@@ -1,0 +1,36 @@
+name: ggtrail-cdc-file-diff
+depth: smoke
+purpose: Decodes generated multi-table GoldenGate trail files through GGTrailParser and matches the projected op stream against the generator's golden.
+
+tql: app.tql
+
+topology: single
+requires: []
+
+generate:
+  - kind: ggtrail
+    workload: workload.yaml
+    dest: '/tmp/${NS}-gg/'
+    when: pre_deploy   # GGTrailParser requires schema.def to exist at SOURCE creation time
+
+assert:
+  smoke: true
+  file:
+    - path: /tmp/${NS}-out
+      match: expected/ops.csv   # emitted by the generator; see expected/README.md
+      project: data
+
+# ---------------------------------------------------------------------------------------
+# ENABLED 2026-09-30. The case was disabled on 2026-08-23 because the app emitted no events.
+# Re-run on Striim 5.4.0.6C, the generated trail decodes in full: all 220 operations arrive,
+# with the generator's original rt + 7-digit file name (9-digit names were tried and are not
+# needed). Striim's parser also decodes the same trail offline (tools/ggtrail-harness in
+# a test repo that has it). The zero-event result of 2026-08-23 did not reproduce, and its cause was not
+# identified.
+#
+# The one real mismatch was the projection: the reader delivers a DECIMAL as a Double, and
+# TO_STRING renders 18740864.31 as 1.874086431E7. The CQ formats ORDERS' amount (data[2]) with
+# BigDecimal to two places, which is the generator's golden; other tables' data[2] are text.
+
+timeout: 180
+tags: [ggtrail, cdc, regression, diff]

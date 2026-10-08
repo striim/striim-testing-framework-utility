@@ -1,0 +1,52 @@
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-postgres
+services:
+  slt-postgres:
+    build: .                 # postgres:16 + wal2json (Dockerfile), for PostgreSQLReader CDC
+    image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-postgres:16
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-postgres
+    # Resource ceilings are overridable for the host's available capacity.
+    cpus: ${SLT_POSTGRES_CPUS:-2}
+    # Parallel runs exceeded the former 1g limit and lost replication backends to
+    # OOM kills. Allow 4g by default to leave headroom for concurrent workloads.
+    mem_limit: ${SLT_POSTGRES_MEM_LIMIT:-4g}
+    # wal_level=logical enables logical decoding so Striim's PostgreSQLReader (CDC)
+    # can create a replication slot. DatabaseReader/Writer (non-CDC) are unaffected.
+    # output_plugin_libraries is an ALLOW-LIST of logical-decoding output plugins, added as a
+    # security hardening in a recent postgres minor. It defaults to "pgoutput, test_decoding",
+    # so wal2json -- installed and loadable, sitting right there in pkglibdir -- is refused with
+    # `library "wal2json" may not be used as an output plugin` the moment PostgreSQLReader tries
+    # to create its slot. Nothing in this repo changed: `FROM postgres:16` is unpinned, so a
+    # base-image pull moved the default under us and postgres-cdc-diff went red (2026-08-19).
+    # The defaults are KEPT and wal2json appended -- replacing the list would disallow pgoutput,
+    # which is the plugin every non-wal2json logical slot uses.
+    # 32, not 10: every CDC test holds a wal2json slot (fan-in tests two), a batch runs 4 at once per
+    # lane, and a test killed at its timeout never drops its slot; at 10, a few leaks failed every
+    # later CDC test in the lane with "all replication slots are in use".
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=32", "-c", "max_wal_senders=32",
+              "-c", "output_plugin_libraries=pgoutput,test_decoding,wal2json"]
+    environment:
+      # Superuser (admin). The framework's PgAdmin connects as this to create the
+      # qasource/qatarget roles + schemas and to wipe them between tests; the qasource
+      # and qatarget data roles are created at setup, not here.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: striim
+      POSTGRES_DB: sltdb
+    ports:
+      # Host port is overridable for machines where :5432 is already taken. When
+      # overriding, point the framework at it too: SLT_PG_HOST=localhost
+      # SLT_PG_PORT=<port> (+ the SLT_PG_* creds; see docs/internals/ENGINE.md).
+      - "${SLT_PG_HOST_PORT:-5432}:5432"
+    networks:
+      - slt-postgres-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sltdb"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
+networks:
+  slt-postgres-net:
+    driver: bridge

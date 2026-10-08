@@ -1,0 +1,47 @@
+-- Runnable example for ReferenceUdf.ReferenceUdfMarkProcessed.
+-- ReferenceUdfMarkProcessed copies every inbound WAEvent through unchanged
+-- (WAEvents.copyEvent, not WAEvent.makeCopy) and stamps userdata.processed=true
+-- UDF analog of OpenProcessors/ReferenceOp's copy-adds-userdata sample,
+-- expressed as a UDF call inside a CQ instead of an OPEN PROCESSOR stage.
+-- Fans out to two targets so both halves of the contract are independently
+-- observable: a Postgres replica (proves data[] passthrough) and a
+-- FileWriter+JSONFormatter (the only way to observe userdata, since it never
+-- lands in a relational column). ${...} tokens are filled by the live-test
+-- framework; substitute your own URLs/schema to run by hand.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE PgSource USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username:      '${PG_SOURCE_USER}',
+  Password:      '${PG_SOURCE_PASSWORD}',
+  Tables:        '${PG_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE STREAM ProcessedStream OF Global.WAEvent;
+
+CREATE OR REPLACE CQ MarkProcessedCq
+INSERT INTO ProcessedStream
+SELECT com.example.ReferenceUdf.ReferenceUdfMarkProcessed(s)
+FROM SrcStream s;
+
+CREATE OR REPLACE TARGET PgReplica USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username:      '${PG_TARGET_USER}',
+  Password:      '${PG_TARGET_PASSWORD}',
+  Tables:        '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}out',
+  BatchPolicy:   'EventCount:100,Interval:1',
+  CommitPolicy:  'EventCount:100,Interval:1'
+) INPUT FROM ProcessedStream;
+
+CREATE OR REPLACE TARGET FileOut USING Global.FileWriter (
+  FileName:    '/tmp/${TID}${NS}_out',
+  FlushPolicy: 'EventCount:100,Interval:1s'
+) FORMAT USING Global.JSONFormatter () INPUT FROM ProcessedStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

@@ -1,0 +1,4 @@
+# Track the (secret-free) build-config .env; the repo root .gitignore ignores .env globally.
+!.env
+# Written by the Striim deps gate when SLT_STRIIM_DEPS_MANIFEST is set; never committed.
+images/striim/files/slt-installer-identity.json

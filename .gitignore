@@ -1,0 +1,44 @@
+# ---- OS / editors ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# ---- Python ----
+__pycache__/
+*.pyc
+.venv/
+.venv-test/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Build artifacts ----
+target/
+*.class
+
+# ---- Secrets / local config ----
+.env
+*.pem
+*.jks
+*sa-key*.json
+
+# ---- Local test inputs that are never committed ----
+ggtrailfiles/
+externaljars/
+
+# ---- Per-checkout engine state (live .slt-*, integration .int-*, prefix-scoped .*-slt-/.*-int- variants) ----
+.slt-*
+.*-slt-*
+.int-*
+.*-int-*
+.perf-results/
+
+# ---- striim-test run directories and ownership ledgers (default state dir: scripts/live) ----
+scripts/live/runs/
+scripts/live/lifecycle/

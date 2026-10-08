@@ -1,0 +1,41 @@
+name: framework-seed-after
+depth: smoke
+purpose: A post_start seed delayed with `after` runs once the wait elapses and its data still reaches the target
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+# `after` accepts 30s / 500ms / 2m / a bare number of seconds, and is measured from the moment
+# the app reached RUNNING -- not from the previous seed file -- so two entries at 10s and 30s
+# fire 10s and 30s in, not 10s and 40s. It is only valid with `when: post_start`; pairing it
+# with pre_deploy is rejected at load rather than ignored, since nothing exists to wait for.
+#
+# Reach for it when a reader needs to settle past RUNNING before data arrives. It is a blunt
+# instrument -- a fixed sleep is slower than a condition and can still be too short on a loaded
+# machine -- so prefer an assertion that waits where the framework offers one.
+seed:
+  - file: seed_delayed.sql
+    db: postgres-source
+    when: post_start
+    after: 10s
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      rows: 1
+      match: expected/tgt.csv
+
+timeout: 180
+tags: [framework, seed, postgres, regression]

@@ -1,0 +1,31 @@
+name: servicenow
+# Connection only: the framework ships no ServiceNow container, because none exists (ServiceNow is
+# hosted). A test that requires servicenow runs against your own instance, set with
+# SLT_SERVICENOW_HOST and the settings below (shell or .env). With SLT_SERVICENOW_HOST unset its
+# tests skip, naming it. Use a sub-production instance: tests insert, update and delete records.
+# The framework neither reads nor writes ServiceNow itself (docs/SERVICENOW.md).
+isolation: none
+live_override_env: SLT_SERVICENOW_HOST
+# The values each setting falls back to when it is unset. The credentials have none: a setting
+# left unset renders its token empty (a basic-auth test sets no OAuth client).
+docker_defaults:
+  scheme: https
+  port: 443
+live_env:
+  host: SLT_SERVICENOW_HOST            # e.g. yourinstance.service-now.com
+  scheme: SLT_SERVICENOW_SCHEME
+  port: SLT_SERVICENOW_PORT
+  user: SLT_SERVICENOW_USER
+  password: SLT_SERVICENOW_PASSWORD
+  client_id: SLT_SERVICENOW_CLIENT_ID
+  client_secret: SLT_SERVICENOW_CLIENT_SECRET
+# Token templates. {view_host} is the host the Striim app reaches the instance by: the instance's
+# host, or SLT_SERVICENOW_VIEW_HOST.
+provides:
+  SERVICENOW_URL: "{scheme}://{view_host}:{port}"
+  SERVICENOW_HOST: "{view_host}"
+  SERVICENOW_USER: "{user}"
+  SERVICENOW_PASSWORD: "{password}"
+  SERVICENOW_CLIENT_ID: "{client_id}"
+  SERVICENOW_CLIENT_SECRET: "{client_secret}"
+  SERVICENOW_TOKEN_URL: "{scheme}://{view_host}:{port}/oauth_token.do"

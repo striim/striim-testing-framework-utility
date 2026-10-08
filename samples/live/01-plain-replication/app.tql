@@ -1,0 +1,26 @@
+-- Customer app: a finite Postgres DatabaseReader initial load into an owned target table.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE CustomerSource USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO CustomerRows;
+
+CREATE OR REPLACE TARGET CustomerTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM CustomerRows;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

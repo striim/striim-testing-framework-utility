@@ -1,0 +1,26 @@
+{
+  "orders.csv": {
+    "declaration": {"columns": {"amount": "decimal:2", "created": "timestamptz", "id": "integer", "img": "binary:hex", "ok": "boolean", "payload": "json"},
+                    "ignore": [], "keys": null, "order": "any", "order_by": null, "profile": "slt-canon/1"},
+    "rows": [
+      [["amount", "decimal:2", "10.50"], ["created", "timestamptz", "2026-03-01T08:00:00.000000Z"], ["id", "integer", "1"], ["img", "binary:hex", "deadbeef"], ["note", "text", ""], ["ok", "boolean", "true"], ["payload", "json", "{\"a\":1.50,\"b\":[1,2]}"]],
+      [["amount", null], ["created", "timestamptz", "2026-03-01T08:00:00.000000Z"], ["id", "integer", "2"], ["img", "binary:hex", "00ff"], ["note", null], ["ok", "boolean", "false"], ["payload", "json", "{}"]]
+    ]
+  },
+  "orders_dup.csv": {
+    "declaration": {"columns": {"amount": "decimal:2", "created": "timestamptz", "id": "integer", "img": "binary:hex", "ok": "boolean", "payload": "json"},
+                    "ignore": [], "keys": null, "order": "any", "order_by": null, "profile": "slt-canon/1"},
+    "rows": [
+      [["amount", "decimal:2", "10.50"], ["created", "timestamptz", "2026-03-01T08:00:00.000000Z"], ["id", "integer", "1"], ["img", "binary:hex", "deadbeef"], ["note", "text", ""], ["ok", "boolean", "true"], ["payload", "json", "{\"a\":1.50,\"b\":[1,2]}"]],
+      [["amount", null], ["created", "timestamptz", "2026-03-01T08:00:00.000000Z"], ["id", "integer", "2"], ["img", "binary:hex", "00ff"], ["note", null], ["ok", "boolean", "false"], ["payload", "json", "{}"]],
+      [["amount", "decimal:2", "10.50"], ["created", "timestamptz", "2026-03-01T08:00:00.000000Z"], ["id", "integer", "1"], ["img", "binary:hex", "deadbeef"], ["note", "text", ""], ["ok", "boolean", "true"], ["payload", "json", "{\"a\":1.50,\"b\":[1,2]}"]]
+    ]
+  },
+  "events": {
+    "declaration": {"columns": {"price": "decimal:2"}, "ignore": [], "keys": null, "order": "sequence", "order_by": null, "profile": "slt-canon/1"},
+    "rows": [
+      [["id", "text", "1"], ["name", "text", "a\nb"], ["price", "decimal:2", "1.50"], ["tag", "text", "x"]],
+      [["id", "text", "2"], ["name", null]]
+    ]
+  }
+}

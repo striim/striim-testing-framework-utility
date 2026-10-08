@@ -1,0 +1,27 @@
+seed: 42
+keys: sequential
+tables:
+  SCOTT.CUSTOMERS:
+    columns:
+      - {name: ID, type: int, pk: true}
+      - {name: NAME, type: "varchar(50)"}
+      - {name: TIER, type: "char(1)"}
+  SCOTT.ORDERS:
+    columns:
+      - {name: ID, type: int, pk: true}
+      - {name: CUSTOMER_ID, type: int, fk: SCOTT.CUSTOMERS.ID}
+      - {name: AMOUNT, type: "decimal(10,2)"}
+      - {name: PLACED_AT, type: timestamp}
+  SCOTT.ORDER_ITEMS:
+    columns:
+      - {name: ID, type: int, pk: true}
+      - {name: ORDER_ID, type: int, fk: SCOTT.ORDERS.ID}
+      - {name: SKU, type: "varchar(20)"}
+      - {name: QTY, type: int}
+workload:
+  initial_rows: {SCOTT.CUSTOMERS: 20, SCOTT.ORDERS: 40, SCOTT.ORDER_ITEMS: 60}
+  ops: 100
+  mix: {insert: 0.6, update: 0.3, delete: 0.1}
+  table_weights: {SCOTT.CUSTOMERS: 1, SCOTT.ORDERS: 2, SCOTT.ORDER_ITEMS: 2}
+  txn_ops: [1, 3]
+max_records_per_file: 1000

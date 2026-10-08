@@ -1,0 +1,26 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE OrdersCdc USING Global.MySQLReader (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_SOURCE_USER}',
+  Password: '${MYSQL_SOURCE_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}orders',
+  StartPositionByName: true
+) OUTPUT TO OrderChanges;
+
+CREATE OR REPLACE TARGET OrdersCopy USING Global.DatabaseWriter (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_TARGET_USER}',
+  Password: '${MYSQL_TARGET_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}orders,${MYSQL_TARGET_SCHEMA}.${TID}orders',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM OrderChanges;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

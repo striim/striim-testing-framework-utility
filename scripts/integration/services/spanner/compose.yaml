@@ -1,0 +1,37 @@
+# Cloud Spanner emulator for integration testing (Phase 1 scaffold) — same image and
+# structure as the live tier (scripts/live/services/spanner/compose.yaml), on
+# non-conflicting host ports so both stacks can run at once. 19010 = gRPC (data/DDL),
+# 19020 = REST (admin). The instance + the two databases (gsql = GoogleSQL, pgdb =
+# PostgreSQL dialect) are created by the test harness's admin client (google-cloud-
+# spanner) from the host — no gcloud CLI dependency, no custom build.
+#
+# No healthcheck: the emulator image ships no shell tooling, and it comes up in ~1-2s;
+# the admin client's ensure() retries the first connection to cover startup.
+# Parallel stacks: INT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (mirrors scripts/live's SLT_STACK_PREFIX pattern).
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-spanner
+services:
+  int-spanner:
+    # Pinned for reproducibility — same version scripts/live validated against.
+    # Re-pin deliberately when upgrading.
+    image: gcr.io/cloud-spanner-emulator/emulator:1.5.55
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-spanner
+    # Measured ceilings (a limits sampler re-derives them). mem_limit
+    # raised to 2g after an OOMKill at 512m in a perf-tier run.
+    cpus: ${INT_SPANNER_CPUS:-0.5}
+    mem_limit: ${INT_SPANNER_MEM_LIMIT:-2g}
+    platform: linux/amd64
+    ports:
+      # Host ports are overridable for machines where they are already taken (distinct
+      # from the live tier's 9010/9020 so both stacks can run at once). When
+      # overriding, point the framework at it too: INT_SPANNER_HOST=localhost +
+      # INT_SPANNER_PORT / INT_SPANNER_ADMIN_PORT=<ports>.
+      - "${INT_SPANNER_GRPC_HOST_PORT:-19010}:9010"
+      - "${INT_SPANNER_REST_HOST_PORT:-19020}:9020"
+    networks:
+      - int-spanner-net
+
+networks:
+  int-spanner-net:
+    driver: bridge

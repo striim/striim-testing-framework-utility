@@ -1,0 +1,47 @@
+# Integration-tier Vertica. Ported from scripts/live/services/vertica rather than written
+# fresh, as services/sqlserver was ported from the live tier's mssql.
+#
+# Differences from the live tier's copy:
+#   - Port 15433, not 5433, so this stack and a live stack can run at once -- exactly why
+#     integration Postgres is on 15432 rather than 5432.
+#   - Database intdb and marker .int-init-done (images/vertica), the names this tier uses.
+#
+# Parallel stacks: INT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and the container_name below -- unset/empty, both interpolate to
+# today's exact names.
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-vertica
+services:
+  int-vertica:
+    # Multi-arch base image: native on arm64 (Apple Silicon), unlike int-mssql.
+    build: ./images/vertica
+    image: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-vertica:25.3.0-8
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-vertica
+    # Idle use measured at ~160 MiB (arm64) and ~330 MiB (amd64 under emulation); the limit
+    # leaves room for loads. Not yet re-derived with a limits sampler.
+    cpus: ${INT_VERTICA_CPUS:-1}
+    mem_limit: ${INT_VERTICA_MEM_LIMIT:-2g}
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
+    ports:
+      # Host port is overridable for machines where :15433 is already taken. When
+      # overriding, point the framework at it too: INT_VERTICA_HOST=localhost
+      # INT_VERTICA_PORT=<port>.
+      - "${INT_VERTICA_HOST_PORT:-15433}:5433"
+    networks:
+      - int-vertica-net
+    healthcheck:
+      # Healthy only once entrypoint.sh has written its marker AND qasource can log in, as
+      # services/sqlserver does. entrypoint.sh clears the marker at the top of every boot,
+      # so a marker from a prior life of this container cannot gate.
+      test: ["CMD-SHELL", "test -f /data/.int-init-done && /opt/vertica/bin/vsql -h 127.0.0.1 -U qasource -w striim -d intdb -c 'SELECT 1'"]
+      interval: 2s
+      timeout: 5s
+      # First boot creates the database: ~20 s native, ~30 s under amd64 emulation (measured
+      # on the live tier's copy).
+      retries: 150
+
+networks:
+  int-vertica-net:
+    driver: bridge

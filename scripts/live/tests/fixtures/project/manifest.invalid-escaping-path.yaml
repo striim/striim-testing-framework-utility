@@ -1,0 +1,9 @@
+# INVALID: target path escapes the consumer root after symlink resolution -> reject offline.
+schemaVersion: 1
+targets:
+  - name: Escaper
+    kind: op
+    path: ../../outside-the-project/module
+    build: maven
+suites:
+  live: cases/live

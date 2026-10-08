@@ -1,0 +1,53 @@
+name: vertica
+compose: compose.yaml            # relative to this file
+container: int-vertica
+isolation: none                  # fixed qasource/qatarget schemas; per-test isolation is
+                                 # by ${TID} table prefix, as for postgres
+# If INT_VERTICA_HOST is set, reuse a live Vertica (from INT_VERTICA_* env) and skip Docker.
+live_override_env: INT_VERTICA_HOST
+# Docker defaults (used when not live). The container's own entrypoint creates the
+# database, the qasource/qatarget users and their schemas before the healthcheck passes,
+# so nothing here has to be created at resolve time.
+docker_defaults:
+  host: localhost
+  port: 15433
+  dbname: intdb
+  admin_user: dbadmin           # superuser; vcluster create_db names it after the OS user
+  admin_password: striim
+  source_user: qasource
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: INT_VERTICA_HOST_PORT
+live_env:
+  host: INT_VERTICA_HOST
+  port: INT_VERTICA_PORT
+  dbname: INT_VERTICA_DB
+  admin_user: INT_VERTICA_ADMIN_USER
+  admin_password: INT_VERTICA_ADMIN_PASSWORD
+  source_user: INT_VERTICA_SOURCE_USER
+  source_password: INT_VERTICA_SOURCE_PASSWORD
+  source_schema: INT_VERTICA_SOURCE_SCHEMA
+  target_user: INT_VERTICA_TARGET_USER
+  target_password: INT_VERTICA_TARGET_PASSWORD
+  target_schema: INT_VERTICA_TARGET_SCHEMA
+# Token templates. {view_host} is the host the processor under test uses to reach Vertica;
+# the harness's own connection uses the base {host}:{port} (localhost:15433).
+provides:
+  VERTICA_HOST: "{view_host}"
+  VERTICA_PORT: "{port}"
+  VERTICA_DB: "{dbname}"
+  VERTICA_ADMIN_USER: "{admin_user}"
+  VERTICA_ADMIN_PASSWORD: "{admin_password}"
+  VERTICA_SOURCE_USER: "{source_user}"
+  VERTICA_SOURCE_PASSWORD: "{source_password}"
+  VERTICA_SOURCE_SCHEMA: "{source_schema}"
+  VERTICA_TARGET_USER: "{target_user}"
+  VERTICA_TARGET_PASSWORD: "{target_password}"
+  VERTICA_TARGET_SCHEMA: "{target_schema}"
+  VERTICA_URL: "jdbc:vertica://{view_host}:{port}/{dbname}"

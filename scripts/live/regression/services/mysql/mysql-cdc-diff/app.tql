@@ -1,0 +1,26 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE MysqlCDCSource USING Global.MySQLReader (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_SOURCE_USER}',
+  Password: '${MYSQL_SOURCE_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}src',
+  StartPositionByName: true
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET MysqlTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_TARGET_USER}',
+  Password: '${MYSQL_TARGET_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}src,${MYSQL_TARGET_SCHEMA}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

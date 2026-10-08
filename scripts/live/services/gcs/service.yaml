@@ -1,0 +1,35 @@
+name: gcs
+compose: compose.yaml            # relative to this file
+container: slt-gcs
+isolation: none                 # fixed project/buckets; provisioned once per session
+# If SLT_GCS_HOST is set, reuse a live emulator (from SLT_GCS_* env), skip Docker.
+live_override_env: SLT_GCS_HOST
+docker_defaults:
+  host: localhost
+  port: 4443
+  token_port: 4444              # fake OAuth token server; the throwaway key's token_uri
+  project: test-project
+  src_bucket: slt-src
+  tgt_bucket: slt-tgt
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_GCS_HOST_PORT
+  token_port: SLT_GCS_TOKEN_HOST_PORT
+live_env:
+  host: SLT_GCS_HOST
+  port: SLT_GCS_PORT
+  project: SLT_GCS_PROJECT
+  src_bucket: SLT_GCS_SRC_BUCKET
+  tgt_bucket: SLT_GCS_TGT_BUCKET
+# Tokens for the Striim app. GCS_ENDPOINT feeds the app's PrivateServiceConnectEndpoint
+# (-> StorageOptions.setHost). {view_host} is the host the Striim server uses to reach
+# the emulator (host.docker.internal for the Docker cluster), but the plugin OVERRIDES
+# the host here with its resolved IP -- Apache UrlValidator in the adapter rejects
+# host.docker.internal/localhost. The framework's own GcsAdmin reads the emulator at
+# the base {host}:{port} (localhost:4443). See services/gcs/README.md.
+provides:
+  GCS_PROJECT: "{project}"
+  GCS_ENDPOINT: "http://{view_host}:{port}"
+  GCS_SRC_BUCKET: "{src_bucket}"
+  GCS_TGT_BUCKET: "{tgt_bucket}"

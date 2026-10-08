@@ -1,0 +1,16 @@
+# C7.2 invalid: only version 1 exists.
+lifecycle:
+  version: 2
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  completion:
+    kind: source-count
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned

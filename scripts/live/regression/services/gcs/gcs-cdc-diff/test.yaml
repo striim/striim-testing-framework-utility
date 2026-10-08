@@ -1,0 +1,24 @@
+name: gcs-cdc-diff
+depth: smoke
+purpose: GCSReader picks up an object uploaded after the app is RUNNING (post_start) and GCSWriter lands its records on the target bucket — the GCS analog of the CDC diffs
+
+tql: app.tql
+
+seed:
+  - file: source.csv   # GcsAdmin uploads this to ${GCS_SRC_BUCKET} once the app is RUNNING
+    db: gcs
+    when: post_start
+
+topology: single
+requires: [gcs]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${GCS_SRC_BUCKET}
+      source_db: gcs
+      target: ${GCS_TGT_BUCKET}
+      target_db: gcs
+
+timeout: 180
+tags: [diff, cdc, gcs, regression]

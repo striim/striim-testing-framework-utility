@@ -1,0 +1,56 @@
+name: framework-recover
+depth: smoke
+purpose: The recover phase really interrupts and restarts a running app, and a pipeline whose writer commits on a tight policy survives a STOP with no loss
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+# CDC, so the data must be committed after RUNNING or the reader never sees it
+# (framework-seed-phases is the example that proves that).
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+# The feature under test. `recover:` interrupts the app AFTER every post_start step and BEFORE
+# every assertion, then brings it back and pauses for replay to drain.
+#
+# mode: stop -- STOP APPLICATION. NOT a drain: Flow.stopImpl() calls stopDataFlow()+stop() and
+# never flush(), so a DatabaseWriter discards its pending batch and rolls back its open
+# transaction. The other modes are `kill` (SIGKILL the node
+# container -- docker only, the test SKIPS on a native Striim) and `quiesce` (QUIESCE
+# APPLICATION, which DOES flush -- the control arm).
+#
+# after: 10 -- this example is the POSITIVE case, so it deliberately lets the writer finish.
+# CommitPolicy Interval:1 below commits every second, so by 10s the seed is durable and the
+# rollback has nothing to discard. A recovery test hunting for LOSS sets `after` low instead,
+# to stop the app mid-write.
+recover:
+  mode: stop
+  after: 10
+  settle: 20
+
+# RECOVERY on the app is what makes any of this meaningful: without it there is no checkpoint
+# to resume from and a restarted app just re-reads from its current position.
+#
+# diff, not data: the claim is "the target caught up to the source", which is exactly what a
+# diff says and what a row count would not. A count of 3 would also pass with three wrong rows.
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+timeout: 300
+tags: [framework, recover, postgres, regression]

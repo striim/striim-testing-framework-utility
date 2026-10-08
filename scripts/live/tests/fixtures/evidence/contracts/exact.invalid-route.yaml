@@ -1,0 +1,12 @@
+# C8.1/C8.3: exact data routes are postgres-source/postgres-target only -> exact-route-unsupported (F4).
+name: exact-route
+purpose: p
+tql: app.tql
+requires: [oracle]
+exact: {version: 1}
+assert:
+  data:
+    - target: QATARGET.${TID_ORACLE}TGT
+      target_db: oracle
+      match: expected/tgt.csv
+      exact: true

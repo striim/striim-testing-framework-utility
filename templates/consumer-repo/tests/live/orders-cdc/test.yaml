@@ -1,0 +1,44 @@
+name: orders-cdc
+purpose: Postgres CDC applies inserts, an update and a delete to the orders copy
+tql: app.tql
+topology: single
+requires: [postgres]
+timeout: 180
+tags: [cdc, postgres, orders]
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+seed:
+  - file: changes.sql
+    db: postgres-source
+    when: post_start
+exact: {version: 1}
+assert:
+  smoke: true
+  data:
+    - target: "${PG_TARGET_SCHEMA}.${TID}orders_copy"
+      target_db: postgres-target
+      match: expected/rows.csv
+      exact:
+        columns: {id: integer, amount: "decimal:2"}
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  stability: 5s
+  deadlines: {readiness: 90s, completion: 120s}
+  reset: owned
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: postgres-target
+      table: "${PG_TARGET_SCHEMA}.${TID}orders_copy"
+      key: id

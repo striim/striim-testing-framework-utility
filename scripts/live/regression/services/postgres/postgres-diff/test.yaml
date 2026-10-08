@@ -1,0 +1,44 @@
+name: postgres-diff
+depth: smoke
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed: seed.sql
+
+exact: {version: 1}
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      source_db: postgres-source
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      exact: true
+
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  completion:
+    kind: source-count
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  stability: 2s
+  deadlines: {readiness: 60s, completion: 120s}
+  reset: owned
+
+timeout: 180
+tags: [diff, regression, postgres]

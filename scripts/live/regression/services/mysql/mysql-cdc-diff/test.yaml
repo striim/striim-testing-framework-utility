@@ -1,0 +1,30 @@
+name: mysql-cdc-diff
+depth: smoke
+purpose: MySQL binlog-based CDC (MySQLReader) within one DB; seed runs post_start so binlog captures the inserts
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: mysql-source
+  - file: ddl_target.sql
+    db: mysql-target
+
+seed:
+  - file: seed.sql
+    db: mysql-source
+    when: post_start
+
+topology: single
+requires: [mysql]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${MYSQL_SOURCE_SCHEMA}.${TID}src
+      source_db: mysql-source
+      target: ${MYSQL_TARGET_SCHEMA}.${TID}tgt
+      target_db: mysql-target
+
+timeout: 180
+tags: [diff, cdc, mysql, regression]

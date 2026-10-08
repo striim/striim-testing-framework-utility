@@ -1,0 +1,37 @@
+# VALID: Chorus integration runner. Fresh Chorus report, nonzero, errors/failures/skips = 0.
+schemaVersion: 1
+name: integration-chorus-smoke
+tier: integration
+description: Chorus @SmokeTest suite against the owned runtime
+cwd: $PT_PRODUCT_HOME_COPY/IntegrationTests
+argv:
+  - mvn
+  - -B
+  - integration-test
+  - -Dchorus.tags=@SmokeTest
+shell: false
+prereq:
+  - kind: http
+    url: http://localhost:9080/ui
+    expectStatus: 200
+  - kind: file
+    path: $PT_PRODUCT_HOME_COPY/IntegrationTests/src/test/resources/features
+selection:
+  default: []
+  allowEmpty: false
+timeout:
+  total: 7200
+  cancelGrace: 30
+processGroup: true
+artifacts:
+  reports:
+    - kind: chorus-xml
+      path: $PT_PRODUCT_HOME_COPY/IntegrationTests/target/surefire-reports/TEST-com.webaction.integration.test.IntegrationTestSuite.xml
+      required: true
+      freshness: run
+result:
+  adapter: chorus-xml
+  policy:
+    zeroTests: fail
+    requiredSkip: fail
+    knownFailures: []

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "livetest"
+version = "0.1.0"
+license = {file = "LICENSE"}
+description = "Live App Test framework for Striim example/regression apps"
+requires-python = ">=3.12"
+dependencies = ["pyyaml>=6", "requests>=2.31", "psycopg2-binary>=2.9", "oracledb>=2", "google-cloud-spanner>=3.40", "google-cloud-storage>=2", "confluent-kafka>=2", "fastavro>=1", "pymssql>=2.3", "PyMySQL>=1.1", "vertica-python>=1.4", "sqlalchemy>=2.0.0", "filelock>=3.20.4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-mock>=3", "pytest-xdist>=3"]
+# Teradata's own licence governs the driver: see the README, "Use your own Teradata".
+teradata = ["teradatasql>=20"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["livetest*"]
+
+[tool.pytest.ini_options]
+# Phase 1: scan only the framework's own tests + the regression suite. The OP
+# example tree (java/OpenProcessors) is added in phase 6 when examples gain a
+# test.yaml — with --import-mode=importlib + norecursedirs to avoid duplicate
+# test-module basename collisions across OP scratch dirs.
+testpaths = ["tests", "regression"]
+python_files = ["test_*.py"]
+# Load the framework via -p (installed editable package) rather than a
+# `pytest_plugins` entry in conftest.py: the latter is a hard error under pytest
+# 8.1+/9 when this suite is collected from the repo root (a non-top-level conftest).
+# -p works from any rootdir since `livetest` is importable (see pythonpath).
+addopts = "--import-mode=importlib -p livetest.plugin"
+pythonpath = ["."]
+norecursedirs = ["*.egg-info", ".git", "target", "scratch"]
+markers = [
+    "live: end-to-end test requiring a Striim server",
+    # One per service a manifest can name in `requires:`; livetest/plugin.py applies them
+    # per item, so a runner can select on what a test USES -- `-m "live and not spanner"`.
+    "postgres: live test whose manifest requires the postgres service",
+    "oracle: live test whose manifest requires the oracle service",
+    "mssql: live test whose manifest requires the mssql service",
+    "spanner: live test whose manifest requires the spanner service",
+    "gcs: live test whose manifest requires the gcs service",
+    "kafka: live test whose manifest requires the kafka service",
+    "mysql: live test whose manifest requires the mysql service",
+    "teradata: live test whose manifest requires the teradata service (your own instance, SLT_TERADATA_HOST)",
+    "vertica: live test whose manifest requires the vertica service",
+    "servicenow: live test whose manifest requires the servicenow service (your own instance, SLT_SERVICENOW_HOST)",
+    # One per depth tier a manifest can name in `depth:` (docs/WRITING-TESTS.md);
+    # livetest/plugin.py applies the matching one per item.
+    "depth_smoke: T0 smoke tier -- fastest, broadest-coverage subset",
+    "depth_gate: T1 gate tier -- hand-picked one-per-module x service",
+    "depth_regression: T2 regression tier -- default depth for most manifests",
+    "depth_fault: T3 fault-injection tier",
+    "depth_customer: T4 customer-repro tier",
+    "depth_measure: T5 measurement/perf tier",
+    "depth_canary: T6 canary tier",
+]

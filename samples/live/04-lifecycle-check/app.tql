@@ -1,0 +1,26 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE PgCdcSource USING Global.PostgreSQLReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src',
+  ReplicationSlotName: '${PG_SLOT}'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET PgTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

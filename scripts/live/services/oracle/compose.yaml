@@ -1,0 +1,71 @@
+# Oracle CDC service for the live tier (an OracleReader source + DatabaseWriter target).
+#
+#   docker compose -f services/oracle/compose.yaml up -d --wait
+#   docker compose -f services/oracle/compose.yaml down -v
+#
+# Builds a custom image (images/oracle/) from gvenzl/oracle-free with ARCHIVELOG (the
+# LogMiner prerequisite) + the Striim CDC/data setup (c##striim LogMiner user,
+# qasource/qatarget data schemas, DB-level supplemental logging) baked in AT BUILD TIME
+# — see images/oracle/Dockerfile + bake.sql. This avoids a runtime MOUNT-restart, which
+# fights gvenzl's PID-1 entrypoint and crashes the container. Runtime just opens the
+# already-configured DB.
+#
+# The healthcheck uses gvenzl's own /opt/oracle/healthcheck.sh (waits for gvenzl to
+# finish startup + FREEPDB1 READ WRITE) plus a qasource connect probe, so `up --wait`
+# returns only once the DB is fully open and the data user is usable.
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-oracle
+services:
+  slt-oracle:
+    build:
+      context: ./images/oracle
+      dockerfile: ./Dockerfile
+    image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-oracle:23.26.2
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-oracle
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_ORACLE_CPUS:-2}
+    mem_limit: ${SLT_ORACLE_MEM_LIMIT:-4g}
+    # NO platform pin: follow the host architecture.
+    # Historically pinned linux/amd64. On Apple Silicon that forced QEMU emulation, where this
+    # Oracle fails to start: ORA-00443 ("background process PMON did not start", exit 187) with
+    # PMON reporting ORA-01096 and a garbage instance version (0.0.0.14.238). Native arm64
+    # resolves it; the mechanism behind the amd64 failure is NOT isolated. The base image
+    # gvenzl/oracle-free:23.26.2-slim-faststart publishes BOTH amd64 and arm64 for this exact
+    # tag, so following the host is correct on either: arm64 here, amd64 on an x86 host where
+    # it works fine. Do NOT hard-pin arm64 -- that just moves the same bug to the next machine.
+    # CACHE CAVEAT when changing hosts: changing/removing this pin does NOT re-resolve an image
+    # already in the local store. Use `docker pull --platform <arch> <base>` and verify with
+    # `docker image inspect --format '{{.Os}}/{{.Architecture}}'` BEFORE concluding anything.
+    environment:
+      ORACLE_PASSWORD: striim         # SYS/SYSTEM password (reset by gvenzl on startup)
+    ports:
+      # Host port is overridable for machines where :1521 is already taken. When
+      # overriding, point the framework at it too: SLT_ORA_HOST=localhost
+      # SLT_ORA_PORT=<port> (+ the SLT_ORA_* creds; see docs/internals/ENGINE.md).
+      - "${SLT_ORA_HOST_PORT:-1521}:1521"
+    networks:
+      - slt-oracle-net
+    healthcheck:
+      # Use gvenzl's own healthcheck (OS-auth `sqlplus -s /`, gated on its startup marker
+      # files + FREEPDB1 in READ WRITE), THEN confirm the qasource data user the tests
+      # actually use can run a query. This waits for gvenzl to FINISH its startup
+      # orchestration (not just for FREEPDB1 to auto-open via SAVE STATE), and gates on the
+      # real test credential. Avoids the two fragilities of the old sentinel check:
+      #   1. it authenticated as system/striim — a password gvenzl RESETS during startup,
+      #      so it raced/failed with ORA-01017; OS auth has no such dependency.
+      #   2. it flipped green the instant FREEPDB1 registered with the listener (no settling
+      #      margin), so a reader could connect before the DB had finished opening.
+      # (The old check gated on a baked SLT_SETUP_COMPLETE sentinel table, but since setup is
+      # baked AT BUILD TIME that table existed the moment the PDB opened — no runtime
+      # guarantee — so it was dropped. "qasource can query" is the real readiness signal.)
+      test: ["CMD-SHELL", "/opt/oracle/healthcheck.sh FREEPDB1 && echo 'SELECT 1 FROM dual;' | sqlplus -s -L qasource/striim@localhost:1521/FREEPDB1 | grep -q 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 60s
+
+networks:
+  slt-oracle-net:
+    driver: bridge

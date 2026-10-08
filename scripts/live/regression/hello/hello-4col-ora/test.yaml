@@ -1,0 +1,27 @@
+name: hello-4col-ora
+depth: smoke
+purpose: Control for the width-4 column-loss failure — the topology of the failing OP tests (Oracle initial load -> Postgres, 4-column table) with no OP in the pipeline
+
+tql: app.tql
+
+ddl:
+  - file: source_oracle_ddl.sql
+    db: oracle-source
+  - file: target_pg_ddl.sql
+    db: postgres-target
+seed:
+  - file: source_oracle_seed.sql
+    db: oracle-source
+
+topology: single
+requires: [oracle, postgres]
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}customer
+      target_db: postgres-target
+      match: expected/customer.csv
+
+timeout: 180
+tags: [regression, self-contained, oracle, postgres]

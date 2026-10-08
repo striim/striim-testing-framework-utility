@@ -1,0 +1,25 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE SourceReader USING Global.DatabaseReader (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_SOURCE_USER}',
+  Password: '${MYSQL_SOURCE_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}batch_source'
+) OUTPUT TO SourceStream;
+
+CREATE OR REPLACE TARGET TargetWriter USING Global.DatabaseWriter (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_TARGET_USER}',
+  Password: '${MYSQL_TARGET_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}batch_source,${MYSQL_TARGET_SCHEMA}.${TID}batch_test_table',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SourceStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

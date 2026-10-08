@@ -1,0 +1,49 @@
+# fake-gcs-server for the integration tier (a GCS-writing OP's real upload
+# target). Same image scripts/live/services/gcs/compose.yaml uses. Unlike that
+# tier, this runs ONE container, not two -- see services/gcs/README.md for why the
+# live tier's fake-OAuth-token sidecar has nothing to serve here.
+#
+# Parallel stacks: INT_STACK_PREFIX namespaces the compose project + container name
+# below (mirrors services/postgres/compose.yaml) -- unset/empty interpolates to
+# today's exact names.
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-gcs
+services:
+  int-gcs:
+    image: fsouza/fake-gcs-server:1.54.0   # pinned -- same version scripts/live/services/gcs validated against
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-gcs
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${INT_GCS_CPUS:-0.5}
+    mem_limit: ${INT_GCS_MEM_LIMIT:-512m}
+    # -public-host must match what the harness's own client reaches the emulator by.
+    # Always localhost here: this tier has no containerized Striim (IntegrationProcessor
+    # runs as a local subprocess -- inttest/tokens.py: view_host == host, always).
+    # -external-url: what the server echoes in mediaLink/selfLink. Unset it defaults to the
+    # container-internal 0.0.0.0:4443, which only coincides with the published port on the
+    # default stack -- see the live tier's twin, where that cost the whole objectwriter
+    # suite on a second stack. This tier is not exposed today (inttest/gcsadmin.py uses
+    # bucket.blob(), which never populates media_link, rather than get_blob()/list_blobs()),
+    # so this is the same one-line hardening kept deliberately in step, not a fix for a live bug.
+    command: ["-scheme", "http", "-port", "4443",
+              "-public-host", "localhost:${INT_GCS_HOST_PORT:-14443}",
+              "-external-url", "${INT_GCS_EXTERNAL_URL:-http://0.0.0.0:${INT_GCS_HOST_PORT:-14443}}"]
+    ports:
+      # Host port is overridable for machines where :14443 is already taken (distinct
+      # from the live tier's :4443 so both stacks can run at once). When overriding,
+      # point the framework at it too: INT_GCS_HOST=localhost INT_GCS_PORT=<port>.
+      - "${INT_GCS_HOST_PORT:-14443}:4443"
+    # Without this, `docker compose up -d --wait` (services.py:compose_up) returns as
+    # soon as the container is RUNNING, and the first test races the emulator's start.
+    # Probes the storage API, not just the port, so healthy means actually serving.
+    # busybox wget: the image ships /bin/sh, wget and nc (no curl).
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://localhost:4443/storage/v1/b?project=test' || exit 1"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+    networks:
+      - int-gcs-net
+
+networks:
+  int-gcs-net:
+    driver: bridge

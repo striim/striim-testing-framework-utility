@@ -1,0 +1,57 @@
+name: vertica
+compose: compose.yaml            # relative to this file
+container: slt-vertica
+isolation: none                 # fixed qasource/qatarget schemas; tests use ${TID}-prefixed tables
+# If SLT_VERTICA_HOST is set, reuse a live Vertica (from SLT_VERTICA_* env) and skip Docker.
+live_override_env: SLT_VERTICA_HOST
+# Docker defaults (used when not live). Consistent with every other DB: an admin account
+# (the superuser, created by vcluster create_db) plus two data accounts + same-named
+# schemas — qasource for source tables/connections, qatarget for target tables/connections.
+# A source table T and a same-named target table T coexist as qasource.T / qatarget.T.
+docker_defaults:
+  host: localhost
+  port: 5433
+  dbname: sltdb
+  admin_user: dbadmin           # superuser; vcluster create_db names it after the OS user
+  admin_password: striim
+  source_user: qasource         # source user; owns + operates in the qasource schema
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget         # target user; owns + operates in the qatarget schema
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_VERTICA_HOST_PORT
+# Live env var names (used when live_override_env is set):
+live_env:
+  host: SLT_VERTICA_HOST
+  port: SLT_VERTICA_PORT
+  dbname: SLT_VERTICA_DB
+  admin_user: SLT_VERTICA_ADMIN_USER
+  admin_password: SLT_VERTICA_ADMIN_PASSWORD
+  source_user: SLT_VERTICA_SOURCE_USER
+  source_password: SLT_VERTICA_SOURCE_PASSWORD
+  source_schema: SLT_VERTICA_SOURCE_SCHEMA
+  target_user: SLT_VERTICA_TARGET_USER
+  target_password: SLT_VERTICA_TARGET_PASSWORD
+  target_schema: SLT_VERTICA_TARGET_SCHEMA
+# Token templates emitted after resolution. {view_host} is the host the STRIIM APP uses to
+# reach Vertica — localhost for a native/host Striim, host.docker.internal for a
+# containerized Striim (SLT_STRIIM_VIEW_HOST). pytest's own connection uses the base {host}
+# (localhost:5433) regardless — so the same published :5433 serves both.
+# Source tables live in ${VERTICA_SOURCE_SCHEMA} (qasource), target tables in
+# ${VERTICA_TARGET_SCHEMA} (qatarget); the reader connects as ${VERTICA_SOURCE_USER}, the
+# writer as ${VERTICA_TARGET_USER}.
+provides:
+  VERTICA_HOST: "{view_host}"
+  VERTICA_PORT: "{port}"
+  VERTICA_DB: "{dbname}"
+  VERTICA_SOURCE_USER: "{source_user}"
+  VERTICA_SOURCE_PASSWORD: "{source_password}"
+  VERTICA_SOURCE_SCHEMA: "{source_schema}"
+  VERTICA_TARGET_USER: "{target_user}"
+  VERTICA_TARGET_PASSWORD: "{target_password}"
+  VERTICA_TARGET_SCHEMA: "{target_schema}"
+  VERTICA_URL: "jdbc:vertica://{view_host}:{port}/{dbname}"

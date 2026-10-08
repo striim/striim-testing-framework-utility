@@ -1,0 +1,30 @@
+name: postgres-cdc-diff
+depth: smoke
+purpose: Postgres logical decoding CDC (PostgreSQLReader) within one DB; seed runs post_start so the replication slot captures the inserts
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql   # qasource.src
+    db: postgres-source
+  - file: ddl_target.sql   # qatarget.tgt
+    db: postgres-target
+  - file: slot.sql   # wal2json slot (own file: separate txn, no prior writes)
+    db: postgres-source
+seed:
+  - file: seed.sql                                    # into qasource.src (default db = postgres-source)
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src            # read via qasource (default source_db: postgres-source)
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt            # read via qatarget
+      target_db: postgres-target
+
+timeout: 180
+tags: [diff, cdc, postgres, regression]

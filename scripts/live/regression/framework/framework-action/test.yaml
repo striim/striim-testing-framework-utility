@@ -1,0 +1,67 @@
+name: framework-action
+depth: smoke
+purpose: The action phase really stops and restarts a running app N times, a concurrent SQL script really runs on its own thread throughout (its rows are counted, since its failures only log), and rows committed before the first stop survive both cycles
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+# CDC, so the data must be committed after RUNNING or the reader never sees it
+# (framework-seed-phases is the example that proves that).
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+# The feature under test. `action:` runs AFTER every post_start step and BEFORE every assertion.
+# `stop_start_cycle` STOPs the app, waits `stop_duration`, STARTs it and waits for RUNNING, and
+# repeats `cycles` times with `delay_before_stop` between. The difference from `recover:` is
+# the loop and the `concurrent:` block: each entry is a SQL file run on its own thread, every
+# `loop_interval`, from the moment the phase starts until the last cycle's app is RUNNING again.
+#
+# Two cycles, not one: one cycle cannot distinguish "the loop works" from "the first iteration
+# works". delay_before_stop: 5 lets the writer (Interval:1) commit what the script inserts.
+#
+# ⚠ WHAT THIS DOES AND DOES NOT PROVE. The script's five rows land on its FIRST iteration --
+# the thread starts before the first delay -- so they are committed at the target before the
+# first STOP. The diff therefore proves that rows already at the target SURVIVE two stop/start
+# cycles, not that rows written WHILE STOPPED replay from the slot. The latter needs rows with
+# per-iteration keys and an "at least N" assertion, and no assert tier expresses a minimum; a
+# case wanting that claim has to build one. framework-recover covers the same survival claim
+# with `recover:`; this example's addition is the loop and the concurrent thread.
+action:
+  - type: stop_start_cycle
+    cycles: 2
+    delay_before_stop: 5s
+    stop_duration: 3s
+    concurrent:
+      - db: postgres-source
+        file: concurrent.sql
+        loop_interval: 1s
+
+# Two assertions, each for what the other cannot see. `data: rows: 8` (3 seeded + 5 from the
+# script) proves the concurrent script RAN: its failures are logged rather than failed, so
+# source and target would be trivially equal if it never inserted anything. The diff proves
+# the eight rows are intact after two STOPs -- a count of 8 would also pass with eight wrong rows.
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      rows: 8
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+timeout: 300
+tags: [framework, action, postgres, regression]

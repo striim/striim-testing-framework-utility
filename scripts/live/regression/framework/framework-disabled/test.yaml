@@ -1,0 +1,38 @@
+name: framework-disabled
+depth: smoke
+purpose: A disabled test is skipped before any provisioning and is force-runnable with SLT_RUN_DISABLED=1
+disabled: "EXAMPLE, not a real quarantine: this test exists to demonstrate the marker. Its assertions pass, so SLT_RUN_DISABLED=1 runs it green."
+
+tql: app.tql
+
+# `disabled:` skips the test BEFORE any service is provisioned -- it costs nothing to leave in
+# the tree, which is the point: a known-bug repro stays committed, asserting the CORRECT
+# behaviour, and turns green the day the bug is fixed. Use a non-empty string as the reason,
+# with the ticket key at the front, because that string is all a skipped-test report shows.
+#
+#   SLT_RUN_DISABLED=1 python -m pytest -m live -k framework-disabled
+#
+# `disabled_parallel:` is the narrower sibling: same skip point, but only under SLT_PARALLEL.
+# It is NOT for a test that collides with a sibling -- that is an isolation bug, fixed by
+# tokenizing the object names.
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+timeout: 180
+tags: [framework, skip, postgres, regression]

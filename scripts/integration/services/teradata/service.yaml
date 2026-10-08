@@ -1,0 +1,53 @@
+name: teradata
+# Connection only: the framework ships no Teradata container. A case
+# that requires teradata runs against your own instance, set with INT_TERADATA_HOST and the
+# settings below (shell or .env). With INT_TERADATA_HOST unset it skips, naming it.
+isolation: none                  # fixed qasource/qatarget databases; per-test isolation is by
+                                 # ${TID}-prefixed table names
+live_override_env: INT_TERADATA_HOST
+python_module: teradatasql
+# The Teradata driver is an optional extra: pip install -e ".[teradata]" (or pip install teradatasql).
+python_module_hint: >-
+  install the framework's teradata extra (pip install -e ".[teradata]", or pip install teradatasql).
+  Installing it means accepting Teradata's licence for the driver, which allows its use only with
+  your own Teradata-authorized licence for the Teradata platform; that licence also forbids
+  publishing Teradata test or benchmark results without Teradata's consent
+required_env:
+  - INT_TERADATA_ADMIN_USER
+  - INT_TERADATA_ADMIN_PASSWORD
+  - INT_TERADATA_SOURCE_USER
+  - INT_TERADATA_SOURCE_PASSWORD
+  - INT_TERADATA_TARGET_USER
+  - INT_TERADATA_TARGET_PASSWORD
+docker_defaults:
+  port: 1025
+  dbname: dbc
+  source_schema: qasource
+  target_schema: qatarget
+live_env:
+  admin_user: INT_TERADATA_ADMIN_USER
+  admin_password: INT_TERADATA_ADMIN_PASSWORD
+  source_user: INT_TERADATA_SOURCE_USER
+  source_password: INT_TERADATA_SOURCE_PASSWORD
+  target_user: INT_TERADATA_TARGET_USER
+  target_password: INT_TERADATA_TARGET_PASSWORD
+  host: INT_TERADATA_HOST
+  port: INT_TERADATA_PORT
+  dbname: INT_TERADATA_DB
+  source_schema: INT_TERADATA_SOURCE_SCHEMA
+  target_schema: INT_TERADATA_TARGET_SCHEMA
+provides:
+  TERADATA_HOST: "{view_host}"
+  TERADATA_PORT: "{port}"
+  TERADATA_ADMIN_USER: "{admin_user}"
+  TERADATA_ADMIN_PASSWORD: "{admin_password}"
+  TERADATA_SOURCE_USER: "{source_user}"
+  TERADATA_SOURCE_PASSWORD: "{source_password}"
+  TERADATA_SOURCE_SCHEMA: "{source_schema}"
+  TERADATA_TARGET_USER: "{target_user}"
+  TERADATA_TARGET_PASSWORD: "{target_password}"
+  TERADATA_TARGET_SCHEMA: "{target_schema}"
+  # ⚠ TMODE=ANSI and CHARSET=UTF8 are CORRECTNESS, not tuning, and belong in the URL so every
+  # client gets them: TERA mode compares 'ABC' = 'abc' (two source keys would collapse onto one
+  # target row), and an ASCII session SILENTLY replaces every character it cannot represent.
+  TERADATA_URL: "jdbc:teradata://{view_host}/DBS_PORT={port},TMODE=ANSI,CHARSET=UTF8"

@@ -1,0 +1,25 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE ProductsSource USING Global.DatabaseReader (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_SOURCE_USER}',
+  Password: '${MYSQL_SOURCE_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}products'
+) OUTPUT TO ProductsStream;
+
+CREATE OR REPLACE TARGET ProductsCopy USING Global.DatabaseWriter (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_TARGET_USER}',
+  Password: '${MYSQL_TARGET_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}products,${MYSQL_TARGET_SCHEMA}.${TID}products',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM ProductsStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

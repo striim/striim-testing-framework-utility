@@ -1,0 +1,36 @@
+name: framework-expect-halt
+depth: smoke
+purpose: An app that fails at runtime satisfies expect_halt, and expect_halt_contains narrows the pass to a halt whose reason names this test
+
+tql: app.tql
+
+# expect_halt turns "the app died" from a failure into the assertion. It is satisfied by a
+# terminal status reached ANY way: a synchronous DEPLOY/START failure, never reaching RUNNING,
+# or a later transition while running (this test's shape -- the writer only fails once a row
+# arrives). On its own it satisfies the "at least one assertion" rule, so no assert: block is
+# needed.
+#
+# expect_halt_contains narrows it from "any reason" to "a reason naming these substrings", ANDed.
+# Choose substrings unique to this scenario: for a POLLED halt the framework matches against the
+# last 20KB of the SHARED app-node log, so a generic phrase can be satisfied by a sibling test's
+# identical error under SLT_PARALLEL. The table name below is ${TID}-tokenized in the app, so it
+# is unique per test even in a concurrent run.
+#
+# Docker vs native: the polled reason check reads the node log, which only exists in docker mode.
+# On a native single-node run the test still PASSES and records "halt reason not checked
+# (native mode)" -- grep the .slt.json sidecar if you need to know whether it was verified.
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+expect_halt: true
+expect_halt_contains: no_such_target
+
+timeout: 180
+tags: [framework, halt, postgres, regression]

@@ -1,0 +1,21 @@
+# INVALID: unsupported runner capabilities.
+# `result.adapter` must be one of junit-xml | testng-xml | chorus-xml | none
+# (C2 schema v1); `gherkin-json` is not a frozen adapter and must be rejected as an
+# unsupported capability — not guessed at, not silently treated as `none`.
+# Likewise `prereq` kinds are only cmd | file | http; `docker-compose` is rejected.
+schemaVersion: 1
+name: unsupported-cap
+tier: integration
+cwd: .
+argv:
+  - mvn
+  - -B
+  - verify
+prereq:
+  - kind: docker-compose
+    file: compose.yaml
+result:
+  adapter: gherkin-json
+  policy:
+    zeroTests: fail
+    requiredSkip: fail

@@ -1,0 +1,29 @@
+-- scripts/live/regression/oracle-diff/app.tql
+-- Oracle initial load: DatabaseReader queries the seeded source rows and
+-- DatabaseWriter writes them to the target table (same schema). The diff tier
+-- asserts ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT catches up to ${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE OraSource USING Global.DatabaseReader (
+  ConnectionURL: '${ORACLE_URL}',
+  Username: '${ORACLE_SOURCE_USER}',
+  Password: '${ORACLE_SOURCE_PASSWORD}',
+  Tables: '${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET OraTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${ORACLE_URL}',
+  Username: '${ORACLE_TARGET_USER}',
+  Password: '${ORACLE_TARGET_PASSWORD}',
+  Tables: '${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC,${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

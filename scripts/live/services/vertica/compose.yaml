@@ -1,0 +1,41 @@
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica
+services:
+  slt-vertica:
+    # Vertica 25.3 Community Edition, one node, with certificates, database creation and the
+    # qasource/qatarget provisioning baked into the entrypoint
+    # (images/vertica/{Dockerfile,entrypoint.sh,init.sql}), so `docker compose up` alone leaves
+    # the data users present. The base image is multi-arch: native on arm64 (Apple Silicon).
+    build: ./images/vertica
+    image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica:25.3.0-8
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica
+    # Idle use measured at ~160 MiB (arm64) and ~330 MiB (amd64 under emulation); the limit
+    # leaves room for loads. Not yet re-derived with a limits sampler.
+    cpus: ${SLT_VERTICA_CPUS:-1}
+    mem_limit: ${SLT_VERTICA_MEM_LIMIT:-2g}
+    ulimits:
+      nofile:
+        soft: 32768
+        hard: 32768
+    ports:
+      # Host port is overridable for machines where :5433 is already taken. When
+      # overriding, point the framework at it too: SLT_VERTICA_HOST=localhost
+      # SLT_VERTICA_PORT=<port> (+ the SLT_VERTICA_* creds; see README.md).
+      - "${SLT_VERTICA_HOST_PORT:-5433}:5433"
+    networks:
+      - slt-vertica-net
+    healthcheck:
+      # Healthy only once entrypoint.sh has written its marker (after init.sql succeeded)
+      # AND qasource can log in, as services/mssql does. entrypoint.sh clears the marker at
+      # the top of every boot, so a marker from a prior life of this container cannot gate.
+      test: ["CMD-SHELL", "test -f /data/.slt-init-done && /opt/vertica/bin/vsql -h 127.0.0.1 -U qasource -w striim -d sltdb -c 'SELECT 1'"]
+      interval: 2s
+      timeout: 5s
+      # First boot creates the database: ~20 s native, ~30 s under amd64 emulation (measured).
+      retries: 150
+
+networks:
+  slt-vertica-net:
+    driver: bridge

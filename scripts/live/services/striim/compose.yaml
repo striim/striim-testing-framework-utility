@@ -1,0 +1,206 @@
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim
+services:
+
+   slt-striim:
+      image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim:${STRIIM_VERSION:-5.4.2}
+      platform: linux/amd64
+      container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim
+      hostname: slt-striim
+      # MEM_MAX below is only the JVM heap — it does NOT bound the container, so a stack
+      # that outgrows the host has nothing to stop it: the JVMs just keep allocating and
+      # the HOST goes down instead of the container. (2026-08-16: two of these at
+      # MEM_MAX=8192m on a 27 GB box drove it to load 403 at 99.5% sy with swap 100% full
+      # and — because the user slice throttles in the memory.high->max band — ZERO OOM
+      # kills, so nothing self-corrected and the JVMs had to be killed by hand.)
+      # mem_limit is that missing ceiling: exceed it and the CONTAINER dies, not the host.
+      # Default 0 = unlimited (previous behavior — a 4g default would OOM-kill the Mac's
+      # live tier, which runs the 40 GB heap). On a modest host set BOTH, together:
+      #    export SLT_STRIIM_MEM_MAX=3072m SLT_STRIIM_MEM_LIMIT=4g
+      # Keep the limit above the heap (heap + ~1 GB for metaspace/direct/stacks), or the
+      # JVM is killed the moment it grows into a heap it was told it could have.
+      mem_limit: ${SLT_STRIIM_MEM_LIMIT:-0}
+      # The primary's CPU ceiling, mirroring SLT_STRIIM_NODE_CPUS on slt-node.
+      # The licence caps the CLUSTER at 24 CPUs and an uncapped primary sees every host core, so
+      # capping the node alone cannot bring the pair under the cap on a >=24-core host. There, set
+      # both, e.g. SLT_STRIIM_PRIMARY_CPUS=12 SLT_STRIIM_NODE_CPUS=12. Default 0 = no limit
+      # (docker NanoCpus 0), the previous behavior.
+      cpus: ${SLT_STRIIM_PRIMARY_CPUS:-0}
+      environment:
+         ROLE: primary
+         # Extra JVM system properties for this Striim JVM. Striim's bin/server.sh appends
+         # $JAVA_SYSTEM_PROPERTIES to the java command line, so an environment value reaches it
+         # unchanged. Empty by default. Example: SLT_STRIIM_JAVA_SYSTEM_PROPERTIES=-Djava.awt.headless=true
+         JAVA_SYSTEM_PROPERTIES: ${SLT_STRIIM_JAVA_SYSTEM_PROPERTIES:-}
+         CLUSTER_NAME: ${CLUSTER_NAME}
+         COMPANY_NAME: ${COMPANY_NAME}
+         PRODUCT_KEY: ${PRODUCT_KEY}
+         LICENCE_KEY: ${LICENCE_KEY}
+         # THIS VALUE SIZES THREE JVMs, NOT ONE. Compose sets it here and on slt-agent --
+         # and slt-node, which declares no MEM_MAX at all, gets it too: the entrypoint
+         # renders startUp.properties here, publishes it to /shared, and the node copies it
+         # verbatim (see the note on slt-node below). So a stack reserves 3x this in -Xmx,
+         # plus half again in direct memory, since -XX:MaxDirectMemorySize defaults to half
+         # MEM_MAX when DIR_MEM_MAX is unset -- which it is.
+         #
+         # That is address space, not committed RAM: measured with two full stacks up, 154 GB
+         # of declared -Xmx corresponded to 18.4 GB of RSS. Treat the sum as headroom
+         # arithmetic rather than as what the stack will consume. There is no host-RAM guard;
+         # lower SLT_STRIIM_MEM_MAX on a modest machine or before running several stacks.
+         MEM_MAX: ${SLT_STRIIM_MEM_MAX:-16384m}
+         # PREFIXED, exactly like container_name above. This is the name the node and the
+         # agent are told to connect to (the entrypoint writes it into
+         # striim.node.servernode.address and MetaDataRepositoryLocation), so it has to name
+         # THIS stack's primary and nothing else.
+         #
+         # It was a bare `slt-striim` and still worked, but only by accident: compose adds
+         # the SERVICE name as a network alias, so `slt-striim` resolved to whichever
+         # primary shared the caller's network. Two stacks up meant two containers answering
+         # to the same name on different networks -- correct in practice, indistinguishable
+         # in a config file, and it reads exactly like a cross-stack leak to anyone auditing
+         # it. Docker's DNS resolves container names on a user-defined network, so the
+         # prefixed name resolves on its own and does not depend on alias shadowing.
+         PRIMARY_HOSTNAME: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim
+         ZOOKEEPER_HOSTNAME: zookeeper
+         KAFKA_HOSTNAME: kafka
+         STRIIMAI_HOSTNAME: slt-striim-ai
+         ENABLE_JMX: true
+      networks:
+         - slt-striim-net
+      # On Linux Docker `host.docker.internal` does NOT exist (Docker Desktop/Mac injects
+      # it automatically; the daemon on Linux does not). The framework points every deployed
+      # app at host-published services via host.docker.internal:<port> (view_host in docker
+      # mode — see plugin.py), so without this mapping the Striim app dies with
+      # `UnknownHostException: host.docker.internal` and any DB reader/writer HALTs. Mapping
+      # it to the special `host-gateway` value resolves to the bridge gateway, reaching the
+      # host-published Oracle/Postgres/Kafka/etc. ports. No-op on Mac (already provided).
+      extra_hosts:
+         - "host.docker.internal:host-gateway"
+      ports:
+         # Host ports are overridable for machines where these are already taken. When
+         # overriding the console port, point the framework at it too:
+         # STRIIM_URL=http://localhost:<port> (see docs/internals/ENGINE.md).
+         - "${SLT_STRIIM_HTTP_HOST_PORT:-9080}:9080"    # console / HTTP API
+         - "${SLT_STRIIM_HTTPS_HOST_PORT:-9081}:9081"   # HTTPS
+         - "${SLT_STRIIM_JMX_HOST_PORT:-7071}:7071"     # JMX Prometheus exporter
+         - "${SLT_STRIIM_DEBUG_HOST_PORT:-8787}:8787"   # JDWP remote debug
+      volumes:
+         - slt-striim-shared:/shared
+      build:
+         context: ./images/striim
+         dockerfile: ./Dockerfile
+         args:
+            # STRIIM_VERSION/JDK_VERSION are derived from STRIIM_HOME (the harness
+            # exports them; a hand build exports them itself). Defaults keep a bare
+            # `docker compose build` working. NOT pinned in services/striim/.env — that is no
+            # longer a competing source of truth.
+            - STRIIM_VERSION=${STRIIM_VERSION:-5.4.2}
+            - JDK_VERSION=${JDK_VERSION:-17}
+            - INSTANTCLIENT_VERSION=${INSTANTCLIENT_VERSION}
+            - INSTANTCLIENT_ZIPFILE=${INSTANTCLIENT_ZIPFILE}
+            - INSTANTCLIENT_FOLDER=${INSTANTCLIENT_FOLDER}
+
+   slt-node:
+      image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim:${STRIIM_VERSION:-5.4.2}
+      platform: linux/amd64
+      container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-node
+      hostname: striim-node
+      # NO MEM_MAX HERE, AND IT STILL RUNS THE SERVER'S HEAP. The entrypoint copies the
+      # primary's RENDERED startUp.properties out of /shared into this node's conf, MEM_MAX
+      # and all, so SLT_STRIIM_MEM_MAX sizes this container without appearing in it. There is
+      # no per-node knob. Verified on a running stack: slt-striim and slt-node both report
+      # -Xmx at the value set above, and this container's environment contains no MEM_MAX.
+      #
+      # Reading compose alone therefore under-reports a stack's heap by a whole JVM, which is
+      # what made every earlier account of this stack's memory wrong.
+      #
+      # Striim licenses cap the CLUSTER at 24 CPUs: on a >=13-core host the primary
+      # (all cores) + this node (all cores) exceeds the cap and the node SELF-SHUTS-DOWN
+      # during cluster formation. Cap the node on such hosts (e.g. 4); default 0 = no
+      # limit (docker NanoCpus 0), the previous behavior. Same modest-dev-host pattern
+      # as SLT_STRIIM_MEM_MAX.
+      cpus: ${SLT_STRIIM_NODE_CPUS:-0}
+      # See slt-striim: container ceiling, default 0 = unlimited. Worth noting this node
+      # sets no MEM_MAX at all, so its heap comes from the image default and it is
+      # INVISIBLE to the MEM_MAX-based headroom checks (stack-doctor's check_ram_cpu only
+      # counts containers that declare MEM_MAX, i.e. primary + agent) — yet on 2026-08-16
+      # it was the largest JVM of the three. mem_limit bounds it regardless of heap source.
+      mem_limit: ${SLT_STRIIM_MEM_LIMIT:-0}
+      environment:
+         ROLE: node
+         # Extra JVM system properties for this Striim JVM. Striim's bin/server.sh appends
+         # $JAVA_SYSTEM_PROPERTIES to the java command line, so an environment value reaches it
+         # unchanged. Empty by default. Example: SLT_STRIIM_JAVA_SYSTEM_PROPERTIES=-Djava.awt.headless=true
+         JAVA_SYSTEM_PROPERTIES: ${SLT_STRIIM_JAVA_SYSTEM_PROPERTIES:-}
+         PRIMARY_HOSTNAME: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim
+      networks:
+         slt-striim-net:
+            # `striim-node` is the name the baked entrypoint writes into
+            # striim.node.servernode.address, so the primary looks the node up by it. The
+            # compose SERVICE name (slt-node) is the only alias compose adds on its own, so
+            # this one is pinned rather than left to `hostname:`, which is not reliably
+            # resolvable by sibling containers.
+            aliases:
+               - striim-node
+      # See slt-striim: apps deploy on the `default` group (primary + this node), so the node
+      # also connects to host-published services via host.docker.internal.
+      extra_hosts:
+         - "host.docker.internal:host-gateway"
+      ports:
+         # Host port is overridable; :7071 is the node's JMX Prometheus exporter.
+         - "${SLT_STRIIM_NODE_JMX_HOST_PORT:-7075}:7071"
+      volumes:
+         - slt-striim-shared:/shared
+      depends_on:
+         - slt-striim
+
+   slt-agent:
+      image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim:${STRIIM_VERSION:-5.4.2}
+      platform: linux/amd64
+      container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-agent
+      hostname: striim-agent
+      # See slt-striim: container ceiling, default 0 = unlimited.
+      mem_limit: ${SLT_STRIIM_MEM_LIMIT:-0}
+      environment:
+         ROLE: agent
+         CLUSTER_NAME: ${CLUSTER_NAME}
+         # The agent shares the server's knob, so it reserves a server-sized heap it never
+         # uses (measured RSS ~710 MB against 16 GB). Harmless -- reservation, not commitment
+         # -- but it is why lowering SLT_STRIIM_MEM_MAX lowers this container too.
+         MEM_MAX: ${SLT_STRIIM_MEM_MAX:-16384m}
+         PRIMARY_HOSTNAME: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-striim
+      networks:
+         slt-striim-net:
+            aliases:                      # keep the pre-rename in-network name resolvable
+               - striim-agent
+      # See slt-striim: agent-deployed sources (the `Agents` group) also reach host-published
+      # services via host.docker.internal.
+      extra_hosts:
+         - "host.docker.internal:host-gateway"
+      ports:
+         # Host port is overridable; :7071 is the agent's JMX Prometheus exporter.
+         - "${SLT_STRIIM_AGENT_JMX_HOST_PORT:-7076}:7071"
+      volumes:
+         - slt-striim-shared:/shared
+      depends_on:
+         - slt-striim
+
+   # slt-striim-ai:
+   #    image: striim/striimai:latest
+   #    platform: linux/amd64
+   #    container_name: slt-striim-ai
+   #    hostname: slt-striim-ai
+   #    networks:
+   #       - slt-striim-net
+   #    ports:
+   #       - 9000:9000
+
+networks:
+   slt-striim-net:
+      driver: bridge
+
+volumes:
+   slt-striim-shared:
+      driver: local

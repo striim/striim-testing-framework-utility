@@ -1,0 +1,37 @@
+-- scripts/live/regression/services/vertica/vertica-cdc-diff/app.tql
+-- Vertica incremental capture: IncrementalBatchReader (as the qasource data user) polls the
+-- source table, empty at START, every 5s for rows past the last id it read (CheckColumn), and
+-- DatabaseWriter (as the qatarget data user) writes them to the target table. Vertica has no
+-- log-based CDC reader in Striim, so polling is the stock CDC route. The diff tier asserts
+-- qatarget.tgt catches up to qasource.src. The driver is the image's vertica-jdbc (services/striim).
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE VerticaSource USING Global.IncrementalBatchReader (
+  ConnectionURL: '${VERTICA_URL}',
+  Username: '${VERTICA_SOURCE_USER}',
+  Password: '${VERTICA_SOURCE_PASSWORD}',
+  Tables: '${VERTICA_SOURCE_SCHEMA}.${TID}src',
+  CheckColumn: '%=id',
+  StartPosition: '%=0',
+  FetchSize: 100,
+  PollingInterval: '5sec'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET VerticaTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${VERTICA_URL}',
+  Username: '${VERTICA_TARGET_USER}',
+  Password: '${VERTICA_TARGET_PASSWORD}',
+  -- 3-part source key, as in vertica-diff: the reader names Vertica tables db.schema.table, and
+  -- a key that does not match drops every event ("Mapping for source entity ... not found").
+  Tables: '${VERTICA_DB}.${VERTICA_SOURCE_SCHEMA}.${TID}src,${VERTICA_TARGET_SCHEMA}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

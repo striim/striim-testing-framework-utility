@@ -1,0 +1,41 @@
+-- scripts/live/regression/services/spanner/spanner-cdc-diff/app.tql
+-- Cloud Spanner (GoogleSQL dialect) SpannerBatchReader -> SpannerWriter, both targeting
+-- the emulator via the cloudspanner JDBC URL (autoConfigEmulator, no credentials).
+-- src is empty at START; the rows inserted once the app is RUNNING are found by the
+-- incremental poll (CheckColumn=id, every 5s) and written to tgt in the same GoogleSQL db.
+-- 5.4 has no stock Spanner change-stream reader, so polling is the stock CDC route.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE SpannerSource USING Global.SpannerBatchReader (
+  ConnectionURL: '${SPANNER_GSQL_URL}',
+  ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json',
+  ProjectId: '${SPANNER_PROJECT}',
+  InstanceID: '${SPANNER_INSTANCE}',
+  DatabaseName: '${SPANNER_GSQL_DB}',
+  Tables: '${TID}src',
+  CheckColumn: '%=id',
+  StartPosition: '%=0',
+  FetchSize: 100,
+  pollingInterval: '5sec',
+  ReturnDateTimeAs: 'JODA',
+  ConnectionPoolSize: 5,
+  ThreadPoolSize: 5
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET SpannerTarget USING Global.SpannerWriter (
+  ConnectionURL: '${SPANNER_GSQL_URL}',
+  ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json',
+  ProjectId: '${SPANNER_PROJECT}',
+  InstanceID: '${SPANNER_INSTANCE}',
+  DatabaseName: '${SPANNER_GSQL_DB}',
+  Tables: '${TID}src,${SPANNER_GSQL_DB}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

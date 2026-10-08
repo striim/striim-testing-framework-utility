@@ -1,0 +1,28 @@
+name: mssql-diff
+depth: smoke
+purpose: SQL Server initial load from qasource.SRC to qatarget.TGT in the shared qauser DB; non-CDC, so the source is seeded before deploy
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql   # qasource.SRC
+    db: mssql-source
+  - file: ddl_target.sql   # qatarget.TGT
+    db: mssql-target
+seed:
+  - file: seed.sql
+    db: mssql-source
+
+topology: single
+requires: [mssql]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${MSSQL_SOURCE_SCHEMA}.${TID}SRC       # read via qasource (source_db: mssql-source)
+      target: ${MSSQL_TARGET_SCHEMA}.${TID}TGT       # read via qatarget
+      source_db: mssql-source
+      target_db: mssql-target
+
+timeout: 180
+tags: [diff, mssql, regression]

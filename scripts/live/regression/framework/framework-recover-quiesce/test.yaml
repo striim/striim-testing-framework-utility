@@ -1,0 +1,83 @@
+name: framework-recover-quiesce
+depth: smoke
+purpose: "The recover phase works under mode: quiesce -- the QUIESCE path really is driven to completion and the app really is restarted. The positive control for quiesce, and the matched pair for framework-recover's stop."
+
+# Fixtures are COPIES of framework-recover's, byte for byte. `example:` would have expressed
+# the sharing better and NOTHING VALIDATES WHAT IT POINTS AT -- manifest.py only type-checks it
+# as a string and would happily resolve fixtures out of a regression dir. What actually pushed
+# back is bookkeeping: `example` sits in test_framework_coverage.py's EXEMPT list, so the first
+# framework manifest to use the key makes that entry stale and the gate says "drop the
+# exemption". The key is documented as an OP/UDF example pointer, so using it for a regression
+# directory would be off-label -- that, rather than a rejection, is why these are copies.
+#
+# THE PAIR ONLY MEANS SOMETHING WHILE THESE STAY IDENTICAL. The single intended difference is
+# `mode:`. If you change the app, the DDL or the seed here, change it in framework-recover too,
+# or the stop/quiesce comparison silently stops being a comparison.
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+# CDC, so the data must be committed after RUNNING or the reader never sees it
+# (framework-seed-phases is the example that proves that).
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+# The feature under test. `recover:` interrupts the app AFTER every post_start step and BEFORE
+# every assertion, then brings it back and pauses for replay to drain.
+#
+# mode: quiesce -- QUIESCE APPLICATION. This IS a drain: Flow.quiesceFlush() injects a
+# FlushCommandEvent, waits for NODE_APP_QUIESCE_FLUSHED from every component, then checkpoints
+# -- which is exactly what stopImpl() does NOT do. So a writer's pending batch is executed
+# rather than discarded.
+#
+# WHY THIS CASE EXISTS. quiesce was broken IN REVIEW on the branch that introduced it -- not
+# on main: the fix landed in the same squash, so `git log -S APPROVING_QUIESCE origin/main`
+# finds the state present from the file's first commit. The bug was real and worth recording:
+# a plain QUIESCE moves RUNNING -> APPROVING_QUIESCE -> QUIESCING -> STOPPING -> QUIESCED
+# (design §4.2; an earlier version of this comment had it as "... -> RUNNING_UNTIL_QUIESCE ->
+# FLUSHING -> QUIESCED", which no handler produces), and APPROVING_QUIESCE was not in
+# recovery._TRANSITIONAL, so the phase read it, declared the interruption VERIFIED, then waited
+# for a START it never issued until the test timed out.
+#
+# What matters here is that the fix was derived from the platform's STATUS ENUM and a stub
+# client, and no unit test can distinguish that from working. This case is what turns "correct
+# on paper" into "observed working".
+#
+# It is also the matched pair for framework-recover: same fixtures, same app, `mode:` the only
+# difference. Both are POSITIVE cases -- no loss expected either way, because CommitPolicy
+# Interval:1 makes the seed durable well before `after: 10`.
+#
+# after: 10 -- this example is the POSITIVE case, so it deliberately lets the writer finish.
+# CommitPolicy Interval:1 below commits every second, so by 10s the seed is durable and the
+# rollback has nothing to discard. A recovery test hunting for LOSS sets `after` low instead,
+# to stop the app mid-write.
+recover:
+  mode: quiesce
+  after: 10
+  settle: 20
+
+# RECOVERY on the app is what makes any of this meaningful: without it there is no checkpoint
+# to resume from and a restarted app just re-reads from its current position.
+#
+# diff, not data: the claim is "the target caught up to the source", which is exactly what a
+# diff says and what a row count would not. A count of 3 would also pass with three wrong rows.
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+timeout: 300
+tags: [framework, recover, postgres, regression]

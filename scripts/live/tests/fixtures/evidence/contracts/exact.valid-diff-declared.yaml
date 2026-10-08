@@ -1,0 +1,13 @@
+# C8.1: a mapping-form diff exact; the source canonical rows are the expected side.
+name: exact-diff-declared
+purpose: target holds exactly the source rows
+tql: app.tql
+requires: [postgres]
+exact: {version: 1, max_bytes: 1048576}
+assert:
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      source_db: postgres-source
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      exact: {columns: {amount: "decimal:4", updated: timestamp}, order: sequence, order_by: [id]}

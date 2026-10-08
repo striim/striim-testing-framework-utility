@@ -1,0 +1,62 @@
+name: postgres
+compose: compose.yaml            # relative to this file
+container: slt-postgres
+isolation: none                 # fixed qasource/qatarget schemas; tests run serially (like oracle)
+# If SLT_PG_HOST is set, reuse a live Postgres (from SLT_PG_* env) and skip Docker.
+live_override_env: SLT_PG_HOST
+# Docker defaults (used when not live). Consistent with every other DB: an admin
+# account (the superuser) plus two data accounts + same-named schemas — qasource for
+# source tables/connections, qatarget for target tables/connections. A source table T
+# and a same-named target table T coexist as qasource.T / qatarget.T. The framework's
+# PgAdmin uses admin_* for setup/wipe and qasource/qatarget for source/target ops.
+docker_defaults:
+  host: localhost
+  port: 5432
+  dbname: sltdb
+  admin_user: postgres          # superuser; creates the roles + schemas, wipes per test
+  admin_password: striim
+  source_user: qasource         # source role; owns + operates in the qasource schema
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget         # target role; owns + operates in the qatarget schema
+  target_password: striim
+  target_schema: qatarget
+# Live env var names (used when live_override_env is set):
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_PG_HOST_PORT
+live_env:
+  host: SLT_PG_HOST
+  port: SLT_PG_PORT
+  dbname: SLT_PG_DB
+  admin_user: SLT_PG_ADMIN_USER
+  admin_password: SLT_PG_ADMIN_PASSWORD
+  source_user: SLT_PG_SOURCE_USER
+  source_password: SLT_PG_SOURCE_PASSWORD
+  source_schema: SLT_PG_SOURCE_SCHEMA
+  target_user: SLT_PG_TARGET_USER
+  target_password: SLT_PG_TARGET_PASSWORD
+  target_schema: SLT_PG_TARGET_SCHEMA
+# Token templates emitted after resolution. {view_host} is the host the STRIIM APP
+# uses to reach Postgres — localhost for a native/host Striim, host.docker.internal for
+# a containerized Striim (SLT_STRIIM_VIEW_HOST). pytest's own PgAdmin connection uses
+# the base {host} (localhost:5432) regardless — so the same published :5432 serves both.
+# Source tables live in ${PG_SOURCE_SCHEMA} (qasource), target tables in
+# ${PG_TARGET_SCHEMA} (qatarget); the reader connects as ${PG_SOURCE_USER}, the writer
+# as ${PG_TARGET_USER}.
+provides:
+  PG_HOST: "{view_host}"
+  PG_PORT: "{port}"
+  PG_DB: "{dbname}"
+  PG_SOURCE_USER: "{source_user}"
+  PG_SOURCE_PASSWORD: "{source_password}"
+  PG_SOURCE_SCHEMA: "{source_schema}"
+  PG_TARGET_USER: "{target_user}"
+  PG_TARGET_PASSWORD: "{target_password}"
+  PG_TARGET_SCHEMA: "{target_schema}"
+  # Unique per-test name for a PostgreSQLReader wal2json replication slot (CDC tests).
+  # Was ${PG_SCHEMA} under the old per-test-schema model; now a dedicated token since the
+  # schemas are the fixed qasource/qatarget. The framework drops this slot on teardown.
+  PG_SLOT: "{schema}"
+  PG_URL: "jdbc:postgresql://{view_host}:{port}/{dbname}"

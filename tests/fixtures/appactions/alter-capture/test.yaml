@@ -1,0 +1,34 @@
+name: aa-alter-capture
+purpose: hermetic appactions fixture - capture, alter_recompile and drop_recreate_app's stopped-phase keys through the real plugin
+tql: app.tql
+requires: [postgres]
+timeout: 30
+tokens: {START_POSITION: ""}
+server_files:
+  - {file: old.jar, dest: OldReader-5.4.jar, load: open_processor}
+action:
+  - {type: capture, token: SEEN, mon: Src, field: input}
+  - {type: capture, token: ADAPTER0, describe: Src, field: adapterName, expect: OldReader}
+  - type: alter_recompile
+    app: "${APP}"
+    file: swap.tql
+    delay_before_stop: 0
+    capture: [{token: RESTART, describe: Src, field: Source Restart Position}]
+    stopped_seed: [{file: stopped.sql, db: postgres-source}]
+    seed: [{file: after.sql, db: postgres-source, after: 1s}]
+  - {type: capture, token: ADAPTER, describe: Src, field: adapterName, expect: NewReader, timeout: 3s}
+  - type: drop_recreate_app
+    app: "${APP}"
+    delay_before_stop: 0
+    recreate_wait: 0
+    stopped_seed: [{file: stopped2.sql, db: postgres-source}]
+    tokens: {START_POSITION: "^ ${RESTART}"}
+assert:
+  smoke: true
+  monitor:
+    - component: Src
+      metrics:
+        input: "${SEEN}"
+        lastCheckpointedPosition: "^ ${RESTART}"
+        lastEventPosition: {matches: "^\\^ ${RESTART}$"}
+        lastErrorPosition: {absent: true}

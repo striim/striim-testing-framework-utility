@@ -1,0 +1,59 @@
+name: mysql
+compose: compose.yaml            # relative to this file
+container: slt-mysql
+# Fixed schema isolation: qasource/qatarget schemas, like Postgres/Oracle.
+# Consistent with every other DB: an admin account (the superuser) plus two data
+# accounts + same-named schemas — qasource for source tables/connections, qatarget
+# for target tables/connections.
+isolation: none
+# If SLT_MYSQL_HOST is set, reuse a live MySQL (from SLT_MYSQL_* env) and skip Docker.
+live_override_env: SLT_MYSQL_HOST
+# Docker defaults (used when not live). Admin account (root) for setup; qasource/qatarget
+# users + schemas for data. MySQLAdmin uses admin creds for setup/wipe and qasource/qatarget
+# for source/target ops.
+docker_defaults:
+  host: localhost
+  port: 3306
+  admin_user: root               # admin; creates the users + schemas, wipes per test
+  admin_password: striim
+  source_user: qasource          # source role; owns + operates in the qasource schema
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget          # target role; owns + operates in the qatarget schema
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_MYSQL_HOST_PORT
+# Live env var names (used when live_override_env is set):
+live_env:
+  host: SLT_MYSQL_HOST
+  port: SLT_MYSQL_PORT
+  admin_user: SLT_MYSQL_ADMIN_USER
+  admin_password: SLT_MYSQL_ADMIN_PASSWORD
+  source_user: SLT_MYSQL_SOURCE_USER
+  source_password: SLT_MYSQL_SOURCE_PASSWORD
+  source_schema: SLT_MYSQL_SOURCE_SCHEMA
+  target_user: SLT_MYSQL_TARGET_USER
+  target_password: SLT_MYSQL_TARGET_PASSWORD
+  target_schema: SLT_MYSQL_TARGET_SCHEMA
+# Token templates emitted after resolution. {view_host} is the host the Striim app
+# uses to reach MySQL — localhost for native Striim, host.docker.internal for
+# containerized Striim (SLT_STRIIM_VIEW_HOST). pytest's own MySQLAdmin connection
+# uses the base {host} (localhost:3306) regardless.
+# Source tables live in ${MYSQL_SOURCE_SCHEMA} (qasource), target tables in
+# ${MYSQL_TARGET_SCHEMA} (qatarget); the reader connects as ${MYSQL_SOURCE_USER},
+# the writer as ${MYSQL_TARGET_USER}.
+provides:
+  MYSQL_HOST: "{view_host}"
+  MYSQL_PORT: "{port}"
+  MYSQL_USER: "{source_user}"
+  MYSQL_PASSWORD: "{source_password}"
+  MYSQL_SOURCE_USER: "{source_user}"
+  MYSQL_SOURCE_PASSWORD: "{source_password}"
+  MYSQL_SOURCE_SCHEMA: "{source_schema}"
+  MYSQL_TARGET_USER: "{target_user}"
+  MYSQL_TARGET_PASSWORD: "{target_password}"
+  MYSQL_TARGET_SCHEMA: "{target_schema}"
+  MYSQL_URL: "jdbc:mysql://{view_host}:{port}/"

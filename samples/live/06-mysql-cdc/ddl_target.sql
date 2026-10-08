@@ -1,0 +1,5 @@
+CREATE TABLE ${MYSQL_TARGET_SCHEMA}.${TID}orders (
+  id INT PRIMARY KEY,
+  customer VARCHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL
+);

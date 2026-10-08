@@ -1,0 +1,52 @@
+name: framework-seed-phases
+depth: smoke
+purpose: One manifest seeds at BOTH lifecycle points, and only the post_start commit reaches a CDC target -- which is why the phase is per file
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+# The feature under test. `when` is per FILE, so one manifest can establish a baseline before
+# the app exists and then change data while it is capturing -- what the removed manifest-wide
+# `seed_when:` could not express. Order within a phase is file order.
+seed:
+  - file: seed_baseline.sql
+    db: postgres-source
+    when: pre_deploy        # the default, spelled out because this test is the example
+  - file: seed_change.sql
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+# Two specs, and the difference between them IS the lesson.
+#
+# The source ends with BOTH rows: that is how this test proves both seed files ran, and that
+# pre_deploy really did run before post_start.
+#
+# The target ends with ONLY the post_start row. PostgreSQLReader streams from its position at
+# START, so a row committed before the app started is never replayed -- no matter that the
+# replication slot already existed. Seed a CDC test pre_deploy and its data silently never
+# arrives; that is the mistake `when` exists to prevent, and asserting it here means a change
+# that quietly reorders the phases fails this test rather than passing a weaker one.
+assert:
+  smoke: true
+  data:
+    - target: ${PG_SOURCE_SCHEMA}.${TID}src
+      target_db: postgres-source
+      rows: 2
+      match: expected/src.csv
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      rows: 1
+      match: expected/tgt.csv
+
+timeout: 180
+tags: [framework, seed, postgres, regression]

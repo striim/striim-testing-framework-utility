@@ -1,0 +1,57 @@
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-mysql
+
+services:
+  slt-mysql:
+    image: mysql:8.0
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-mysql
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_MYSQL_CPUS:-1}
+    # Memory is set above the measured 0.52 GiB one-lane peak: at 1g, the xmysql-*-10000 cases under
+    # --parallel 3 memcg-OOM-killed mysqld at anon-rss 1034872 kB. 2g
+    # gives about 2x that observed floor (the true peak was cut off by the kill).
+    mem_limit: ${SLT_MYSQL_MEM_LIMIT:-2g}
+    environment:
+      # Root password (superuser). The framework's MySQLAdmin connects as root
+      # (service.yaml admin_user) to create the qasource/qatarget users + schemas and
+      # manage per-test isolation. sltadmin is unused. striim is unused by the
+      # provisioning path, but MySQLAdmin.create_schema still grants to it, so do not
+      # drop either CREATE USER from init-mysql.sql without changing that method.
+      MYSQL_ROOT_PASSWORD: striim
+      MYSQL_ALLOW_EMPTY_PASSWORD: "false"
+    command:
+      # Binary logging required for CDC via MySQLReader (see README.md alongside).
+      # ROW format: data changes recorded row-by-row (required for accurate CDC).
+      # server-id: required for binary logging; uniquely identifies this server.
+      # default-storage-engine: InnoDB supports transactions + constraints (required).
+      - --binlog-format=ROW
+      - --server-id=1
+      - --default-storage-engine=InnoDB
+      # Binlog expiration: prune old logs after 1 day to prevent disk fill-up in
+      # long-running test suites with frequent CDC operations.
+      - --expire-logs-days=1
+    volumes:
+      # Initialization script: creates the two vestigial accounts noted above.
+      # The accounts and schemas the framework actually uses -- qasource and qatarget,
+      # a FIXED pair, not per-test -- are created at runtime by MySQLAdmin.ensure_setup().
+      # Per-test isolation is by ${TID} table-name prefix; see README.md.
+      - ./init-mysql.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      # Host port is overridable for machines where :3306 is already taken. When
+      # overriding, point the framework at it too: SLT_MYSQL_HOST=localhost
+      # SLT_MYSQL_PORT=<port> (+ the SLT_MYSQL_* creds; see docs/internals/ENGINE.md).
+      - "${SLT_MYSQL_HOST_PORT:-3306}:3306"
+    networks:
+      - slt-mysql-net
+    healthcheck:
+      # mysqladmin ping: simple, fast connection check. No flags needed; connects as root.
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pstriim"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
+networks:
+  slt-mysql-net:
+    driver: bridge

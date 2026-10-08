@@ -1,0 +1,51 @@
+name: spanner
+compose: compose.yaml            # relative to this file
+container: int-spanner
+isolation: none                 # fixed instance/databases; provisioned once per session
+# Later phase: broker support — if INT_SPANNER_HOST is set, reuse a live emulator (from
+# INT_SPANNER_* env), skip Docker. Logic deferred; wired here so this shape matches
+# scripts/live from day one (mirrors scripts/live/services/spanner/service.yaml's
+# SLT_SPANNER_HOST).
+live_override_env: INT_SPANNER_HOST
+docker_defaults:
+  host: localhost
+  port: 19010                    # gRPC (data + DDL)
+  admin_port: 19020              # REST (admin)
+  project: test-project
+  instance: test-inst
+  gsql_db: gsql                 # GoogleSQL dialect
+  pg_db: pgdb                   # PostgreSQL dialect
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port (or standing up a second stack from another checkout) moves
+# the emulator AND the admin client that dials it. See inttest/tokens.py.
+docker_env:
+  port: INT_SPANNER_GRPC_HOST_PORT
+  admin_port: INT_SPANNER_REST_HOST_PORT
+live_env:
+  host: INT_SPANNER_HOST
+  port: INT_SPANNER_PORT
+  admin_port: INT_SPANNER_ADMIN_PORT
+  project: INT_SPANNER_PROJECT
+  instance: INT_SPANNER_INSTANCE
+  gsql_db: INT_SPANNER_GSQL_DB
+  pg_db: INT_SPANNER_PG_DB
+# Tokens for the Striim app. The writer targets the emulator via the cloudspanner
+# JDBC URL with autoConfigEmulator=true (no credentials) — {view_host} is the host
+# the Striim server uses to reach the emulator (host.docker.internal for the Docker
+# cluster). ProjectId/InstanceID/DatabaseName tokens are provided for the fallback
+# native-client path. The test harness's own admin connection reads the emulator at
+# the base {host}:{port} (localhost:19010).
+provides:
+  SPANNER_PROJECT: "{project}"
+  SPANNER_INSTANCE: "{instance}"
+  SPANNER_GSQL_DB: "{gsql_db}"
+  SPANNER_PG_DB: "{pg_db}"
+  # The HARNESS's own admin client (inttest/spanneradmin.py, via dbroutes) reaches the
+  # emulator at the base {host}:{port} (SPANNER_EMULATOR_HOST) -- NOT {view_host},
+  # which is only meaningful to the Striim server/operator inside the cluster. Names
+  # match plugin.py's legacy _spanner_tokens() fixture-path keys, so the YAML pipeline
+  # and the fixture path converge on one vocabulary.
+  SPANNER_HOST: "{host}"
+  SPANNER_GRPC_PORT: "{port}"
+  SPANNER_GSQL_URL: "jdbc:cloudspanner://{view_host}:{port}/projects/{project}/instances/{instance}/databases/{gsql_db}?autoConfigEmulator=true"
+  SPANNER_PG_URL: "jdbc:cloudspanner://{view_host}:{port}/projects/{project}/instances/{instance}/databases/{pg_db}?autoConfigEmulator=true"

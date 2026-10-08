@@ -1,0 +1,7 @@
+# INVALID: unknown top-level field `modules` must be rejected (name the field, list allowed).
+schemaVersion: 1
+targets: []
+modules:
+  - Platform
+suites:
+  live: cases/live

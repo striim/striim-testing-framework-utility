@@ -1,0 +1,5 @@
+CREATE TABLE ${MYSQL_TARGET_SCHEMA}.${TID}products (
+  id INT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  stock INT NOT NULL
+);

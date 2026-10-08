@@ -1,0 +1,40 @@
+name: framework-kafka-cleanup
+depth: smoke
+purpose: The kafka_cleanup_topics manifest key is accepted end-to-end and its listed topics join the per-test teardown delete — the pipeline itself (postgres -> persisted KPS stream -> target) runs and lands its rows, proving the key does not disturb a normal run
+
+tql: app.tql
+
+requires: [kafka, postgres]
+topology: single
+
+ddl:
+  - db: postgres-source
+    file: postgres_ddl.sql
+  - db: postgres-target
+    file: ddl_target.sql
+
+seed:
+  - db: postgres-source
+    file: seed.sql
+    when: pre_deploy
+
+# The feature under test. The framework already auto-detects a PERSIST stream's derived
+# `<ns>_<stream>` data topic and `<topic>_CHECKPOINT` companion and deletes them at teardown;
+# this key is the escape hatch for topics the app creates that auto-detection CANNOT name.
+# Listing the derived names explicitly (as done here) is legal and idempotent — the teardown
+# delete tolerates a topic appearing twice — and it is what makes the key demonstrable in the
+# gallery without inventing a second, un-derivable producer. Each entry is `${...}`-token
+# rendered like TQL, and `kafka` must be in `requires` or the loader refuses the manifest.
+kafka_cleanup_topics:
+  - "${NS}_PersistentStream"
+  - "${NS}_PersistentStream_CHECKPOINT"
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}replicated_data
+      target_db: postgres-target
+      rows: 10
+
+timeout: 180
+tags: [framework, kafka, persistent-stream, postgres, regression]

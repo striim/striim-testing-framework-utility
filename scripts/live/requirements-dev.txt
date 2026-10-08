@@ -1,0 +1,6 @@
+# livetest — dev/test dependencies (mirrors [project.optional-dependencies].dev).
+# Install:  pip install -r requirements-dev.txt
+
+-r requirements.txt
+pytest>=8
+pytest-mock>=3

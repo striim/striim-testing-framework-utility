@@ -1,0 +1,13 @@
+# VALID: consumer. Platform modules are native-runner subjects, NOT targets.
+schemaVersion: 1
+framework:
+  mode: wheel
+  wheel: releases/striim_testing-1.0.0-py3-none-any.whl
+  lock: framework-requirements.lock
+targets: []
+suites:
+  live: cases/live
+runners:
+  - runners/unit-surefire.yaml
+  - runners/integration-chorus.yaml
+  - runners/integration-testng.yaml

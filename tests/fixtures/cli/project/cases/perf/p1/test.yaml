@@ -1,0 +1,9 @@
+name: p1
+op:
+  jar: java/OpenProcessors/ChangeReader
+source:
+  max_ticks: 50
+performance:
+  run_sizes: [1]
+  correctness:
+    mode: disabled

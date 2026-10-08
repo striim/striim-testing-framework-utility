@@ -1,0 +1,30 @@
+-- scripts/live/regression/services/file/file-cdc-diff/app.tql
+-- File tailing: the FileReader watches /tmp/${NS}-in (created empty before deploy); the
+-- input file is DROPPED there AFTER the app is RUNNING (server_files when: post_start),
+-- so the reader picks up the newly-appeared file -- the file analog of a CDC source
+-- capturing post-start changes. Rows flow through DSVParser -> FileWriter + JSONFormatter
+-- to /tmp/${NS}-out, which the file: assertion matches against the golden.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE FileSrc USING Global.FileReader (
+  directory:     '/tmp/${NS}-in',
+  wildcard:      'input.csv',
+  positionbyeof: false
+) PARSE USING Global.DSVParser (
+  header:          true,
+  columndelimiter: ',',
+  charset:         'UTF-8'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET FileOut USING Global.FileWriter (
+  FileName:    '/tmp/${NS}-out',
+  FlushPolicy: 'EventCount:100,Interval:1s'
+) FORMAT USING Global.JSONFormatter () INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

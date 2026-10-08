@@ -1,0 +1,6 @@
+CREATE TABLE ${TID}tgt (
+  id INTEGER PRIMARY KEY,
+  customer_name TEXT NOT NULL,
+  amount NUMERIC(12, 2) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);

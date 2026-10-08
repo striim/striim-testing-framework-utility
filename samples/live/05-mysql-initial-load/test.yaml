@@ -1,0 +1,23 @@
+name: mysql-initial-load
+purpose: Copy five MySQL rows as an initial load and match the target with a reviewed golden
+tql: app.tql
+topology: single
+requires: [mysql]
+timeout: 180
+tags: [sample, initial-load, mysql]
+ddl:
+  - file: ddl_source.sql
+    db: mysql-source
+  - file: ddl_target.sql
+    db: mysql-target
+seed:
+  - file: seed.sql
+    db: mysql-source
+    when: pre_deploy
+assert:
+  smoke: true
+  data:
+    - target: "${MYSQL_TARGET_SCHEMA}.${TID}products"
+      target_db: mysql-target
+      rows: 5
+      match: expected/rows.csv

@@ -1,0 +1,40 @@
+name: spanner
+compose: compose.yaml            # relative to this file
+container: slt-spanner
+isolation: none                 # fixed instance/databases; provisioned once per session
+# If SLT_SPANNER_HOST is set, reuse a live emulator (from SLT_SPANNER_* env), skip Docker.
+live_override_env: SLT_SPANNER_HOST
+docker_defaults:
+  host: localhost
+  port: 9010                    # gRPC (data + DDL)
+  admin_port: 9020              # REST (admin)
+  project: test-project
+  instance: test-inst
+  gsql_db: gsql                 # GoogleSQL dialect
+  pg_db: pgdb                   # PostgreSQL dialect
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so remapping a
+# busy port moves the emulator AND the client that dials it.
+docker_env:
+  port: SLT_SPANNER_GRPC_HOST_PORT
+  admin_port: SLT_SPANNER_REST_HOST_PORT
+live_env:
+  host: SLT_SPANNER_HOST
+  port: SLT_SPANNER_PORT
+  admin_port: SLT_SPANNER_ADMIN_PORT
+  project: SLT_SPANNER_PROJECT
+  instance: SLT_SPANNER_INSTANCE
+  gsql_db: SLT_SPANNER_GSQL_DB
+  pg_db: SLT_SPANNER_PG_DB
+# Tokens for the Striim app. The writer targets the emulator via the cloudspanner
+# JDBC URL with autoConfigEmulator=true (no credentials) — {view_host} is the host
+# the Striim server uses to reach the emulator (host.docker.internal for the Docker
+# cluster). ProjectId/InstanceID/DatabaseName tokens are provided for the fallback
+# native-client path. The framework's own SpannerAdmin reads the emulator at the base
+# {host}:{port} (localhost:9010).
+provides:
+  SPANNER_PROJECT: "{project}"
+  SPANNER_INSTANCE: "{instance}"
+  SPANNER_GSQL_DB: "{gsql_db}"
+  SPANNER_PG_DB: "{pg_db}"
+  SPANNER_GSQL_URL: "jdbc:cloudspanner://{view_host}:{port}/projects/{project}/instances/{instance}/databases/{gsql_db}?autoConfigEmulator=true"
+  SPANNER_PG_URL: "jdbc:cloudspanner://{view_host}:{port}/projects/{project}/instances/{instance}/databases/{pg_db}?autoConfigEmulator=true"

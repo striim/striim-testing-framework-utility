@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "striim-testing-framework-utility"
+version = "0.1.0"
+license = {file = "LICENSE"}
+description = "Live and integration test engines for Striim apps, open processors and UDFs"
+requires-python = ">=3.12"
+# Union of scripts/live and scripts/integration runtime dependencies.
+dependencies = ["pyyaml>=6", "requests>=2.31", "psycopg2-binary>=2.9", "oracledb>=2", "google-cloud-spanner>=3.40", "google-cloud-storage>=2", "confluent-kafka>=2", "fastavro>=1", "pymssql>=2.3", "PyMySQL>=1.1", "vertica-python>=1.4", "sqlalchemy>=2.0.0", "filelock>=3.20.4", "psutil>=5.9", "pytest>=8", "pytest-xdist>=3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-mock>=3", "pytest-xdist>=3"]
+# Teradata's own licence governs the driver: see the README, "Use your own Teradata".
+teradata = ["teradatasql>=20"]
+
+[project.scripts]
+striim-test = "striim_test.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["scripts/live", "scripts/integration", "scripts/cli"]
+include = ["livetest*", "inttest*", "striim_test*"]

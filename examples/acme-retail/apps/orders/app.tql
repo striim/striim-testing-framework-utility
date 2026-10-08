@@ -1,0 +1,27 @@
+-- Acme Retail: replicate order changes to the fulfillment database.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE OrdersCdc USING Global.PostgreSQLReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}orders',
+  ReplicationSlotName: '${PG_SLOT}'
+) OUTPUT TO OrderChanges;
+
+CREATE OR REPLACE TARGET FulfillmentOrders USING Global.DatabaseWriter (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_TARGET_USER}',
+  Password: '${MYSQL_TARGET_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}orders,${MYSQL_TARGET_SCHEMA}.${TID}orders_copy',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM OrderChanges;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

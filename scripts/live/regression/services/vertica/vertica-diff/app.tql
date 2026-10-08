@@ -1,0 +1,32 @@
+-- scripts/live/regression/services/vertica/vertica-diff/app.tql
+-- Vertica initial load: DatabaseReader (as the qasource data user) queries the seeded source
+-- rows and DatabaseWriter (as the qatarget data user) writes them to the target table (same
+-- sltdb database, source/target in their own schemas). The diff tier asserts qatarget.tgt
+-- catches up to qasource.src. The driver is the image's vertica-jdbc (services/striim).
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE VerticaSource USING Global.DatabaseReader (
+  ConnectionURL: '${VERTICA_URL}',
+  Username: '${VERTICA_SOURCE_USER}',
+  Password: '${VERTICA_SOURCE_PASSWORD}',
+  Tables: '${VERTICA_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET VerticaTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${VERTICA_URL}',
+  Username: '${VERTICA_TARGET_USER}',
+  Password: '${VERTICA_TARGET_PASSWORD}',
+  -- 3-part source key: DatabaseReader emits db.schema.table for Vertica (as for SQL Server), and
+  -- a key that does not match drops every event ("Mapping for source entity ... not found").
+  Tables: '${VERTICA_DB}.${VERTICA_SOURCE_SCHEMA}.${TID}src,${VERTICA_TARGET_SCHEMA}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

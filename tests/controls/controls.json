@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "caseSet": [
+    "01-plain-replication",
+    "02-transform",
+    "04-lifecycle-check",
+    "03-file-output"
+  ],
+  "controls": [
+    {"id": "wrong-golden", "case": "01-plain-replication", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "exact-data-mismatch", "junit": "failed", "requiredEvents": [], "recoveryExit": null}},
+    {"id": "extra-duplicate", "case": "02-transform", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "exact-data-mismatch", "junit": "failed", "requiredEvents": [], "recoveryExit": null}},
+    {"id": "late-row", "case": "01-plain-replication", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "late-row-source-ahead-of-target", "junit": "failed", "requiredEvents": ["late-row-injected-before-stability-end"], "recoveryExit": null}},
+    {"id": "missing-required-service", "case": "01-plain-replication", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "required-service-unavailable", "junit": "failed", "requiredEvents": [], "recoveryExit": null}},
+    {"id": "invalid-asset", "case": "03-file-output", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "invalid-input-asset", "junit": "failed", "requiredEvents": [], "recoveryExit": null}},
+    {"id": "required-skip", "case": "01-plain-replication", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "required-case-skipped", "junit": "skipped", "requiredEvents": [], "recoveryExit": null}},
+    {"id": "sequence-order", "case": "03-file-output", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "sequence-order-mismatch", "junit": "failed", "requiredEvents": [], "recoveryExit": null}},
+    {"id": "l1-capture-suppressed", "case": "04-lifecycle-check", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "readiness-deadline", "junit": "failed", "requiredEvents": ["capture-suppressed-after-running"], "recoveryExit": null}},
+    {"id": "l2-prior-sentinel-ignored", "case": "04-lifecycle-check", "kind": "lifecycle-proof", "expected": {"subjectExit": 0, "failure": null, "junit": "passed", "requiredEvents": ["prior-attempt-sentinel-in-target", "current-sentinel-observed-beside-prior", "prior-attempt-sentinel-removed"], "recoveryExit": null}},
+    {"id": "l3-delete-empty-no-done", "case": "04-lifecycle-check", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "current-done-sentinel-not-observed", "junit": "failed", "requiredEvents": ["done-sentinel-suppressed"], "recoveryExit": null}},
+    {"id": "l4-overlap-identities", "case": null, "kind": "lifecycle-proof", "expected": {"subjectExit": 0, "failure": null, "junit": "passed", "requiredEvents": ["overlap-barrier-entered", "distinct-run-identities-observed"], "recoveryExit": null}},
+    {"id": "l5-sibling-survival", "case": null, "kind": "lifecycle-proof", "expected": {"subjectExit": 0, "failure": null, "junit": "passed", "requiredEvents": ["first-run-finished", "sibling-still-active", "shared-services-survived"], "recoveryExit": null}},
+    {"id": "l6-foreign-survival", "case": null, "kind": "lifecycle-proof", "expected": {"subjectExit": 0, "failure": null, "junit": "passed", "requiredEvents": ["foreign-table-survived", "sibling-file-survived"], "recoveryExit": null}},
+    {"id": "l7-cleanup-fault-replay", "case": "01-plain-replication", "kind": "negative", "expected": {"subjectExit": 1, "failure": "cleanup-fault", "junit": "failed", "requiredEvents": ["cleanup-table-fault-injected", "ownership-replay-started", "ownership-replay-completed"], "recoveryExit": 0}},
+    {"id": "l8-blocked-target-insert", "case": "01-plain-replication", "kind": "negative", "expected": {"subjectExit": "nonzero", "failure": "baseline-landed-deadline", "junit": "failed", "requiredEvents": ["target-insert-blocked-after-running"], "recoveryExit": null}}
+  ]
+}

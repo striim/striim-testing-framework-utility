@@ -1,0 +1,17 @@
+# C8.1: a typed multiset data assertion (order: any) under the top-level block.
+name: exact-data-any
+purpose: initial load lands every source row exactly once
+tql: app.tql
+requires: [postgres]
+exact:
+  version: 1
+  max_rows: 1000
+assert:
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      match: expected/tgt.csv
+      keys: [id, amount, created, payload, loaded_at]
+      exact:
+        columns: {id: integer, amount: "decimal:2", created: timestamptz, payload: json}
+        ignore: [loaded_at]

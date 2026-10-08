@@ -1,0 +1,34 @@
+name: lc-file-initial-load
+purpose: hermetic lifecycle fixture - samples/live/03-file-output's shape, an initial load to a FileWriter output whose baseline-landed readiness path is under the owned directory
+tql: app.tql
+requires: [postgres]
+timeout: 30
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: pre_deploy
+exact: {version: 1}
+assert:
+  smoke: true
+  file:
+    - path: "${OWNED_DIR}/out.json"
+      match: expected/rows.csv
+      exact: {columns: {id: integer}}
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: file
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    path: "${OWNED_DIR}/out.json"
+  completion:
+    kind: file-lines
+    path: "${OWNED_DIR}/out.json"
+    lines: 2
+  stability: 0s
+  deadlines: {readiness: 3s, completion: 3s}
+  reset: owned

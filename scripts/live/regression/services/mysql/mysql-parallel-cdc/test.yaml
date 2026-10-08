@@ -1,0 +1,34 @@
+name: mysql-parallel-cdc
+depth: smoke
+
+# Phase 2.2: Parallel Execution Test
+# Tests MySQL CDC with concurrent test isolation via ${TID}
+# Validates:
+# - Multiple concurrent tests can run independently
+# - Table-name isolation works via the ${TID} prefix
+# - No cross-test data contamination
+tql: app.tql
+
+# DDL for source and target schemas with TID isolation
+ddl:
+  - file: ddl_source.sql
+    db: mysql-source
+  - file: ddl_target.sql
+    db: mysql-target
+
+seed:
+  - file: seed.sql
+    db: mysql-source
+
+topology: single
+requires: [mysql]
+
+assert:
+  smoke: true
+  data:
+    - target: ${TID}parallel_test_table
+      target_db: mysql-target
+      rows: 3
+
+timeout: 120
+tags: [cdc, regression, mysql]

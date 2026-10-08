@@ -1,0 +1,7 @@
+name: needs-absent
+purpose: synthetic case whose required service is not provisionable, so it skips before any Docker call
+requires: [synthetic-absent-service]
+op:
+  jar: java/OpenProcessors/ReferenceOp
+assert:
+  smoke: true

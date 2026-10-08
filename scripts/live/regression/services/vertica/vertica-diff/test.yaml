@@ -1,0 +1,28 @@
+name: vertica-diff
+depth: smoke
+purpose: Vertica initial load from the qasource schema to the qatarget schema of the shared sltdb database through Striim's DatabaseReader and DatabaseWriter; non-CDC, so the source is seeded before deploy
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql   # the source table, in qasource
+    db: vertica-source
+  - file: ddl_target.sql   # the target table, in qatarget
+    db: vertica-target
+seed:
+  - file: seed.sql
+    db: vertica-source
+
+topology: single
+requires: [vertica]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${VERTICA_SOURCE_SCHEMA}.${TID}src     # read via qasource (source_db: vertica-source)
+      target: ${VERTICA_TARGET_SCHEMA}.${TID}tgt     # read via qatarget
+      source_db: vertica-source
+      target_db: vertica-target
+
+timeout: 180
+tags: [diff, vertica, regression]

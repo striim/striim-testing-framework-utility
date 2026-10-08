@@ -1,0 +1,37 @@
+name: referenceop-copy-adds-userdata
+purpose: "copies every event through unchanged and stamps userdata.processed=true on each copy"
+
+example: samples/code/op/java/OpenProcessors/ReferenceOp/examples/copy-adds-userdata
+tql: app.tql
+
+op:
+  jar: samples/code/op/java/OpenProcessors/ReferenceOp
+
+ddl:
+  - file: source_postgres_ddl.sql
+    db: postgres-source
+  - file: target_postgres_ddl.sql
+    db: postgres-target
+seed:
+  - file: source_postgres_seed.sql
+    db: postgres-source
+    when: pre_deploy
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}items
+      target_db: postgres-target
+      match: expected/items.csv
+  file:
+    - path: /tmp/${TID}${NS}_out
+      project: userdata
+      keys: [processed]
+      min_events: 2
+      match: expected/userdata.csv
+
+timeout: 180
+tags: [op, referenceop, postgres, sample]

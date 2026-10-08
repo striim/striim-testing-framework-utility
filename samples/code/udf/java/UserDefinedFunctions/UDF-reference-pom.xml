@@ -1,0 +1,359 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<!--
+	  ============================================================================================
+	  REFERENCE / TEMPLATE POM — User-Defined Functions.
+
+	  This is not a buildable module pom; it is the canonical starting point for a NEW gold-standard
+	  UDF and the diff baseline for a consistency review of an EXISTING one. Copy this file to
+	  <NewUdf>/pom.xml and customize the points marked "CUSTOMIZE" below (base name, description,
+	  op-specific deps). Everything else — the release-parameterization structure (STRIIM_HOME /
+	  STRIIM_VERSION / STRIIM_SERIES / JAVA_RELEASE, the striim-home-from-env / release-from-env
+	  profiles, UDF_VERSION-drives-jar-name-only) is the uniform gold-standard shape and should not
+	  vary UDF to UDF without updating this reference (and docs/TESTING-YOUR-JAVA.md) in the same change.
+
+	  UDF_VERSION IS JAR-NAME-ONLY. Unlike an OP (which cache-busts on a package-embedded OP_VERSION —
+	  see docs/TESTING-YOUR-JAVA.md), a UDF's package/FQN is FLAT and UNVERSIONED
+	  (com.example.<Udf> — the stable public TQL contract) and its CLASS is unversioned
+	  (<Udf>.java, no version suffix). UDF_VERSION is required in the pom but used ONLY to name the
+	  jar: finalName = ${project.artifactId}${UDF_VERSION}-${STRIIM_SERIES} (e.g. MyUdfV1B-5.4.jar).
+	  A version bump changes UDF_VERSION + the changelog only — never the package or the class name.
+	  UDFs have no @PropertyTemplate / Striim-Service manifest and no OP-cache-by-package concern (see
+	  docs/TESTING-YOUR-JAVA.md).
+
+	  A pure-library UDF pom with the placeholder base name "MyUdf". Replace "MyUdf" throughout with the real UDF's base name.
+	  ============================================================================================
+	-->
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>com.example</groupId>
+	<!-- CUSTOMIZE: the bare base name, e.g. MyUdf. NEVER a version suffix — this is the stable
+	     package leaf too (com.example.MyUdf). -->
+	<artifactId>MyUdf</artifactId>
+	<version>1.0.0-SNAPSHOT</version>
+	<name>MyUdf</name>
+	<!-- CUSTOMIZE: one-line description of the function library. -->
+	<description>Striim UDF library of &lt;what this library does&gt;.</description>
+
+	<properties>
+		<!-- CUSTOMIZE: bump for each shippable jar iteration (V1, V2, ...). USED ONLY IN THE
+		     finalName BELOW — it never touches the package, the class name, or the artifactId/name.
+		     A version bump changes this property + the changelog, nothing else. -->
+		<UDF_VERSION>V1</UDF_VERSION>
+
+		<!-- THE INTEGRATION LAYER IS REQUIRED. A Striim-aware UDF MUST reach the platform
+		through a shared seam, not directly. NOTE the gap: UDF builds add-source SampleCommon
+		only, so the OpenProcessorCommon seams are not reachable from a UDF today. Adding that
+		add-source block is pom work that belongs to the module's upgrade; until then a UDF's
+		own injectable interface is the required answer, never a raw platform call.
+
+		PLATFORM COUPLING. These system-scoped jars belong to the platform and are NOT
+		shaded into the module: outside a real Striim server they are simply ABSENT, so a
+		class loaded from them raises NoClassDefFoundError, an Error that
+		`catch (Exception)` does not catch. Reference com.webaction.* from src/main ONLY
+		where no shared seam exists.
+
+		Keep platform access behind the shared interfaces listed below so
+		the integration harness can substitute them.
+
+		Everything else routes through the OpenProcessorCommon seams below. These are NOT
+		add-sourced by this pom: the build-helper block further down add-sources SampleCommon
+		only, which is the gap noted above. Until a module adds the OpenProcessorCommon
+		add-source, these name the seam to reach for, not one you can call today:
+		MetadataAccess           MDCache, MetadataRepository, SecurityInfo,
+		runtime.Context, uuid.AuthToken
+		TypeResolver             runtime.compiler.*, runtime.TypeGenerator
+		BuiltInFuncs             runtime.BuiltInFunc
+		PositionPropagation      hand-rolled position attachment
+		SecretResolver           decrypting a credential yourself
+		AbstractOpenProcessorApp openprocessor.StriimOpenProcessor
+
+		A hand-rolled platform call also cannot be unit tested: a static getInstance()
+		cannot be mocked. If no seam exists for what you need, that is a finding. Propose
+		one; do not add another hand-roll. A platform lint can check this.
+		-->
+		<!-- Path to the Striim install whose lib/ supplies system-scoped jars, for Striim-aware UDFs
+		     that have them. A pure-library UDF (no system-scoped deps, e.g. this template) doesn't
+		     need a Striim install to build — STRIIM_HOME is carried anyway,
+		     with the striim-home-from-env profile below, purely so the pom matches the gold-standard
+		     shape and no per-developer path can ever leak in. Default MUST stay the neutral
+		     /opt/striim — never a personal path. -->
+		<STRIIM_HOME>/opt/striim</STRIIM_HOME>
+
+		<!-- Release triad the module builds against by default. Override all three together via
+		     STRIIM_VERSION/STRIIM_SERIES/JAVA_RELEASE env vars (release-from-env profile below,
+		     derived from your STRIIM_HOME) to target a different Striim
+		     release; the defaults
+		     here (the 5.4.x baseline) keep this module standalone-buildable with no env set. Only
+		     STRIIM_SERIES actually affects THIS module's output (the finalName below) when the UDF is
+		     a pure library with no system-scoped deps; STRIIM_VERSION/JAVA_RELEASE are carried for
+		     gold-standard shape parity, same rationale as STRIIM_HOME above. A Striim-aware UDF with
+		     system-scoped deps uses STRIIM_VERSION for real (in its systemPath jars). -->
+		<STRIIM_VERSION>5.4.0.6</STRIIM_VERSION>
+		<STRIIM_SERIES>5.4</STRIIM_SERIES>
+		<JAVA_RELEASE>17</JAVA_RELEASE>
+
+		<maven.compiler.source>${JAVA_RELEASE}</maven.compiler.source>
+		<maven.compiler.target>${JAVA_RELEASE}</maven.compiler.target>
+
+		<!-- CUSTOMIZE: op-specific lib version properties, e.g. for a pure JsonNode library: -->
+		<JACKSON_VERSION>2.14.0</JACKSON_VERSION>
+	</properties>
+
+	<dependencies>
+		<!-- ============================================================================
+		     CUSTOMIZE — dependency shape is BY ROLE:
+
+		     PURE-LIBRARY UDF (this template): normal COMPILE-scope deps
+		     resolved from Maven Central — portable, no Striim install needed to build. Striim
+		     provides the same libs (e.g. Jackson) at runtime, so they are NOT shaded.
+
+		     STRIIM-AWARE UDF: declare Platform/Common/kryo (plus SourceCommons/hazelcast only if
+		     actually used) as SYSTEM-scoped deps from ${STRIIM_HOME}/lib — same pattern as
+		     OP-reference-pom.xml. Copy ReferenceUdf/pom.xml. kryo is REQUIRED to compile against
+		     WAEvent (it implements KryoSerializable), not an optional extra. That pom also adds
+		     <additionalClasspathElements> to surefire — see the surefire plugin below — so the unit
+		     tests can resolve ${STRIIM_HOME}/lib at test time.
+
+		     EXTERNAL-I/O UDF: as Striim-aware, plus bundle the third-party client libs via a
+		     shade/assembly build. If you add a shade step, move the Striim-Build-* manifest entries into
+		     the shade plugin's ManifestResourceTransformer — and do NOT add Striim-Module-Name /
+		     Striim-Service-* entries, which declare an OP service a UDF does not implement
+		     (docs/TESTING-YOUR-JAVA.md).
+
+		     Do not mix the pure-library and Striim-aware patterns in one UDF.
+		     ============================================================================ -->
+		<dependency>
+			<groupId>com.fasterxml.jackson.core</groupId>
+			<artifactId>jackson-databind</artifactId>
+			<version>${JACKSON_VERSION}</version>
+		</dependency>
+		<dependency>
+			<groupId>com.fasterxml.jackson.core</groupId>
+			<artifactId>jackson-core</artifactId>
+			<version>${JACKSON_VERSION}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<version>5.10.2</version>
+			<scope>test</scope>
+		</dependency>
+		<!-- Add mockito-core only if a Striim-aware / external-I/O UDF needs it. -->
+	</dependencies>
+
+	<build>
+		<!-- Jar name: <artifactId><UDF_VERSION>-<STRIIM_SERIES>.jar, e.g. MyUdfV1-5.4.jar. This is
+		     the ONLY place UDF_VERSION is used — the package/class stay unversioned. This is the jar
+		     the live harness builds, uploads to UploadedFiles/, and globally LOADs from the test
+		     yaml's `udf:` block; an example app.tql never contains a LOAD itself
+		     (docs/TESTING-YOUR-JAVA.md). -->
+		<finalName>${project.artifactId}${UDF_VERSION}-${STRIIM_SERIES}</finalName>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<version>3.13.0</version>
+				<configuration>
+					<source>${maven.compiler.source}</source>
+					<target>${maven.compiler.target}</target>
+				</configuration>
+			</plugin>
+			<!--
+			  surefire PINNED to 3.2.5: an unpinned surefire silently falls back to 2.12.4, which
+			  predates JUnit 5 and reports a vacuous "Tests run: 0" green. Do not remove the pin.
+
+			  CUSTOMIZE (Striim-aware UDFs only): a UDF with system-scoped deps must ALSO put
+			  ${STRIIM_HOME}/lib on the TEST classpath, or its unit tests fail to resolve WAEvent
+			  et al. ReferenceUdf/pom.xml adds exactly this block; a
+			  pure-library UDF (this template's default) does not need it and leaves it out:
+
+			    <configuration>
+			        <useManifestOnlyJar>false</useManifestOnlyJar>
+			        <additionalClasspathElements>
+			            <additionalClasspathElement>${STRIIM_HOME}/lib/*</additionalClasspathElement>
+			        </additionalClasspathElements>
+			    </configuration>
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<version>3.2.5</version>
+			</plugin>
+			<!--
+			  Stamp the release this jar was built against into MANIFEST.MF so the live-test harness
+			  refuses to reuse a jar from a different Striim release / Java level (mirrors the OPs'
+			  shade ManifestResourceTransformer entries).
+			-->
+			<!--
+			  WAEvent-aware UDFs ONLY (delete both plugins for a pure-library UDF).
+			  add-source compiles SampleCommon's WAEvents into this jar;
+			  shade relocates it to a module-unique name, since Striim's global LOAD rejects
+			  two jars declaring the same class. outputFile keeps this the only
+			  unclassified jar in target/ (the -sources/-javadoc pair is added below).
+			-->
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>build-helper-maven-plugin</artifactId>
+				<version>3.6.0</version>
+				<executions>
+					<execution>
+						<id>add-common-source</id>
+						<phase>generate-sources</phase>
+						<goals>
+							<goal>add-source</goal>
+						</goals>
+						<configuration>
+							<sources>
+								<source>${project.basedir}/../../SampleCommon/src/main/java</source>
+							</sources>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-shade-plugin</artifactId>
+				<version>3.5.1</version>
+				<configuration>
+					<createDependencyReducedPom>false</createDependencyReducedPom>
+					<outputFile>${project.build.directory}/${project.artifactId}${UDF_VERSION}-${STRIIM_SERIES}.jar</outputFile>
+					<relocations>
+						<relocation>
+							<pattern>com.example.common</pattern>
+							<shadedPattern>com.example.shaded.${project.artifactId}.common</shadedPattern>
+						</relocation>
+					</relocations>
+					<transformers>
+						<transformer
+							implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+							<manifestEntries>
+								<!-- Re-stamped: shade rewrites the jar maven-jar-plugin produced. -->
+								<Striim-Build-Version>${STRIIM_VERSION}</Striim-Build-Version>
+								<Striim-Build-Series>${STRIIM_SERIES}</Striim-Build-Series>
+								<Striim-Build-Java>${JAVA_RELEASE}</Striim-Build-Java>
+							</manifestEntries>
+						</transformer>
+					</transformers>
+				</configuration>
+				<executions>
+					<execution>
+						<phase>package</phase>
+						<goals>
+							<goal>shade</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-jar-plugin</artifactId>
+				<version>3.4.1</version>
+				<configuration>
+					<archive>
+						<manifestEntries>
+							<Striim-Build-Version>${STRIIM_VERSION}</Striim-Build-Version>
+							<Striim-Build-Series>${STRIIM_SERIES}</Striim-Build-Series>
+							<Striim-Build-Java>${JAVA_RELEASE}</Striim-Build-Java>
+						</manifestEntries>
+					</archive>
+				</configuration>
+			</plugin>
+
+			<!-- ================================================================================
+			     API docs and sources, bound to `package`. Output is named from this module's jar
+			     base name, landing beside it as <jar>-sources.jar and <jar>-javadoc.jar.
+
+			     Why bind rather than pass the goals on the command line: javadoc is only checked
+			     when it is generated, and `mvn package` is the command a developer runs. A broken
+			     reference fails that build; so does a @param naming an argument the method does
+			     not have. A MISSING @param or @return is only a warning, which is deliberate,
+			     because the templates require neither. The check is of form, never of truth: a
+			     green build proves the tags RESOLVE, not that they are correct.
+
+			     Do NOT also pass these goals on the command line where this pom is built. The
+			     lifecycle already runs them, and a second `default-cli` execution regenerates and
+			     re-jars the javadoc for nothing.
+
+			     Both versions are PINNED for determinism, and as a floor against a future Maven 4
+			     runner. The pin does not change which version resolves today: 4.0.0-beta-1 declares
+			     a Maven 4 prerequisite, so Maven 3.9 rejects it and selects 3.4.0 unaided. Unlike
+			     the surefire pin, which prevents a real and current silent-zero-tests green, this
+			     one is insurance.
+
+			     These two jars are DEVELOPER artifacts and are never shipped:
+			     a packaging step should drop any -sources/-javadoc jar from a customer package.
+			     target/ therefore holds more than one jar,
+			     so anything counting jars there must exclude them.
+			     The live harness is unaffected: it globs target/*-<series>.jar, which neither suffix
+			     can match.
+			     ================================================================================ -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-source-plugin</artifactId>
+				<version>3.4.0</version>
+				<executions>
+					<execution>
+						<id>attach-sources</id>
+						<phase>package</phase>
+						<goals>
+							<goal>jar-no-fork</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-javadoc-plugin</artifactId>
+				<version>3.12.0</version>
+				<executions>
+					<execution>
+						<id>attach-javadocs</id>
+						<phase>package</phase>
+						<goals>
+							<goal>jar</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
+
+		</plugins>
+		<!-- No shade plugin, no Main-Class, no Striim-Module-Name / Striim-Service-* manifest
+		     entries — a UDF is a plain library jar of static methods resolved by FQN, not a
+		     StriimOpenProcessor service. A Striim-aware UDF that needs a shaded uber-jar (bundled
+		     client libs) adds the shade plugin the same way OP-reference-pom.xml does,
+		     but still without the Striim-Service manifest entries (those are OP-only). -->
+	</build>
+
+	<profiles>
+		<!--
+		  Override STRIIM_HOME from a STRIIM_HOME environment variable so a hardcoded per-developer
+		  path never leaks into the build (a CLI -DSTRIIM_HOME=... beats both). Portability hygiene
+		  here for a pure-library UDF; load-bearing for a Striim-aware UDF with system-scoped deps.
+		-->
+		<profile>
+			<id>striim-home-from-env</id>
+			<activation><property><name>env.STRIIM_HOME</name></property></activation>
+			<properties><STRIIM_HOME>${env.STRIIM_HOME}</STRIIM_HOME></properties>
+		</profile>
+		<!--
+		  Override the release triad from env vars when STRIIM_RELEASE is set — the marker
+		  exported alongside STRIIM_VERSION/STRIIM_SERIES/JAVA_RELEASE, so
+		  all three resolve together. For a pure-library UDF only STRIIM_SERIES actually changes this
+		  module's output (the finalName above); STRIIM_VERSION/JAVA_RELEASE are carried for
+		  gold-standard shape parity, same rationale as the STRIIM_HOME profile above.
+		-->
+		<profile>
+			<id>release-from-env</id>
+			<activation><property><name>env.STRIIM_RELEASE</name></property></activation>
+			<properties>
+				<STRIIM_VERSION>${env.STRIIM_VERSION}</STRIIM_VERSION>
+				<STRIIM_SERIES>${env.STRIIM_SERIES}</STRIIM_SERIES>
+				<JAVA_RELEASE>${env.JAVA_RELEASE}</JAVA_RELEASE>
+			</properties>
+		</profile>
+	</profiles>
+</project>

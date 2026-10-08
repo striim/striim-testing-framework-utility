@@ -1,0 +1,49 @@
+name: framework-tokens
+depth: smoke
+purpose: Every ${...} token class -- framework, service, isolation and manifest-declared -- renders in the TQL, the SQL files and the assert targets alike
+
+tql: app.tql
+
+# ${...} substitution applies to EVERY string the manifest reaches: the TQL, the contents of
+# each ddl/seed file, and the assert targets. Four classes appear in this test:
+#
+#   framework   ${NS} ${APP}              per-test namespace and application name
+#   service     ${PG_URL} ${PG_SOURCE_SCHEMA} ${PG_SOURCE_USER} ${PG_TARGET_*}
+#               published by each `requires:` service from its service.yaml `provides:` map
+#   isolation   ${TID}                    empty in a serial run, a per-test id under SLT_PARALLEL
+#   manifest    ${POLICY}                 declared under `tokens:` below; a per-manifest constant
+#
+# ${TID} is the one that matters for correctness. Every DB object name carries it -- here
+# ${TID}src and ${TID}tgt in the ddl, the seed, the TQL and the assert target -- so two
+# concurrent runs of different tests never collide in the shared qasource/qatarget schemas.
+# Oracle tests use ${TID_ORACLE} (the same value, uppercased) because unquoted identifiers fold
+# to upper case. Templates carry no separator of their own: the token's VALUE supplies the
+# trailing underscore when it is non-empty.
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+# `tokens:` -- values this manifest declares itself, rendered wherever the harness renders
+# tokens. Names are [A-Z][A-Z0-9_]*; a harness name (${NS}, ${TID}, ${PG_URL}, ...) is refused,
+# and a value may not contain ${...}. The point is one shipped app serving several manifests
+# that differ in a value (e.g. TrailFilePattern: '${SRC_TRAIL}').
+tokens:
+  POLICY: 'EventCount:100,Interval:1'
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      match: expected/tgt.csv
+
+timeout: 180
+tags: [framework, tokens, postgres, regression]

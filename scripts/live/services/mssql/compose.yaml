@@ -1,0 +1,68 @@
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-mssql
+services:
+  slt-mssql:
+    # SQL Server 2022 (amd64) with the qasource/qatarget provisioning baked into the
+    # entrypoint (images/mssql/{Dockerfile,entrypoint.sh,init.sql}), so `docker compose
+    # up` alone leaves the data users present. Full CDC + SQL Server Agent + sp_repldone,
+    # so it drives Striim's DatabaseReader CDC reader and the DatabaseMaintenanceOp's sp_repldone
+    # path. Runs under emulation on arm64 (Apple Silicon), same as the Striim cluster.
+    build: ./images/mssql
+    image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-mssql:2022
+    platform: linux/amd64
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-mssql
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_MSSQL_CPUS:-1}
+    mem_limit: ${SLT_MSSQL_MEM_LIMIT:-2560m}
+    cap_add: [SYS_PTRACE]
+    environment:
+      ACCEPT_EULA: "Y"
+      # BOOTSTRAP password only — SQL Server refuses to start without upper+lower+digit.
+      # After boot, entrypoint.sh's background init.sql relaxes the sa login to the
+      # normalized weak password 'striim' (ALTER LOGIN ... CHECK_POLICY=OFF) — the single
+      # authoritative migration; MssqlAdmin.ensure_setup (Python) only re-verifies it
+      # idempotently afterward, it does not race it (see entrypoint.sh). Keep this in sync
+      # with mssqladmin.py's _BOOTSTRAP_SA_PASSWORD (or override via SLT_MSSQL_BOOTSTRAP_PASSWORD).
+      MSSQL_SA_PASSWORD: "QAtestuser1"
+      MSSQL_PID: "Developer"                # free, full-featured (CDC, Agent)
+      MSSQL_AGENT_ENABLED: "TRUE"           # Agent runs the CDC capture/cleanup jobs
+    ports:
+      # Host port is overridable for machines where :1433 is already taken. When
+      # overriding, point the framework at it too: SLT_MSSQL_HOST=localhost
+      # SLT_MSSQL_PORT=<port> (+ the SLT_MSSQL_* creds; see docs/internals/ENGINE.md).
+      - "${SLT_MSSQL_HOST_PORT:-1433}:1433"
+    networks:
+      - slt-mssql-net
+    healthcheck:
+      # Gates readiness on entrypoint.sh's background init.sql migration having actually
+      # COMPLETED (its DONE_MARKER file), not on "the server accepts some login" — a
+      # login-guessing probe here (the old form: try 'striim', fall back to the bootstrap
+      # password) ran concurrently with entrypoint.sh's own migration AND with
+      # MssqlAdmin._ensure_sa_password() (mssqladmin.py), three actors independently
+      # reading/ALTERing the same sa login right after boot. A connection landing mid-ALTER
+      # LOGIN got a spurious "Login failed" (SQL Server error state 7 or 8) — intermittent,
+      # and once triggered could keep failing past the framework's retry budget. A bare
+      # file check has no such race: it can only ever be true after the one authoritative
+      # migration (entrypoint.sh) has already committed — entrypoint.sh clears the marker
+      # at the top of every boot, so a stale marker from a prior life of this same
+      # container (survives `stop`/`start`, only `down -v` wipes it) can't gate on it.
+      #
+      # Defense in depth: also probe qasource, not sa. qasource is created once under
+      # IF NOT EXISTS (init.sql) and never re-ALTERed on a later boot, so — unlike sa —
+      # logging into it can never race a concurrent password change; this catches the
+      # marker going stale some other way this comment didn't anticipate (mirrors
+      # services/oracle/compose.yaml's non-sentinel liveness probe for the same reason).
+      test: ["CMD-SHELL", "test -f /var/opt/mssql/.slt-init-done && /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U qasource -P striim -Q 'SELECT 1'"]
+      interval: 2s
+      timeout: 3s
+      # entrypoint.sh's own loop budgets ~180s (90 * 2s) PLUS per-iteration sqlcmd login
+      # overhead on top, so its true wall-clock can exceed 180s on a slow cold boot (amd64
+      # emulation on Apple Silicon). Keep Docker's ceiling comfortably above that so a slow
+      # boot surfaces as entrypoint.sh's own WARNING, not an opaque Docker "unhealthy".
+      retries: 150
+
+networks:
+  slt-mssql-net:
+    driver: bridge

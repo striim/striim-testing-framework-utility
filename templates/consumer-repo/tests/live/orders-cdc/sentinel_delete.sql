@@ -1,0 +1,1 @@
+DELETE FROM ${TID}orders WHERE id = ${SENTINEL_ID};

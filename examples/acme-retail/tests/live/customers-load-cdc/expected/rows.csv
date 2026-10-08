@@ -1,0 +1,4 @@
+customer_id,email,loyalty_tier,credit_limit
+2001,shopper-2001@example.test,gold,250.50
+2003,<null>,standard,75.00
+2004,shopper-2004@example.test,silver,150.25

@@ -1,0 +1,42 @@
+# Integration-tier MySQL (Phase 2.3 scaffold). mysql:8.0 with its defaults, which include
+# binary logging (not read here: CDC/binlog reading is not exercised by integration
+# tests); init.sql lets non-SUPER users create stored functions despite it. init.sql (mounted
+# below) provisions the qasource/qatarget accounts + schemas at first startup, same
+# as the live tier's init-mysql.sql. Parallel stacks: INT_STACK_PREFIX namespaces
+# the compose project (which owns the network/volume names) and every container_name
+# below — unset/empty, both interpolate to today's exact names (mirrors
+# scripts/live's SLT_STACK_PREFIX pattern).
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mysql
+services:
+  int-mysql:
+    image: mysql:8.0
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mysql
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${INT_MYSQL_CPUS:-1}
+    mem_limit: ${INT_MYSQL_MEM_LIMIT:-1g}
+    environment:
+      # Superuser (root). init.sql (below) creates the qasource/qatarget users +
+      # schemas at first cluster init.
+      MYSQL_ROOT_PASSWORD: striim
+      MYSQL_DATABASE: intdb
+    ports:
+      # Host port is overridable for machines where :13306 is already taken (distinct
+      # from the live tier's :3306 so both stacks can run at once). When overriding,
+      # point the framework at it too: INT_MYSQL_HOST=localhost INT_MYSQL_PORT=<port>.
+      - "${INT_MYSQL_HOST_PORT:-13306}:3306"
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/10-qausers.sql:ro
+    networks:
+      - int-mysql-net
+    healthcheck:
+      # TCP, not the socket: first boot runs a temporary --skip-networking server to load
+      # initdb.d, and a socket ping answers from THAT one, so the stack reads Healthy and
+      # the first DDL lands on a server about to shut down (2013 Lost connection).
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--protocol=TCP", "-u", "root", "-pstriim"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
+networks:
+  int-mysql-net:
+    driver: bridge

@@ -1,0 +1,23 @@
+# Union of the root and both engines' runtime and dev dependencies.
+# Keep in sync with their pyproject.toml files; omit the optional Teradata driver.
+pyyaml>=6
+requests>=2.31
+psycopg2-binary>=2.9
+oracledb>=2
+google-cloud-spanner>=3.40
+google-cloud-storage>=2
+confluent-kafka>=2
+fastavro>=1
+pymssql>=2.3
+PyMySQL>=1.1
+vertica-python>=1.4
+sqlalchemy>=2.0.0
+filelock>=3.20.4
+psutil>=5.9
+pytest>=8
+pytest-xdist>=3
+pytest-mock>=3
+
+# Pinned build tools for the local editable install without build isolation.
+setuptools>=68
+wheel

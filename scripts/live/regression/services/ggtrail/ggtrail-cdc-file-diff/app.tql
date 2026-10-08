@@ -1,0 +1,62 @@
+-- scripts/live/regression/services/ggtrail/ggtrail-cdc-file-diff/app.tql
+-- GoldenGate trail tailing with no external service: the framework's `generate:` hook runs the
+-- ggtrail generator from workload.yaml before deploy, producing trail files (rt*) + schema.def
+-- in /tmp/${NS}-gg. The source tails those files; the CQ projects the two META fields that
+-- identify each change (TableName / OperationName) plus the row payload; FileWriter writes the
+-- events for the file: assertion to match against expected/ops.csv.
+--
+-- Configuration notes:
+--
+--   * GGTrailReader, not FileReader + GGTrailParser. The generator's writer docstring says
+--     these files are for GGTrailReader.
+--   * DefinitionFile, NOT metadata, for the defgen path. With `metadata:` the source halts on
+--     "Reading MetaData using Trail file is not supported for GG Version < 12.2 -- Set property
+--     DefinitionFile to read metadata from Defgen file": the writer emits compatibility 8.
+--
+-- Three deliberate choices below, all load-bearing:
+--   * JSONFormatter, not DSVFormatter -- the file: assertion parses the target with
+--     parse_json_events() and compares projected `data` dicts. A DSV target reads back as zero
+--     events. Same reason file-cdc-diff uses it.
+--   * data[0..2] only -- the trail carries three tables of differing width (CUSTOMERS has 3
+--     columns, ORDERS and ORDER_ITEMS have 4). Projecting the widest COMMON prefix keeps one
+--     uniform row shape and avoids indexing past a narrower table's data array.
+--   * ORDERS' data[2] is a DECIMAL, which the reader delivers as a Double; TO_STRING would
+--     print 18740864.31 as 1.874086431E7. BigDecimal to two places matches the golden.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE GG_SRC USING Global.GGTrailReader (
+  TrailDirectory:              '/tmp/${NS}-gg/',
+  TrailFilePattern:            'rt*',
+  DefinitionFile:              '/tmp/${NS}-gg/schema.def',
+  TrailByteOrder:              'BigEndian',
+  Compression:                 false,
+  Tables:                      'SCOTT.%',
+  FilterTransactionBoundaries: true,
+  positionByEOF:               false,
+  WildcardAction:              'Ignore',
+  StartPosition:               'FileName:rt0000000;offset:0'
+) OUTPUT TO gg_stream;
+
+CREATE OR REPLACE CQ ProjectOps
+  INSERT INTO OpsStream
+  SELECT TO_STRING(META(s, 'TableName'))     AS TABLE_NAME,
+         TO_STRING(META(s, 'OperationName')) AS OP_TYPE,
+         TO_STRING(data[0])                  AS C0,
+         TO_STRING(data[1])                  AS C1,
+         CASE WHEN TO_STRING(META(s, 'TableName')) = 'SCOTT.ORDERS'
+              THEN java.math.BigDecimal.valueOf(TO_DOUBLE(data[2])).setScale(2, 4).toPlainString()
+              ELSE TO_STRING(data[2]) END    AS C2
+  FROM gg_stream s;
+
+CREATE OR REPLACE TARGET FileOut USING Global.FileWriter (
+  FileName:    '/tmp/${NS}-out',
+  FlushPolicy: 'EventCount:100,Interval:1s'
+) FORMAT USING Global.JSONFormatter () INPUT FROM OpsStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

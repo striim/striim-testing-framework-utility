@@ -1,0 +1,65 @@
+name: framework-xfail
+depth: smoke
+purpose: An xfail test that FAILS is reported as XFAIL rather than a failure, and strict:true turns an unexpected pass back into one
+
+tql: app.tql
+
+# `xfail:` marks a test EXPECTED TO FAIL. It reaches pytest as pytest.mark.xfail(reason, strict),
+# so a failing run reports XFAIL and does not redden the suite -- which is the whole point: a
+# known-bug repro stays committed, asserting the CORRECT behaviour, instead of being deleted or
+# commented out.
+#
+# EXAMPLE, not a real quarantine -- the same convention framework-disabled uses. The assertion
+# below is deliberately wrong: seed.sql inserts 3 rows and it asserts 4, so this test fails on
+# every run, on purpose, and that failure is what makes the XFAIL observable end to end.
+#
+# strict: true is doing real work here rather than decoration. Under strict, an UNEXPECTED PASS
+# (XPASS) is reported as a failure, so if anything ever makes `rows: 4` true -- a harness change,
+# a seed edit -- this example goes red instead of quietly ceasing to demonstrate anything. That
+# is the same bidirectionality the EXEMPT list in test_framework_coverage.py enforces: a marker
+# must not outlive its reason.
+#
+# The two accepted forms:
+#   xfail: "PLATFORM-1: reason"                 -- string shorthand, strict defaults to false
+#   xfail: {reason: "PLATFORM-1: ...", strict: true}
+#
+# Both are parsed in scripts/live/livetest/manifest.py and covered hermetically in
+# tests/test_manifest.py; this directory is the live half, proving the key reaches the runner.
+#
+# The marker is NARROW (design §10.1): only an assertion failure on a tier named in `tiers` is
+# reported as XFAIL. A case that fails because the cluster never came up, the TQL did not
+# compile, the DDL errored, or the app never reached RUNNING is reported as a real FAILURE,
+# exactly as it would be without the marker. `tiers` defaults to every assertion tier except
+# `smoke`; naming the one that carries the defect is the precise form.
+xfail:
+  reason: "EXAMPLE, not a real quarantine: asserts 4 rows against a 3-row seed so the XFAIL path is exercised"
+  strict: true
+  tiers: [data]
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      rows: 4          # deliberately wrong: seed.sql inserts 3. See the note above.
+
+# 45s, not the 180s the other framework examples carry. A `rows:` assert POLLS until its
+# budget expires, and this one asserts a count that can never be reached, so the budget is not
+# a safety margin here -- it is the run cost, paid in full on every suite run. Measured: the 3
+# seeded rows land within seconds, so 45s leaves ample margin for the pipeline to deliver them
+# and still fail on 3 != 4 rather than on "nothing arrived yet", which would demonstrate
+# nothing. At 180s this example cost 222s; at 45s it costs about 85s.
+timeout: 45
+tags: [framework, xfail, postgres, regression]

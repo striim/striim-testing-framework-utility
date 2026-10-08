@@ -1,0 +1,60 @@
+-- scripts/live/regression/services/gcs/gcs-cdc-diff/app.tql
+-- GCS round-trip against the fake-gcs-server emulator:
+--   GCSReader (DSV) polls the source bucket, empty at START, and reads the object the
+--   framework uploads once the app is RUNNING (post_start) -> a WAEvent
+--   stream; a CQ projects just the two parsed data columns (the reader also
+--   attaches GCS metadata -- offset/path/object/VALID_RECORD -- which we drop so
+--   the round-trip is a clean 1:1); GCSWriter (DSV) writes them to the target
+--   bucket. The diff tier reads both buckets via GcsAdmin and asserts they match.
+--
+-- Emulator wiring (see services/gcs/README.md):
+--   * Auth: the adapter always fetches an OAuth token from the key's token_uri;
+--     the throwaway key points token_uri at the fake token server (:4444), which
+--     hands back a dummy bearer token the emulator ignores.
+--   * Endpoint: PrivateServiceConnectEndpoint -> StorageOptions.setHost(). It must
+--     be an IP -- the adapter runs it through Apache UrlValidator, which rejects
+--     host.docker.internal (.internal is not a valid TLD) and mangles it into a
+--     bogus "storage-http://..." host. The framework resolves the host IP for it.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE GcsSource USING Global.GCSReader (
+  ProjectId: '${GCS_PROJECT}',
+  BucketName: '${GCS_SRC_BUCKET}',
+  ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json',
+  PrivateServiceConnectEndpoint: '${GCS_ENDPOINT}',
+  ObjectDetectionMode: 'GCSDirectoryListing',
+  ObjectFilter: '*.csv',
+  -- PollingInterval is milliseconds (not a duration string); default 60000ms.
+  PollingInterval: '5000',
+  -- _h_GCSQueryCoolingTime (minutes, default 5) makes the reader SKIP objects newer
+  -- than N minutes -- a buffer against reading a half-written object. The seed is
+  -- uploaded after START, so the default would stall the read ~5 min. 0 = read
+  -- immediately (safe here: GcsAdmin uploads the object in one request).
+  '_h_GCSQueryCoolingTime': '0'
+)
+PARSE USING Global.DSVParser ()
+OUTPUT TO RawStream;
+
+CREATE OR REPLACE CQ ProjectData
+  INSERT INTO DataStream
+  SELECT TO_STRING(data[0]) AS c0, TO_STRING(data[1]) AS c1
+  FROM RawStream;
+
+CREATE OR REPLACE TARGET GcsTarget USING Global.GCSWriter (
+  projectId: '${GCS_PROJECT}',
+  bucketName: '${GCS_TGT_BUCKET}',
+  objectName: 'out.csv',
+  uploadpolicy: 'eventcount:100,interval:5s',
+  PrivateServiceConnectEndpoint: '${GCS_ENDPOINT}',
+  serviceAccountKey: 'UploadedFiles/fake-gcp-key.json'
+)
+FORMAT USING Global.DSVFormatter ()
+INPUT FROM DataStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

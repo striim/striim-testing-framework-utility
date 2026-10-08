@@ -1,0 +1,41 @@
+name: framework-assert-data
+depth: smoke
+purpose: The data assert tier in all three forms -- exact rows, a golden match, and a keys projection -- against one target
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+# Three specs against the same table, because `data` has three independent modes and a test
+# that only ever uses `match:` proves nothing about the other two:
+#   rows:      exact cardinality -- catches duplicates a set-compare cannot, since `match` is
+#              dedup-blind (it compares DISTINCT row sets)
+#   match:     the distinct row set equals a golden CSV, order-insensitive
+#   keys:      projects the row down to named columns before comparing, for when a table
+#              carries columns the test does not want to pin
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      rows: 3
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      match: expected/tgt.csv
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      keys: [id]
+      match: expected/tgt_ids.csv
+
+timeout: 180
+tags: [framework, assert, postgres, regression]

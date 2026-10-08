@@ -1,0 +1,31 @@
+name: lc-invalid-unknown-kind
+purpose: hermetic lifecycle fixture - an unknown readiness kind is rejected at load
+tql: app.tql
+requires: [postgres]
+timeout: 30
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: pre_deploy
+assert:
+  smoke: true
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: source-complete
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  completion:
+    kind: source-count
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  stability: 0s
+  deadlines: {readiness: 3s, completion: 3s}
+  reset: owned

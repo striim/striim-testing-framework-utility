@@ -1,0 +1,27 @@
+# VALID: private-style project with Maven-built OP and a prebuilt UDF.
+schemaVersion: 1
+framework:
+  mode: sibling
+  sibling: striim-testing-framework-utility
+targets:
+  - name: LookupOp
+    kind: op
+    path: java/OpenProcessors/LookupOp
+    build: maven
+  - name: ExampleJsonUdf
+    kind: udf
+    path: java/UserDefinedFunctions/ExampleJsonUdf
+    build: prebuilt
+    prebuilt:
+      jar: artifacts/json-mutator-1.0.0.jar
+      sha256: 3f2a9b1c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8
+suites:
+  unit: tests/unit
+  integration: regression/integration
+  live: regression/live
+  perf: regression/perf
+scan:
+  moduleRoots:
+    - java/OpenProcessors
+    - java/UserDefinedFunctions
+runners: []

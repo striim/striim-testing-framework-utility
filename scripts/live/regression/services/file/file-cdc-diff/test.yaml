@@ -1,0 +1,21 @@
+name: file-cdc-diff
+depth: smoke
+purpose: File-tailing analog of the CDC diffs — the input file is dropped after the app is RUNNING (post_start), so FileReader picks it up like a CDC source captures post-start changes
+
+tql: app.tql
+
+topology: single
+requires: []
+
+server_files:
+  - {file: input.csv, dest: '/tmp/${NS}-in/input.csv', when: post_start}
+
+assert:
+  smoke: true
+  file:
+    - path: /tmp/${NS}-out
+      match: expected/events.csv   # DSVParser without a typed output stream keys columns positionally (0,1,...); golden headers match
+      project: data
+
+timeout: 180
+tags: [file, cdc, filereader, filewriter, regression]

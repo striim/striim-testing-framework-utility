@@ -1,0 +1,23 @@
+name: mysql-cdc
+purpose: MySQL binlog CDC applies inserts, an update and a delete to the orders copy
+tql: app.tql
+topology: single
+requires: [mysql]
+timeout: 180
+tags: [sample, cdc, mysql]
+ddl:
+  - file: ddl_source.sql
+    db: mysql-source
+  - file: ddl_target.sql
+    db: mysql-target
+seed:
+  - file: changes.sql
+    db: mysql-source
+    when: post_start
+assert:
+  smoke: true
+  data:
+    - target: "${MYSQL_TARGET_SCHEMA}.${TID}orders"
+      target_db: mysql-target
+      rows: 2
+      match: expected/rows.csv

@@ -1,0 +1,7 @@
+name: "off"  # quoted: YAML 1.1 reads bare off as boolean false
+purpose: synthetic disabled integration case (deselected by the guard with its reason)
+disabled: "synthetic: deselected before provisioning"
+op:
+  jar: java/OpenProcessors/ReferenceOp
+assert:
+  smoke: true

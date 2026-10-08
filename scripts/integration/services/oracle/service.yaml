@@ -1,0 +1,58 @@
+name: oracle
+compose: compose.yaml            # relative to this file
+container: int-oracle
+isolation: none                 # fixed schemas (QASOURCE/QATARGET); tests run serially initially
+# Unlike scripts/live (which builds a slt-oracle image baking ARCHIVELOG + LogMiner
+# CDC setup at build time), this uses the base gvenzl/oracle-free image directly with
+# the qasource/qatarget data schemas created at first startup via a volume-mounted
+# init.sql (no custom build) — see compose.yaml. No ARCHIVELOG/CDC user (c##striim):
+# OracleReader CDC is not exercised by integration tests.
+# Later phase: broker support — if INT_ORA_HOST is set, reuse a live Oracle (from INT_ORA_*
+# env) and skip Docker. Logic deferred; wired here so this shape matches scripts/live
+# from day one (mirrors scripts/live/services/oracle/service.yaml's SLT_ORA_HOST).
+live_override_env: INT_ORA_HOST
+# Docker defaults (used when not live).
+docker_defaults:
+  host: localhost
+  port: 11521
+  service: FREEPDB1           # the PDB — data users (qasource/qatarget) connect here
+  source_user: qasource       # data source schema (owns QASOURCE.*); reader/seed connect here
+  source_password: striim
+  source_schema: QASOURCE      # in Oracle a user IS its schema — QASOURCE for qasource
+  target_user: qatarget       # data target schema (owns QATARGET.*); writer connects here
+  target_password: striim
+  target_schema: QATARGET      # QATARGET for qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port (or standing up a second stack from another checkout) moves
+# the service AND the client that dials it. See inttest/tokens.py::_resolve_service_base.
+docker_env:
+  port: INT_ORA_HOST_PORT
+# Live env var names (used when live_override_env is set):
+live_env:
+  host: INT_ORA_HOST
+  port: INT_ORA_PORT
+  service: INT_ORA_SERVICE
+  source_user: INT_ORA_SOURCE_USER
+  source_password: INT_ORA_SOURCE_PASSWORD
+  source_schema: INT_ORA_SOURCE_SCHEMA
+  target_user: INT_ORA_TARGET_USER
+  target_password: INT_ORA_TARGET_PASSWORD
+  target_schema: INT_ORA_TARGET_SCHEMA
+# Token templates emitted after resolution. {view_host} is the host the STRIIM APP
+# uses to reach Oracle — localhost for a native/host Striim, host.docker.internal for
+# a containerized Striim. The test harness's own connection uses the base {host}:{port}
+# (localhost:11521) regardless, so the same published :11521 serves both. Initial-load
+# reads/seeds use ${ORACLE_SOURCE_USER}; the DatabaseWriter target uses
+# ${ORACLE_TARGET_USER}. (No ORACLE_CDC_* tokens — see note above; add them if/when
+# integration tests grow an OracleReader CDC case, mirroring the live tier's bake.sql.)
+provides:
+  ORACLE_HOST: "{view_host}"
+  ORACLE_PORT: "{port}"
+  ORACLE_SERVICE: "{service}"
+  ORACLE_SOURCE_USER: "{source_user}"
+  ORACLE_SOURCE_PASSWORD: "{source_password}"
+  ORACLE_SOURCE_SCHEMA: "{source_schema}"
+  ORACLE_TARGET_USER: "{target_user}"
+  ORACLE_TARGET_PASSWORD: "{target_password}"
+  ORACLE_TARGET_SCHEMA: "{target_schema}"
+  ORACLE_URL: "jdbc:oracle:thin:@//{view_host}:{port}/{service}"

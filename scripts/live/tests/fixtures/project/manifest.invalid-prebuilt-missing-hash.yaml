@@ -1,0 +1,11 @@
+# INVALID: build=prebuilt without prebuilt.sha256 -> reject (consumer must not rebuild/discover).
+schemaVersion: 1
+targets:
+  - name: NoHash
+    kind: udf
+    path: artifacts/nohash
+    build: prebuilt
+    prebuilt:
+      jar: artifacts/nohash-1.0.0.jar
+suites:
+  integration: cases/integration

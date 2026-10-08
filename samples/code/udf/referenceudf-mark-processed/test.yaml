@@ -1,0 +1,37 @@
+name: referenceudf-mark-processed
+purpose: "copies every event through unchanged and stamps userdata.processed=true on each copy"
+
+example: samples/code/udf/java/UserDefinedFunctions/ReferenceUdf/examples/ReferenceUdfMarkProcessed
+tql: app.tql
+
+udf:
+  jar: samples/code/udf/java/UserDefinedFunctions/ReferenceUdf
+
+ddl:
+  - file: ddl.sql     # qasource: ${TID}src (+ unused ${TID}out)
+    db: postgres-source
+  - file: ddl.sql     # qatarget: ${TID}out (+ unused ${TID}src)
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: pre_deploy   # DatabaseReader initial load only emits rows present at START
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}out
+      target_db: postgres-target
+      match: expected/out.csv
+  file:
+    - path: /tmp/${TID}${NS}_out
+      project: userdata
+      keys: [processed]
+      min_events: 1
+      match: expected/userdata.csv
+
+timeout: 180
+tags: [udf, referenceudf, postgres, sample]

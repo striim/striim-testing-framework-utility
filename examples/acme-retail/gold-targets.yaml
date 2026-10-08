@@ -1,0 +1,9 @@
+# Your test repo's project manifest: where your tests are, and where your own services are.
+schemaVersion: 1
+targets: []
+suites:
+  live: tests/live
+  # integration: tests/integration     # Open Processor / UDF cases (docs/INTEGRATION-TESTS.md)
+stateDir: .state                      # run directories are written here
+# servicesRoots:                      # services of your own (docs/YOUR-OWN-SERVICES.md)
+#   - services

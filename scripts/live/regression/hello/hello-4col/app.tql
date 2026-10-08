@@ -1,0 +1,32 @@
+-- scripts/live/regression/hello/hello-4col/app.tql
+-- hello-single with a 4-column table: Postgres DatabaseReader feeds DatabaseWriter
+-- directly (no OP). Exists to isolate the width-4 column-loss failure mode.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE FLOW SourceFlow;
+  CREATE OR REPLACE SOURCE PgSource USING Global.DatabaseReader (
+    ConnectionURL: '${PG_URL}',
+    Username: '${PG_SOURCE_USER}',
+    Password: '${PG_SOURCE_PASSWORD}',
+    Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+  ) OUTPUT TO SrcStream;
+END FLOW SourceFlow;
+
+CREATE OR REPLACE FLOW AppFlow;
+  CREATE OR REPLACE TARGET PgTarget USING Global.DatabaseWriter (
+    ConnectionURL: '${PG_URL}',
+    Username: '${PG_TARGET_USER}',
+    Password: '${PG_TARGET_PASSWORD}',
+    Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt',
+    BatchPolicy: 'EventCount:100,Interval:1',
+    CommitPolicy: 'EventCount:100,Interval:1'
+  ) INPUT FROM SrcStream;
+END FLOW AppFlow;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

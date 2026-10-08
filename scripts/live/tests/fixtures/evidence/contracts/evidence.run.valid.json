@@ -1,0 +1,154 @@
+{
+  "cases": [
+    {
+      "caseId": "live:cases/orders::orders",
+      "dataSha256": "sha256:990a6c7e35bc3ff4689e703420d967abaa29221d3468beaf9bd5806e32ea2eb4",
+      "envelope": {
+        "path": "live/evidence/orders/20260914T230000Z-abcd1234/evidence.json",
+        "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "logicalInputsSha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "nodeid": "cases/orders/test.yaml::orders",
+      "qualifies": true,
+      "qualifiesReason": null,
+      "status": "passed"
+    }
+  ],
+  "checks": [
+    {
+      "detail": null,
+      "name": "junit-present",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "junit-wellformed",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "junit-invocation",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "counts-agree",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "one-envelope-per-executed-case",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "no-foreign-envelopes",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "envelope-valid",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "case-identity",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "cleanup-record",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "identity",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "goldens-unchanged",
+      "ok": true
+    },
+    {
+      "detail": null,
+      "name": "no-evidence-errors",
+      "ok": true
+    }
+  ],
+  "createdAt": "2026-09-14T23:02:12Z",
+  "evidenceVersion": 2,
+  "identity": {
+    "framework": {
+      "lock": {
+        "path": "locks/linux_x86_64.lock",
+        "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "mode": "wheel",
+      "packages": [
+        "striim-testing"
+      ],
+      "provenance": {
+        "BUILT_FROM": "1.0.0",
+        "DIRTY": false,
+        "GIT_SHA": "fc0e177"
+      },
+      "wheel": {
+        "path": "dist/striim_testing-1.0.0-py3-none-any.whl",
+        "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    "identityJsonSha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "infraOwnership": "exclusive",
+    "interpreter": "~/venv/bin/python",
+    "manifest": {
+      "path": "striim-test.yaml",
+      "sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "runEpoch": "20260914T230000Z-abcd1234"
+  },
+  "installedWheel": true,
+  "invocation": "4f7c2a9e0b1d4c3e8a6f5b2d1c0e9f87",
+  "kind": "run",
+  "label": null,
+  "qualified": true,
+  "qualifiedReason": null,
+  "reports": {
+    "junit": {
+      "bytes": 2048,
+      "errors": 0,
+      "failures": 0,
+      "invocationProperty": "4f7c2a9e0b1d4c3e8a6f5b2d1c0e9f87",
+      "path": "live/junit.xml",
+      "sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "skipped": 0,
+      "tests": 1
+    },
+    "results": {
+      "path": "live/results.json",
+      "sha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "selection": {
+      "path": "live/selection.json",
+      "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "sidecar": {
+      "path": "live/junit.slt.json",
+      "sha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  },
+  "runId": "20260914T230000Z-abcd1234",
+  "selection": {
+    "deselected": [],
+    "executed": [
+      "cases/orders/test.yaml::orders"
+    ],
+    "notExecuted": [],
+    "selected": [
+      "cases/orders/test.yaml::orders"
+    ],
+    "skipped": []
+  },
+  "tier": "live",
+  "valid": true
+}

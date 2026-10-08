@@ -1,0 +1,15 @@
+# C7.2 valid: CDC, db sink, sentinel readiness and completion (the only kind for an empty final result).
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt", key: id}

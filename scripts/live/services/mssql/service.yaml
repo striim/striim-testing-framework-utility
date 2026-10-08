@@ -1,0 +1,71 @@
+name: mssql
+compose: compose.yaml            # relative to this file — full SQL Server, runs under emulation on arm64
+container: slt-mssql
+isolation: none                 # shared qauser DB; tests use fixed tables + run serially (like oracle)
+# If SLT_MSSQL_HOST is set, reuse a live SQL Server (from SLT_MSSQL_* env) and skip Docker.
+live_override_env: SLT_MSSQL_HOST
+# service_outage signal TERM: PID 1 is launch_sqlservr.sh (bash), which ignores SIGTERM, so
+# `docker stop` ends in SIGKILL. Signal sqlservr itself (as `systemctl stop` does) instead.
+# `ps -C`, not pidof: under Rosetta (arm64 hosts) the executable is rosetta and pidof finds nothing.
+graceful_stop: kill -TERM $(ps -C sqlservr -o pid=)
+graceful_stop_timeout: 60
+# Docker defaults (used when not live). The framework creates the qauser database and
+# enables CDC (sp_cdc_enable_db) on first resolve — see MssqlAdmin.ensure_setup. SQL
+# Server Agent is enabled in compose so the CDC capture/cleanup jobs run.
+docker_defaults:
+  host: localhost
+  port: 1433
+  user: sa                      # SA login
+  # Normalized password. SQL Server refuses to BOOT with a weak sa password, so the
+  # container starts on a complex BOOTSTRAP password (compose.yaml MSSQL_SA_PASSWORD)
+  # and MssqlAdmin.ensure_setup then runs `ALTER LOGIN [sa] WITH PASSWORD='striim',
+  # CHECK_POLICY=OFF, CHECK_EXPIRATION=OFF` to relax it to this value (idempotent).
+  password: striim
+  database: qauser              # CDC-enabled app database (created on first resolve)
+  # Data accounts (created by MssqlAdmin.ensure_setup as sa): qasource owns the qasource
+  # schema (source tables/connections), qatarget owns the qatarget schema (target). Both
+  # are weak-password logins (CHECK_POLICY OFF, like sa) and db_owner in qauser.
+  source_user: qasource
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget
+  target_password: striim
+  target_schema: qatarget
+# Live env var names (used when live_override_env is set):
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_MSSQL_HOST_PORT
+live_env:
+  host: SLT_MSSQL_HOST
+  port: SLT_MSSQL_PORT
+  user: SLT_MSSQL_USER
+  password: SLT_MSSQL_PASSWORD
+  database: SLT_MSSQL_DB
+  source_user: SLT_MSSQL_SOURCE_USER
+  source_password: SLT_MSSQL_SOURCE_PASSWORD
+  source_schema: SLT_MSSQL_SOURCE_SCHEMA
+  target_user: SLT_MSSQL_TARGET_USER
+  target_password: SLT_MSSQL_TARGET_PASSWORD
+  target_schema: SLT_MSSQL_TARGET_SCHEMA
+# Token templates. {view_host} is the host the STRIIM APP uses to reach SQL Server —
+# localhost for a native/host Striim, host.docker.internal for a containerized Striim
+# (SLT_STRIIM_VIEW_HOST). pytest's own MssqlAdmin connection uses the base {host}
+# (localhost:1433) regardless, so the published :1433 serves both. MSSQL_HOSTPORT is the
+# host:port form the DatabaseMaintenanceOp / DatabaseReaderReader want; MSSQL_URL is the JDBC form
+# DatabaseReader/Writer want (encryption on, trust the self-signed cert).
+# Source tables live in ${MSSQL_SOURCE_SCHEMA} (qasource), target tables in
+# ${MSSQL_TARGET_SCHEMA} (qatarget); the reader connects as ${MSSQL_SOURCE_USER},
+# the writer as ${MSSQL_TARGET_USER}.
+provides:
+  MSSQL_HOST: "{view_host}"
+  MSSQL_PORT: "{port}"
+  MSSQL_DB: "{database}"
+  MSSQL_SOURCE_USER: "{source_user}"
+  MSSQL_SOURCE_PASSWORD: "{source_password}"
+  MSSQL_SOURCE_SCHEMA: "{source_schema}"
+  MSSQL_TARGET_USER: "{target_user}"
+  MSSQL_TARGET_PASSWORD: "{target_password}"
+  MSSQL_TARGET_SCHEMA: "{target_schema}"
+  MSSQL_HOSTPORT: "{view_host}:{port}"
+  MSSQL_URL: "jdbc:sqlserver://{view_host}:{port};databaseName={database};encrypt=true;trustServerCertificate=true"

@@ -1,0 +1,7 @@
+name: lc-legacy
+purpose: hermetic lifecycle fixture - a case without a lifecycle block runs the legacy lifecycle
+tql: app.tql
+requires: [postgres]
+timeout: 30
+assert:
+  smoke: true

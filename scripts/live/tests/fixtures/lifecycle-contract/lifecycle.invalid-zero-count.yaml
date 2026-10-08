@@ -1,0 +1,10 @@
+# C7.2 invalid: zero is never a completion witness (use sentinel for an empty result).
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: row-count, db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt", expect: 0}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned

@@ -1,0 +1,25 @@
+# Redirect the cluster's Spanner writers to the LOCAL emulator. SPANNER_EMULATOR_HOST
+# is a JVM-global redirect (+ no-auth), and the SpannerWriter has no per-app emulator/
+# skip-auth knob — its client only honors this env — so Spanner-emulator tests need it.
+#
+# The framework applies this override automatically when it provisions the cluster
+# (livetest/striim_provision.py cluster_up), so SLT_SPANNER tests are self-provisioning
+# like GCS/Kafka. It is kept OUT of the base compose.yaml so a plain `docker compose up`
+# (or a reused real cluster) still targets real Spanner — baked into the base it would
+# silently send real-Spanner apps to the empty local emulator.
+#
+# The port tracks the emulator's published host port (services/spanner/compose.yaml) —
+# the cluster reaches the emulator through that published mapping, so export the same
+# SLT_SPANNER_GRPC_HOST_PORT for the cluster provision when overriding it.
+services:
+  slt-striim:
+    environment:
+      SPANNER_EMULATOR_HOST: host.docker.internal:${SLT_SPANNER_GRPC_HOST_PORT:-9010}
+
+  slt-node:
+    environment:
+      SPANNER_EMULATOR_HOST: host.docker.internal:${SLT_SPANNER_GRPC_HOST_PORT:-9010}
+
+  slt-agent:
+    environment:
+      SPANNER_EMULATOR_HOST: host.docker.internal:${SLT_SPANNER_GRPC_HOST_PORT:-9010}

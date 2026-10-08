@@ -1,0 +1,38 @@
+-- scripts/live/regression/services/mssql/mssql-cdc-diff/app.tql
+-- SQL Server CDC: MSSqlReader reads native CDC changes on qasource.SRC (captured by the
+-- SQL Server Agent capture job, connecting as the qasource data user -- a db_owner
+-- member, so it has the rights CDC capture needs) and DatabaseWriter writes them to
+-- qatarget.TGT (connecting as the qatarget data user). StartPosition NOW + seed-after-
+-- RUNNING means only the post-start inserts flow through. The diff tier asserts
+-- qatarget.TGT catches up to qasource.SRC.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE MssqlCdc USING Global.MSSqlReader (
+  ConnectionURL: '${MSSQL_URL}',
+  Username: '${MSSQL_SOURCE_USER}',
+  Password: '${MSSQL_SOURCE_PASSWORD}',
+  DatabaseName: '${MSSQL_DB}',
+  Tables: '${MSSQL_SOURCE_SCHEMA}.${TID}SRC',
+  StartPosition: 'NOW',
+  PollingInterval: 5,
+  IntegratedSecurity: false,
+  FilterTransactionBoundaries: true,
+  SendBeforeImage: true
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET MssqlTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${MSSQL_URL}',
+  Username: '${MSSQL_TARGET_USER}',
+  Password: '${MSSQL_TARGET_PASSWORD}',
+  Tables: '${MSSQL_SOURCE_SCHEMA}.${TID}SRC,${MSSQL_TARGET_SCHEMA}.${TID}TGT',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

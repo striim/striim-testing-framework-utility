@@ -1,0 +1,51 @@
+-- Persistent stream test: verify ZooKeeper-backed Kafka persistent streams work
+-- Creates a persistent stream, seeded data flows through it, and is replicated to target
+
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+-- ZooKeeper-backed PropertySet for persistent streams (Striim 5.0.6.2F compatibility)
+CREATE PROPERTYSET KafkaPropertySet (
+    zk.address: 'slt-zookeeper:2181',
+    bootstrap.brokers: '${KAFKA_BROKER}',
+    kafkaversion: '2.1',
+    partitions: '1',
+    replication.factor: '1'
+);
+
+-- Persistent stream backed by Kafka via ZooKeeper coordination
+CREATE STREAM PersistentStream OF Global.WAEvent PERSIST USING KafkaPropertySet;
+
+-- Source: read from postgres, output to persistent stream
+CREATE OR REPLACE SOURCE PgSource USING Global.DatabaseReader (
+  ConnectionRetryPolicy: 'retryInterval=30, maxRetries=3',
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Password_encrypted: 'false',
+  FetchSize: '10000',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}source_data'
+)
+OUTPUT TO PersistentStream;
+
+-- Target: read from persistent stream, write to postgres
+CREATE OR REPLACE TARGET PgTarget USING Global.DatabaseWriter (
+  ConnectionRetryPolicy: 'retryInterval=30, maxRetries=3',
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Password_encrypted: 'false',
+  CDDLAction: 'Process',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}source_data,${PG_TARGET_SCHEMA}.${TID}replicated_data',
+  adapterName: 'DatabaseWriter'
+)
+INPUT FROM PersistentStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

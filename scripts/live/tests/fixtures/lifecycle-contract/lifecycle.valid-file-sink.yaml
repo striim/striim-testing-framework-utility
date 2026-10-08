@@ -1,0 +1,10 @@
+# C7.2 valid: CDC to a file sink under the framework-allocated owned directory.
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: file-lines, path: "${OWNED_DIR}/out.csv", lines: 3}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned

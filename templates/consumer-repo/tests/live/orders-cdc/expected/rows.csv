@@ -1,0 +1,3 @@
+id,customer,amount,status
+1001,Record01,25.00,new
+1003,Record03,118.00,shipped

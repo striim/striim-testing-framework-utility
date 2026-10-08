@@ -1,0 +1,28 @@
+name: oracle-diff
+depth: smoke
+purpose: Oracle initial load within one schema; non-CDC, so the source is seeded before deploy
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql   # ${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC
+    db: oracle-source
+  - file: ddl_target.sql   # ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT
+    db: oracle-target
+seed:
+  - file: seed.sql
+    db: oracle-source
+
+topology: single
+requires: [oracle]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC
+      source_db: oracle-source           # source endpoint (${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC via qasource)
+      target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT
+      target_db: oracle-target    # target endpoint (${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT via qatarget)
+
+timeout: 180
+tags: [diff, oracle, regression]

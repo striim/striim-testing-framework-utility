@@ -1,0 +1,76 @@
+name: mysql
+compose: compose.yaml            # relative to this file
+container: int-mysql
+isolation: none                 # fixed qasource/qatarget schemas; per-test isolation is by
+                                 # ${TID} table prefix, and teardown is each case's own
+                                 # `DROP TABLE IF EXISTS` (as SQL Server), not a per-test drop
+# Later phase: broker support — if INT_MYSQL_HOST is set, reuse a live MySQL (from INT_MYSQL_*
+# env) and skip Docker. Logic deferred; wired here so this shape matches scripts/live
+# from day one (mirrors scripts/live/services/mysql/service.yaml's SLT_MYSQL_HOST).
+live_override_env: INT_MYSQL_HOST
+# Docker defaults (used when not live). Base mysql:8.0 image, no binlog —
+# MySQLReader/CDC is not exercised by integration tests, unlike the live tier.
+# Same account shape as every other DB service: an admin account (the superuser)
+# plus two data accounts + same-named schemas — qasource for source tables/connections,
+# qatarget for target tables/connections. A source table T and a same-named target
+# table T coexist as qasource.T / qatarget.T.
+docker_defaults:
+  host: localhost
+  port: 13306
+  dbname: intdb
+  admin_user: root              # superuser; creates the roles + schemas via init.sql
+  admin_password: striim
+  source_user: qasource         # source user; owns + operates in the qasource schema
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget         # target user; owns + operates in the qatarget schema
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port (or standing up a second stack from another checkout) moves
+# the service AND the client that dials it. See inttest/tokens.py::_resolve_service_base.
+docker_env:
+  port: INT_MYSQL_HOST_PORT
+# Live env var names (used when live_override_env is set):
+live_env:
+  host: INT_MYSQL_HOST
+  port: INT_MYSQL_PORT
+  dbname: INT_MYSQL_DB
+  admin_user: INT_MYSQL_ADMIN_USER
+  admin_password: INT_MYSQL_ADMIN_PASSWORD
+  source_user: INT_MYSQL_SOURCE_USER
+  source_password: INT_MYSQL_SOURCE_PASSWORD
+  source_schema: INT_MYSQL_SOURCE_SCHEMA
+  target_user: INT_MYSQL_TARGET_USER
+  target_password: INT_MYSQL_TARGET_PASSWORD
+  target_schema: INT_MYSQL_TARGET_SCHEMA
+# Token templates emitted after resolution. {view_host} is the host the STRIIM APP
+# uses to reach MySQL — localhost for a native/host Striim, host.docker.internal for
+# a containerized Striim. The test harness's own DB connection uses the base
+# {host}:{port} (localhost:13306) regardless — so the same published :13306 serves both.
+# Source tables live in ${MYSQL_SOURCE_SCHEMA} (qasource), target tables in
+# ${MYSQL_TARGET_SCHEMA} (qatarget); the reader connects as ${MYSQL_SOURCE_USER},
+# the writer as ${MYSQL_TARGET_USER}.
+provides:
+  MYSQL_HOST: "{view_host}"
+  MYSQL_PORT: "{port}"
+  MYSQL_DB: "{dbname}"
+  # Published so inttest/mysqlclient.py::dsn_from_tokens can build a MySQLAdmin dsn from the
+  # per-test token table alone -- previously reachable only via plugin.py's separate,
+  # fixture-side _mysql_tokens() resolver. Not a new secret exposure: the superuser
+  # password is already "striim", hardcoded in the committed compose.yaml, and
+  # _mysql_tokens() already published both values into the fixture-based `tokens` fixture.
+  MYSQL_ADMIN_USER: "{admin_user}"
+  MYSQL_ADMIN_PASSWORD: "{admin_password}"
+  MYSQL_SOURCE_USER: "{source_user}"
+  MYSQL_SOURCE_PASSWORD: "{source_password}"
+  MYSQL_SOURCE_SCHEMA: "{source_schema}"
+  MYSQL_TARGET_USER: "{target_user}"
+  MYSQL_TARGET_PASSWORD: "{target_password}"
+  MYSQL_TARGET_SCHEMA: "{target_schema}"
+  # No query string: several Tier B test.yaml files append connection parameters
+  # to route a JDBC pool at the fixed qasource/qatarget schema
+  # (docs/internals/INTEGRATION-ENGINE.md#token-isolation) -- table-level isolation is by ${TID} prefix
+  # instead, rendered into config.json's content by plugin.py's render_config_file.
+  # Keep this value query-string-free, or give it a '&' instead if that ever changes.
+  MYSQL_URL: "jdbc:mysql://{view_host}:{port}/{dbname}"

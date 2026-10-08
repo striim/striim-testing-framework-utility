@@ -1,0 +1,14 @@
+# INVALID: boolean tier value in the manifest.
+# C1 manifest `suites` values are manifest-relative PATHS; `live: true` is a schema
+# error (reject, name the field).
+# NOTE (lossless registry adapter): the private gold REGISTRY keeps its tri-state
+# tests.<tier> values — `true` (planned gap), `false` (gap), `null`
+# (reasoned-not-needed), or a `path` (present) — and the adapter must preserve all
+# four distinguishably. A registry tri-state value is never silently coerced into a
+# manifest suite path; the boolean shown here is what a bad adapter would emit, and
+# it must be rejected.
+schemaVersion: 1
+targets: []
+suites:
+  unit: tests/unit
+  live: true

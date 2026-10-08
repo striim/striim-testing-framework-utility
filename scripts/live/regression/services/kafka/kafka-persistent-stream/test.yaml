@@ -1,0 +1,41 @@
+name: kafka-persistent-stream
+depth: smoke
+purpose: Verify Kafka persistent streams with ZooKeeper coordination — verifies topics are created and data flows through the persisted stream.
+
+tql: app.tql
+
+requires: [kafka, postgres]
+topology: single
+
+ddl:
+  - db: postgres-source
+    file: postgres_ddl.sql
+  - db: postgres-target
+    file: ddl_target.sql
+
+# DatabaseReader is a ONE-SHOT batch read at START, not CDC: a post_start seed lands after the
+# read has already happened and the target stays empty (measured: rows=0 of 10 after 120s).
+# pre_deploy is the phase for a batch reader; framework-seed-phases is the example of the
+# distinction.
+seed:
+  - db: postgres-source
+    file: seed.sql
+    when: pre_deploy
+
+# NOTE: kafka_cleanup_topics for ${NS}_PersistentStream and
+# ${NS}_PersistentStream_CHECKPOINT are now auto-detected from app.tql
+# (CREATE STREAM PersistentStream ... PERSIST USING) via the framework's
+# persistent stream detection. Manual kafka_cleanup_topics no longer needed.
+
+assert:
+  smoke: true
+  # `data` with `rows:` -- the tier's row-count mode. This block was `rowcount:` with
+  # `expected_rows:`, which is not an assert tier: the loader accepted it and nothing ran it, so
+  # the case asserted `smoke` only.
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}replicated_data
+      target_db: postgres-target
+      rows: 10
+
+timeout: 120
+tags: [product, kafka, persistent-stream, regression]

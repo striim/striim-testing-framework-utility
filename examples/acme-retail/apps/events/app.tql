@@ -1,0 +1,37 @@
+-- Acme Retail: publish the append-only retail event log as flat Avro records.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE RetailEventsCdc USING Global.MySQLReader (
+  ConnectionURL: '${MYSQL_URL}',
+  Username: '${MYSQL_SOURCE_USER}',
+  Password: '${MYSQL_SOURCE_PASSWORD}',
+  Tables: '${MYSQL_SOURCE_SCHEMA}.${TID}retail_events',
+  StartPositionByName: true
+) OUTPUT TO RawRetailEvents;
+
+CREATE OR REPLACE CQ EventEnvelope
+  INSERT INTO RetailEventMessages
+  SELECT TO_STRING(retail_row.data[0]) AS event_id,
+         TO_STRING(retail_row.data[1]) AS event_type,
+         TO_STRING(retail_row.data[2]) AS order_id
+  FROM RawRetailEvents retail_row;
+
+CREATE OR REPLACE TARGET RetailEventsKafka USING Global.KafkaWriter VERSION '2.1.0' (
+  BrokerAddress: '${KAFKA_BROKER}',
+  Topic: '${KAFKA_TGT_TOPIC}',
+  Mode: 'Sync',
+  CommitPolicy: 'EventCount:100,Interval:1'
+)
+FORMAT USING Global.AvroFormatter (
+  FormatAs: 'Default',
+  SchemaRegistryUrl: '${KAFKA_SCHEMA_REGISTRY_URL}'
+)
+INPUT FROM RetailEventMessages;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

@@ -1,0 +1,14 @@
+# VALID: customer app-only project. No targets, no Maven, live cases in the customer repo.
+schemaVersion: 1
+framework:
+  mode: wheel
+  wheel: releases/striim_testing-1.0.0-py3-none-any.whl
+  lock: framework-requirements.lock
+targets: []
+suites:
+  live: cases/live
+  integration: cases/integration
+servicesRoots:
+  - services
+stateDir: .state
+runners: []

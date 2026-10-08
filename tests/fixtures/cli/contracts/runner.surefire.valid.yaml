@@ -1,0 +1,40 @@
+# VALID: Surefire unit runner for the Platform module (argv, fresh junit-xml, policy).
+schemaVersion: 1
+name: unit-surefire-platform
+tier: unit
+description: Platform module unit tests via Surefire (testng.xml suite)
+cwd: $PT_PRODUCT_HOME_COPY/Platform
+argv:
+  - mvn
+  - -B
+  - surefire:test
+env:
+  MAVEN_OPTS: "-Xmx2g"
+envExpand:
+  - MAVEN_OPTS
+shell: false
+prereq:
+  - kind: cmd
+    argv: [java, -version]
+    expectExit: 0
+  - kind: file
+    path: $PT_PRODUCT_HOME_COPY/Platform/pom.xml
+selection:
+  default: []
+  allowEmpty: false
+timeout:
+  total: 1800
+  cancelGrace: 30
+processGroup: true
+artifacts:
+  reports:
+    - kind: junit-xml
+      path: $PT_PRODUCT_HOME_COPY/Platform/target/surefire-reports/TEST-*.xml
+      required: true
+      freshness: run
+result:
+  adapter: junit-xml
+  policy:
+    zeroTests: fail
+    requiredSkip: fail
+    knownFailures: []

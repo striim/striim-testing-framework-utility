@@ -1,0 +1,6 @@
+name: twin
+purpose: synthetic integration case sharing a live case name (dispatch tests; collected only)
+op:
+  jar: java/OpenProcessors/ReferenceOp
+assert:
+  smoke: true

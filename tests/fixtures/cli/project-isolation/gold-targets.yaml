@@ -1,0 +1,6 @@
+# Synthetic consumer for striim-test import-isolation tests.
+schemaVersion: 1
+targets: []
+suites:
+  live: cases
+stateDir: .state

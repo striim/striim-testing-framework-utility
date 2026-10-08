@@ -1,0 +1,9 @@
+# Synthetic app-only consumer for the striim-test CLI tests. Copied to a tmp dir
+# by tests/cli/conftest.py before use; its stateDir is never written inside the repository.
+schemaVersion: 1
+targets: []
+suites:
+  live: cases/live
+  integration: cases/integration
+  perf: cases/perf
+stateDir: .state

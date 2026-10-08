@@ -1,0 +1,48 @@
+name: acme-customers-load-cdc
+purpose: Customer profiles load from a quiescent baseline and then reflect PostgreSQL CDC changes
+example: apps/customers
+tql: app.tql
+topology: single
+depth: regression
+requires: [postgres]
+timeout: 180
+tags: [acme, customers, initial-load, cdc]
+ddl:
+  - {file: fixtures/ddl_source.sql, db: postgres-source}
+  - {file: fixtures/ddl_target.sql, db: postgres-target}
+  - {file: fixtures/baseline.sql, db: postgres-source}
+  - {file: fixtures/slot.sql, db: postgres-source}
+seed:
+  - file: fixtures/changes.sql
+    db: postgres-source
+    when: post_start
+exact: {version: 1, max_rows: 10}
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}customers_copy
+      target_db: postgres-target
+      match: expected/rows.csv
+      exact:
+        columns: {customer_id: integer, credit_limit: 'decimal:2'}
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}customers
+      source_db: postgres-source
+      target: ${PG_TARGET_SCHEMA}.${TID}customers_copy
+      target_db: postgres-target
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: '${PG_SOURCE_SCHEMA}.${TID}customers'}
+    target: {db: postgres-target, table: '${PG_TARGET_SCHEMA}.${TID}customers_copy'}
+  completion:
+    kind: row-count
+    db: postgres-target
+    table: ${PG_TARGET_SCHEMA}.${TID}customers_copy
+    expect: 3
+  stability: 5s
+  deadlines: {readiness: 90s, completion: 120s}
+  reset: owned

@@ -1,0 +1,38 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE ItemsSource USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username:      '${PG_SOURCE_USER}',
+  Password:      '${PG_SOURCE_PASSWORD}',
+  Tables:        '${PG_SOURCE_SCHEMA}.${TID}items'
+) OUTPUT TO ItemsSourceStream;
+
+CREATE OR REPLACE STREAM ProcessedStream OF Global.WAEvent;
+
+CREATE OR REPLACE OPEN PROCESSOR ItemsCopy USING Global.${OP_NAME} (
+  EnableLogging:     'true',
+  EnableInspection:  'false'
+) INSERT INTO ProcessedStream
+FROM ItemsSourceStream;
+
+CREATE OR REPLACE TARGET ItemsReplica USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username:      '${PG_TARGET_USER}',
+  Password:      '${PG_TARGET_PASSWORD}',
+  Tables:        '${PG_SOURCE_SCHEMA}.${TID}items,${PG_TARGET_SCHEMA}.${TID}items',
+  BatchPolicy:   'EventCount:10,Interval:1',
+  CommitPolicy:  'EventCount:10,Interval:1'
+) INPUT FROM ProcessedStream;
+
+CREATE OR REPLACE TARGET ItemsOut USING Global.FileWriter (
+  FileName:    '/tmp/${TID}${NS}_out',
+  FlushPolicy: 'EventCount:10,Interval:1s'
+) FORMAT USING Global.JSONFormatter () INPUT FROM ProcessedStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

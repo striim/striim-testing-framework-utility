@@ -1,0 +1,17 @@
+# livetest — runtime dependencies.
+# Kept in sync with [project].dependencies in pyproject.toml.
+# Install:  pip install -r requirements.txt   (or: pip install -e .)
+
+pyyaml>=6
+requests>=2.31
+psycopg2-binary>=2.9
+oracledb>=2
+google-cloud-spanner>=3.40
+google-cloud-storage>=2
+confluent-kafka>=2
+fastavro>=1
+pymssql>=2.3
+PyMySQL>=1.1
+vertica-python>=1.4
+sqlalchemy>=2.0.0
+filelock>=3.20.4

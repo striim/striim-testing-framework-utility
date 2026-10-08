@@ -1,0 +1,41 @@
+name: kafka
+compose: compose.yaml            # relative to this file
+container: slt-kafka
+isolation: none                 # fixed topics; provisioned once per session, cleared per test
+# If SLT_KAFKA_HOST is set, reuse a live broker (from SLT_KAFKA_* env), skip Docker.
+live_override_env: SLT_KAFKA_HOST
+docker_defaults:
+  host: localhost               # KafkaAdmin (host) reaches the broker + registry here
+  port: 9092                    # HOST listener  (KafkaAdmin)
+  broker_port: 19092            # DOCKER listener (Striim container, via host.docker.internal)
+  registry_port: 8081
+  zookeeper_port: 2181          # ZooKeeper client port (for persistent streams)
+  src_topic: slt_src
+  tgt_topic: slt_tgt
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_KAFKA_HOST_PORT
+  broker_port: SLT_KAFKA_DOCKER_HOST_PORT
+  registry_port: SLT_SCHEMA_REGISTRY_HOST_PORT
+  zookeeper_port: SLT_ZOOKEEPER_CLIENT_PORT
+live_env:
+  host: SLT_KAFKA_HOST
+  port: SLT_KAFKA_PORT
+  broker_port: SLT_KAFKA_BROKER_PORT
+  registry_port: SLT_KAFKA_REGISTRY_PORT
+  zookeeper_port: SLT_ZOOKEEPER_PORT
+  src_topic: SLT_KAFKA_SRC_TOPIC
+  tgt_topic: SLT_KAFKA_TGT_TOPIC
+# Tokens for the Striim app. The reader/writer reach the broker over the DOCKER
+# listener (advertised host.docker.internal:19092) and the registry at
+# host.docker.internal:8081 — {view_host} is the host the Striim server uses to reach
+# them (host.docker.internal for the Docker cluster). The framework's own KafkaAdmin
+# uses the base host:port (localhost:9092) + http://localhost:8081. (Native Striim
+# would need SLT_KAFKA_HOST + the HOST listener; the Docker cluster is the tested path.)
+provides:
+  KAFKA_BROKER: "{view_host}:{broker_port}"
+  KAFKA_ZOOKEEPER: "slt-zookeeper:2181"
+  KAFKA_SCHEMA_REGISTRY_URL: "http://{view_host}:{registry_port}"
+  KAFKA_SRC_TOPIC: "{src_topic}"
+  KAFKA_TGT_TOPIC: "{tgt_topic}"

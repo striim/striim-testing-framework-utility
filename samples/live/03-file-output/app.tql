@@ -1,0 +1,28 @@
+-- Two pre-deploy Postgres rows flow through a real DatabaseReader into a JSON FileWriter.
+-- The framework allocates OWNED_DIR uniquely per attempt and removes that directory at teardown.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE PgSource USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO SrcStream;
+
+-- One event per line, as the lifecycle's file-lines witnesses count them: no enclosing array,
+-- and the members of an event joined by a space rather than a newline.
+CREATE OR REPLACE TARGET FileOut USING Global.FileWriter (
+  FileName: '${OWNED_DIR}/rows.json',
+  FlushPolicy: 'EventCount:1,Interval:1s'
+) FORMAT USING Global.JSONFormatter (
+  EventsAsArrayOfJsonObjects: 'false',
+  JsonMemberDelimiter: ' '
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

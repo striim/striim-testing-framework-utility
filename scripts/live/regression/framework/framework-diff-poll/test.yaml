@@ -1,0 +1,58 @@
+name: framework-diff-poll
+depth: smoke
+purpose: "`diff_poll:` is read from the manifest and applied to the diff assertion"
+
+# ⚠ WHY THE KEY EXISTS AT ALL (§85.3, §127.2). `elapsed_s` on a diff assertion can only be as
+# precise as the interval between polls, and the default is 2.0s. §85.3 compares two writers on
+# the time their targets take to catch up; two writers finishing seconds apart are
+# INDISTINGUISHABLE at that resolution, and the number reported would be quantisation rather than
+# measurement. A measurement case lowers this; a convergence case should not.
+#
+# ⚠ It is opt-in rather than lowered for everyone because each poll costs one SELECT per table.
+# Making every live case poll five times a second would add load to a shared database for no
+# benefit to any assertion that only asks "did it converge".
+#
+# ⚠ WHAT THIS CASE PROVES, EXACTLY: that the loader ACCEPTS the key and a case declaring it runs
+# green. It does NOT prove the value reaches the assertion, and it cannot -- three rows converge on
+# the FIRST poll whatever the interval is, so the case passes identically with diff_poll at 0.25 or
+# at the 2.0 default. Watch the run: it prints no per-poll heartbeat at all, where a slower case
+# prints "asserting diff (0s/180s) ... (2s/180s)".
+#
+# The value REACHING assert_diff is pinned by test_diff_kwargs_carries_the_manifest_poll, which is
+# negative-controlled. That separation is deliberate: a framework case here is cheap and every run
+# pays for it, and a workload big enough to actually time belongs in the §85.3 comparison.
+#
+# ⚠ An earlier revision of this comment said the case proves the key is "plumbed". It does not --
+# accepted and plumbed are different claims, and only the unit test carries the second.
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+# The key under test. 0.25s rather than the 2.0s default.
+diff_poll: 0.25
+
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      source_db: postgres-source
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      # §127.5's gate: a MULTISET compare, so a duplicated row is a failure rather than being
+      # collapsed away. Cheap here, and it keeps the framework example honest about what the
+      # §85.3 comparison actually uses.
+      exact: true
+
+timeout: 120
+tags: [framework, postgres, regression]

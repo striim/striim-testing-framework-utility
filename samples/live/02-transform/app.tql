@@ -1,0 +1,32 @@
+-- Customer app: preserve the DatabaseReader WAEvent and double its amount field in a CQ.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE CustomerSource USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO RawCustomerRows;
+
+CREATE STREAM TransformedCustomerRows OF Global.WAEvent;
+CREATE OR REPLACE CQ DoubleAmount
+  INSERT INTO TransformedCustomerRows
+  SELECT row_event FROM RawCustomerRows row_event
+  MODIFY(data[2] = TO_DOUBLE(row_event.data[2]) * 2.0);
+
+CREATE OR REPLACE TARGET CustomerTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM TransformedCustomerRows;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

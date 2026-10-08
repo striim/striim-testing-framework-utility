@@ -1,0 +1,13 @@
+# C7.2 invalid: unknown readiness kind (source-complete was replaced by baseline-landed).
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness: {kind: source-complete}
+  completion:
+    kind: source-count
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt"}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned

@@ -1,0 +1,50 @@
+# Integration-tier Oracle (Phase 1 scaffold). Unlike scripts/live (images/oracle/
+# Dockerfile + bake.sql bakes ARCHIVELOG + LogMiner CDC setup at BUILD time, because a
+# runtime MOUNT-mode restart fights gvenzl's PID-1 entrypoint), this uses the base
+# gvenzl/oracle-free image directly — no build — since integration tests don't
+# exercise OracleReader CDC and so never need that restart. The qasource/qatarget data
+# users are created at first startup via gvenzl's own /container-entrypoint-initdb.d
+# hook (init.sql, volume-mounted below) — analogous to postgres's
+# docker-entrypoint-initdb.d, no image build required.
+#
+# The healthcheck uses gvenzl's own /opt/oracle/healthcheck.sh (waits for gvenzl to
+# finish startup + FREEPDB1 READ WRITE) plus a qasource connect probe, so `up --wait`
+# returns only once the DB is fully open and the init.sql data user is usable — same
+# reasoning as scripts/live/services/oracle/compose.yaml.
+# Parallel stacks: INT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (mirrors scripts/live's SLT_STACK_PREFIX pattern).
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-oracle
+services:
+  int-oracle:
+    image: gvenzl/oracle-free:23.26.2-slim-faststart
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-oracle
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${INT_ORACLE_CPUS:-1}
+    mem_limit: ${INT_ORACLE_MEM_LIMIT:-3584m}
+    platform: linux/amd64
+    environment:
+      ORACLE_PASSWORD: striim         # SYS/SYSTEM password (reset by gvenzl on startup)
+    ports:
+      # Host port is overridable for machines where :11521 is already taken (distinct
+      # from the live tier's :1521 so both stacks can run at once). When overriding,
+      # point the framework at it too: INT_ORA_HOST=localhost INT_ORA_PORT=<port>.
+      - "${INT_ORA_HOST_PORT:-11521}:1521"
+    volumes:
+      - ./sql/init.sql:/container-entrypoint-initdb.d/10-qausers.sql:ro
+    networks:
+      - int-oracle-net
+    healthcheck:
+      # grep anchored to a bare "1" result line, not a substring match: an unusable
+      # qasource (e.g. ORA-01045: does not have CREATE SESSION privilege)
+      # contains the digit "1" in its error text, so a plain `grep -q 1`
+      # reports healthy for a service nothing can actually connect to.
+      test: ["CMD-SHELL", "/opt/oracle/healthcheck.sh FREEPDB1 && echo 'SELECT 1 FROM dual;' | sqlplus -s -L qasource/striim@localhost:1521/FREEPDB1 | grep -qE '^[[:space:]]*1[[:space:]]*$'"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 60s
+
+networks:
+  int-oracle-net:
+    driver: bridge

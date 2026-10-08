@@ -1,0 +1,390 @@
+<project xmlns="https://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="https://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="https://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>ReferenceOpV1</artifactId>
+    <packaging>jar</packaging>
+    <version>1.0.0-SNAPSHOT</version>
+    <name>ReferenceOpV1</name>
+    <url>http://maven.apache.org</url>
+
+    <!-- Canonical gold-standard reference OP: a pure copy-through enricher built
+         entirely on OpenProcessorCommon (see that module's README/javadoc). Its
+         core logic is exactly the shared EventProcessor/BuiltInFuncs/Logger seam
+         with (almost) no OP-specific code — new OPs should copy this module's
+         shape rather than an older OP. -->
+
+    <properties>
+        <OP_VERSION>V1</OP_VERSION>
+        <!-- Reproducible build. Without this, maven-jar-plugin and maven-shade-plugin stamp
+             every zip entry with the moment of the build, so `mvn clean package` over an
+             UNCHANGED tree emits a different sha256 every time. The live framework keyed its
+             OP registry on that digest, so any rebuild looked like a changed jar and forced
+             an UNLOAD + LOAD OPEN PROCESSOR: a cluster-wide reload nobody asked for, and the
+             operation that wedges Striim's OP loader. A fixed value makes the artifact a pure
+             function of its inputs. Bump it when you want the stamp to move, never per build. -->
+        <project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>
+        <!-- Path to the Striim install whose lib/ supplies the system-scoped jars.
+             Default below; override with -DSTRIIM_HOME=/path, or set a STRIIM_HOME
+             environment variable (the striim-home-from-env profile picks it up). -->
+        <STRIIM_HOME>/opt/striim</STRIIM_HOME>
+        <!-- Release the module builds against by default. Override all three together
+             via STRIIM_VERSION/STRIIM_SERIES/JAVA_RELEASE env vars (release-from-env
+             profile) to target a different Striim release; the defaults here keep this
+             module standalone-buildable against 5.4.x with no env set. -->
+        <STRIIM_VERSION>5.4.0.6</STRIIM_VERSION>
+        <STRIIM_SERIES>5.4</STRIIM_SERIES>
+        <JAVA_RELEASE>17</JAVA_RELEASE>
+        <!-- Transitive Striim runtime libs: frozen across releases (same jar in every
+             Striim install's lib/), so these have no release-from-env override profile. -->
+        <HAZELCAST_VERSION>5.3.5</HAZELCAST_VERSION>
+        <KRYO_VERSION>2.20</KRYO_VERSION>
+        <JETTISON_VERSION>1.5.4</JETTISON_VERSION>
+        <JACKSON_VERSION>2.14.0</JACKSON_VERSION>
+        <JODA_TIME_VERSION>2.10.13</JODA_TIME_VERSION>
+        <LOG4J_VERSION>2.17.2</LOG4J_VERSION>
+        <maven.compiler.source>${JAVA_RELEASE}</maven.compiler.source>
+        <maven.compiler.target>${JAVA_RELEASE}</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <!-- Striim runtime (provides StriimOpenProcessor, @PropertyTemplate, WAEvent,
+             BuiltInFunc, etc). Declared explicitly from the Striim lib rather than
+             pulled from the OpenProcessorSDK fat jar — the SDK bundles a stale
+             WAEvent that shadows Common's on the test classpath. -->
+        <dependency>
+            <groupId>com.webaction</groupId>
+            <artifactId>Platform</artifactId>
+            <version>${STRIIM_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/Platform-${STRIIM_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.webaction</groupId>
+            <artifactId>Common</artifactId>
+            <version>${STRIIM_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/Common-${STRIIM_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.webaction</groupId>
+            <artifactId>SourceCommons</artifactId>
+            <version>${STRIIM_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/SourceCommons-${STRIIM_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.hazelcast</groupId>
+            <artifactId>hazelcast</artifactId>
+            <version>${HAZELCAST_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/hazelcast-${HAZELCAST_VERSION}.jar</systemPath>
+        </dependency>
+        <!-- Transitive Striim runtime deps the OpenProcessorSDK fat jar used to
+             supply: Jackson, Kryo (WAEvent implements KryoSerializable), jettison
+             (WAEvent JSON at runtime). Needed on the test classpath to construct
+             and serialize com.webaction.proc.events.WAEvent. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${JACKSON_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/jackson-databind-${JACKSON_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${JACKSON_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/jackson-core-${JACKSON_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>${JACKSON_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/jackson-annotations-${JACKSON_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>com.esotericsoftware</groupId>
+            <artifactId>kryo</artifactId>
+            <version>${KRYO_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/kryo-${KRYO_VERSION}.jar</systemPath>
+        </dependency>
+        <dependency>
+            <groupId>org.codehaus.jettison</groupId>
+            <artifactId>jettison</artifactId>
+            <version>${JETTISON_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/jettison-${JETTISON_VERSION}.jar</systemPath>
+        </dependency>
+        <!-- joda-time: BuiltInFunc references org.joda.time types, so loading
+             BuiltInFunc (via the BuiltInFunc::IS_PRESENT production presence
+             check) needs it on the classpath. Also formerly bundled into the
+             OpenProcessorSDK fat jar. -->
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>${JODA_TIME_VERSION}</version>
+            <scope>system</scope>
+            <systemPath>${STRIIM_HOME}/lib/joda-time-${JODA_TIME_VERSION}.jar</systemPath>
+        </dependency>
+
+        <!--       -->
+        <!-- TESTS -->
+        <!--       -->
+
+        <!-- JUnit -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.0</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Mockito -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <version>5.18.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy-agent</artifactId>
+            <version>1.17.6</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Log4j -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>${LOG4J_VERSION}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>${LOG4J_VERSION}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-slf4j-impl</artifactId>
+            <version>${LOG4J_VERSION}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <profiles>
+        <!-- Override STRIIM_HOME from a STRIIM_HOME environment variable when set;
+             otherwise the default in <properties> is used. A CLI -DSTRIIM_HOME=...
+             overrides both. -->
+        <profile>
+            <id>striim-home-from-env</id>
+            <activation>
+                <property>
+                    <name>env.STRIIM_HOME</name>
+                </property>
+            </activation>
+            <properties>
+                <STRIIM_HOME>${env.STRIIM_HOME}</STRIIM_HOME>
+            </properties>
+        </profile>
+        <!-- Override the release triad from env vars when STRIIM_RELEASE is set; the
+             env source that exports STRIIM_RELEASE always exports STRIIM_VERSION,
+             STRIIM_SERIES and JAVA_RELEASE alongside it, so all three resolve together.
+             Frozen transitive libs (hazelcast, kryo, jettison, joda-time, jackson, log4j)
+             are NOT overridden here — same jar across releases, so the property default
+             always applies. -->
+        <profile>
+            <id>release-from-env</id>
+            <activation>
+                <property>
+                    <name>env.STRIIM_RELEASE</name>
+                </property>
+            </activation>
+            <properties>
+                <STRIIM_VERSION>${env.STRIIM_VERSION}</STRIIM_VERSION>
+                <STRIIM_SERIES>${env.STRIIM_SERIES}</STRIIM_SERIES>
+                <JAVA_RELEASE>${env.JAVA_RELEASE}</JAVA_RELEASE>
+            </properties>
+        </profile>
+    </profiles>
+
+    <build>
+        <!-- Set at the <build> level (not only in the shade plugin) so the implicit
+             default-jar and the shade goal target the SAME filename — otherwise default-jar
+             emits a stray ${artifactId}-1.0.0-SNAPSHOT.jar beside the shaded jar. -->
+        <finalName>${project.artifactId}-${STRIIM_SERIES}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                </configuration>
+            </plugin>
+            <!-- Compiles OpenProcessorCommon's sources directly into this module's
+                 build (rather than depending on it as a jar) so its classes get
+                 shaded into this OP's single output jar alongside App/Processor. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>add-common-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/../OpenProcessorCommon/src/main/java</source>
+                                <source>${project.basedir}/../../SampleCommon/src/main/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <configuration>
+                    <createDependencyReducedPom>false</createDependencyReducedPom>
+                    <!-- Relocate the shared package to a module-unique name: Striim's global
+                         LOAD rejects two jars declaring the same class. -->
+                    <relocations>
+                        <relocation>
+                            <pattern>com.example.common</pattern>
+                            <shadedPattern>com.example.shaded.${project.artifactId}.common</shadedPattern>
+                        </relocation>
+                    </relocations>
+                    <filters>
+                        <filter>
+                            <artifact>*:*</artifact>
+                            <excludes>
+                                <!-- Both forms, per the shade filters below: module-info.class causes
+                                     classloader conflicts on Java 17, and the versions/9-only pattern
+                                     misses versions/11 and versions/17 in a multi-release jar. -->
+                                <exclude>module-info.class</exclude>
+                                <exclude>META-INF/versions/*/module-info.class</exclude>
+                                <exclude>META-INF/*.SF</exclude>
+                                <exclude>META-INF/*.DSA</exclude>
+                                <exclude>META-INF/*.RSA</exclude>
+                                <exclude>META-INF/*.EC</exclude>
+                            </excludes>
+                        </filter>
+                    </filters>
+                    <!-- Write the shaded jar directly OVER the default-jar output (same path via
+                         the build finalName). outputFile mode does not leave an `original-` backup
+                         or a version-named stray, so this is the only unclassified jar in target/
+                         (the -sources/-javadoc pair is added below). -->
+                    <outputFile>${project.build.directory}/${project.artifactId}-${STRIIM_SERIES}.jar</outputFile>
+                    <transformers>
+                        <transformer
+                            implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                            <manifestEntries>
+                                <Striim-Module-Name>ReferenceOp${OP_VERSION}</Striim-Module-Name>
+                                <Striim-Service-Interface>
+                                    com.webaction.runtime.components.openprocessor.StriimOpenProcessor
+                                </Striim-Service-Interface>
+                                <Striim-Service-Implementation>
+                                    com.example.ReferenceOp${OP_VERSION}.App
+                                </Striim-Service-Implementation>
+                                <!-- Release the jar was built against; the live-test harness reads
+                                     these to refuse reusing a jar from a different release. -->
+                                <Striim-Build-Version>${STRIIM_VERSION}</Striim-Build-Version>
+                                <Striim-Build-Series>${STRIIM_SERIES}</Striim-Build-Series>
+                                <Striim-Build-Java>${JAVA_RELEASE}</Striim-Build-Java>
+                            </manifestEntries>
+                        </transformer>
+                    </transformers>
+                    <artifactSet>
+                        <excludes>
+                            <exclude>org.slf4j:*</exclude>
+                            <exclude>log4j:*</exclude>
+                        </excludes>
+                    </artifactSet>
+                </configuration>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- ================================================================================
+                 API docs and sources, bound to `package`. Output is named from this module's jar
+                 base name, landing beside it as <jar>-sources.jar and <jar>-javadoc.jar.
+
+                 Why bind rather than pass the goals on the command line: javadoc is only checked
+                 when it is generated, and `mvn package` is the command a developer runs. A broken
+                 reference fails that build; so does a @param naming an argument the method does
+                 not have. A MISSING @param or @return is only a warning, which is deliberate,
+                 because the templates require neither. The check is of form, never of truth: a
+                 green build proves the tags RESOLVE, not that they are correct.
+
+                 Do NOT also pass these goals on the command line where this pom is built. The
+                 lifecycle already runs them, and a second `default-cli` execution regenerates and
+                 re-jars the javadoc for nothing.
+
+                 Both versions are PINNED for determinism, and as a floor against a future Maven 4
+                 runner. The pin does not change which version resolves today: 4.0.0-beta-1 declares
+                 a Maven 4 prerequisite, so Maven 3.9 rejects it and selects 3.4.0 unaided. Unlike
+                 the surefire pin, which prevents a real and current silent-zero-tests green, this
+                 one is insurance.
+
+                 These two jars are DEVELOPER artifacts and are never shipped:
+                 a packaging step should drop any -sources/-javadoc jar from a customer package.
+                 target/ therefore holds more than one jar,
+                 so anything counting jars there must exclude them.
+                 The live harness is unaffected: it globs target/*-<series>.jar, which neither suffix
+                 can match.
+                 ================================================================================ -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.4.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.12.0</version>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+        </plugins>
+    </build>
+</project>

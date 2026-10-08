@@ -1,0 +1,36 @@
+name: file-output
+purpose: Initial load written by FileWriter as JSON to a run-owned file, compared exactly with a golden
+tql: app.tql
+topology: single
+requires: [postgres]
+timeout: 120
+tags: [sample, initial-load, postgres, filewriter, exact]
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: pre_deploy
+exact: {version: 1}
+assert:
+  smoke: true
+  file:
+    - path: "${OWNED_DIR}/rows.json"
+      match: expected/rows.csv
+      exact: {columns: {id: integer}}
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: file
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    path: "${OWNED_DIR}/rows.json"
+  completion:
+    kind: file-lines
+    path: "${OWNED_DIR}/rows.json"
+    lines: 2
+  stability: 1s
+  deadlines: {readiness: 60s, completion: 60s}
+  reset: owned

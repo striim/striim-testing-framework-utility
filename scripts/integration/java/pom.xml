@@ -1,0 +1,317 @@
+<project xmlns="https://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="https://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="https://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-4_0_0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.striim.testing</groupId>
+    <artifactId>inttest-harness</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>inttest-harness</name>
+
+    <!-- The Java-side driver for scripts/integration (docs/INTEGRATION-TESTS.md). Standalone-buildable
+         with plain `mvn` — no Striim install required to build or run this module.
+         It never compiles OpenProcessorCommon or links real Striim; it ships its own
+         minimal mock com.webaction.* value types and drives an operator jar's shaded
+         OpenProcessorCommon contracts purely via reflection and java.lang.reflect.Proxy
+         (see IntegrationProcessor). Jackson, an SLF4J API + no-op binding (Hikari/gRPC
+         inside an operator jar static-init `LoggerFactory`), and the Postgres/Oracle
+         JDBC drivers are shaded in so the runtime classpath is just `harness.jar:<opjar>`. -->
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>17</maven.compiler.release>
+        <jackson.version>2.14.0</jackson.version>
+        <junit.version>5.10.0</junit.version>
+        <!-- SLF4J: API + a no-op binding. Operator jars exclude org.slf4j:* from
+             their own shade (see an OP pom's artifactSet), yet HikariCP
+             and gRPC/Netty static-init LoggerFactory, so the harness must supply the
+             only copy on the flat harness.jar:<opjar> classpath. 2.0.x is binary-
+             compatible with Hikari 6.3.0 (compiled against 1.7.36); api and binding
+             MUST share a version: 2.x discovers bindings via ServiceLoader, so a
+             1.7.x binding would be silently ignored. -->
+        <slf4j.version>2.0.17</slf4j.version>
+        <!-- Pinned to what ${STRIIM_HOME}/lib ships, so a core sees the same log4j
+             API here as it does in a node. -->
+        <log4j.version>2.17.2</log4j.version>
+        <!-- JDBC drivers for the integration tier's own services. No operator jar
+             ships a Postgres or Oracle driver (an OP may shade its own Spanner driver).
+             ojdbc11 matched to services/oracle/compose.yaml's image version for clarity;
+             Oracle JDBC drivers are forward/backward compatible across server versions,
+             so this pin is not a hard requirement to keep in lockstep. -->
+        <!-- Avro. An operator whose INPUT is an AvroEvent (AvroConverterOp) carries a
+             GenericRecord payload, and no operator jar shades avro: their poms take it
+             system-scoped from ${STRIIM_HOME}/lib/avro-striim11-1.12.0.jar and leave it to
+             the server. So on the flat harness.jar:<opjar> classpath the harness must
+             supply the only copy. Upstream 1.12.0 is the same API: that jar is unrelocated
+             org/apache/avro, and its own pom.properties reads groupId=org.apache.avro,
+             artifactId=avro, version=striim11-1.12.0, i.e. a rebuild rather than a fork. -->
+        <avro.version>1.12.0</avro.version>
+        <postgresql.version>42.7.13</postgresql.version>
+        <!-- T2b-17: MySQL/MariaDB. The version Striim 5.4.0.6C ships in lib/, so a case here
+             runs the driver a deployment runs. Also available offline in ~/.m2. -->
+        <mysql.connector.version>8.0.30</mysql.connector.version>
+        <ojdbc.version>23.26.2.0.0</ojdbc.version>
+        <!-- Matched to the driver Striim itself ships (${STRIIM_HOME}/lib/
+             mssql-jdbc-12.8.1.jre8.jar), so the integration tier exercises the same
+             driver the live tier and a real deployment do. -->
+        <mssql.jdbc.version>12.8.1.jre11</mssql.jdbc.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
+        <!--
+          joda-time is `provided` in every OP pom because a real Striim server ships it, so it
+          is NOT inside a shaded op jar. The harness's child classloader would therefore raise
+          NoClassDefFoundError the moment a core touches it (a type-detecting core does,
+          via an `instanceof org.joda.time.DateTime` chain), a failure that says nothing about
+          the operator. This is a public library, not a Striim platform class, so the harness
+          supplies the REAL one rather than a mock: the core then sees exactly what it sees in
+          production. Platform classes stay mocked under src/main/java/com/webaction; that
+          distinction is the rule, not this dependency.
+        -->
+        <!--
+          org.json is `system` scope in the OP poms that use it (DatabaseMaintenanceOp parses
+          Striim console responses with it), resolved from ${STRIIM_HOME}/lib, so a real server
+          ships it and it is NOT shaded into the op jar. The harness's child classloader would
+          therefore raise NoClassDefFoundError the moment such a core parsed a response, a failure
+          that says nothing about the operator. Same rule as joda-time below: a public library gets
+          the REAL one rather than a mock, so the core sees exactly what it sees in production.
+          Platform classes stay mocked under src/main/java/com/webaction.
+        -->
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20220320</version>
+        </dependency>
+
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <version>2.10.13</version>
+        </dependency>
+
+        <!--
+          log4j is `provided` in the two OP poms that use it (StatusReader, MetricsReader) because
+          a real Striim server ships it, so it is NOT shaded into their op jars. The harness's
+          child classloader would therefore raise NoClassDefFoundError the moment such a core is
+          loaded — MetricsReaderV4E.Processor holds a static LogManager.getLogger(), so it dies in
+          <clinit> before a single case runs, "a failure that says nothing about the operator".
+          Same rule as joda-time and org.json above: a public library gets the REAL one rather
+          than a mock, so the core sees exactly what it sees in production.
+
+          THIS ABSENCE IS WHY THOSE TWO MODULES HAD NO INTEGRATION OR PERF TIER. The correlation
+          was measured and then misread as a property of the modules — they are the only two
+          importing log4j, and the only two with `integration: null` — when the cause was a gap in
+          the set of platform-shipped libraries this harness supplies.
+
+          BOTH artifacts, not just the api: StatusReader touches only Logger/LogManager, but
+          MetricsReader's log-path discovery reads the LIVE configuration through LoggerContext,
+          Configuration, LoggerConfig, Appender and RollingFileAppender, every one of which is
+          log4j-core.
+        -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-api</artifactId>
+            <version>${log4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!-- An implementation must be PRESENT, exactly as slf4j-nop is below: without it
+                 log4j-api falls back to a no-op and prints a StatusLogger ERROR to stderr on
+                 every run, which a case asserting on stderr would then have to tolerate. Kept
+                 quiet by src/main/resources/log4j2.xml rather than by omission. -->
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>${log4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!-- A binding must be PRESENT; the harness wants no logging output. -->
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>${slf4j.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>${avro.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>runtime</scope>
+            <exclusions>
+                <!-- Annotations only; operator jars already shade checker-qual. -->
+                <exclusion>
+                    <groupId>org.checkerframework</groupId>
+                    <artifactId>checker-qual</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>com.microsoft.sqlserver</groupId>
+            <artifactId>mssql-jdbc</artifactId>
+            <version>${mssql.jdbc.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+            <version>${mysql.connector.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>${ojdbc.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>${project.artifactId}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.2</version>
+            </plugin>
+            <plugin>
+                <!-- Shades Jackson and the runtime deps (SLF4J binding, JDBC drivers)
+                     into this jar so the runtime invocation contract (docs/INTEGRATION-TESTS.md) is
+                     exactly `java -cp harness.jar:<opjar> ...` — no separate jars need
+                     to be on the classpath. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>module-info.class</exclude>
+                                        <!-- WILDCARD, not versions/9: a descriptor's location is not
+                                             stable across a dependency bump. HikariCP moved its from
+                                             META-INF/versions/11/ in 5.0.1 to the bare root in 6.3.0,
+                                             and this jar bundles real JDBC drivers whose next version
+                                             could do the same. Same form the OP reference prescribes. -->
+                                        <exclude>META-INF/versions/*/module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer
+                                    implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.striim.testing.inttest.IntegrationProcessor</mainClass>
+                                    <manifestEntries>
+                                        <!-- postgresql is a multi-release jar (META-INF/versions/11/...);
+                                             without this the shaded manifest loses that marker and the
+                                             JVM silently falls back to the Java-8 base classes (benign:
+                                             pgjdbc's leak-cleaner ReferenceQueue fallback instead of
+                                             java.lang.ref.Cleaner, but worth preserving intentionally). -->
+                                        <Multi-Release>true</Multi-Release>
+                                    </manifestEntries>
+                                </transformer>
+                                <!-- Merges META-INF/services/* instead of first-wins. Load-bearing:
+                                     postgresql and ojdbc11 BOTH ship META-INF/services/java.sql.Driver,
+                                     and JdbcConnectionFactory never sets driverClassName, so ServiceLoader
+                                     registration is the only path by which either driver loads. Also
+                                     carries slf4j-nop's org.slf4j.spi.SLF4JServiceProvider entry. -->
+                                <transformer
+                                    implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <!-- A project's own harness tests: tests that drive the project's modules, compiled
+                 and run with this suite from <SLT_PROJECT_ROOT>/scripts/integration/java-field.
+                 They share this package, so ModuleJars is visible to them. A missing directory
+                 adds nothing. -->
+            <id>project-tests</id>
+            <activation>
+                <property>
+                    <name>env.SLT_PROJECT_ROOT</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-project-tests</id>
+                                <phase>generate-test-sources</phase>
+                                <goals>
+                                    <goal>add-test-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>${env.SLT_PROJECT_ROOT}/scripts/integration/java-field/src/test/java</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

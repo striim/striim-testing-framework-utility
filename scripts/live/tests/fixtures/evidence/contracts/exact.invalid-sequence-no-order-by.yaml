@@ -1,0 +1,12 @@
+# C8.1: order: sequence on a db route requires order_by -> invalid-declaration.
+name: exact-sequence-no-order-by
+purpose: p
+tql: app.tql
+requires: [postgres]
+exact: {version: 1}
+assert:
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      match: expected/tgt.csv
+      exact: {order: sequence}

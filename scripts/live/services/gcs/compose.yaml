@@ -1,0 +1,90 @@
+# fake-gcs-server for the live tier (a GCS reader / writer target). Same image the
+# integration tier's GCS service uses. Serves the GCS JSON/XML API on 4443; each
+# test's two derived buckets (slt-<tid>-src, slt-<tid>-tgt) are created by the
+# framework's GcsAdmin (google-cloud-storage) from the host — no gcloud CLI dependency.
+#
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-gcs
+services:
+  slt-gcs:
+    image: fsouza/fake-gcs-server:1.54.0   # pinned for reproducibility (was :latest); the version the live tier was validated against
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-gcs
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_GCS_CPUS:-0.5}
+    mem_limit: ${SLT_GCS_MEM_LIMIT:-512m}
+    # public-host must match what the STRIIM writer uses to reach the emulator, so
+    # fake-gcs-server hands back reachable resumable-upload URLs (host.docker.internal
+    # for the Docker cluster; override to localhost:4443 for a native Striim). The
+    # framework's own GcsAdmin is unaffected — it downloads via its api_endpoint.
+    # The -public-host default tracks the published host port below (an explicit
+    # SLT_GCS_PUBLIC_HOST always wins); -port 4443 is the container-internal bind.
+    # -external-url is what the server echoes back in mediaLink/selfLink (and in an upload's
+    # Location header), and it is a SEPARATE audience from -public-host: the in-cluster Striim
+    # writer reaches the emulator by the host IP above, while the harness's own GcsAdmin
+    # (livetest/gcsadmin.py read_object_bytes/select_rows, which use get_blob/list_blobs and so
+    # follow mediaLink) reaches it from the docker HOST. No one address serves both -- the host
+    # IP is not routable from the host itself.
+    #
+    # Left unset it defaults to "the address where the server is running", i.e. 0.0.0.0 and the
+    # CONTAINER-INTERNAL 4443. On the default stack that is published on 4443 too, so following
+    # mediaLink happens to work; remap the published port and every metadata call still succeeds
+    # while every media download is refused (`HTTPConnectionPool(host='0.0.0.0', port=4443)` --
+    # the whole objectwriter suite, 2026-08-19). So only the PORT is wrong: keep the 0.0.0.0
+    # host exactly as today (a host-side client reaches it; changing it would move the upload
+    # Location header out from under the writer for no reason) and track the published port.
+    command: ["-scheme", "http", "-port", "4443",
+              "-public-host", "${SLT_GCS_PUBLIC_HOST:-host.docker.internal:${SLT_GCS_HOST_PORT:-4443}}",
+              "-external-url", "${SLT_GCS_EXTERNAL_URL:-http://0.0.0.0:${SLT_GCS_HOST_PORT:-4443}}"]
+    ports:
+      # Host port is overridable for machines where :4443 is already taken. When
+      # overriding, point the framework at it too: SLT_GCS_HOST=localhost
+      # SLT_GCS_PORT=<port>, and set SLT_GCS_PUBLIC_HOST to match (see
+      # docs/internals/ENGINE.md).
+      - "${SLT_GCS_HOST_PORT:-4443}:4443"
+    # Without this, `docker compose up -d --wait` returns as soon as the container is
+    # RUNNING, and the first test races the emulator's start. Probes the storage API,
+    # not just the port, so healthy means actually serving. busybox wget: the image
+    # ships /bin/sh, wget and nc (no curl). localhost:4443 is the container-internal
+    # bind, independent of -public-host and the published host port.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://localhost:4443/storage/v1/b?project=test' || exit 1"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+  # Fake OAuth token endpoint (:4444). The Striim GCS reader/writer always fetch a
+  # token from the key's token_uri before talking to storage; the emulator has none.
+  # This returns a static bearer token for any request (fake-gcs-server ignores it).
+  # Test-only; hands a fixed dummy token to anyone.
+  slt-token:
+    image: python:3.12-slim
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-token
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_TOKEN_CPUS:-0.5}
+    mem_limit: ${SLT_TOKEN_MEM_LIMIT:-512m}
+    command: ["python", "/srv/faketoken.py"]
+    volumes:
+      - ./faketoken.py:/srv/faketoken.py:ro
+    ports:
+      # Host port is overridable for machines where :4444 is already taken. The
+      # throwaway key's token_uri must then point at the overridden port.
+      - "${SLT_GCS_TOKEN_HOST_PORT:-4444}:4444"
+    # Striim's GCS reader/writer fetch a token BEFORE talking to storage, so an
+    # unready token endpoint fails the pipeline just as an unready emulator does.
+    # Without a healthcheck `--wait` reports this container Healthy the moment it is
+    # running, which is not the same thing. python3 is the probe because the slim
+    # image ships no wget/curl/nc; faketoken.py answers GET and POST alike.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4444/', timeout=2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 1s
+    networks:
+      - slt-gcs-net
+
+networks:
+  slt-gcs-net:
+    driver: bridge

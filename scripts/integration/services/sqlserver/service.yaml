@@ -1,0 +1,58 @@
+name: sqlserver
+compose: compose.yaml            # relative to this file
+container: int-mssql
+isolation: none                  # fixed qasource/qatarget schemas; per-test isolation is
+                                 # by ${TID} table prefix, as for postgres
+# Later phase: broker support -- if INT_MSSQL_HOST is set, reuse a live SQL Server (from
+# INT_MSSQL_* env) and skip Docker.
+live_override_env: INT_MSSQL_HOST
+# Docker defaults (used when not live). The container's own entrypoint provisions the
+# database, logins, users and schemas before the healthcheck passes, so nothing here has
+# to be created at resolve time -- unlike the live tier, where MssqlAdmin.ensure_setup
+# also enables CDC.
+docker_defaults:
+  host: localhost
+  port: 11433
+  dbname: intdb
+  admin_user: sa
+  # Normalized. The container BOOTS on the complex bootstrap password in compose.yaml and
+  # its entrypoint relaxes sa to this value; see that file for why nothing else may.
+  admin_password: striim
+  source_user: qasource
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: INT_MSSQL_HOST_PORT
+live_env:
+  host: INT_MSSQL_HOST
+  port: INT_MSSQL_PORT
+  dbname: INT_MSSQL_DB
+  admin_user: INT_MSSQL_ADMIN_USER
+  admin_password: INT_MSSQL_ADMIN_PASSWORD
+  source_user: INT_MSSQL_SOURCE_USER
+  source_password: INT_MSSQL_SOURCE_PASSWORD
+  source_schema: INT_MSSQL_SOURCE_SCHEMA
+  target_user: INT_MSSQL_TARGET_USER
+  target_password: INT_MSSQL_TARGET_PASSWORD
+  target_schema: INT_MSSQL_TARGET_SCHEMA
+provides:
+  SQLSERVER_HOST: "{view_host}"
+  SQLSERVER_PORT: "{port}"
+  SQLSERVER_DB: "{dbname}"
+  SQLSERVER_ADMIN_USER: "{admin_user}"
+  SQLSERVER_ADMIN_PASSWORD: "{admin_password}"
+  SQLSERVER_SOURCE_USER: "{source_user}"
+  SQLSERVER_SOURCE_PASSWORD: "{source_password}"
+  SQLSERVER_SOURCE_SCHEMA: "{source_schema}"
+  SQLSERVER_TARGET_USER: "{target_user}"
+  SQLSERVER_TARGET_PASSWORD: "{target_password}"
+  SQLSERVER_TARGET_SCHEMA: "{target_schema}"
+  # encrypt=true;trustServerCertificate=true is REQUIRED, not decoration: mssql-jdbc 10+
+  # encrypts by default and the container serves a self-signed certificate, so a URL
+  # without the trust flag fails the handshake before it ever authenticates.
+  SQLSERVER_URL: "jdbc:sqlserver://{view_host}:{port};databaseName={dbname};encrypt=true;trustServerCertificate=true"

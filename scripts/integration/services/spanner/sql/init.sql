@@ -1,0 +1,45 @@
+-- Cloud Spanner "init" step for the integration test tier — NOT SQL.
+--
+-- Unlike Postgres/Oracle, Spanner has no CREATE DATABASE/CREATE USER
+-- statement to run through a SQL client at setup time: instance and
+-- database creation (and dialect selection: GoogleSQL vs PostgreSQL) are
+-- Cloud Spanner Admin API operations, done here via the
+-- google-cloud-spanner Python client, mirroring the live-tier
+-- `SpannerAdmin` helper (see scripts/live/services/spanner/README.md,
+-- "Self-provisioning") which creates the emulator instance plus the `gsql`
+-- and `pgdb` databases from the host.
+--
+-- This file exists only as a documentation placeholder/marker so the
+-- scripts/integration/sql/ layout stays parallel across dialects (each gets
+-- an init.sql + templates.sql). It is NOT executed by the harness.
+--
+-- Provisioning is implemented by the actual
+-- instance/database self-provisioning lives in
+-- scripts/integration/inttest/spanneradmin.py, ported from
+-- scripts/live/livetest/spanneradmin.py:
+--   - `SpannerAdmin.ensure()` creates the emulator instance (idempotent) and
+--     the named database with its dialect, self-healing a dialect mismatch
+--     on a long-lived `isolation: none` emulator.
+--   - `ensure()` (module-level) retries `SpannerAdmin.ensure()` -- the
+--     emulator's compose.yaml declares no healthcheck, so this retry is the
+--     tier's actual readiness gate.
+--   - `admins_for(tokens)` builds one `SpannerAdmin` per dialect
+--     (spanner-google -> gsql db, spanner-postgres -> pgdb) via
+--     `dbroutes.connection_params`, and ensures both.
+--   - `inttest/plugin.py`'s `IntYamlItem.runtest` step 4b calls
+--     `_ensure_spanner_databases` unconditionally for any `requires:
+--     [spanner]` test (even one with no ddl:/seed:, since the operator's own
+--     `${SPANNER_*_URL}` JDBC connection still needs the database to
+--     exist); `SpannerAdmin.run_statements` (via `dbroutes._run_spanner`)
+--     runs actual DDL/seed for tests that declare it.
+--   - Teardown drops only this test's `${TID}`-prefixed tables
+--     (`SpannerAdmin.drop_test_tables`) -- see `_teardown_db_isolation`;
+--     unlike Postgres/Oracle there is no per-test schema/prefix beyond that,
+--     since Spanner is `isolation: none` (one shared instance/databases).
+--   - Provisioned the same way as Postgres/Oracle -- no opt-in flag; a
+--     `requires: [spanner]` test (or a standalone @pytest.mark.spanner test,
+--     via `cleanup_spanner`) brings the emulator up automatically.
+--
+-- DDL/seed fixtures for actual OP Spanner test cases are a
+-- separate slice's concern (Tier C-2 integration cases) -- see
+-- templates.sql for a caveat about its own contents before copying from it.

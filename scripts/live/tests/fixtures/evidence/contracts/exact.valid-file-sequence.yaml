@@ -1,0 +1,11 @@
+# C8.1: an ordered file assertion; sequence needs exactly one file on one node (C8.3).
+name: exact-file-sequence
+purpose: FileWriter emits the events in source order
+tql: app.tql
+requires: [postgres]
+exact: {version: 1}
+assert:
+  file:
+    - path: ${OWNED_DIR}/out.json
+      match: expected/events.csv
+      exact: {order: sequence, columns: {price: "decimal:2", img: "binary:base64"}}

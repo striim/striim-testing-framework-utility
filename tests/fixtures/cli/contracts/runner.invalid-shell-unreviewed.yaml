@@ -1,0 +1,17 @@
+# INVALID: shell=true without shellReviewed (and no named reviewer) is rejected.
+# A token value must never be interpolated into a shell string.
+schemaVersion: 1
+name: bad-shell
+tier: unit
+cwd: .
+argv:
+  - sh
+  - -c
+  - "run $SOMETHING now"
+shell: true
+shellReviewed: false
+result:
+  adapter: junit-xml
+  policy:
+    zeroTests: fail
+    requiredSkip: fail

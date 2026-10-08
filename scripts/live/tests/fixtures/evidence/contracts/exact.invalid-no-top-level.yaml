@@ -1,0 +1,11 @@
+# C8.1: a spec-level exact without the top-level block -> exact-block-missing.
+name: exact-no-top-level
+purpose: p
+tql: app.tql
+requires: [postgres]
+assert:
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      match: expected/tgt.csv
+      exact: true

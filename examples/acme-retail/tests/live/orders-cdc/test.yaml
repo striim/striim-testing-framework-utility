@@ -1,0 +1,30 @@
+name: acme-orders-cdc
+purpose: Order CDC applies inserts, an update and a delete to MySQL fulfillment orders
+example: apps/orders
+tql: app.tql
+topology: single
+depth: gate
+requires: [postgres, mysql]
+timeout: 180
+tags: [acme, orders, cdc, cross-database]
+ddl:
+  - {file: fixtures/ddl_source.sql, db: postgres-source}
+  - {file: fixtures/ddl_target.sql, db: mysql-target}
+  - {file: fixtures/slot.sql, db: postgres-source}
+seed:
+  - file: fixtures/changes.sql
+    db: postgres-source
+    when: post_start
+    after: 10s
+assert:
+  smoke: true
+  data:
+    - target: ${MYSQL_TARGET_SCHEMA}.${TID}orders_copy
+      target_db: mysql-target
+      rows: 2
+      match: expected/rows.csv
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}orders
+      source_db: postgres-source
+      target: ${MYSQL_TARGET_SCHEMA}.${TID}orders_copy
+      target_db: mysql-target

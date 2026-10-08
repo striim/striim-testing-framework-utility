@@ -1,0 +1,10 @@
+# C7.2 valid: CDC, Postgres source progress readiness, positive row count.
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: row-count, db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}tgt", expect: 3}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned

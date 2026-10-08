@@ -1,0 +1,28 @@
+name: lc-file-sink
+purpose: hermetic lifecycle fixture - CDC to a FileWriter output under the framework-allocated owned directory
+tql: app.tql
+requires: [postgres]
+timeout: 30
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+seed:
+  - file: changes.sql
+    db: postgres-source
+    when: post_start
+exact: {version: 1}
+assert:
+  smoke: true
+  file:
+    - path: "${OWNED_DIR}/out.json"
+      match: expected/events.csv
+      exact: true
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: file-lines, path: "${OWNED_DIR}/out.json", lines: 2}
+  stability: 0s
+  deadlines: {readiness: 3s, completion: 3s}
+  reset: owned

@@ -1,0 +1,24 @@
+name: kafka-cdc-diff
+depth: smoke
+purpose: KafkaReader consumes Avro messages produced after the app is RUNNING (post_start) and KafkaWriter lands them on the target topic — the Kafka analog of the CDC diffs
+
+tql: app.tql
+
+seed:
+  - file: source.csv   # KafkaAdmin produces these as Avro to ${KAFKA_SRC_TOPIC} once the app is RUNNING
+    db: kafka
+    when: post_start
+
+topology: single
+requires: [kafka]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${KAFKA_SRC_TOPIC}
+      source_db: kafka
+      target: ${KAFKA_TGT_TOPIC}
+      target_db: kafka
+
+timeout: 180
+tags: [diff, cdc, kafka, avro, regression]

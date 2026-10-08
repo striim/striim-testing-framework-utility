@@ -1,0 +1,28 @@
+name: exact-file-sequence
+purpose: hermetic exact fixture - FileWriter events under the owned directory equal the golden sequence
+tql: app.tql
+requires: [postgres]
+timeout: 5
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+seed:
+  - file: changes.sql
+    db: postgres-source
+    when: post_start
+exact: {version: 1}
+assert:
+  smoke: true
+  file:
+    - path: "${OWNED_DIR}/out.json"
+      match: expected/events.csv
+      exact: {order: sequence, columns: {price: "decimal:2"}}
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: file-lines, path: "${OWNED_DIR}/out.json", lines: 2}
+  stability: 0s
+  deadlines: {readiness: 3s, completion: 3s}
+  reset: owned

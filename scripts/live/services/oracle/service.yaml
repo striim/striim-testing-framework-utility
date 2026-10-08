@@ -1,0 +1,68 @@
+name: oracle
+compose: compose.yaml            # relative to this file
+container: slt-oracle
+isolation: none                 # fixed schemas (QASOURCE/QATARGET); OP tests run serially
+# Archivelog + the CDC/data setup are baked into the image at build time (images/oracle/),
+# so there is no post_up (the old runtime archivelog restart crashed gvenzl).
+# If SLT_ORA_HOST is set, reuse a live Oracle (from SLT_ORA_* env) and skip Docker.
+live_override_env: SLT_ORA_HOST
+# Docker defaults (used when not live). The CDC service enables archivelog +
+# supplemental logging + LogMiner grants for the `c##striim` common CDC user (baked at
+# build time — see compose.yaml + images/oracle/); qasource/qatarget are the data schemas
+# the examples read/write.
+docker_defaults:
+  host: localhost
+  port: 1521
+  service: FREEPDB1           # the PDB — data users (qasource/qatarget) connect here
+  cdb_service: FREE           # the CDB root — the LogMiner CDC reader connects here
+  source_user: qasource       # data source schema (owns QASOURCE.*); reader/seed connect here
+  source_password: striim
+  source_schema: QASOURCE      # in Oracle a user IS its schema — QASOURCE for qasource
+  target_user: qatarget       # data target schema (owns QATARGET.*); writer connects here
+  target_password: striim
+  target_schema: QATARGET      # QATARGET for qatarget
+  cdc_user: c##striim         # common user (CDB$ROOT) — required for LogMiner CDC from a PDB
+  cdc_password: striim
+# Live env var names (used when live_override_env is set):
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port moves the service AND the client that dials it.
+docker_env:
+  port: SLT_ORA_HOST_PORT
+live_env:
+  host: SLT_ORA_HOST
+  port: SLT_ORA_PORT
+  service: SLT_ORA_SERVICE
+  cdb_service: SLT_ORA_CDB_SERVICE
+  source_user: SLT_ORA_SOURCE_USER
+  source_password: SLT_ORA_SOURCE_PASSWORD
+  source_schema: SLT_ORA_SOURCE_SCHEMA
+  target_user: SLT_ORA_TARGET_USER
+  target_password: SLT_ORA_TARGET_PASSWORD
+  target_schema: SLT_ORA_TARGET_SCHEMA
+  cdc_user: SLT_ORA_CDC_USER
+  cdc_password: SLT_ORA_CDC_PASSWORD
+# Token templates emitted after resolution. {view_host} is the host the STRIIM APP
+# uses to reach Oracle — localhost for a native/host Striim, host.docker.internal
+# for a containerized Striim (SLT_STRIIM_VIEW_HOST). OraAdmin (pytest's own
+# connection) uses the base {host} (localhost:1521) regardless, so the published
+# :1521 serves both. The OracleReader CDC source uses ${ORACLE_CDC_USER} (LogMiner);
+# initial-load reads/seeds use ${ORACLE_SOURCE_USER}; the DatabaseWriter target uses
+# ${ORACLE_TARGET_USER}.
+provides:
+  ORACLE_HOST: "{view_host}"
+  ORACLE_PORT: "{port}"
+  ORACLE_SERVICE: "{service}"
+  ORACLE_SOURCE_USER: "{source_user}"
+  ORACLE_SOURCE_PASSWORD: "{source_password}"
+  ORACLE_SOURCE_SCHEMA: "{source_schema}"
+  ORACLE_TARGET_USER: "{target_user}"
+  ORACLE_TARGET_PASSWORD: "{target_password}"
+  ORACLE_TARGET_SCHEMA: "{target_schema}"
+  ORACLE_CDC_USER: "{cdc_user}"
+  ORACLE_CDC_PASSWORD: "{cdc_password}"
+  ORACLE_URL: "jdbc:oracle:thin:@//{view_host}:{port}/{service}"
+  # CDC reader connects to the CDB root (LogMiner mines the whole CDB); the common
+  # c##striim user's container_data is visible from root, so the validator passes.
+  ORACLE_CDC_URL: "jdbc:oracle:thin:@//{view_host}:{port}/{cdb_service}"
+  # OJet/XStream uses the native OCI driver but otherwise resolves the same CDB root.
+  ORACLE_CDC_OCI_URL: "jdbc:oracle:oci:@//{view_host}:{port}/{cdb_service}"

@@ -1,0 +1,31 @@
+-- scripts/live/regression/hello-cluster/app.tql
+-- Reader runs on the AGENT (${SOURCE_GROUP}); the writer/app runs on the CLUSTER (${APP_GROUP}).
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE FLOW SourceFlow;
+  CREATE OR REPLACE SOURCE PgSource USING Global.DatabaseReader (
+    ConnectionURL: '${PG_URL}',
+    Username: '${PG_SOURCE_USER}',
+    Password: '${PG_SOURCE_PASSWORD}',
+    Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+  ) OUTPUT TO SrcStream;
+END FLOW SourceFlow;
+
+CREATE OR REPLACE FLOW AppFlow;
+  CREATE OR REPLACE TARGET PgTarget USING Global.DatabaseWriter (
+    ConnectionURL: '${PG_URL}',
+    Username: '${PG_TARGET_USER}',
+    Password: '${PG_TARGET_PASSWORD}',
+    Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt',
+    BatchPolicy: 'EventCount:100,Interval:1',
+    CommitPolicy: 'EventCount:100,Interval:1'
+  ) INPUT FROM SrcStream;
+END FLOW AppFlow;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP} WITH SourceFlow IN ${SOURCE_GROUP}, AppFlow IN ${APP_GROUP};
+START APPLICATION ${APP};

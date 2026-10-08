@@ -1,0 +1,51 @@
+name: teradata
+# Connection only: the framework ships no Teradata container (its image and VM disks are
+# private). A test that requires teradata runs against your own
+# instance, set with SLT_TERADATA_HOST and the settings below (shell or .env), the way
+# SLT_PG_HOST points at your own Postgres. With SLT_TERADATA_HOST unset its tests skip, naming it.
+# A consumer service named teradata (servicesRoots) that does ship a compose file replaces this.
+isolation: none                 # fixed qasource/qatarget databases; tests use ${TID}-prefixed tables
+live_override_env: SLT_TERADATA_HOST
+python_module: teradatasql
+# The Teradata driver is an optional extra: pip install -e ".[teradata]" (or pip install teradatasql).
+python_module_hint: >-
+  install the framework's teradata extra (pip install -e ".[teradata]", or pip install teradatasql).
+  Installing it means accepting Teradata's licence for the driver, which allows its use only with
+  your own Teradata-authorized licence for the Teradata platform; that licence also forbids
+  publishing Teradata test or benchmark results without Teradata's consent
+# Credentials must be supplied explicitly. A data user is also a database; set each
+# schema to match its configured user. The admin creates data users when needed.
+required_env:
+  - SLT_TERADATA_USER
+  - SLT_TERADATA_PASSWORD
+  - SLT_TERADATA_SOURCE_USER
+  - SLT_TERADATA_SOURCE_PASSWORD
+  - SLT_TERADATA_TARGET_USER
+  - SLT_TERADATA_TARGET_PASSWORD
+docker_defaults:
+  port: 1025
+  source_schema: qasource
+  target_schema: qatarget
+live_env:
+  user: SLT_TERADATA_USER
+  password: SLT_TERADATA_PASSWORD
+  source_user: SLT_TERADATA_SOURCE_USER
+  source_password: SLT_TERADATA_SOURCE_PASSWORD
+  target_user: SLT_TERADATA_TARGET_USER
+  target_password: SLT_TERADATA_TARGET_PASSWORD
+  host: SLT_TERADATA_HOST
+  port: SLT_TERADATA_PORT
+  source_schema: SLT_TERADATA_SOURCE_SCHEMA
+  target_schema: SLT_TERADATA_TARGET_SCHEMA
+# Token templates. {view_host} is the host the Striim app reaches Teradata by: the instance's
+# host, or SLT_TERADATA_VIEW_HOST. TeradataAdmin (pytest's own connection) uses {host}.
+provides:
+  TERADATA_HOST: "{view_host}"
+  TERADATA_PORT: "{port}"
+  TERADATA_SOURCE_USER: "{source_user}"
+  TERADATA_SOURCE_PASSWORD: "{source_password}"
+  TERADATA_SOURCE_SCHEMA: "{source_schema}"
+  TERADATA_TARGET_USER: "{target_user}"
+  TERADATA_TARGET_PASSWORD: "{target_password}"
+  TERADATA_TARGET_SCHEMA: "{target_schema}"
+  TERADATA_URL: "jdbc:teradata://{view_host}/DBS_PORT={port}"

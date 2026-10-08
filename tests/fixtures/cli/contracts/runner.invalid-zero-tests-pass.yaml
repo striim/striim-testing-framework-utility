@@ -1,0 +1,14 @@
+# INVALID: zeroTests: pass is not allowed. A selected suite with 0 tests is a failure.
+schemaVersion: 1
+name: bad-zero-tests
+tier: unit
+cwd: .
+argv:
+  - mvn
+  - test
+shell: false
+result:
+  adapter: junit-xml
+  policy:
+    zeroTests: pass
+    requiredSkip: fail

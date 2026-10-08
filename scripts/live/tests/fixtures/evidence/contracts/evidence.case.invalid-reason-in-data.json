@@ -1,0 +1,181 @@
+{
+  "assertions": [
+    {
+      "actual": {
+        "kind": "rows",
+        "rows": []
+      },
+      "db": "postgres-target",
+      "detail": null,
+      "expected": {
+        "kind": "rows",
+        "rows": []
+      },
+      "status": "passed",
+      "target": "qatarget.slt_a1b2c3d4tgt",
+      "type": "data"
+    }
+  ],
+  "data": {
+    "reason": "computed later"
+  },
+  "evidenceVersion": 2,
+  "inputs": {
+    "bindings": {
+      "APP": "ns_a1b2c3d4.orders",
+      "ATTEMPT": "0a1b2c3d",
+      "NS": "slt_a1b2c3d4",
+      "RUN_ID": "20260914T230000Z-abcd1234",
+      "TID": "a1b2c3d4"
+    },
+    "caseAssets": {
+      "files": {
+        "ddl/target.sql": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      },
+      "goldens": {
+        "expected/tgt.csv": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "manifestSha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "tqlSha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "framework": {
+      "importPath": "~/venv/lib/python3.11/site-packages/livetest",
+      "lockSha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "mode": "wheel",
+      "provenance": {
+        "BUILT_FROM": "1.0.0",
+        "DIRTY": false,
+        "GIT_SHA": "fc0e177"
+      },
+      "wheelSha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "logicalInputsSha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "productBuild": {
+      "reason": "app-only case: no op/udf"
+    },
+    "renderedInputs": [
+      {
+        "name": "app.tql",
+        "renderedSha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+        "role": "tql",
+        "templateSha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "uses": 1
+      }
+    ],
+    "renderedManifestSha256": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "source": {
+      "dirty": [],
+      "head": "6a141ee660836251476c3c8e8b7af217e1821191",
+      "repo": "~/src/consumer"
+    }
+  },
+  "integrity": {
+    "evidenceErrors": [],
+    "goldens": {
+      "expected/tgt.csv": {
+        "finalSha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "inputSha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "unchanged": true
+      }
+    }
+  },
+  "kind": "case",
+  "lifecycle": {
+    "cleanup": {
+      "detail": null,
+      "status": "ok"
+    },
+    "completion": {
+      "at": "t",
+      "condition": "c",
+      "deadlineS": 60.0,
+      "endedAt": "t",
+      "kind": "source-count",
+      "observations": [],
+      "reason": "satisfied",
+      "startedAt": "t",
+      "witness": "w"
+    },
+    "faultInjected": null,
+    "identity": null,
+    "mode": "initial-load",
+    "ready": {
+      "at": "t",
+      "condition": "c",
+      "deadlineS": 60.0,
+      "endedAt": "t",
+      "kind": "baseline-landed",
+      "observations": [],
+      "reason": "satisfied",
+      "startedAt": "t",
+      "witness": "w"
+    }
+  },
+  "reports": [
+    {
+      "invocation": "4f7c2a9e0b1d4c3e8a6f5b2d1c0e9f87",
+      "kind": "junit-xml",
+      "path": "live/junit.xml"
+    },
+    {
+      "kind": "slt-json-v1",
+      "path": "live/junit.slt.json"
+    }
+  ],
+  "resources": {
+    "cleanupVerified": true,
+    "foreign": [],
+    "infrastructure": null,
+    "owned": [],
+    "reused": [],
+    "verificationGaps": []
+  },
+  "review": null,
+  "run": {
+    "attempt": "0a1b2c3d",
+    "caseId": "live:cases/orders::orders",
+    "endedAt": "2026-09-14T23:02:10Z",
+    "failure": null,
+    "invocation": "4f7c2a9e0b1d4c3e8a6f5b2d1c0e9f87",
+    "nodeid": "cases/orders/test.yaml::orders",
+    "qualifies": false,
+    "qualifiesReason": "no exact data assertion",
+    "runId": "20260914T230000Z-abcd1234",
+    "skipReason": null,
+    "startedAt": "2026-09-14T23:00:01Z",
+    "status": "passed",
+    "suite": "cases/orders",
+    "tier": "live"
+  },
+  "runtime": {
+    "arch": "x86_64",
+    "hostId": "3f2a9c4d5e6b7a81",
+    "importPath": "~/venv/lib/python3.11/site-packages/livetest",
+    "interpreter": "~/venv/bin/python",
+    "jdk": {
+      "reason": "live tier process runs no JVM"
+    },
+    "mode": "wheel",
+    "os": "Linux-7.0.0",
+    "python": "3.11.9",
+    "resourceRoot": "~/venv/lib/python3.11/site-packages/livetest/_builtin/services",
+    "services": [
+      {
+        "image": "postgres:16",
+        "imageId": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "name": "postgres"
+      }
+    ],
+    "stateDir": "~/.local/state/striim-test/projects/proj1",
+    "striim": {
+      "expected": "slt-striim:5.4.0.6",
+      "observed": {
+        "consoleReachable": true,
+        "container": "slt-a1b2-slt-striim",
+        "imageId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "url": "http://localhost:9080",
+        "version": "5.4.0.6"
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+name: framework-server-files
+depth: smoke
+purpose: server_files places test-dir files onto the Striim server at both lifecycle points, and a FileReader tailing the directory picks up each one
+
+tql: app.tql
+
+topology: single
+requires: []
+
+# `server_files` is the file-system counterpart of `seed:` -- it puts a file committed next to
+# this manifest onto the SERVER, which ddl/seed cannot do because they talk to databases. The
+# copy is mode-aware: docker cp into the right container for the cluster, a filesystem copy
+# for a native Striim.
+#
+#   when: pre_deploy   the file is in place before the reader starts -- the ordinary case
+#   when: post_start   the file appears in a directory the reader is already tailing, which is
+#                      the file-CDC analogue of a post_start seed
+#
+# `dest` MUST carry ${NS} or ${TID}. It is a path on a shared server, so two concurrent tests
+# both writing /tmp/in/input.csv would clobber each other; the isolation-enforcement suite
+# fails an untokenized dest for that reason. The framework creates the directory before deploy
+# whatever the `when`, so a reader watching it never starts against a missing path.
+#
+# Not shown here: `load: udf` (or `load: open_processor`), which changes the key's meaning
+# entirely -- `dest` becomes an
+# uploaded jar's NAME rather than a path, the file goes into Striim's UploadedFiles/, and it is
+# registered as a global UDF jar. That is for a prebuilt jar with no buildable module in-repo.
+server_files:
+  - {file: baseline.csv, dest: '/tmp/${NS}-in/baseline.csv', when: pre_deploy}
+  - {file: change.csv,   dest: '/tmp/${NS}-in/change.csv',   when: post_start}
+
+# The `file` assert tier reads the FileWriter output back off the server (globbing the rollover
+# suffix -- /tmp/x becomes /tmp/x.00) and compares a projection of each JSON event. `project`
+# selects which section: data (the row's current image, used here), userdata, before, or all.
+# DSVParser without a typed output stream keys columns positionally, so the golden's header is
+# 0,1 rather than id,msg.
+assert:
+  smoke: true
+  file:
+    - path: /tmp/${NS}-out
+      match: expected/events.csv
+      project: data
+
+timeout: 180
+tags: [framework, server-files, file, regression]

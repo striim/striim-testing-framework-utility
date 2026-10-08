@@ -1,0 +1,45 @@
+# Cloud Spanner emulator for the live tier (a SpannerWriter / SpannerPGDialectWriter
+# target). Same image the integration tier uses. 9010 = gRPC (data/DDL),
+# 9020 = REST (admin). The instance + the two databases (gsql = GoogleSQL, pgdb =
+# PostgreSQL dialect) are created by the framework's SpannerAdmin (google-cloud-spanner)
+# from the host — no gcloud CLI dependency.
+#
+# No healthcheck: the emulator image ships no shell tooling, and it comes up in ~1-2s;
+# SpannerAdmin.ensure() retries the first connection to cover startup.
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-spanner
+services:
+  slt-spanner:
+    # Pinned for reproducibility (was untagged -> floating :latest); the emulator version
+    # the live tier was validated against. Re-pin deliberately when upgrading.
+    image: gcr.io/cloud-spanner-emulator/emulator:1.5.55
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-spanner
+    # Measured ceilings (a limits sampler re-derives them). mem_limit
+    # raised to 2g after an OOMKill at 512m in a perf-tier run.
+    cpus: ${SLT_SPANNER_CPUS:-1}
+    # At 1g the emulator (in-memory, grows with data) was memcg-OOM-killed at anon-rss about 1 GB
+    # after 32 of the 95 serial Spanner cases; with 4g the whole
+    # serial pass ran. 2g (#9) was not measured against that pass, so the default stays at 4g.
+    mem_limit: ${SLT_SPANNER_MEM_LIMIT:-4g}
+    platform: linux/amd64
+    ports:
+      # Host ports are overridable for machines where they are already taken. Set ONLY the two
+      # variables interpolated below -- service.yaml's docker_env maps them onto the admin
+      # client's base, so the emulator and the client that dials it move together.
+      #
+      # ⚠ Do NOT set SLT_SPANNER_HOST to "point the framework at it": that is live_override_env,
+      # and a non-empty value makes services.resolve() return mode="live"/started=False, skipping
+      # `docker compose up` entirely -- so the stack this file defines never starts. That variable
+      # is for an emulator you run YOURSELF, which is a different intent.
+      # The cluster override (services/striim/compose.spanner-emulator.yaml) tracks the
+      # gRPC variable, so export it for the cluster provision too.
+      - "${SLT_SPANNER_GRPC_HOST_PORT:-9010}:9010"
+      - "${SLT_SPANNER_REST_HOST_PORT:-9020}:9020"
+    networks:
+      - slt-spanner-net
+
+networks:
+  slt-spanner-net:
+    driver: bridge

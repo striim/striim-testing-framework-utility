@@ -1,0 +1,33 @@
+-- scripts/live/regression/services/mssql/mssql-diff/app.tql
+-- SQL Server initial load: DatabaseReader (as the qasource data user) queries the
+-- seeded source rows and DatabaseWriter (as the qatarget data user) writes them to the
+-- target table (same qauser DB, source/target in their own schemas). The diff tier
+-- asserts qatarget.TGT catches up to qasource.SRC.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE MssqlSource USING Global.DatabaseReader (
+  DatabaseProviderType: 'Default',
+  ConnectionURL: '${MSSQL_URL}',
+  Username: '${MSSQL_SOURCE_USER}',
+  Password: '${MSSQL_SOURCE_PASSWORD}',
+  Tables: '${MSSQL_DB}.${MSSQL_SOURCE_SCHEMA}.${TID}SRC'   -- 3-part: DatabaseReader emits db.schema.table
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET MssqlTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${MSSQL_URL}',
+  Username: '${MSSQL_TARGET_USER}',
+  Password: '${MSSQL_TARGET_PASSWORD}',
+  -- 3-part source key MUST match the reader's db.schema.table metadata, else the writer
+  -- drops every event and the target stays empty (the diff then times out).
+  Tables: '${MSSQL_DB}.${MSSQL_SOURCE_SCHEMA}.${TID}SRC,${MSSQL_DB}.${MSSQL_TARGET_SCHEMA}.${TID}TGT',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

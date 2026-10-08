@@ -1,0 +1,23 @@
+name: kafka-diff
+depth: smoke
+purpose: Round-trip through Kafka + Schema Registry with Avro — KafkaReader (AvroParser) from the source topic to KafkaWriter (AvroFormatter) on the target topic
+
+tql: app.tql
+
+seed:
+  - file: source.csv   # KafkaAdmin produces these as Avro to ${KAFKA_SRC_TOPIC}
+    db: kafka
+
+topology: single
+requires: [kafka]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${KAFKA_SRC_TOPIC}
+      source_db: kafka
+      target: ${KAFKA_TGT_TOPIC}
+      target_db: kafka
+
+timeout: 180
+tags: [diff, kafka, avro, regression]

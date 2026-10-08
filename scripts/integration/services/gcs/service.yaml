@@ -1,0 +1,35 @@
+name: gcs
+compose: compose.yaml            # relative to this file
+container: int-gcs
+isolation: none                 # one fixed bucket; per-test isolation is by ${TID}-prefixed
+                                 # object paths (via the FolderName property), not a per-test bucket
+# Later phase: broker support -- if INT_GCS_HOST is set, reuse a live emulator (from
+# INT_GCS_* env) and skip Docker. Logic deferred; wired here so this shape matches
+# scripts/live from day one (mirrors scripts/live/services/gcs/service.yaml's
+# SLT_GCS_HOST).
+live_override_env: INT_GCS_HOST
+docker_defaults:
+  host: localhost
+  port: 14443
+  project: test-project
+  bucket: int-test-bucket
+# Published host ports, overridable exactly as compose.yaml interpolates them -- so
+# remapping a busy port (or standing up a second stack from another checkout) moves
+# the emulator AND the client that dials it. See inttest/tokens.py.
+docker_env:
+  port: INT_GCS_HOST_PORT
+live_env:
+  host: INT_GCS_HOST
+  port: INT_GCS_PORT
+  project: INT_GCS_PROJECT
+  bucket: INT_GCS_BUCKET
+# Tokens for test.yaml `properties:`. GCS_ENDPOINT feeds StorageEndpoint (->
+# StorageOptions.setHost) -- a GCS-writing OP's storage client takes the
+# NoCredentials branch unconditionally whenever StorageEndpoint is set, so no
+# ServiceAccountKey/ADC/token dance is needed at this tier (see README.md). {view_host}
+# == {host} always in this tier (inttest/tokens.py -- no containerized Striim to
+# reach via a docker-internal hostname).
+provides:
+  GCS_PROJECT: "{project}"
+  GCS_ENDPOINT: "http://{view_host}:{port}"
+  GCS_BUCKET: "{bucket}"

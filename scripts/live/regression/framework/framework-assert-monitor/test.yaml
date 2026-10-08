@@ -1,0 +1,40 @@
+name: framework-assert-monitor
+depth: smoke
+purpose: The monitor assert tier -- what the platform's MON shows for a target, read over the same endpoint as the console, polled until it catches up
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+
+topology: single
+requires: [postgres]
+
+# `monitor:` asserts the FIGURES A PERSON READS, not what the target wrote: a target that
+# writes every row and publishes nothing looks dead on the monitor page, and no data tier
+# can see that. `target:` names the TQL component (optional when the app has one TARGET);
+# `metrics:` maps a MON field to the value it must show. Counts only -- rates and clocks are
+# refused by name at load, because a case asserting one measures the machine it runs on. A
+# mapping value is a subset match against a structured field. MON republishes once per
+# snapshot, so the tier polls until every figure matches or the timeout expires.
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      source_db: postgres-source
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+  monitor:
+    - target: PgTarget
+      metrics:
+        input: 3
+        processed: 3
+
+timeout: 180
+tags: [framework, assert, postgres, regression]

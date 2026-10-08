@@ -1,0 +1,67 @@
+# Integration-tier SQL Server. Ported from scripts/live/services/mssql (which was already
+# working) rather than written fresh -- that tier had SQL Server from the start and this
+# one simply never got it, which is the whole reason SqlServerDialect shipped untested.
+#
+# Two deliberate differences from the live tier's copy:
+#   - NO CDC and NO SQL Server Agent. The integration tier never reads change data, the
+#     same reasoning that has services/postgres use base postgres:16 rather than the live
+#     tier's wal2json build. Agent's capture/cleanup jobs are pure cost in a container
+#     this tier starts and stops constantly.
+#   - Port 11433, not 1433, so this stack and a live stack can run at once -- exactly why
+#     integration Postgres is on 15432 rather than 5432.
+#
+# Parallel stacks: INT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and the container_name below -- unset/empty, both interpolate to
+# today's exact names.
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mssql
+services:
+  int-mssql:
+    # amd64 only -- Microsoft publishes no arm64 SQL Server image, so on Apple Silicon
+    # this runs under emulation. It works and it is slower than the other services; that
+    # cost is why `requires: [sqlserver]` is worth being deliberate about.
+    build: ./images/mssql
+    image: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mssql:2022
+    platform: linux/amd64
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mssql
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${INT_MSSQL_CPUS:-1}
+    mem_limit: ${INT_MSSQL_MEM_LIMIT:-2560m}
+    cap_add: [SYS_PTRACE]
+    environment:
+      ACCEPT_EULA: "Y"
+      # BOOTSTRAP password only -- SQL Server refuses to START without upper+lower+digit.
+      # After boot, entrypoint.sh's background init.sql relaxes the sa login to the
+      # normalized weak password 'striim' (ALTER LOGIN ... CHECK_POLICY=OFF). That is the
+      # single authoritative migration; nothing else may ALTER this login.
+      MSSQL_SA_PASSWORD: "QAtestuser1"
+      MSSQL_PID: "Developer"
+      # Agent OFF: it exists to run the CDC capture/cleanup jobs, and this tier has no CDC.
+      MSSQL_AGENT_ENABLED: "FALSE"
+    ports:
+      # Host port is overridable for machines where :11433 is already taken. When
+      # overriding, point the framework at it too: INT_MSSQL_HOST=localhost
+      # INT_MSSQL_PORT=<port>.
+      - "${INT_MSSQL_HOST_PORT:-11433}:1433"
+    networks:
+      - int-mssql-net
+    healthcheck:
+      # Gates on entrypoint.sh's init having actually COMPLETED (its DONE_MARKER), not on
+      # "the server accepts some login". A login-guessing probe races entrypoint.sh's own
+      # ALTER LOGIN on sa, and a connection landing mid-ALTER gets a spurious "Login
+      # failed" (error state 7 or 8) that can persist past the retry budget. A file check
+      # cannot race it: the marker is written only after the migration commits, and
+      # entrypoint.sh clears it at the top of every boot so a stale one from a prior life
+      # of the same container cannot gate on it.
+      #
+      # Defense in depth: probe qasource, not sa. qasource is created once under IF NOT
+      # EXISTS and never re-ALTERed, so logging into it can never race a password change.
+      test: ["CMD-SHELL", "test -f /var/opt/mssql/.int-init-done && /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U qasource -P striim -Q 'SELECT 1'"]
+      interval: 2s
+      timeout: 10s
+      # Generous: a cold first boot under emulation is slow, and the marker is only
+      # written after init.sql has run.
+      retries: 90
+
+networks:
+  int-mssql-net:
+    driver: bridge

@@ -1,0 +1,47 @@
+# Integration-tier Postgres (Phase 1 scaffold). Unlike scripts/live (which builds a
+# slt-postgres:16 image adding wal2json for PostgreSQLReader CDC), this uses the base
+# postgres:16 image directly — no build — since CDC/logical-decoding is not exercised
+# by integration tests. init.sql (mounted below) provisions the qasource/qatarget
+# roles + schemas at first cluster init, same as the live tier's init-qausers.sql.
+# Parallel stacks: INT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (mirrors scripts/live's SLT_STACK_PREFIX pattern).
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-postgres
+services:
+  int-postgres:
+    image: postgres:16
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-postgres
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${INT_POSTGRES_CPUS:-0.5}
+    mem_limit: ${INT_POSTGRES_MEM_LIMIT:-512m}
+    environment:
+      # Superuser (admin). init.sql (below) creates the qasource/qatarget roles +
+      # schemas at first cluster init.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: striim
+      POSTGRES_DB: intdb
+    ports:
+      # Host port is overridable for machines where :15432 is already taken (distinct
+      # from the live tier's :5432 so both stacks can run at once). When overriding,
+      # point the framework at it too: INT_PG_HOST=localhost INT_PG_PORT=<port>.
+      - "${INT_PG_HOST_PORT:-15432}:5432"
+    volumes:
+      # The tzdata script is RUN WITH sh before the entrypoint rather than dropped into
+      # initdb.d: a bind-mounted file can report executable while the mount refuses to exec
+      # it ("bad interpreter: Permission denied", Docker Desktop, 2026-09-16), and the
+      # entrypoint then neither runs nor sources it and the container exits 126. zic only
+      # writes zoneinfo links, so it needs no database and runs first either way.
+      - ./sql/init-tzdata.sh:/tz-init.sh:ro
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/10-qausers.sql:ro
+    command: ["sh", "-c", "sh /tz-init.sh; exec docker-entrypoint.sh postgres"]
+    networks:
+      - int-postgres-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d intdb"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
+networks:
+  int-postgres-net:
+    driver: bridge

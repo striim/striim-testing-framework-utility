@@ -1,0 +1,6 @@
+# Large downloaded build deps — never commit
+*
+!.gitignore
+!extra-lib/
+extra-lib/*
+!extra-lib/README.md

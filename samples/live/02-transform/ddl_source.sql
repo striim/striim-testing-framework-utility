@@ -1,0 +1,6 @@
+CREATE TABLE ${TID}src (
+  id INTEGER PRIMARY KEY,
+  label TEXT NOT NULL,
+  amount NUMERIC(12, 2) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);

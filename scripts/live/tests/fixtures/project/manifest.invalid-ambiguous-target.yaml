@@ -1,0 +1,15 @@
+# INVALID: ambiguous target — two targets share the name `LookupOp`.
+# Rule (C1): target names must be unique within targets; reject offline, before
+# provisioning, naming both occurrences.
+schemaVersion: 1
+targets:
+  - name: LookupOp
+    kind: op
+    path: java/OpenProcessors/LookupOp
+    build: maven
+  - name: LookupOp
+    kind: udf
+    path: java/UserDefinedFunctions/LookupOp
+    build: maven
+suites:
+  live: cases/live

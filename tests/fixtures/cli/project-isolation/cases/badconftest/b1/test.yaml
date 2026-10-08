@@ -1,0 +1,5 @@
+name: b1
+purpose: synthetic isolation case (collected only)
+tql: app.tql
+assert:
+  smoke: true

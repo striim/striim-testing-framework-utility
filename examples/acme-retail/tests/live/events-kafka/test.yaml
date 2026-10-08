@@ -1,0 +1,24 @@
+name: acme-events-kafka
+purpose: MySQL CDC publishes every append-only retail event including the terminal record to Kafka
+example: apps/events
+tql: app.tql
+topology: single
+depth: gate
+requires: [mysql, kafka]
+timeout: 180
+tags: [acme, events, cdc, kafka, avro]
+ddl:
+  - {file: fixtures/ddl_source.sql, db: mysql-source}
+seed:
+  - file: fixtures/changes.sql
+    db: mysql-source
+    when: post_start
+    after: 10s
+assert:
+  smoke: true
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      rows: 4
+      keys: [event_id, event_type, order_id]
+      match: expected/messages.csv

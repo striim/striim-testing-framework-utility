@@ -1,0 +1,6 @@
+name: alpha
+purpose: synthetic live case for striim-test dispatch tests (collected or dry-run only)
+tql: app.tql
+requires: [postgres]
+assert:
+  smoke: true

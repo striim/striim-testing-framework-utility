@@ -1,0 +1,26 @@
+name: spanner-pg-diff
+depth: smoke
+purpose: Cloud Spanner emulator (PostgreSQL dialect) same-backend source->target via SpannerBatchReader -> SpannerPGDialectWriter (mirrors oracle-diff / postgres-diff)
+
+tql: app.tql
+
+ddl:
+  - file: spanner_ddl.sql   # Spanner PG-dialect src + tgt tables
+    db: spanner-postgres
+seed:
+  - file: seed.sql
+    db: spanner-postgres
+
+topology: single
+requires: [spanner]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${TID}src
+      source_db: spanner-postgres
+      target: ${TID}tgt
+      target_db: spanner-postgres
+
+timeout: 180
+tags: [diff, spanner, postgres-dialect, regression]

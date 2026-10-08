@@ -1,0 +1,56 @@
+name: framework-drop-recreate
+depth: smoke
+purpose: The drop_recreate_app action really stops, force-drops, and rebuilds a running app from its own rendered TQL block — the app returns to RUNNING, and rows already committed at the target survive the drop untouched
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+# The feature under test. `drop_recreate_app` STOPs the named app (best-effort — a HALTED app
+# cannot stop cleanly but must still drop), runs `DROP APPLICATION <app> FORCE` via
+# StriimClient._force_drop (a plain DROP wedges on a stuck adapter — the field-proven G-15
+# lesson, inherited here rather than rediscovered), waits `recreate_wait`, then re-runs THIS
+# manifest's own `CREATE OR REPLACE APPLICATION <app> … END APPLICATION` block from the rendered
+# TQL followed by DEPLOY + START and waits for RUNNING.
+#
+# `app` is token-rendered, so a multi-app manifest can name the piece it rebuilds
+# ("${APP}_source") and leave the rest of its topology running — that is how a
+# multi-app case uses it. Here the gallery app is single, so the whole app cycles.
+#
+# ⚠ WHAT THIS DOES AND DOES NOT PROVE. The diff proves rows already at the target survive a
+# force-drop/recreate and that the rebuilt app starts clean enough for smoke to pass. It does
+# NOT prove replay-position behaviour of the recreated reader (slot semantics are the reader's,
+# not the framework's) — a reader's own live cases are where position survival is judged.
+action:
+  - type: drop_recreate_app
+    app: "${APP}"
+    delay_before_stop: 5s
+    recreate_wait: 3s
+
+assert:
+  smoke: true
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      rows: 3
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+timeout: 300
+tags: [framework, action, postgres, regression]

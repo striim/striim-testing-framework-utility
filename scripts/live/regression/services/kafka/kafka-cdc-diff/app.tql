@@ -1,0 +1,53 @@
+-- scripts/live/regression/services/kafka/kafka-cdc-diff/app.tql
+-- Kafka round-trip with Avro via the Confluent Schema Registry, the source topic empty at START:
+--   KafkaReader (AvroParser) reads the Avro messages the framework produces to the source
+--   topic once the app is RUNNING (post_start) into
+--   an AvroEvent stream; a CQ projects the two record fields (AvroEvent.data is a map,
+--   accessed as data.get('c0')) into a typed stream so AvroFormatter emits a clean flat
+--   {c0,c1} record (a passthrough AvroEvent would emit a native metadata/data envelope);
+--   KafkaWriter (AvroFormatter) writes it to the target topic. The diff tier reads both
+--   topics via KafkaAdmin and asserts the target matches the source.
+--
+-- Wire format: Striim's Avro+registry path is length-delimited ([int32 len][int32
+-- schemaId][avro]), NOT the Confluent standard. The reader needs the matching
+-- value.deserializer in KafkaConfig; the framework's KafkaAdmin produces/reads the
+-- same frame. See services/kafka/README.md.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE KafkaSource USING Global.KafkaReader VERSION '2.1.0' (
+  BrokerAddress: '${KAFKA_BROKER}',
+  Topic: '${KAFKA_SRC_TOPIC}',
+  StartOffset: 0,
+  KafkaConfigPropertySeparator: ';',
+  KafkaConfigValueSeparator: '=',
+  KafkaConfig: 'poll.timeout.ms=5000;value.deserializer=com.striim.avro.deserializer.LengthDelimitedAvroRecordDeserializer'
+)
+PARSE USING Global.AvroParser (
+  SchemaRegistryUrl: '${KAFKA_SCHEMA_REGISTRY_URL}'
+)
+OUTPUT TO RawStream;
+
+CREATE OR REPLACE CQ ProjectData
+  INSERT INTO DataStream
+  SELECT TO_STRING(data.get('c0')) AS c0, TO_STRING(data.get('c1')) AS c1
+  FROM RawStream;
+
+CREATE OR REPLACE TARGET KafkaTarget USING Global.KafkaWriter VERSION '2.1.0' (
+  BrokerAddress: '${KAFKA_BROKER}',
+  Topic: '${KAFKA_TGT_TOPIC}',
+  Mode: 'Sync',
+  CommitPolicy: 'EventCount:100,Interval:1'
+)
+FORMAT USING Global.AvroFormatter (
+  FormatAs: 'Default',
+  SchemaRegistryUrl: '${KAFKA_SCHEMA_REGISTRY_URL}'
+)
+INPUT FROM DataStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

@@ -1,0 +1,10 @@
+# C7.2 invalid: a file sink cannot use a sentinel kind.
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness: {kind: sentinel}
+  completion: {kind: file-lines, path: "${OWNED_DIR}/out.csv", lines: 3}
+  stability: 5s
+  deadlines: {readiness: 60s, completion: 300s}
+  reset: owned

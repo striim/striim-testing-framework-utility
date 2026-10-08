@@ -1,0 +1,25 @@
+name: hello-4col
+depth: smoke
+purpose: Control test discriminating the "4-column tables lose column 4" failure seen in OP tests — no custom OP in the pipeline
+
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed: seed.sql
+
+topology: single
+requires: [postgres]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+timeout: 180
+tags: [regression, self-contained, postgres]

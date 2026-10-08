@@ -1,0 +1,34 @@
+-- scripts/live/regression/oracle-cdc-diff/app.tql
+-- Oracle CDC: OracleReader (LogMiner, as the ${ORACLE_CDC_USER} striim user) captures
+-- inserts committed after START; DatabaseWriter (as the ${ORACLE_SOURCE_USER} data user)
+-- propagates them to ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT. The diff tier asserts TGT catches up to SRC.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE OraCdcSource USING Global.OracleReader (
+  ConnectionURL: '${ORACLE_CDC_URL}',
+  Username: '${ORACLE_CDC_USER}',
+  Password: '${ORACLE_CDC_PASSWORD}',
+  Tables: 'FREEPDB1.${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC',
+  DictionaryMode: 'OnlineCatalog',
+  CommittedTransactions: true,
+  FilterTransactionBoundaries: true,
+  SendBeforeImage: true,
+  SupportPDB: true
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET OraTarget USING Global.DatabaseWriter (
+  ConnectionURL: '${ORACLE_URL}',
+  Username: '${ORACLE_TARGET_USER}',
+  Password: '${ORACLE_TARGET_PASSWORD}',
+  Tables: 'FREEPDB1.${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC,${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

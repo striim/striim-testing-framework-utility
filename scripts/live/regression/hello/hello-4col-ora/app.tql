@@ -1,0 +1,29 @@
+-- scripts/live/regression/hello/hello-4col-ora/app.tql
+-- Oracle DatabaseReader (initial load) -> PostgreSQL DatabaseWriter, no OP.
+-- The same topology as an OP test's CUSTOMER path, minus the OP.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE OracleSource USING Global.DatabaseReader (
+  DatabaseProviderType: 'Default',
+  Username: '${ORACLE_SOURCE_USER}',
+  Password: '${ORACLE_SOURCE_PASSWORD}',
+  ConnectionURL: '${ORACLE_URL}',
+  Tables: '${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}CUSTOMER'
+) OUTPUT TO SrcStream;
+
+CREATE OR REPLACE TARGET PostgresTarget USING Global.DatabaseWriter (
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  ConnectionURL: '${PG_URL}',
+  Tables: '${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}CUSTOMER,${PG_TARGET_SCHEMA}.${TID}customer',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM SrcStream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

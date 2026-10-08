@@ -1,0 +1,27 @@
+name: spanner-cdc-diff
+depth: smoke
+purpose: Rows inserted into the Spanner emulator after the app is RUNNING (post_start) are picked up by SpannerBatchReader's incremental poll (CheckColumn) and written by SpannerWriter
+
+tql: app.tql
+
+ddl:
+  - file: spanner_ddl.sql   # Spanner GoogleSQL src + tgt tables
+    db: spanner-google
+seed:
+  - file: seed.sql
+    db: spanner-google
+    when: post_start
+
+topology: single
+requires: [spanner]
+
+assert:
+  smoke: true
+  diff:
+    - source: ${TID}src
+      source_db: spanner-google
+      target: ${TID}tgt
+      target_db: spanner-google
+
+timeout: 180
+tags: [diff, cdc, spanner, googlesql, regression]

@@ -1,0 +1,118 @@
+# Kafka + ZooKeeper + Confluent Schema Registry for the live tier — a
+# KafkaReader source AND KafkaWriter target, with Avro via the schema registry.
+# ZooKeeper is required for persistent streams in Striim 5.0.6.2F.
+#
+# Dual access is the fiddly part. Two parties reach the broker from different places:
+#   * the framework's KafkaAdmin runs on the HOST      -> localhost:9092
+#   * the Striim cluster runs in Docker (a separate compose project/network) and
+#     reaches the host's published ports via host.docker.internal -> :19092
+# A Kafka client bootstraps one listener, then RECONNECTS to that listener's
+# advertised address, so each party needs its own listener advertised at an address
+# IT can resolve. Hence two external listeners (HOST/DOCKER) plus an INTERNAL listener
+# the schema registry uses over the compose network.
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project (which owns the
+# network/volume names) and every container_name below — unset/empty, both interpolate
+# to today's exact names (see docs/internals/ENGINE.md "Parallel stacks").
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-kafka
+services:
+  slt-zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-zookeeper
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_ZOOKEEPER_CPUS:-1}
+    mem_limit: ${SLT_ZOOKEEPER_MEM_LIMIT:-512m}
+    ports:
+      # Host port is overridable for parallel stacks (SLT_STACK_PREFIX namespaces ports).
+      # Set SLT_ZOOKEEPER_CLIENT_PORT to override when 2181 is already taken.
+      - "${SLT_ZOOKEEPER_CLIENT_PORT:-2181}:2181"
+    environment:
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_SYNC_LIMIT: 5
+      ZOOKEEPER_INIT_LIMIT: 10
+    networks:
+      - slt-kafka-net
+    healthcheck:
+      test: ["CMD-SHELL", "printf ruok | nc -w 2 localhost 2181 | grep -qx imok"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  slt-kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-kafka
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_KAFKA_CPUS:-3}
+    mem_limit: ${SLT_KAFKA_MEM_LIMIT:-1536m}
+    depends_on:
+      slt-zookeeper:
+        condition: service_healthy
+    ports:
+      # Host ports are overridable for machines where they are already taken. The same
+      # variables are interpolated into KAFKA_ADVERTISED_LISTENERS below, so broker
+      # metadata follows an override. When overriding, point the framework at it too:
+      # SLT_KAFKA_HOST=localhost + SLT_KAFKA_PORT / SLT_KAFKA_BROKER_PORT /
+      # SLT_KAFKA_REGISTRY_PORT=<ports> (see docs/internals/ENGINE.md).
+      - "${SLT_KAFKA_HOST_PORT:-9092}:9092"      # HOST listener  -> KafkaAdmin (localhost)
+      - "${SLT_KAFKA_DOCKER_HOST_PORT:-19092}:19092"    # DOCKER listener -> Striim container (host.docker.internal)
+    environment:
+      KAFKA_BROKER_ID: "1"
+      KAFKA_ZOOKEEPER_CONNECT: "${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-zookeeper:2181"
+      KAFKA_LISTENERS: "HOST://0.0.0.0:9092,DOCKER://0.0.0.0:19092,INTERNAL://0.0.0.0:29092"
+      # The HOST/DOCKER advertised ports must track the published host ports above — a
+      # client bootstraps, then RECONNECTS to the advertised address, which it reaches
+      # through the published mapping. INTERNAL stays on the compose network (no mapping).
+      KAFKA_ADVERTISED_LISTENERS: "HOST://localhost:${SLT_KAFKA_HOST_PORT:-9092},DOCKER://host.docker.internal:${SLT_KAFKA_DOCKER_HOST_PORT:-19092},INTERNAL://slt-kafka:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "HOST:PLAINTEXT,DOCKER:PLAINTEXT,INTERNAL:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_MESSAGE_MAX_BYTES: "10485760"
+      KAFKA_REPLICA_FETCH_MAX_BYTES: "10485760"
+    networks:
+      - slt-kafka-net
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  slt-schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-schema-registry
+    # Measured ceilings (a limits sampler re-derives them).
+    cpus: ${SLT_SCHEMA_REGISTRY_CPUS:-1}
+    mem_limit: ${SLT_SCHEMA_REGISTRY_MEM_LIMIT:-1g}
+    depends_on:
+      slt-kafka:
+        condition: service_healthy
+    ports:
+      # Host port is overridable. The registry's own listener stays on the
+      # container-internal :8081 (nothing is advertised back to clients — they just
+      # use whatever URL they are given).
+      - "${SLT_SCHEMA_REGISTRY_HOST_PORT:-8081}:8081"    # reached at localhost:8081 (KafkaAdmin) / host.docker.internal:8081 (Striim)
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: "slt-schema-registry"
+      # scheme must be the SECURITY PROTOCOL (PLAINTEXT), not the listener name (INTERNAL) —
+      # the registry maps the scheme to kafkastore.security.protocol.
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://slt-kafka:29092"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+    networks:
+      - slt-kafka-net
+    # Without this, `docker compose up --wait` returns as soon as the container is
+    # "running" (right after Kafka goes healthy) but before the registry JVM serves
+    # :8081, so on a cold start the first schema register/lookup races it and gets a
+    # "Connection reset by peer". Gate readiness on the REST endpoint answering.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/subjects"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+networks:
+  slt-kafka-net:
+    driver: bridge

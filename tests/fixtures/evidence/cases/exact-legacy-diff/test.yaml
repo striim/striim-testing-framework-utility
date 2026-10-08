@@ -1,0 +1,10 @@
+name: exact-legacy-diff
+purpose: hermetic exact fixture - legacy diff.exact true without the block keeps legacy-text/1
+tql: app.tql
+requires: [postgres]
+timeout: 5
+assert:
+  diff:
+    - source: "${PG_SOURCE_SCHEMA}.src"
+      target: "${PG_TARGET_SCHEMA}.tgt"
+      exact: true

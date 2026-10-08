@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The harness wants no logging output — the same intent as the slf4j-nop binding in pom.xml.
+
+  log4j-core is on the classpath so that a core holding a static LogManager.getLogger() loads at
+  all (MetricsReaderV4E.Processor does). Without a configuration it would default to logging
+  ERROR to the console, so a module's own error path would write to the harness's stderr and any
+  case asserting on that stream would have to tolerate it. OFF here, rather than no
+  implementation at all, because "no implementation" is what makes log4j-api print a StatusLogger
+  ERROR of its own.
+
+  A case that WANTS to see a module's log output should raise this deliberately with
+  -Dlog4j2.level, not by editing this file.
+-->
+<Configuration status="OFF">
+    <Appenders>
+        <Null name="Discard"/>
+    </Appenders>
+    <Loggers>
+        <Root level="OFF">
+            <AppenderRef ref="Discard"/>
+        </Root>
+    </Loggers>
+</Configuration>

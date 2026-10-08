@@ -1,0 +1,14 @@
+{
+  "events": {
+    "declarationSha256": "sha256:3d299b21335c104dd54653b6ecdc6fc591bc29b5c337d096f4d25858691c41e7",
+    "sha256": "sha256:c8207aef82f32dd2d7782ff6f1788a1931d1d8dffc2054b5052c0b357757090b"
+  },
+  "orders.csv": {
+    "declarationSha256": "sha256:cabf2ee6565840aa53a991847e1cf1edf6bab043f352a861cf5e210e4552b50d",
+    "sha256": "sha256:d60e6ab85f35c2503182b003c3f34d03a6ad6a557cc7ed4823407fed3dc42363"
+  },
+  "orders_dup.csv": {
+    "declarationSha256": "sha256:cabf2ee6565840aa53a991847e1cf1edf6bab043f352a861cf5e210e4552b50d",
+    "sha256": "sha256:33f0efb2faae66db07c8ce14f1e95ee3577200dc01fcc5eadbd5a1d2279f5c5a"
+  }
+}

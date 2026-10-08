@@ -1,0 +1,93 @@
+name: framework-recover-kill
+depth: fault
+purpose: "The recover phase works under mode: kill -- the app node containers really are SIGKILLed, the cluster really comes back, and the app really is restarted. The positive control for kill, the least-exercised of the three modes."
+
+# Fixtures are COPIES of framework-recover's, byte for byte. `example:` would have expressed
+# the sharing better and NOTHING VALIDATES WHAT IT POINTS AT -- manifest.py only type-checks it
+# as a string and would happily resolve fixtures out of a regression dir. What actually pushed
+# back is bookkeeping: `example` sits in test_framework_coverage.py's EXEMPT list, so the first
+# framework manifest to use the key makes that entry stale and the gate says "drop the
+# exemption". The key is documented as an OP/UDF example pointer, so using it for a regression
+# directory would be off-label -- that, rather than a rejection, is why these are copies.
+#
+# THE PAIR ONLY MEANS SOMETHING WHILE THESE STAY IDENTICAL. The single intended difference is
+# `mode:`. If you change the app, the DDL or the seed here, change it in framework-recover too,
+# or the stop/kill comparison silently stops being a comparison.
+tql: app.tql
+
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+  - file: slot.sql
+    db: postgres-source
+
+# CDC, so the data must be committed after RUNNING or the reader never sees it
+# (framework-seed-phases is the example that proves that).
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: post_start
+
+topology: single
+requires: [postgres]
+
+# The feature under test. `recover:` interrupts the app AFTER every post_start step and BEFORE
+# every assertion, then brings it back and pauses for replay to drain.
+#
+# mode: kill -- `docker kill -s KILL` every container in stack.app_nodes(), then `docker
+# restart` them, re-authenticate, and wait for the cluster to accept commands again. The crash
+# case: no close(), no flush, no rollback, and the API token dies with the JVM.
+#
+# WHY THIS CASE EXISTS. kill was the LEAST exercised of the three modes -- no live manifest used
+# it and restore()'s kill branch had no unit test at all, so deleting the whole branch was
+# invisible. It also carried a defect that only shows on this path: CRASH and HALT are both
+# restartable AND terminal, so issuing START and immediately calling await_running raised
+# "reached terminal status CRASH" on the very state the START was meant to leave. That was
+# fixed in review on the branch that introduced it, so it never reached main -- but, like the
+# quiesce fix, it was fixed against the status enum and a stub client, not a live server. This case is what
+# observes it working.
+#
+# Running it for the first time then found a SEPARATE, pre-existing bug in
+# striim_provision.restart_app_nodes: it fetched an API token microseconds after
+# `docker restart`, and the ConnectionResetError escaped uncaught. Fixed in this branch.
+#
+# ⚠ CLUSTER-WIDE, NOT SCOPED TO THIS APP. It SIGKILLs the app nodes, so every other app on them
+# dies too -- and the victims fail for reasons that point nowhere near this manifest, which is
+# why a comment is not enough. `disabled_parallel` below is the guard TEST-YAML.md prescribes
+# for exactly this, and the same reasoning the OP poison-recovery path already follows when it
+# refuses to restart the shared nodes under xdist.
+#
+# DOCKER ONLY. On a native Striim the mode is unsupported and the test SKIPS rather than
+# silently downgrading to `stop`, which would report a pass for a case never run.
+#
+# Still a POSITIVE case: CommitPolicy Interval:1 makes the seed durable well before `after: 10`,
+# so a crash at that point has nothing uncommitted to lose. What is under test is the PHASE --
+# that a killed cluster comes back and the app is restarted -- not the writer's durability.
+
+# First kill manifest in the repo, so it is also the first to need this. Under
+# SLT_PARALLEL/xdist the case SKIPS rather than taking the whole cluster down with it.
+disabled_parallel: "mode: kill SIGKILLs the shared app nodes, killing every other worker's apps"
+
+recover:
+  mode: kill
+  after: 10
+  settle: 30
+
+# RECOVERY on the app is what makes any of this meaningful: without it there is no checkpoint
+# to resume from and a restarted app just re-reads from its current position.
+#
+# diff, not data: the claim is "the target caught up to the source", which is exactly what a
+# diff says and what a row count would not. A count of 3 would also pass with three wrong rows.
+assert:
+  smoke: true
+  diff:
+    - source: ${PG_SOURCE_SCHEMA}.${TID}src
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+
+# 600, not 300: a kill restarts containers and waits for the cluster to re-form, which is far
+# slower than a STOP/START round trip.
+timeout: 600
+tags: [framework, recover, postgres, regression]

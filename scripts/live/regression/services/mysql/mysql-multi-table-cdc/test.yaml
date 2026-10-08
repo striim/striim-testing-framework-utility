@@ -1,0 +1,40 @@
+name: mysql-multi-table-cdc
+depth: smoke
+
+# Phase 2.2: Multi-Table CDC Test
+# Tests CDC with multiple related tables
+# Validates:
+# - Multiple tables replicate concurrently
+# - Foreign key relationships preserved
+# - Data consistency across tables
+tql: app.tql
+
+# DDL for source and target schemas with multiple tables
+ddl:
+  - file: ddl_source.sql
+    db: mysql-source
+  - file: ddl_target.sql
+    db: mysql-target
+
+seed:
+  - file: seed.sql
+    db: mysql-source
+
+topology: single
+requires: [mysql]
+
+assert:
+  smoke: true
+  data:
+    - target: ${TID}mt_customers
+      target_db: mysql-target
+      rows: 3
+    - target: ${TID}mt_orders
+      target_db: mysql-target
+      rows: 5
+    - target: ${TID}mt_items
+      target_db: mysql-target
+      rows: 8
+
+timeout: 180
+tags: [cdc, regression, mysql]

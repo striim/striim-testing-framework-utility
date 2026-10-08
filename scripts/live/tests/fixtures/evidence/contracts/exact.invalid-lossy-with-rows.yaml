@@ -1,0 +1,13 @@
+# C8.1: exact cannot be combined with rows/min_rows/ordered/project -> invalid-exact-spec.
+name: exact-with-rows
+purpose: p
+tql: app.tql
+requires: [postgres]
+exact: {version: 1}
+assert:
+  data:
+    - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      target_db: postgres-target
+      match: expected/tgt.csv
+      rows: 3
+      exact: {columns: {amount: "decimal:2"}}

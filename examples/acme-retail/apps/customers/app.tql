@@ -1,0 +1,44 @@
+-- Acme Retail: load customer profiles, then maintain them through CDC.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+-- Start only against a quiescent source; keep it quiescent until the baseline lands.
+CREATE OR REPLACE SOURCE CustomerSnapshot USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}customers'
+) OUTPUT TO CustomerBaseline;
+
+CREATE OR REPLACE SOURCE CustomerCdc USING Global.PostgreSQLReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}customers',
+  ReplicationSlotName: '${PG_SLOT}'
+) OUTPUT TO CustomerChanges;
+
+CREATE OR REPLACE TARGET CustomerLoadCopy USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}customers,${PG_TARGET_SCHEMA}.${TID}customers_copy',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM CustomerBaseline;
+
+CREATE OR REPLACE TARGET CustomerCdcCopy USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}customers,${PG_TARGET_SCHEMA}.${TID}customers_copy',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM CustomerChanges;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

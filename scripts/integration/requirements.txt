@@ -1,0 +1,11 @@
+pytest>=7.0
+pytest-xdist>=3.0      # Parallel execution
+psycopg2-binary>=2.9   # Postgres driver
+oracledb>=2.0          # Oracle driver (modern, replaces cx_Oracle)
+pymssql>=2.3           # SQL Server driver (same one scripts/live uses)
+vertica-python>=1.4    # Vertica driver (same one scripts/live uses)
+google-cloud-spanner>=3.0
+google-cloud-storage>=2.0
+filelock>=3.0
+pyyaml>=6.0            # For parsing service.yaml
+psutil>=5.9            # Performance mode (--perf): process-tree CPU/memory sampling

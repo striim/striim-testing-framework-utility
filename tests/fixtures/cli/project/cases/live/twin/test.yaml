@@ -1,0 +1,6 @@
+name: twin
+purpose: synthetic live case for striim-test dispatch tests (collected or dry-run only)
+tql: app.tql
+
+assert:
+  smoke: true
