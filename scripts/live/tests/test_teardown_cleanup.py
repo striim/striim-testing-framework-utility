@@ -94,6 +94,23 @@ def test_malformed_file_spec_is_ignored_at_teardown():
     # teardown must not raise again.
     teardown_file_outputs([{"min_events": 1}], {}, lambda p: None)
 
+def test_mssql_admin_route_never_logs_in_at_teardown():
+    from livetest.plugin import teardown_unowned
+    from livetest.mssqladmin import MssqlAdmin
+    logins = []
+
+    def connect(**kw):
+        logins.append(kw["user"])
+        raise AssertionError("teardown must not log in on mssql-admin")
+
+    dsn = {"host": "h", "port": 1433, "user": "sa", "password": "striim", "database": "qauser"}
+    admins = {"mssql-admin": {"admin": MssqlAdmin(dsn, connect=connect, role="admin")}}
+    ddl = [("mssql-admin", "x.sql")]
+    teardown_ddl_tables(admins, ddl, {"TID": "t1_"}, parallel=False)
+    teardown_ddl_tables(admins, ddl, {"TID": "t1_"}, parallel=True)
+    out = teardown_unowned(admins, ddl, {"TID": "t1_"}, [], [], None, lambda p: None, [], lambda n: None)
+    assert logins == [] and out["failed"] == {}
+
 def test_teradata_admin_route_never_logs_in_at_teardown():
     from livetest.plugin import teardown_unowned
     from livetest.teradataadmin import TeradataAdmin
