@@ -492,3 +492,95 @@ def test_a_dependency_class_sharing_a_source_name_is_not_own(tmp_path):
         z.writestr("com/zeta/FooOpV8F/Orm/Dialect.class", header(61))         # the module's own
     assert opartifacts._jar_own_class_major(jar, mod) == 61
     opartifacts._assert_jar_java_version(jar, "17", mod)      # no false wrong-JDK error
+
+
+def test_build_jar_uses_prebuilt_jar_env(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    prebuilt = tmp_path / "custom" / "ReferenceOpV1-5.4.jar"
+    prebuilt.parent.mkdir(parents=True, exist_ok=True)
+    _write_jar_with_class(prebuilt, "com/example/Test.class", 61)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(prebuilt))
+    calls = []
+    reports = []
+    built = opartifacts.build_jar(MODULE, RELEASE_54, run=lambda *a: calls.append(a), report=reports.append)
+    assert built.path == prebuilt
+    assert built.name == "ReferenceOpV1-5.4.jar"
+    assert built.op_name == "ReferenceOpV1"
+    assert built.sha256 == opartifacts.file_sha256(prebuilt)
+    assert len(calls) == 0
+    assert any("using prebuilt jar" in r for r in reports)
+
+
+def test_build_jar_prebuilt_jar_rejects_missing(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(tmp_path / "missing.jar"))
+    with pytest.raises(opartifacts.OpArtifactError, match="prebuilt jar not found"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
+def test_build_jar_prebuilt_jar_rejects_corrupt(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    bad = tmp_path / "bad.jar"
+    bad.write_text("not a real jar file")
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(bad))
+    with pytest.raises(opartifacts.OpArtifactError, match="prebuilt jar is not a readable jar"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
+def test_build_jar_prebuilt_jar_rejects_wrong_bytecode(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    prebuilt = tmp_path / "ReferenceOpV1-5.4.jar"
+    _write_jar_with_class(prebuilt, "com/example/Test.class", 55)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(prebuilt))
+    with pytest.raises(opartifacts.OpArtifactError, match="wrong JDK"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
+def test_build_jar_uses_prebuilt_dir(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    stage_dir = tmp_path / "stage" / "v1_ReferenceOp_5.4.2"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    prebuilt = stage_dir / "ReferenceOpV1-5.4.jar"
+    _write_jar_with_class(prebuilt, "com/example/Test.class", 61)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(tmp_path / "stage"))
+    calls = []
+    built = opartifacts.build_jar(MODULE, RELEASE_54, run=lambda *a: calls.append(a))
+    assert built.path == prebuilt
+    assert len(calls) == 0
+
+
+
+def test_build_jar_prebuilt_dir_never_takes_another_modules_jar(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    _jar(tmp_path / "stage" / "OtherOpV1-5.4.jar", major=61)
+    _jar(tmp_path / "stage" / "ReferenceOpExtraV1-5.4.jar", major=61)    # a prefix is not identity
+    monkeypatch.setenv("SLT_PREBUILT_DIR", str(tmp_path / "stage"))
+    with pytest.raises(opartifacts.OpArtifactError, match="no ReferenceOp jar for series 5.4"):
+        opartifacts.build_jar(MODULE, RELEASE_54, run=lambda *a: pytest.fail("must not build"))
+    own = tmp_path / "stage" / "ReferenceOpV1-5.4.jar"
+    _jar(own, major=61)
+    assert opartifacts.build_jar(MODULE, RELEASE_54).path == own
+
+
+def test_build_jar_prebuilt_dir_rejects_two_jars_of_the_module(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    _jar(tmp_path / "stage" / "a" / "ReferenceOpV1-5.4.jar", major=61)
+    _jar(tmp_path / "stage" / "b" / "ReferenceOpV2-5.4.jar", major=61)
+    monkeypatch.setenv("SLT_PREBUILT_DIR", str(tmp_path / "stage"))
+    with pytest.raises(opartifacts.OpArtifactError, match="multiple candidates"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
+def test_build_jar_module_prebuilt_variable_outranks_the_generic_ones(tmp_path, monkeypatch):
+    _hermetic_build_env(tmp_path, monkeypatch)
+    own = tmp_path / "own" / "ReferenceOpV2-5.4.jar"
+    _jar(own, major=61)
+    _jar(tmp_path / "generic" / "ReferenceOpV1-5.4.jar", major=61)
+    assert opartifacts.prebuilt_env_var(MODULE) == "SLT_PREBUILT_JAR_REFERENCEOP"
+    assert opartifacts.prebuilt_env_var("java/OpenProcessors/my-op.v2") == "SLT_PREBUILT_JAR_MY_OP_V2"
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(tmp_path / "generic" / "ReferenceOpV1-5.4.jar"))
+    monkeypatch.setenv("SLT_PREBUILT_DIR", str(tmp_path / "generic"))
+    monkeypatch.setenv("SLT_PREBUILT_JAR_REFERENCEOP", str(own))
+    reports = []
+    assert opartifacts.build_jar(MODULE, RELEASE_54, report=reports.append).path == own
+    assert any("(SLT_PREBUILT_JAR_REFERENCEOP)" in r for r in reports)

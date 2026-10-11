@@ -62,6 +62,16 @@ class BuiltArtifact:
     name: str     # OP_JAR  -- the jar's filename, e.g. "ReferenceOpV1-5.4.jar"
     op_name: str  # OP_NAME -- filename with the trailing "-<SERIES>.jar" removed,
                   #            e.g. "ReferenceOpV1"
+    sha256: str = ""
+
+
+def file_sha256(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _module_dir(module_ref: str) -> Path:
@@ -348,6 +358,41 @@ def _assert_jar_java_version(jar: Path, java_release, module_dir: Path) -> None:
             f"JDK (a stale build from another release). Run 'mvn clean' in {module_dir} and retry.")
 
 
+def prebuilt_env_var(module_ref: str) -> str:
+    """The module's own prebuilt-jar variable, e.g. SLT_PREBUILT_JAR_FOOOP for module FooOp.
+
+    It outranks SLT_PREBUILT_JAR and SLT_PREBUILT_DIR, so a caller that loads several modules in
+    one process (a pre-flight) gives each module its own jar."""
+    return "SLT_PREBUILT_JAR_" + re.sub(r"[^A-Z0-9]", "_", module_name(module_ref).upper())
+
+
+def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
+    """The prebuilt jar to use instead of building `module_ref`, and the variable that chose it;
+    None when no prebuilt variable is set. A directory must hold exactly one jar of THIS module
+    for `series` ("<module>[V<version>]-<series>.jar", searched recursively); another module's
+    jar never stands in for it."""
+    for var in (prebuilt_env_var(module_ref), "SLT_PREBUILT_JAR", "SLT_PREBUILT_DIR"):
+        value = os.environ.get(var)
+        if value:
+            break
+    else:
+        return None
+    path = Path(value).resolve()
+    if path.is_dir():
+        mod = module_name(module_ref)
+        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(series)}\.jar", re.IGNORECASE)
+        matches = sorted(p for p in path.rglob("*.jar") if own.fullmatch(p.name))
+        if not matches:
+            raise OpArtifactError(f"{var}: no {mod} jar for series {series} in {path}")
+        if len(matches) > 1:
+            raise OpArtifactError(f"{var}: multiple candidates for {mod} in {path}: "
+                                  f"{[p.name for p in matches]}")
+        path = matches[0]
+    if not path.is_file():
+        raise OpArtifactError(f"{var}: prebuilt jar not found: {path}")
+    return path, var
+
+
 def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArtifact:
     """Build module_ref (a repo-relative module dir or its pom.xml) against `release`
     (a dict as returned by inttest.releases.resolve_release / detect_release) and return the
@@ -370,6 +415,20 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         raise OpArtifactError(f"release is missing STRIIM_SERIES: {release!r}")
     fingerprint = _build_fingerprint(release)
     java_release = release.get("JAVA_RELEASE")
+    chosen = _prebuilt_jar(module_ref, series)
+    if chosen:
+        prebuilt, var = chosen
+        corrupt = _jar_unreadable(prebuilt)
+        if corrupt is not None:
+            raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
+        _assert_jar_java_version(prebuilt, java_release, module_dir)
+        jar_name = prebuilt.name
+        suffix = f"-{series}.jar"
+        op_name = jar_name[:-len(suffix)] if jar_name.endswith(suffix) else (jar_name[:-4] if jar_name.endswith(".jar") else jar_name)
+        digest = file_sha256(prebuilt)
+        notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
+        return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest)
+
     existing = _release_jar_candidates(module_dir, series)
     # >1 candidate is stale build output, not a broken repo: a version bump changes the
     # pom's finalName, and `mvn package` writes the new jar BESIDE the old one instead of
