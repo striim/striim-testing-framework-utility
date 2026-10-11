@@ -74,6 +74,9 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 | `SLT_RECOVER_RESTORE_TIMEOUT` | shell | `600` | Seconds a `recover:` phase allows for its restore. |
 | `SLT_STACK_PREFIX` | shell, `.env` | unset | Run a second, independent stack on the same machine: its containers and cleanup carry this prefix. |
 | `SLT_JDK<release>_HOME` | shell | on macOS, the JDK `java_home` finds | The JDK that builds Open Processor and UDF jars for that Java release, for example `SLT_JDK17_HOME`. Off macOS the JDK comes only from here. |
+| `SLT_PREBUILT_JAR_<MODULE>` | shell | unset: build the module | A jar to test in place of building that module, for example `SLT_PREBUILT_JAR_REFERENCEOP` for `ReferenceOp`; a folder is searched for the module's jar. Wins over the next two ([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md)). |
+| `SLT_PREBUILT_JAR` | shell | unset | A jar, or a folder, for every module the run builds. |
+| `SLT_PREBUILT_DIR` | shell | unset | A folder holding one jar per module and series. |
 
 ## The Docker Striim cluster
 

@@ -110,6 +110,12 @@ SECTIONS = (
         ("SLT_JDK<release>_HOME", "on macOS, the JDK `java_home` finds",
          "The JDK that builds Open Processor and UDF jars for that Java release, for example "
          "`SLT_JDK17_HOME`. Off macOS the JDK comes only from here."),
+        ("SLT_PREBUILT_JAR_<MODULE>", "unset: build the module",
+         "A jar to test in place of building that module, for example `SLT_PREBUILT_JAR_REFERENCEOP` "
+         "for `ReferenceOp`; a folder is searched for the module's jar. Wins over the next two "
+         "([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md))."),
+        ("SLT_PREBUILT_JAR", "unset", "A jar, or a folder, for every module the run builds."),
+        ("SLT_PREBUILT_DIR", "unset", "A folder holding one jar per module and series."),
     )),
     ("The Docker Striim cluster", (
         ("SLT_STRIIM_PRIMARY_CPUS", None,
