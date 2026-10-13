@@ -7,9 +7,11 @@ from livetest.resultschema import build_assertion_result
 
 def assert_smoke(client, app: str | list[str], timeout: int, settle_seconds: float = 1.0,
                   *, db: str | None = None, progress=None) -> list[dict]:
-    # settle_seconds was 5.0: a fixed 5 s on every live case, about a quarter of a ~20 s case.
-    # An app that leaves RUNNING later than 1 s after start is still caught by the case's data,
-    # diff or lifecycle assertions; a case that asserts smoke alone no longer waits for it.
+    # The settle catches an app that leaves RUNNING within settle_seconds of reaching it. A later
+    # exit is caught only by the plugin's terminal-status probe (CRASH, HALT, TERMINATED,
+    # DEPLOY_FAILED), which runs while a polling assertion (data, diff, file, ...) is still
+    # waiting. An app that halts after those assertions pass, or in a smoke-only case, passes.
+    # Lifecycle cases do not come through here (lifecycle.smoke_and_ready).
     # No specs to evaluate -- smoke is a single pass/fail check with nothing to snapshot.
     # await_running/current_status raising, or an app not settling on RUNNING, are all
     # wrapped into one AssertionFailed carrying a single failed record, so the plugin
