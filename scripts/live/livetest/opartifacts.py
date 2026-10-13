@@ -619,6 +619,13 @@ def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
         if mod_id and not own.fullmatch(mod_id):
             raise OpArtifactError(
                 f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
+        # No entry (UDF jars carry none): the file name must name the module, as in a folder. A
+        # name without the series suffix is left to op_name_for's error.
+        suffix = f"-{series}.jar"
+        if not mod_id and path.name.endswith(suffix) and not own.fullmatch(path.name[: -len(suffix)]):
+            raise OpArtifactError(
+                f"{var}: {path.name} has no Striim-Module-Name and is not named for module "
+                f"{mod!r}: {path}")
     if not path.is_file():
         raise OpArtifactError(f"{var}: prebuilt jar not found: {path}")
     return path, var

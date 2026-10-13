@@ -536,6 +536,17 @@ def test_build_jar_shared_prebuilt_rejects_other_module(tmp_path, monkeypatch, m
         opartifacts.build_jar(MODULE, RELEASE_54)
 
 
+@pytest.mark.parametrize("jar_name", ["ReferenceUdf-5.4.jar", "OtherOpV1-5.4.jar", "ReferenceOpExtraV1-5.4.jar"])
+def test_build_jar_shared_prebuilt_without_module_entry_must_be_named_for_the_module(tmp_path, monkeypatch, jar_name):
+    # A UDF jar carries no Striim-Module-Name, so only its name says which module it is.
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    prebuilt = tmp_path / jar_name
+    _write_jar_with_class(prebuilt, "com/example/Test.class", 61)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(prebuilt))
+    with pytest.raises(opartifacts.OpArtifactError, match="SLT_PREBUILT_JAR: .* has no Striim-Module-Name and is not named for module 'ReferenceOp'"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
 @pytest.mark.parametrize("manifest_module", ["ReferenceOp", "ReferenceOpV1", "referenceopv1", "", None])
 def test_build_jar_shared_prebuilt_accepts_matching_or_absent_module(tmp_path, monkeypatch, manifest_module):
     monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
