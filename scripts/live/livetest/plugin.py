@@ -22,7 +22,7 @@ from livetest.substitute import render
 from livetest.striim import StriimClient, probe_reachable, TERMINAL_STATUSES, POLL_TIMEOUT
 from livetest.assertions import AssertionFailed, ExpectedAssertionFailure
 from livetest.resultschema import write_sidecar
-from livetest.assertions.smoke import assert_smoke
+from livetest.assertions.smoke import SETTLE_SECONDS as _SMOKE_SETTLE_SECONDS, assert_smoke
 from livetest.assertions.data import assert_data, parse_data_specs
 from livetest.assertions.diff import assert_diff, parse_diff_specs
 from livetest.assertions.file import assert_file, parse_file_specs
@@ -73,6 +73,21 @@ from livetest import ownership as _slt_ownership   # ownership ledger, C7.6
 
 _STATE_DIR = paths.state_dir()
 INTERRUPT_TEARDOWN_TIMEOUT = 90.0
+# Earliest a post-start seed without `after:` runs, in seconds after RUNNING, when the source's
+# reader cannot report that it is reading (no driver reader_mode) and no lifecycle proved
+# readiness. The smoke settle used to provide it, at 5 s.
+SEED_FLOOR_SECONDS = 5.0
+
+
+def _post_start_seed_floor(reader_ready_known: bool, lifecycle: bool, smoke_settled: float) -> float:
+    """Seconds a post-start seed without `after:` waits once seeding starts (see SEED_FLOOR_SECONDS).
+
+    0 when a reader-ready wait or a lifecycle proved the source is reading; otherwise what is
+    left of the floor after the smoke settle already spent past RUNNING.
+    """
+    if reader_ready_known or lifecycle:
+        return 0.0
+    return max(0.0, SEED_FLOOR_SECONDS - smoke_settled)
 
 
 def _interrupt_teardown(run, item):
@@ -2740,6 +2755,7 @@ class LiveItem(pytest.Item):
                 # Each assert_* returns per-spec structured records (accumulated for the
                 # sidecar); on failure it raises AssertionFailed carrying the records it built
                 # before the raise, which we fold in so the failing assertion is still recorded.
+                _smoke_settled = 0.0   # seconds assert_smoke waited past RUNNING (seed floor)
                 try:
                     # smoke is itself a verification (it waits for + asserts RUNNING), so it is
                     # skipped under SLT_SKIP_VERIFY along with every other assert_* below.
@@ -2757,6 +2773,7 @@ class LiveItem(pytest.Item):
                         _report(m.name, "asserting: smoke")
                         self._slt_records += assert_smoke(client, smoke_apps, timeout=m.timeout,
                                                            progress=_hb("smoke: waiting for RUNNING"))
+                        _smoke_settled = _SMOKE_SETTLE_SECONDS
                         ran = True
 
                     # CDC sources capture only post-start commits: seed after RUNNING. Each
@@ -2774,7 +2791,16 @@ class LiveItem(pytest.Item):
                             _report(m.name, f"{_svc} {_mode} reader is reading ({_waited:.0f}s after RUNNING)")
                         _report(m.name, "seeding data (post-start)")
                         _t0 = time.monotonic()
+                        # A seed with no `after:`, on a source whose reader cannot prove it is
+                        # reading, waits until SEED_FLOOR_SECONDS after RUNNING. RUNNING is not
+                        # reading: an Oracle seed committed at RUNNING + 1 s was measured missed,
+                        # its child rows then breaking the target's foreign key. Until the smoke
+                        # settle went to 1 s, its 5 s covered this for every such case.
+                        _floor = _post_start_seed_floor(bool(reader_waits), m.lifecycle is not None,
+                                                        _smoke_settled)
                         for _db, _f, _after in _post_seed:
+                            if not _after and _floor:
+                                _after = _floor
                             if _after:
                                 _hb_wait = _hb(f"waiting to seed {_f}")
                                 while True:
