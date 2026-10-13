@@ -107,3 +107,17 @@ def test_drop_test_tables_prefix_filtered_multipass(monkeypatch):
     MssqlAdmin(dsn, connect=connect).drop_test_tables("tabc_")
     assert state["tables"] == ["other"]                       # prefix filter respected
     assert "DROP TABLE [qasource].[tabc_parent]" in executed  # retried after the child
+
+
+def test_admin_role_runs_seed_as_sa():
+    logins, executed = [], []
+
+    def connect(server, port, user, password, database, autocommit):
+        logins.append(user)
+        cur = types.SimpleNamespace(execute=lambda sql, *a: executed.append(sql),
+                                    fetchall=lambda: [(1,)], close=lambda: None)
+        return types.SimpleNamespace(cursor=lambda: cur, close=lambda: None)
+
+    dsn = {**_dsn(), "target_user": "qatarget", "target_password": "striim"}
+    MssqlAdmin(dsn, connect=connect, role="admin").run_sql("KILL 51")
+    assert logins == ["sa"] and "KILL 51" in executed

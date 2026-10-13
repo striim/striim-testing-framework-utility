@@ -39,7 +39,7 @@ the setting when the port is busy.
 |---|---|---|---|---|---|
 | `postgres` | `postgres:16` + `wal2json` | yes | 5432 | `postgres-source`, `postgres-target` | `SLT_PG_HOST` |
 | `oracle` | Oracle Free 23ai, ARCHIVELOG + LogMiner user | yes | 1521 | `oracle-source`, `oracle-target` | `SLT_ORA_HOST` |
-| `mssql` | SQL Server 2022 Developer, CDC + Agent | yes | 1433 | `mssql-source`, `mssql-target` | `SLT_MSSQL_HOST` |
+| `mssql` | SQL Server 2022 Developer, CDC + Agent | yes | 1433 | `mssql-source`, `mssql-target`, `mssql-admin` | `SLT_MSSQL_HOST` |
 | `mysql` | `mysql:8.0`, binlog `ROW` | yes | 3306 | `mysql-source`, `mysql-target` | `SLT_MYSQL_HOST` |
 | `vertica` | Vertica 25.3 Community Edition, one node | no | 5433 | `vertica-source`, `vertica-target`, `vertica-admin` | `SLT_VERTICA_HOST` |
 | `kafka` | Confluent 7.6.1: Kafka, ZooKeeper, Schema Registry | n/a | 9092, 19092, 8081 | `kafka` | `SLT_KAFKA_HOST` |
@@ -137,6 +137,8 @@ only, so it runs under emulation on Apple Silicon.
 | Tokens | `MSSQL_URL`, `MSSQL_HOST`, `MSSQL_PORT`, `MSSQL_HOSTPORT` (`host:port`), `MSSQL_DB`, `MSSQL_SOURCE_USER`, `MSSQL_SOURCE_PASSWORD`, `MSSQL_SOURCE_SCHEMA`, `MSSQL_TARGET_USER`, `MSSQL_TARGET_PASSWORD`, `MSSQL_TARGET_SCHEMA` |
 | Settings | `SLT_MSSQL_HOST` and the other `SLT_MSSQL_*` keys; port `SLT_MSSQL_HOST_PORT` |
 
+- `mssql-admin` runs a `seed:` statement as `sa` (for something a data user may not run, such as
+  `KILL`); nothing is dropped on it.
 - **CDC: disable before you drop.** SQL Server ties a capture instance to a table, and a plain
   `DROP TABLE` leaves it behind, so the next run fails with "capture instance already exists".
   A CDC test's DDL disables CDC on the table before dropping it, and enables it after creating it:

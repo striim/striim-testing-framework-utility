@@ -2144,6 +2144,8 @@ class LiveItem(pytest.Item):
                     admins["mssql-source"] = {"admin": _mssql, "schema": None}
                     admins["mssql-target"] = {"admin": MssqlAdmin(resolved.base, role="target"),
                                               "schema": None}
+                    admins["mssql-admin"] = {"admin": MssqlAdmin(resolved.base, role="admin"),
+                                             "schema": None}
                 elif svc == "spanner":
                     for admin, key in _spanner_admins(resolved.base):
                         admins[key] = {"admin": admin, "schema": None}

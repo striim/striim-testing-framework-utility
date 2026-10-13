@@ -226,6 +226,8 @@ class MssqlAdmin:
         (SQL Server's default collation is case-insensitive, so match that way).
         Multi-pass: a table referenced by another's FK can only drop after its
         dependents, so retry until no progress. Best-effort teardown."""
+        if self.role == "admin":
+            return    # the admin route owns no test tables; never sweep as sa
         user, _ = self._creds(self.role)
         schema = self.dsn.get(f"{self.role}_schema", user)
         if not _IDENT.match(schema):
