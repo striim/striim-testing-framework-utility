@@ -79,6 +79,12 @@ has to establish a change stream or finish a snapshot, for example. It is a blun
 fixed sleep makes the test slower and can still be too short on a loaded machine, so prefer an
 assertion that waits for a condition where the framework offers one.
 
+A `post_start` seed with no `after` runs no earlier than 5 s after RUNNING (`SEED_FLOOR_SECONDS`)
+when the source's reader cannot report that it is reading and no `lifecycle:` proved readiness:
+RUNNING is not reading, and an Oracle seed committed 1 s after RUNNING was measured missed. A
+source whose driver waits for its reader, or a `lifecycle:` case, seeds without the floor; an
+explicit `after` replaces it.
+
 ## `local: true` — test-only files beside an `example:`
 
 With `example:` set, `ddl`, `seed` and `upload` files come from the example dir. A file only the

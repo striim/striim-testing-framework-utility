@@ -5,7 +5,11 @@ from livetest.assertions import AssertionFailed
 from livetest.resultschema import build_assertion_result
 
 
-def assert_smoke(client, app: str | list[str], timeout: int, settle_seconds: float = 1.0,
+# How long assert_smoke waits after RUNNING by default. The plugin's post-start seed floor counts it.
+SETTLE_SECONDS = 1.0
+
+
+def assert_smoke(client, app: str | list[str], timeout: int, settle_seconds: float = SETTLE_SECONDS,
                   *, db: str | None = None, progress=None) -> list[dict]:
     # The settle catches an app that leaves RUNNING within settle_seconds of reaching it. A later
     # exit is caught only by the plugin's terminal-status probe (CRASH, HALT, TERMINATED,
