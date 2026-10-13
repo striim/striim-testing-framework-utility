@@ -56,6 +56,7 @@ class BuiltArtifact:
                       # the build lock released, can read a jar a sibling runner is rewriting.
                       # Empty for OP jars, which carry `fingerprint` instead.
     fingerprint: str = ""  # OP jars: the jar_content_fingerprint their content name is cut from
+                           # (a prebuilt jar: its sha256, see build_jar)
     built_name: str = ""   # OP jars: the name the build produced, before content naming
     module_name: str = ""  # OP jars: the manifest's Striim-Module-Name (the OP's identity)
 
@@ -273,7 +274,7 @@ def _content_addressed_uncached(built: BuiltArtifact, store: Path) -> BuiltArtif
         # The state dir is usually inside the consumer's checkout; keep these copies out of git.
         ignore.write_text("*\n")
     series = built.name[len(built.op_name) + 1: -len(".jar")]
-    fingerprint = jar_content_fingerprint(built.path)
+    fingerprint = built.fingerprint or jar_content_fingerprint(built.path)   # set: a prebuilt jar
     tag = _tag(fingerprint)
     name = content_addressed_name(built.name, tag, series)
     final = store / name
@@ -581,6 +582,55 @@ def _assert_jar_java_version(jar: Path, java_release, module_dir: Path) -> None:
             f"JDK (a stale build from another release). Run 'mvn clean' in {module_dir} "
             f"and retry.")
 
+def prebuilt_env_var(module_ref: str) -> str:
+    """The module's own prebuilt-jar variable, e.g. SLT_PREBUILT_JAR_FOOOP for module FooOp.
+
+    It outranks SLT_PREBUILT_JAR and SLT_PREBUILT_DIR, so a caller that loads several modules in
+    one process (a pre-flight) gives each module its own jar."""
+    return "SLT_PREBUILT_JAR_" + re.sub(r"[^A-Z0-9]", "_", module_name(module_ref).upper())
+
+
+def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
+    """The prebuilt jar to use instead of building `module_ref`, and the variable that chose it;
+    None when no prebuilt variable is set. A directory must hold exactly one jar of THIS module
+    for `series` ("<module>[V<version>]-<series>.jar", searched recursively); another module's
+    jar never stands in for it."""
+    for var in (prebuilt_env_var(module_ref), "SLT_PREBUILT_JAR", "SLT_PREBUILT_DIR"):
+        value = os.environ.get(var)
+        if value:
+            break
+    else:
+        return None
+    path = Path(value).resolve()
+    if path.is_dir():
+        mod = module_name(module_ref)
+        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(series)}\.jar", re.IGNORECASE)
+        matches = sorted(p for p in path.rglob("*.jar") if own.fullmatch(p.name))
+        if not matches:
+            raise OpArtifactError(f"{var}: no {mod} jar for series {series} in {path}")
+        if len(matches) > 1:
+            raise OpArtifactError(f"{var}: multiple candidates for {mod} in {path}: "
+                                  f"{[p.name for p in matches]}")
+        path = matches[0]
+    elif var == "SLT_PREBUILT_JAR" and path.is_file():
+        mod_id = jar_module_name(path)
+        mod = module_name(module_ref)
+        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?", re.IGNORECASE)
+        if mod_id and not own.fullmatch(mod_id):
+            raise OpArtifactError(
+                f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
+        # No entry (UDF jars carry none): the file name must name the module, as in a folder. A
+        # name without the series suffix is left to op_name_for's error.
+        suffix = f"-{series}.jar"
+        if not mod_id and path.name.endswith(suffix) and not own.fullmatch(path.name[: -len(suffix)]):
+            raise OpArtifactError(
+                f"{var}: {path.name} has no Striim-Module-Name and is not named for module "
+                f"{mod!r}: {path}")
+    if not path.is_file():
+        raise OpArtifactError(f"{var}: prebuilt jar not found: {path}")
+    return path, var
+
+
 def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArtifact:
     """Build module_ref (a repo-relative module dir or its pom.xml) against `release`
     (a dict as returned by livetest.releases.resolve_release / detect_release) and return the resulting
@@ -602,6 +652,23 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         raise OpArtifactError(f"release is missing STRIIM_SERIES: {release!r}")
     fingerprint = _build_fingerprint(release)
     java_release = release.get("JAVA_RELEASE")
+    chosen = _prebuilt_jar(module_ref, series)
+    if chosen:
+        prebuilt, var = chosen
+        corrupt = _jar_unreadable(prebuilt)
+        if corrupt is not None:
+            raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
+        _assert_jar_java_version(prebuilt, java_release, module_dir)
+        jar_name = prebuilt.name
+        op_name = op_name_for(jar_name, series)
+        digest = file_sha256(prebuilt)
+        mod_id = jar_module_name(prebuilt)
+        notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
+        # A prebuilt jar is an exact artifact, not a rebuild: its raw digest is its identity, so
+        # content_addressed copies and registers these bytes, never an older copy whose entries
+        # merely match.
+        return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest, fingerprint=digest, built_name=jar_name, module_name=mod_id)
+
     existing = _release_jar_candidates(module_dir, series)
     # >1 candidate is stale build output, not a broken repo: a version bump changes the
     # pom's finalName, and `mvn package` writes the new jar BESIDE the old one instead of
