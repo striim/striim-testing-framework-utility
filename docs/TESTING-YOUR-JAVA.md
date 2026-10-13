@@ -107,8 +107,13 @@ The first one set wins, in that order. Set them in the shell; `.env` does not ho
   release's series, named `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`),
   in it or below it. No match, or more than one, is an error and the case does not run; another
   module's jar is never used.
-- **A named file** is used as given, whatever its name: make sure it was built for the release's
-  series.
+- **A named file** must end in `-<series>.jar` for the release's series (for example
+  `ReferenceOpV1-5.4.jar`); otherwise the case does not run.
+- **A shared named file** selected by `SLT_PREBUILT_JAR` is refused if its `Striim-Module-Name`
+  manifest entry names another module. The entry must match the module folder's name, optionally
+  followed by `V<version>`, ignoring case. A jar without the entry is allowed. This manifest check
+  does not apply to `SLT_PREBUILT_JAR_<MODULE>` or `SLT_PREBUILT_DIR`; folder lookup already selects
+  only this module's jar.
 - **Before using it**, the run checks that the file is a readable jar and that its classes target
   the release's Java level (17 for Striim 5.4, 11 for 5.0 and 5.2). If not, the case does not run.
 - **The run reports** the file and its SHA-256 (`using prebuilt jar …`) and loads those exact

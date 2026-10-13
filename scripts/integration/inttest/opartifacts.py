@@ -111,6 +111,18 @@ def op_name_for(jar_name: str, series: str) -> str:
     return jar_name[: -len(suffix)]
 
 
+def jar_module_name(path) -> str:
+    """The jar's `Striim-Module-Name` manifest entry, or "" if it has none."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            text = z.read("META-INF/MANIFEST.MF").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return ""
+    m = re.search(r"^Striim-Module-Name:\s*(\S+)", text, re.MULTILINE)
+    return m.group(1) if m else ""
+
+
 def _files_under(directory: Path) -> list[Path]:
     return [p for p in directory.rglob("*") if p.is_file()] if directory.is_dir() else []
 
@@ -388,6 +400,13 @@ def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
             raise OpArtifactError(f"{var}: multiple candidates for {mod} in {path}: "
                                   f"{[p.name for p in matches]}")
         path = matches[0]
+    elif var == "SLT_PREBUILT_JAR" and path.is_file():
+        mod_id = jar_module_name(path)
+        mod = module_name(module_ref)
+        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?", re.IGNORECASE)
+        if mod_id and not own.fullmatch(mod_id):
+            raise OpArtifactError(
+                f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
     if not path.is_file():
         raise OpArtifactError(f"{var}: prebuilt jar not found: {path}")
     return path, var
@@ -423,8 +442,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
         _assert_jar_java_version(prebuilt, java_release, module_dir)
         jar_name = prebuilt.name
-        suffix = f"-{series}.jar"
-        op_name = jar_name[:-len(suffix)] if jar_name.endswith(suffix) else (jar_name[:-4] if jar_name.endswith(".jar") else jar_name)
+        op_name = op_name_for(jar_name, series)
         digest = file_sha256(prebuilt)
         notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
         return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest)

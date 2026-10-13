@@ -495,6 +495,61 @@ def test_build_jar_uses_prebuilt_jar_env(tmp_path, monkeypatch):
     assert len(calls) == 0
     assert any("using prebuilt jar" in r for r in reports)
 
+@pytest.mark.parametrize("jar_name", ["release.jar", "ExampleMapOpV8G-5.2.jar"])
+@pytest.mark.parametrize("per_module", [False, True])
+def test_build_jar_prebuilt_named_file_requires_series_suffix(tmp_path, monkeypatch, jar_name, per_module):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    prebuilt = tmp_path / jar_name
+    _jar(prebuilt, major=61)
+    var = opartifacts.prebuilt_env_var(MODULE) if per_module else "SLT_PREBUILT_JAR"
+    monkeypatch.setenv(var, str(prebuilt))
+    with pytest.raises(opartifacts.OpArtifactError, match="does not end with the expected '-5.4.jar'"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
+@pytest.mark.parametrize("manifest_module", ["OtherOpV1", "ExampleMapOpExtraV1"])
+def test_build_jar_shared_prebuilt_rejects_other_module(tmp_path, monkeypatch, manifest_module):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    prebuilt = tmp_path / "ExampleMapOpV8G-5.4.jar"
+    _jar(prebuilt, major=61)
+    with zipfile.ZipFile(prebuilt, "a") as z:
+        z.writestr("META-INF/MANIFEST.MF",
+                   f"Manifest-Version: 1.0\r\nStriim-Module-Name: {manifest_module}\r\n")
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(prebuilt))
+    with pytest.raises(opartifacts.OpArtifactError, match="SLT_PREBUILT_JAR: Striim-Module-Name .* does not match module 'ExampleMapOp'"):
+        opartifacts.build_jar(MODULE, RELEASE_54)
+
+
+@pytest.mark.parametrize("manifest_module", ["ExampleMapOp", "ExampleMapOpV8G", "examplemapopv8g", "", None])
+def test_build_jar_shared_prebuilt_accepts_matching_or_absent_module(tmp_path, monkeypatch, manifest_module):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    prebuilt = tmp_path / "ExampleMapOpV8G-5.4.jar"
+    _jar(prebuilt, major=61)
+    if manifest_module is not None:
+        with zipfile.ZipFile(prebuilt, "a") as z:
+            entry = f"Striim-Module-Name: {manifest_module}\r\n" if manifest_module else ""
+            z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\r\n" + entry)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(prebuilt))
+    calls = []
+    built = opartifacts.build_jar(MODULE, RELEASE_54, run=lambda *a, **k: calls.append(a))
+    assert built.path == prebuilt
+    assert built.op_name == "ExampleMapOpV8G"
+    assert built.sha256 == opartifacts.file_sha256(prebuilt)
+    assert calls == []
+
+
+@pytest.mark.parametrize("var", ["SLT_PREBUILT_JAR_EXAMPLEMAPOP", "SLT_PREBUILT_DIR", "SLT_PREBUILT_JAR"])
+def test_build_jar_module_override_and_directory_keep_manifest_behaviour(tmp_path, monkeypatch, var):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    prebuilt = tmp_path / "ExampleMapOpV8G-5.4.jar"
+    _jar(prebuilt, major=61)
+    with zipfile.ZipFile(prebuilt, "a") as z:
+        z.writestr("META-INF/MANIFEST.MF", "Striim-Module-Name: OtherOpV1\r\n")
+    value = prebuilt if var == opartifacts.prebuilt_env_var(MODULE) else tmp_path
+    monkeypatch.setenv(var, str(value))
+    assert opartifacts.build_jar(MODULE, RELEASE_54).path == prebuilt
+
+
 def test_build_jar_prebuilt_jar_rejects_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
     _hermetic_build_env(monkeypatch)
