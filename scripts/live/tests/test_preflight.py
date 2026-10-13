@@ -441,3 +441,99 @@ def test_op_jars_never_count_as_replaced(monkeypatch, tmp_path):
     assert preflight._replaced_loaded_jars(types.SimpleNamespace(mode="docker"), object(),
                                           [(_mod("java/FooOp", "op"), built)]) == []
     assert calls == []
+
+
+def test_preflight_registers_the_prebuilt_jar_its_preloaded_children_use(monkeypatch, tmp_path):
+    # The prebuilt-jar hook on the pre-loaded path: the pre-flight uploads and LOADs the jar the
+    # module's own variable names, and an SLT_OPS_PRELOADED child derives its tokens from the
+    # same content-named copy, so a test runs exactly the bytes the pre-flight registered.
+    import zipfile
+    from livetest import opartifacts, plugin
+
+    staged = tmp_path / "staged" / "FooOpV2-5.4.jar"
+    staged.parent.mkdir()
+    with zipfile.ZipFile(staged, "w") as z:
+        z.writestr("com/example/Foo.class", b"\xca\xfe\xba\xbe\x00\x00\x00\x3d")   # Java 17
+    other = tmp_path / "other" / "FooOpV1-5.4.jar"
+    other.parent.mkdir()
+    other.write_bytes(staged.read_bytes() + b"\0")
+    mod = _mod("java/FooOp", "op")
+    release = {"STRIIM_SERIES": "5.4", "JAVA_RELEASE": "17"}
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(other))     # a generic jar never outranks it
+    monkeypatch.setenv(opartifacts.prebuilt_env_var(mod["jar"]), str(staged))
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    monkeypatch.setattr(opartifacts, "op_jar_store", lambda: tmp_path / "store")
+    monkeypatch.setattr(preflight.stack, "_LOCK_DIR", tmp_path / "locks")
+    monkeypatch.setattr(plugin.stack, "_LOCK_DIR", tmp_path / "locks")
+    ctx = types.SimpleNamespace(mode="docker", url="fake", user="fake", password="fake")
+    monkeypatch.setattr(preflight, "manifests_for", lambda ids: [_mani("a", modules=[mod])])
+    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(preflight, "clear_provision_registry", lambda *a: None)
+    monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: release)
+    monkeypatch.setattr(preflight, "_resolve_striim", lambda cfg: ctx)
+    monkeypatch.setattr(preflight, "_bring_up_services", lambda *a, **kw: {})
+    monkeypatch.setattr(preflight.StriimClient, "from_url", lambda *a: object())
+    registered = []
+    monkeypatch.setattr(preflight, "_register_op_jar", lambda c, client, built: registered.append(built))
+
+    assert preflight.provision(["a"], env={}) == 0
+    [loaded] = registered
+    assert loaded.fingerprint == opartifacts.file_sha256(staged)
+    assert loaded.path.read_bytes() == staged.read_bytes()
+
+    monkeypatch.setenv("SLT_OPS_PRELOADED", "1")
+    [(_, child)] = plugin.build_modules(_mani("a", modules=[mod]), release)
+    assert (child.name, child.path, child.fingerprint) == (loaded.name, loaded.path, loaded.fingerprint)
+
+
+def test_preflight_loads_the_prebuilt_bytes_not_an_older_equivalent_copy(monkeypatch, tmp_path):
+    # Builds are not reproducible, so the store keeps one copy per entry fingerprint and a source
+    # rebuild that differs only in timestamps reuses it. A prebuilt jar is an exact artifact: with
+    # an older timestamp-equivalent copy already in the store, the pre-flight still uploads and
+    # registers the staged bytes, and the pre-loaded child resolves that same copy.
+    import zipfile
+    from livetest import opartifacts, plugin
+
+    def jar(path, year):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(zipfile.ZipInfo("com/example/Foo.class", date_time=(year, 1, 1, 0, 0, 0)),
+                       b"\xca\xfe\xba\xbe\x00\x00\x00\x3d")
+        return path
+
+    old = jar(tmp_path / "target" / "FooOpV2-5.4.jar", 2020)
+    staged = jar(tmp_path / "staged" / "FooOpV2-5.4.jar", 2021)
+    assert opartifacts.file_sha256(old) != opartifacts.file_sha256(staged)
+    assert opartifacts.jar_content_fingerprint(old) == opartifacts.jar_content_fingerprint(staged)
+    mod = _mod("java/FooOp", "op")
+    release = {"STRIIM_SERIES": "5.4", "JAVA_RELEASE": "17"}
+    store = tmp_path / "store"
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    monkeypatch.setattr(opartifacts, "op_jar_store", lambda: store)
+    old_copy = opartifacts.content_addressed(opartifacts.BuiltArtifact(old, old.name, "FooOpV2"))
+    old_bytes = old_copy.path.read_bytes()
+    monkeypatch.setenv(opartifacts.prebuilt_env_var(mod["jar"]), str(staged))
+    monkeypatch.setattr(preflight.stack, "_LOCK_DIR", tmp_path / "locks")
+    monkeypatch.setattr(plugin.stack, "_LOCK_DIR", tmp_path / "locks")
+    ctx = types.SimpleNamespace(mode="docker", url="fake", user="fake", password="fake")
+    monkeypatch.setattr(preflight, "manifests_for", lambda ids: [_mani("a", modules=[mod])])
+    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(preflight, "clear_provision_registry", lambda *a: None)
+    monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: release)
+    monkeypatch.setattr(preflight, "_resolve_striim", lambda cfg: ctx)
+    monkeypatch.setattr(preflight, "_bring_up_services", lambda *a, **kw: {})
+    monkeypatch.setattr(preflight.StriimClient, "from_url", lambda *a: object())
+    registered = []
+    monkeypatch.setattr(preflight, "_register_op_jar", lambda c, client, built: registered.append(built))
+
+    assert preflight.provision(["a"], env={}) == 0
+    [loaded] = registered
+    staged_sha = opartifacts.file_sha256(staged)
+    assert loaded.path != old_copy.path
+    assert opartifacts.file_sha256(loaded.path) == loaded.sha256 == staged_sha   # the upload source
+    assert old_copy.path.read_bytes() == old_bytes                               # never overwritten
+
+    monkeypatch.setenv("SLT_OPS_PRELOADED", "1")
+    [(_, child)] = plugin.build_modules(_mani("a", modules=[mod]), release)
+    assert (child.name, child.path) == (loaded.name, loaded.path)
+    assert child.fingerprint == loaded.fingerprint == staged_sha
