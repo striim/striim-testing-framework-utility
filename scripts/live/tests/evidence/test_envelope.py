@@ -124,6 +124,30 @@ def test_strict_json_file_comparison_writes_and_validates_full_evidence(good):
     assert saved["data"]["comparisons"][0]["equal"] is True
 
 
+def test_transaction_commit_after_recovery_is_written_to_evidence(good):
+    from livetest.transactions import Pool
+    class Connection:
+        def commit(self): pass
+        def rollback(self): pass
+        def close(self): pass
+    pool = Pool({"postgres-source": {"admin": object()}}, {}, source_sql=lambda f: "",
+                connect=lambda *args: Connection(), trace=good._slt_records.append)
+    steps = [{"session": "held", "op": "begin", "db": "postgres-source", "when": "post_start"},
+             {"session": "held", "op": "commit", "when": "post_recover"}]
+    pool.run_phase(steps, "post_start")
+    pool.run_phase(steps, "post_recover")
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    records = [r for r in saved["assertions"] if r["type"] == "transaction"]
+    assert len(records) == 2
+    event = records[-1]["actual"]["rows"][0]
+    assert (event["session"], event["op"], event["phase"], event["outcome"]) == (
+        "held", "commit", "post_recover", "succeeded")
+    assert event["startedAt"] <= event["endedAt"]
+
+
 def doc_of(item, status="passed"):
     return evidence.case_envelope(item, report(), status)
 

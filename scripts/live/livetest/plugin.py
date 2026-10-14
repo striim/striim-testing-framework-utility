@@ -2328,7 +2328,8 @@ class LiveItem(pytest.Item):
             if m.transaction_steps:
                 from livetest.transactions import Pool
                 _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),
-                                timeout=m.timeout, record=self._slt_inputs.record)
+                                timeout=m.timeout, record=self._slt_inputs.record,
+                                trace=self._slt_records.append, report=lambda msg: _report(m.name, msg))
                 _tx_pool.run_phase(m.transaction_steps, "pre_deploy")
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:

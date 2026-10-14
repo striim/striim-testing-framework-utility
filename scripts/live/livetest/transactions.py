@@ -3,6 +3,7 @@ import math
 import re
 import time
 from pathlib import Path
+from datetime import datetime, timezone
 
 from livetest import lifecycle as _lifecycle
 from livetest.sqlutil import split_sql_statements
@@ -94,10 +95,11 @@ def connect_session(admin, timeout):
 
 
 class Pool:
-    def __init__(self, admins, tokens, *, source_sql, timeout=120, connect=None, record=None):
+    def __init__(self, admins, tokens, *, source_sql, timeout=120, connect=None, record=None, trace=None, report=None):
         self.admins, self.tokens, self.source_sql = admins, tokens, source_sql
         self.timeout, self.connect, self.record = timeout, connect or connect_session, record
-        self.sessions = {}
+        self.sessions, self.routes = {}, {}
+        self.trace, self.report = trace, report
 
     def close(self):
         problems = []
@@ -112,10 +114,49 @@ class Pool:
                 except Exception as e:
                     problems.append(f"{name}: close failed: {e}")
                 del self.sessions[name]
+                self.routes.pop(name, None)
         if problems:
             raise ValueError("transaction-cleanup-error: " + "; ".join(problems))
 
+    def _step(self, step):
+        name, op = step["session"], step["op"]
+        if op == "begin":
+            self.sessions[name] = self.connect(self.admins[step["db"]]["admin"], self.timeout)
+            self.routes[name] = step["db"]
+            return
+        conn = self.sessions[name]
+        if op in ("commit", "rollback"):
+            getattr(conn, op)()
+            conn.close()
+            del self.sessions[name]
+            self.routes.pop(name, None)
+            return
+        cur = conn.cursor()
+        try:
+            if op == "sql":
+                template = self.source_sql(step["file"])
+                sql = render(template, self.tokens)
+                statements = split_sql_statements(sql)
+                if any(s.split(None, 1)[0].upper() in ("BEGIN", "START", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE", "PREPARE") for s in statements):
+                    raise ValueError("transaction-control-in-sql: use explicit transaction steps")
+                for statement in statements:
+                    cur.execute(statement)
+                if self.record:
+                    self.record("seed", step["file"], sql, template=template)
+            else:
+                command = {"savepoint": "SAVEPOINT", "rollback_to": "ROLLBACK TO SAVEPOINT", "release": "RELEASE SAVEPOINT"}[op]
+                cur.execute(f'{command} "{step["name"]}"')
+        finally:
+            if cur is not conn:
+                cur.close()
+
+    def _say(self, text):
+        if self.report:
+            from livetest.evidence import known_secrets, redact_text
+            self.report(redact_text(text, known_secrets()))
+
     def run_phase(self, steps, when):
+        from livetest.resultschema import build_assertion_result
         started = time.monotonic()
         try:
             for step in steps:
@@ -125,34 +166,29 @@ class Pool:
                 if left > 0:
                     time.sleep(left)
                 name, op = step["session"], step["op"]
-                if op == "begin":
-                    self.sessions[name] = self.connect(self.admins[step["db"]]["admin"], self.timeout)
-                    continue
-                conn = self.sessions[name]
-                if op in ("commit", "rollback"):
-                    getattr(conn, op)()
-                    conn.close()
-                    del self.sessions[name]
-                    continue
-                cur = conn.cursor()
+                route = step.get("db", self.routes.get(name))
+                began = time.monotonic()
+                event = {"session": name, "op": op, "phase": when,
+                         "startedAt": datetime.now(timezone.utc).isoformat(), "outcome": "failed"}
+                self._say(f"transactions: session={name} op={op} phase={when} startedAt={event['startedAt']}")
+                detail = "ok"
                 try:
-                    if op == "sql":
-                        template = self.source_sql(step["file"])
-                        sql = render(template, self.tokens)
-                        statements = split_sql_statements(sql)
-                        if any(s.split(None, 1)[0].upper() in ("BEGIN", "START", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE", "PREPARE") for s in statements):
-                            raise ValueError("transaction-control-in-sql: use explicit transaction steps")
-                        for statement in statements:
-                            cur.execute(statement)
-                        if self.record:
-                            self.record("seed", step["file"], sql, template=template)
-                    else:
-                        command = {"savepoint": "SAVEPOINT", "rollback_to": "ROLLBACK TO SAVEPOINT", "release": "RELEASE SAVEPOINT"}[op]
-                        cur.execute(f'{command} "{step["name"]}"')
+                    self._step(step)
+                    event["outcome"] = "succeeded"
+                except BaseException as e:
+                    detail = f"transaction-step-error: {type(e).__name__}: {e}"
+                    raise
                 finally:
-                    # Real cursors have independent lifetime; a fake may be its connection.
-                    if cur is not conn:
-                        cur.close()
+                    event["endedAt"] = datetime.now(timezone.utc).isoformat()
+                    event["durationS"] = time.monotonic() - began
+                    self._say(f"transactions: session={name} op={op} phase={when} "
+                              f"startedAt={event['startedAt']} endedAt={event['endedAt']} "
+                              f"outcome={event['outcome']} detail={detail}")
+                    if self.trace:
+                        self.trace(build_assertion_result(type="transaction", target=name, db=route,
+                            spec=dict(step), status="passed" if event["outcome"] == "succeeded" else "failed",
+                            detail=detail, expected={"kind": "rows", "rows": [{"outcome": "succeeded"}]},
+                            actual={"kind": "rows", "rows": [event]}))
         except BaseException:
             self.close()
             raise

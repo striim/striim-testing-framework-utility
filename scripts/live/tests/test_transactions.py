@@ -50,6 +50,44 @@ def test_error_closes_and_rolls_back_every_owned_session():
     assert conn.closed and ("a", "rollback") in conn.log
 
 
+def test_every_step_has_evidence_and_log_including_commit_after_recovery():
+    from livetest.resultschema import _validate_assertion
+    log, conns, records, messages = [], [], [], []
+    def connect(admin, timeout):
+        conn = Connection(str(len(conns)), log); conns.append(conn); return conn
+    pool = transactions.Pool({"postgres-source": {"admin": object()}}, {},
+        source_sql=lambda f: "INSERT INTO source VALUES (1)", connect=connect,
+        trace=records.append, report=messages.append)
+    pool.run_phase(steps(), "post_start")
+    assert len(records) == 7
+    pool.run_phase(steps(), "post_recover")
+    assert len(records) == len(steps())
+    for rec, step in zip(records, steps()):
+        _validate_assertion(rec, "transaction")
+        event = rec["actual"]["rows"][0]
+        assert (event["session"], event["op"], event["phase"]) == (step["session"], step["op"], step["when"])
+        assert event["startedAt"] <= event["endedAt"] and event["durationS"] >= 0
+        assert event["outcome"] == "succeeded" and rec["status"] == "passed"
+    assert records[-1]["actual"]["rows"][0]["phase"] == "post_recover"
+    assert any("session=a op=commit phase=post_recover" in msg and "succeeded" in msg for msg in messages)
+
+
+def test_failed_transaction_step_retains_failed_outcome_and_rolls_back():
+    records, messages = [], []
+    class Rejected(Connection):
+        def commit(self): raise RuntimeError("commit rejected")
+    conn = Rejected("a", [])
+    pool = transactions.Pool({"postgres-source": {"admin": object()}}, {},
+        source_sql=lambda f: "", connect=lambda *args: conn,
+        trace=records.append, report=messages.append)
+    with pytest.raises(RuntimeError, match="commit rejected"):
+        pool.run_phase([steps()[0], {"session": "a", "op": "commit", "when": "post_start"}], "post_start")
+    event = records[-1]["actual"]["rows"][0]
+    assert event["op"] == "commit" and event["outcome"] == "failed"
+    assert records[-1]["status"] == "failed" and conn.closed
+    assert any("commit rejected" in msg for msg in messages)
+
+
 @pytest.mark.parametrize("change", [lambda s: s[0].update(db="mysql-source"),
     lambda s: s[0].update(unknown=1), lambda s: s[0].update(op="sql"),
     lambda s: s[5].update(name="missing"), lambda s: s.pop(),

@@ -53,6 +53,14 @@ pre-deploy and post-recovery; post-start ordinary seeds run first. Post-start
 steps require lifecycle readiness;
 post-recover steps require `recover:` and run after the last restore, before settle.
 
+Every transaction step writes an assertion record of type `transaction` to the
+results sidecar and evidence, and a start/end progress-log line. The actual row
+contains session, op, phase, UTC startedAt/endedAt, durationS and succeeded/failed
+outcome, including commits after recovery. This proves the framework executed a
+commit; it does not prove the product reader captured it. Expected target rows
+remain the test's independent check. A failed step retains its failure record
+before owned sessions are rolled back and closed.
+
 - `op: begin` requires `db: postgres-source` or `postgres-target` and opens a new
   owned connection. Begin two sessions before committing either to overlap them.
 - `op: sql` requires `file`, read and token-rendered like a seed file. It executes
