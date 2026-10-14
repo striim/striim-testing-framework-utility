@@ -492,7 +492,10 @@ def exact_read(conn, table_sql: str, order_by, max_rows: int, max_transfer: int,
     - ``cancelled()`` is checked before each statement, so nothing more is sent once the probe expired."""
     if _driver_connection(conn):
         register_exact_json(conn)
-    conn.autocommit = False
+    if start_snapshot:
+        # psycopg2's autocommit setter calls set_session, which refuses an active
+        # transaction. Later tables reuse the first table's snapshot unchanged.
+        conn.autocommit = False
     row_text = "octet_length(ROW(_slt_r.*)::text)"
 
     def stop():

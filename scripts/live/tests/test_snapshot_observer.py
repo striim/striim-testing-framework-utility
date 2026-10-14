@@ -66,6 +66,44 @@ def test_pg_one_connection_one_repeatable_read(monkeypatch):
     assert calls == [(connection, True), (connection, False)]
 
 
+def test_two_table_snapshot_does_not_reconfigure_an_open_psycopg_transaction(monkeypatch):
+    """Model psycopg2's autocommit setter and transaction state, run real exact_read."""
+    from livetest import lifecycle
+    calls = []
+    class Cursor:
+        description = [("row_bytes",), ("id",)]
+        def __init__(self, conn): self.conn, self.fetched = conn, False
+        def execute(self, sql, params=None):
+            self.conn.active = True
+            calls.append(sql)
+        def fetchone(self): return (1, 2, 1)
+        def fetchmany(self, size):
+            if self.fetched: return []
+            self.fetched = True
+            return [(1, 1)]
+        def close(self): pass
+    class Connection:
+        active = False
+        @property
+        def autocommit(self): return False
+        @autocommit.setter
+        def autocommit(self, value):
+            if self.active:
+                raise RuntimeError("set_session cannot be used inside a transaction")
+            calls.append("configure session")
+        def cursor(self, name=None): return Cursor(self)
+    conn = Connection()
+    class Probe:
+        def _call(self, sql, params, remaining, fetch, read):
+            return read(conn, lambda: False)
+    monkeypatch.setattr(lifecycle, "PgProbe", lambda admin: Probe())
+    result = observer.read_snapshot(spec(), {"postgres-target": {"admin": object()}},
+                                   {"PG_TARGET_SCHEMA": "qatarget", "TID": "case_"}, 2)
+    assert result == {"a": [{"id": 1}], "b": [{"id": 1}]}
+    assert calls.count("configure session") == 1
+    assert calls.count("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY") == 1
+
+
 def test_spanner_one_multi_use_snapshot(monkeypatch):
     from livetest import exactdata
     calls = []
