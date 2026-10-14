@@ -610,3 +610,19 @@ def test_kafka_sequence_real_envelope_validator(good, equal):
     doc = doc_of(good, "passed" if equal else "failed")
     evidence.validate_case(doc)
     evidence.read(write(good, doc))
+
+
+@pytest.mark.parametrize("equal", [True, False])
+def test_kafka_strict_json_real_envelope_validator(good, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}, "strict_json": True}, db_route=False)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    old = good._slt_data[0]
+    good._slt_data = [{**comp, "index": 0, "type": "data", "target": "t1_topic", "route": "kafka",
+        "expected": {**comp["expected"], "source": old["expected"]["source"],
+                     "templateSha256": old["expected"]["templateSha256"]},
+        "actual": {**comp["actual"], "owned": False}}]
+    good._slt_records = [record(target="t1_topic", db="kafka", status="passed" if equal else "failed",
+        spec={"project": "kafka_record", "payload": "json", "exact": {"columns": {"id": "integer"}, "strict_json": True}})]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))

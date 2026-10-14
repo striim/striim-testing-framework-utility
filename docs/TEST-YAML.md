@@ -1205,3 +1205,5 @@ differing only in case — none of them is a readable test-name slug. Write ever
   provisioning, register-once OP jars, no automatic teardown).
 
 Worked case: [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
+
+Kafka `payload: json` comparisons retain their file/record declaration rules in evidence validation, including `strict_json: true` and record sequence order without a database `order_by`. Passing and failing comparisons both retain a validated envelope.
