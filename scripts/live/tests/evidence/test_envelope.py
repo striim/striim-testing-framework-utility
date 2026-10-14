@@ -650,3 +650,38 @@ def test_kafka_strict_json_real_envelope_validator(good, equal):
     doc = doc_of(good, "passed" if equal else "failed")
     evidence.validate_case(doc)
     evidence.read(write(good, doc))
+
+
+def test_observed_commit_writes_source_keys_and_slot_evidence(good):
+    from livetest.transactions import Pool
+    class Cursor:
+        def execute(self, *args): pass
+        def fetchone(self): return (41,)
+        def close(self): pass
+    class Connection:
+        def cursor(self): return Cursor()
+        def commit(self): pass
+        def rollback(self): pass
+        def close(self): pass
+    class Probe:
+        def query(self, sql, params=None, remaining=1):
+            if 'txid_status' in sql: return [('committed',)]
+            if 'pg_replication_slots' in sql: return [('0/10','0/08')]
+            return [('1',False),('2',False)]
+    pool = Pool({'postgres-source': {'admin': object()}},
+        {'PG_SOURCE_SCHEMA': 'qasource', 'TID': 'case_', 'PG_SLOT': 'case_slot'},
+        source_sql=lambda f: '', connect=lambda *args: Connection(), probe=lambda *args: Probe(),
+        owned=lambda *args: True, trace=good._slt_records.append)
+    steps = [{'session':'a','op':'begin','db':'postgres-source','when':'post_start',
+        'observe': {'tables':[{'table':'${PG_SOURCE_SCHEMA}.${TID}src','key':'id'}],'slot':'${PG_SLOT}'}},
+        {'session':'a','op':'commit','when':'post_recover'}]
+    pool.run_phase(steps,'post_start')
+    pool.observe_recovery('pre_interrupt')
+    pool.observe_recovery('post_restore')
+    pool.run_phase(steps,'post_recover')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc_of(good), secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved,secrets=())
+    event = saved['assertions'][-1]['actual']['rows'][0]
+    assert event['txid'] == 41 and event['commitStatus'] == 'committed'
+    assert event['source']['tables'][0]['keys'] == ['1','2']
+    assert event['source']['slot']['restartLsn'] == '0/08'

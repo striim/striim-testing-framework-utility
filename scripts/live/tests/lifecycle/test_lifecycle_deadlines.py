@@ -604,3 +604,30 @@ def test_sentinel_stability_rereads_the_sentinel_after_the_interval(tmp_path, ph
     state2 = lifecycle.State("cdc")
     call(state2, spec, source_dir=tmp_path, id_source=lambda: 42, **_kw(clock2, _sentinel_world(tmp_path, clock2, reappear=False)))
     assert state2.stability["held"] is True and state2.stability["value"] == 0 and state2.stability["measuredS"] >= 5.0
+
+
+def test_observation_budget_retains_the_start_and_end():
+    clock = FakeClock()
+    watch = lifecycle.Watch('row-count','count',lifecycle.Deadline(100,clock))
+    for n in range(80): watch.observe(n)
+    values = [o['value'] for o in watch.finish('deadline')['observations']]
+    assert len(values) == 50
+    assert values[:10] == list(range(10)) and values[-40:] == list(range(40,80))
+
+
+def test_failed_completion_keeps_bounded_target_keys(monkeypatch):
+    class Probe:
+        def query(self, sql, params=None, remaining=1):
+            assert remaining > 0
+            if 'count(*)' in sql: return [(1,)]
+            return [('2',False)]
+    monkeypatch.setattr(lifecycle, 'make_probe', lambda *args: Probe())
+    state, clock = lifecycle.State('cdc'), FakeClock()
+    spec = _spec(completion={'kind':'row-count','db':'postgres-target',
+        'table':'${PG_TARGET_SCHEMA}.${TID}tgt','expect':2,'key':'id'})
+    with pytest.raises(LifecycleError, match='deadline'):
+        lifecycle.complete(state,spec,**_kw(clock,_admins(target_fn=lambda *args: [(1,)])))
+    value = state.completion['observations'][-1]['value']
+    assert value['targetKeys']['keys'] == ['2']
+    assert value['targetKeys']['keysTruncated'] is False
+    assert state.completion['reason'] == 'deadline'

@@ -163,6 +163,51 @@ op:
   `expected/` or `docs/`; the same name marked local in one entry and not in another.
 - Local files get the same token rendering and isolation checks as example files.
 
+### Transaction source diagnostics
+
+Add `observe` to a transaction `begin` to capture source proof on its commit.
+It declares 1..16 table/key pairs and an optional owned replication slot.
+Unknown keys are refused with `invalid-transaction-observe`; unowned runtime
+references fail `transaction-observe-not-owned`. Each commit captures
+`txid_current()` on its session before commit, then confirms `txid_status()`
+through a separate bounded probe and records the declared source keys. An
+unconfirmed commit fails `transaction-commit-not-confirmed`. Post-commit probe
+failures retain `commitSucceeded: true` while reporting failed evidence.
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: row-count, db: postgres-source, table: '${PG_SOURCE_SCHEMA}.${TID}src', expect: 1}
+  reset: owned
+transactions:
+  - session: a
+    op: begin
+    db: postgres-source
+    observe:
+      tables:
+        - {table: '${PG_SOURCE_SCHEMA}.${TID}src', key: id}
+      slot: '${PG_SLOT}'
+  - {session: a, op: sql, file: changes.sql}
+  - {session: a, op: commit}
+```
+
+Source observations use separate connections and do not commit or close held
+seed sessions. Recovery records source keys and the slot's confirmed_flush_lsn
+and restart_lsn before interruption and after restore, with UTC times. These
+probes have a two-second budget. Key samples select at most 51 values on the
+server, retain 50, and bound each value to 256 characters, with explicit
+truncation flags. Diagnostics do not replace the target's exact assertion.
+
+For `lifecycle.completion.kind: row-count`, optional `key: id` captures a bounded
+sample of target keys on failure using a separate two-second diagnostic probe.
+It cannot satisfy or extend the completion deadline. Probe errors are retained
+alongside the original failure. Lifecycle evidence keeps the first 10 and last
+40 observations within its existing 50-observation cap.
+
 ## `recover:` — interrupt the app, bring it back, then assert
 
 Every other phase verifies a pipeline that ran undisturbed. That cannot observe a whole class of

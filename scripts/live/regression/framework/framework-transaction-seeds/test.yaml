@@ -38,6 +38,7 @@ lifecycle:
     db: postgres-target
     table: ${PG_TARGET_SCHEMA}.${TID}tgt
     expect: 2
+    key: id
   stability: 5s
   deadlines:
     readiness: 90s
@@ -51,9 +52,19 @@ transactions:
 - session: a
   op: begin
   db: postgres-source
+  observe:
+    tables:
+    - table: ${PG_SOURCE_SCHEMA}.${TID}src
+      key: id
+    slot: ${PG_SLOT}
 - session: b
   op: begin
   db: postgres-source
+  observe:
+    tables:
+    - table: ${PG_SOURCE_SCHEMA}.${TID}src
+      key: id
+    slot: ${PG_SLOT}
 - session: a
   op: sql
   file: a.sql

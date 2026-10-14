@@ -55,7 +55,7 @@ _KIND_KEYS = {
     "source-progress": {"kind", "db"},
     "sentinel": {"kind"},
     "source-count": {"kind", "source", "target"},
-    "row-count": {"kind", "db", "table", "expect"},
+    "row-count": {"kind", "db", "table", "expect", "key"},
     "file-lines": {"kind", "path", "lines"},
 }
 _SENTINEL_KEYS = {"db", "insert", "delete", "observe"}
@@ -240,6 +240,8 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
         if not isinstance(completion.get("table"), str) or not completion["table"]:
             _err(path, "completion.table must be a non-empty string")
         _positive_int(path, completion.get("expect"), "completion.expect")
+        if "key" in completion and (not isinstance(completion["key"], str) or not _IDENT.fullmatch(completion["key"])):
+            _err(path, "completion.key must be a plain column identifier")
     elif ck == "file-lines":
         if not isinstance(completion.get("path"), str):
             _err(path, "completion.path is required for kind file-lines")
@@ -352,17 +354,22 @@ class Watch:
         self.kind, self.condition, self.deadline = kind, condition, deadline
         self.clock = deadline.clock
         self.started = self.clock.wall()
-        self.observations = collections.deque(maxlen=MAX_OBSERVATIONS)
+        self.first_observations = []
+        self.observations = collections.deque(maxlen=MAX_OBSERVATIONS - 10)
 
     def observe(self, value) -> None:
-        self.observations.append({"at": self.clock.wall(), "value": value})
+        observation = {"at": self.clock.wall(), "value": value}
+        if len(self.first_observations) < 10:
+            self.first_observations.append(observation)
+        else:
+            self.observations.append(observation)
 
     def finish(self, reason: str, witness: str | None = None) -> dict:
         ended = self.clock.wall()
         return {"kind": self.kind, "condition": self.condition,
                 "witness": witness if reason == "satisfied" else None,
                 "at": ended, "startedAt": self.started, "endedAt": ended,
-                "deadlineS": self.deadline.seconds, "observations": list(self.observations),
+                "deadlineS": self.deadline.seconds, "observations": self.first_observations + list(self.observations),
                 "reason": reason}
 
 
@@ -1098,6 +1105,15 @@ def complete(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens,
     if reason == "satisfied":
         state.stability, held = _hold(spec, clock, observe, satisfied)
         reason = reason if held else "stability-lost"
+    if reason != "satisfied" and kind == "row-count" and "key" in spec.completion:
+        from livetest.diagnostics import read_keys
+        diagnostic = {"stage": "completion-failure", "count": value}
+        try:
+            diagnostic["targetKeys"] = read_keys(make_probe(_admin(admins, spec.completion["db"])),
+                _render(spec.completion["table"], tokens), spec.completion["key"], 2.0)
+        except Exception as e:
+            diagnostic["keyReadError"] = f"{type(e).__name__}: {e}"
+        watch.observe(diagnostic)
     state.completion = watch.finish(reason, witness)
     if reason != "satisfied":
         raise LifecycleError(f"lifecycle completion {kind} failed: {reason}", state.completion)

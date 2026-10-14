@@ -2329,7 +2329,7 @@ class LiveItem(pytest.Item):
                 from livetest.transactions import Pool
                 _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),
                                 timeout=m.timeout, record=self._slt_inputs.record,
-                                trace=self._slt_records.append, report=lambda msg: _report(m.name, msg))
+                                trace=self._slt_records.append, report=lambda msg: _report(m.name, msg), owned=ledger.owns)
                 _tx_pool.run_phase(m.transaction_steps, "pre_deploy")
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
@@ -2885,6 +2885,8 @@ class LiveItem(pytest.Item):
                             # the default would report a WORKING stop as "not interrupted".
                             # Floored at the default so a short-timeout manifest cannot make
                             # verification stricter than the library intends.
+                            if _tx_pool is not None:
+                                _tx_pool.observe_recovery("pre_interrupt")
                             recovery.interrupt(client, ctx, app, _rc["mode"],
                                                verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                                report=lambda msg: _report(m.name, msg))
@@ -2894,13 +2896,18 @@ class LiveItem(pytest.Item):
                             # arrives only after the restart. Their `after` counts from RUNNING.
                             _post_rec = [(db, f, a) for db, f, when, a in m.seed_files
                                          if when == "post_recover"]
-                            _restore_then_post_recover(
-                                restore=lambda _settle: recovery.restore(
+                            def _restore_cycle(_settle):
+                                status = recovery.restore(
                                     client, ctx, app, _rc["mode"], timeout=m.timeout,
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
                                     report=lambda msg: _report(m.name, msg),
-                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}")),
+                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}"))
+                                if _tx_pool is not None:
+                                    _tx_pool.observe_recovery("post_restore")
+                                return status
+                            _restore_then_post_recover(
+                                restore=_restore_cycle,
                                 run_files=_run_files,
                                 seeds=_post_rec,
                                 post_restore=(lambda: _tx_pool.run_phase(m.transaction_steps, "post_recover"))
