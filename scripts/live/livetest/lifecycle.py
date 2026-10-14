@@ -991,9 +991,11 @@ def _source_sql_reader(ctx_dir):
 
 def publish_sentinels(state, tokens, ident):
     bindings = {}
+    per_test = getattr(ident, "per_test", "t000000000")
+    attempt = getattr(ident, "attempt", "00000000")
     for phase, value in getattr(state, "sentinel_ids", {}).items():
         bindings[f"SENTINEL_{phase.upper()}_ID"] = str(value)
-        bindings[f"SENTINEL_{phase.upper()}_TAG"] = f"slt-{ident.per_test}-{ident.attempt}-{phase}"
+        bindings[f"SENTINEL_{phase.upper()}_TAG"] = f"slt-{per_test}-{attempt}-{phase}"
     state.sentinel_bindings = bindings
     tokens.update(bindings)
 
