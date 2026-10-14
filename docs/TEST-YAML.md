@@ -1561,3 +1561,5 @@ Worked case: [09-raw-file](../samples/live/09-raw-file/README.md). Framework gal
 Absence selector string values expand case tokens before matching. Finite numeric selectors compare by decimal value, so YAML `9.99` matches a delivered numeric `9.99`; booleans and strings retain distinct token types. Missing fields or incompatible output types still fail the read.
 
 Worked case: [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md). Framework gallery: [framework-bounded-nothing](../scripts/live/regression/framework/framework-bounded-nothing/README.md).
+
+Transaction seed SQL refuses `ABORT` along with other transaction-control statements; use a declared transaction step so session lifetime and rollback remain observable.

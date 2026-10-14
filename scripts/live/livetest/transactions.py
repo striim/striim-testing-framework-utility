@@ -241,7 +241,7 @@ class Pool:
                 template = self.source_sql(step["file"])
                 sql = render(template, self.tokens)
                 statements = split_sql_statements(sql)
-                if any(s.split(None, 1)[0].upper() in ("BEGIN", "START", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE", "PREPARE") for s in statements):
+                if any(s.split(None, 1)[0].upper() in ("BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT", "RELEASE", "PREPARE") for s in statements):
                     raise ValueError("transaction-control-in-sql: use explicit transaction steps")
                 for statement in statements:
                     cur.execute(statement)

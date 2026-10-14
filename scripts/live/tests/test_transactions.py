@@ -41,10 +41,11 @@ def test_overlapping_sessions_hold_through_recover_and_commit_in_chosen_order():
     assert all(c.closed for c in conns)
 
 
-def test_error_closes_and_rolls_back_every_owned_session():
+@pytest.mark.parametrize("control", ["COMMIT", "ABORT"])
+def test_error_closes_and_rolls_back_every_owned_session(control):
     conn = Connection("a", [])
     pool = transactions.Pool({"postgres-source": {"admin": object()}}, {},
-        source_sql=lambda f: "COMMIT;", connect=lambda *a: conn)
+        source_sql=lambda f: control + ";", connect=lambda *a: conn)
     with pytest.raises(ValueError, match="transaction-control-in-sql"):
         pool.run_phase(steps()[:1] + [steps()[2]], "post_start")
     assert conn.closed and ("a", "rollback") in conn.log
