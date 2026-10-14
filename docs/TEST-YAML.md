@@ -44,13 +44,15 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 
 ## `transactions:` — overlapping Postgres seed sessions
 
-The optional ordered `transactions:` list controls named seed sessions. Each
+The optional ordered `transactions:` list controls named seed sessions. Session
+names match `[A-Za-z_][A-Za-z0-9_]{0,62}`; they are not SQL connection strings. Each
 step has `session` and `op`, optional `when` (`pre_deploy`, `post_start` (default)
 or `post_recover`), and optional `after` (a duration from the start of that
 transaction phase). The phases must occur in that order; steps within a phase
 execute in list order. Transaction steps run before ordinary seed files during
 pre-deploy and post-recovery; post-start ordinary seeds run first. Post-start
-steps require lifecycle readiness;
+steps require lifecycle readiness. A begin can add `observe` for bounded commit
+proof (see Transaction source diagnostics below);
 post-recover steps require `recover:` and run after the last restore, before settle.
 
 Every transaction step writes an assertion record of type `transaction` to the
@@ -86,6 +88,52 @@ transactions:
   - {session: a, op: begin, db: postgres-source, when: pre_deploy}
   - {session: a, op: rollback, when: pre_deploy}
 ```
+
+### Transaction source diagnostics
+
+Add `observe` to a transaction `begin` to capture source proof on its commit.
+It declares 1..16 table/key pairs and an optional owned replication slot.
+Unknown keys are refused with `invalid-transaction-observe`; unowned runtime
+references fail `transaction-observe-not-owned`. Each commit captures
+`txid_current()` on its session before commit, then confirms `txid_status()`
+through a separate bounded probe and records the declared source keys. An
+unconfirmed commit fails `transaction-commit-not-confirmed`. Post-commit probe
+failures retain `commitSucceeded: true` while reporting failed evidence.
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: row-count, db: postgres-source, table: '${PG_SOURCE_SCHEMA}.${TID}src', expect: 1}
+  reset: owned
+transactions:
+  - session: a
+    op: begin
+    db: postgres-source
+    observe:
+      tables:
+        - {table: '${PG_SOURCE_SCHEMA}.${TID}src', key: id}
+      slot: '${PG_SLOT}'
+  - {session: a, op: sql, file: changes.sql}
+  - {session: a, op: commit}
+```
+
+Source observations use separate connections and do not commit or close held
+seed sessions. Recovery records source keys and the slot's confirmed_flush_lsn
+and restart_lsn before interruption and after restore, with UTC times. These
+probes have a two-second budget. Key samples select at most 51 values on the
+server, retain 50, and bound each value to 256 characters, with explicit
+truncation flags. Diagnostics do not replace the target's exact assertion.
+
+For `lifecycle.completion.kind: row-count`, optional `key: id` captures a bounded
+sample of target keys on failure using a separate two-second diagnostic probe.
+It cannot satisfy or extend the completion deadline. Probe errors are retained
+alongside the original failure. Lifecycle evidence keeps the first 10 and last
+40 observations within its existing 50-observation cap.
+
 
 ## `seed:` — `when` and `after`
 
@@ -163,50 +211,6 @@ op:
   `expected/` or `docs/`; the same name marked local in one entry and not in another.
 - Local files get the same token rendering and isolation checks as example files.
 
-### Transaction source diagnostics
-
-Add `observe` to a transaction `begin` to capture source proof on its commit.
-It declares 1..16 table/key pairs and an optional owned replication slot.
-Unknown keys are refused with `invalid-transaction-observe`; unowned runtime
-references fail `transaction-observe-not-owned`. Each commit captures
-`txid_current()` on its session before commit, then confirms `txid_status()`
-through a separate bounded probe and records the declared source keys. An
-unconfirmed commit fails `transaction-commit-not-confirmed`. Post-commit probe
-failures retain `commitSucceeded: true` while reporting failed evidence.
-
-<!-- snippet: fragment -->
-```yaml
-lifecycle:
-  version: 1
-  mode: cdc
-  sink: db
-  readiness: {kind: source-progress, db: postgres-source}
-  completion: {kind: row-count, db: postgres-source, table: '${PG_SOURCE_SCHEMA}.${TID}src', expect: 1}
-  reset: owned
-transactions:
-  - session: a
-    op: begin
-    db: postgres-source
-    observe:
-      tables:
-        - {table: '${PG_SOURCE_SCHEMA}.${TID}src', key: id}
-      slot: '${PG_SLOT}'
-  - {session: a, op: sql, file: changes.sql}
-  - {session: a, op: commit}
-```
-
-Source observations use separate connections and do not commit or close held
-seed sessions. Recovery records source keys and the slot's confirmed_flush_lsn
-and restart_lsn before interruption and after restore, with UTC times. These
-probes have a two-second budget. Key samples select at most 51 values on the
-server, retain 50, and bound each value to 256 characters, with explicit
-truncation flags. Diagnostics do not replace the target's exact assertion.
-
-For `lifecycle.completion.kind: row-count`, optional `key: id` captures a bounded
-sample of target keys on failure using a separate two-second diagnostic probe.
-It cannot satisfy or extend the completion deadline. Probe errors are retained
-alongside the original failure. Lifecycle evidence keeps the first 10 and last
-40 observations within its existing 50-observation cap.
 
 ## `recover:` — interrupt the app, bring it back, then assert
 
@@ -1563,3 +1567,5 @@ Absence selector string values expand case tokens before matching. Finite numeri
 Worked case: [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md). Framework gallery: [framework-bounded-nothing](../scripts/live/regression/framework/framework-bounded-nothing/README.md).
 
 Transaction seed SQL refuses `ABORT` along with other transaction-control statements; use a declared transaction step so session lifetime and rollback remain observable.
+
+Worked case: [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md). Framework gallery: [framework-transaction-seeds](../scripts/live/regression/framework/framework-transaction-seeds/README.md).

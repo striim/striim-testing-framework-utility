@@ -180,6 +180,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | File/Kafka/Spanner lifecycle sentinel and bounded absence | File: **tested**, sample 10 reported passing on Striim 5.4.2. Kafka/Spanner: **supported, not exercised here**, hermetic coverage. The sentinel SQL source remains Postgres; table-count witnesses remain Postgres |
 | Strict JSON file payload | **tested**: sample 08 reported passing on Striim 5.4.2. Kafka JSON/Avro strict mode: **supported, not exercised here**, hermetic coverage |
 | Raw file bytes/inventory | **tested**: sample 09 reported passing on Striim 5.4.2, Docker mode; extra empty files fail |
+| Overlapping Postgres seed sessions and held-open recovery commit | **tested**: sample 11 reported passing on Striim 5.4.2 with explicit RECOVERY, progress-triggered STOP and fresh recovery sentinel; expected rows unchanged |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
@@ -238,3 +239,4 @@ row above for recorded runs; a skip is never a pass.
 | Raw bytes and exact inventory | — | — | — | yes | Docker owned output directory; every empty/hidden rolled file counts |
 | Lifecycle sentinel | yes | both dialects | yes | yes | Postgres source; fresh owned sinks; file requires Docker; Kafka can use native |
 | Bounded `nothing:` | yes | both dialects | yes | yes | Only after the completion sentinel proves this route; file requires Docker |
+| Transaction seeds | source or target | — | — | — | Native or Docker Postgres; post-start requires lifecycle readiness |

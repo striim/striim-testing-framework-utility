@@ -182,3 +182,14 @@ drop or replay bypass does not establish ownership.
 | `nothing-arrived` | A matching row arrived during the declared absence window. | Inspect the offending row and fix the app/input; do not shorten the window to hide it. |
 | `nothing-read-error` | An absence probe failed or missed its read deadline. | Correct route reachability/ownership and inspect the nested error; an unreadable sink is not empty. |
 | `witness-unresolvable` | A lifecycle observation cannot be rendered/resolved. | Check sentinel tokens, route, table/path/topic and key declarations against the sink shape. |
+
+## Control overlapping seed transactions and recovery commits
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-transaction-seed` | A transaction schedule/observation has invalid keys, references or phase ordering. | Use valid session names and supported operations; observe only declared owned source tables and slots. |
+| `invalid-transaction-observe` | A transaction schedule/observation has invalid keys, references or phase ordering. | Use valid session names and supported operations; observe only declared owned source tables and slots. |
+| `transaction-control-in-sql` | A transaction SQL file contains transaction-control statements. | Move BEGIN/COMMIT/ROLLBACK/SAVEPOINT operations to transactions; keep the file data SQL only. |
+| `transaction-step-error` | A scheduled transaction operation failed. | Read the transaction record for session/op/phase and driver error; check source constraints and held sessions. |
+| `transaction-cleanup-error` | A held session could not be rolled back/closed during teardown. | Inspect the session error and ensure the source connection can be closed; cleanup failure is retained. |
+| `transaction-observe-not-owned` | A diagnostic table/slot is not confirmed for this attempt and route. | Create/declare it through framework DDL; do not use prior-attempt or foreign resources. |

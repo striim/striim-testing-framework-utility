@@ -348,6 +348,7 @@ In it, under `live/`:
 - `resources`: what the run created, reused and cleaned up.
 - **Raw files**: A `file` assertion carries complete `expected.rows` and `actual.rows` inventory entries: `name`, `bytes`, `sha256`, and optional `records`. Its status and detail distinguish inventory, byte/hash and record-count failures.
 - **Bounded absence**: A `data` or `file` assertion expects count zero and records the last matching count. Success detail states the completed window and read count. A zero count alone does not qualify a failed probe; require a passed assertion and the satisfied completion sentinel.
+- **Transaction seeds**: `transaction` assertions record session, operation, phase, UTC start/end, duration and outcome. Observed commits add `txid`, `commitSucceeded`, `commitStatus` and `source` key/slot read-back. Recovery source observations show `pre_interrupt`/`post_restore` and UTC. Failed row-count completion with `key` adds bounded `targetKeys`; the original completion reason remains.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -521,3 +522,7 @@ Start with [09-raw-file](../samples/live/09-raw-file/README.md), then use the co
 ### Prove no matching data arrived after a sentinel
 
 Start with [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-bounded-nothing/README.md) exercises the same framework contract.
+
+### Control overlapping seed transactions and recovery commits
+
+Start with [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-transaction-seeds/README.md) exercises the same framework contract.
