@@ -631,3 +631,12 @@ def test_failed_completion_keeps_bounded_target_keys(monkeypatch):
     assert value['targetKeys']['keys'] == ['2']
     assert value['targetKeys']['keysTruncated'] is False
     assert state.completion['reason'] == 'deadline'
+
+
+def test_watch_exposes_the_same_bounded_history_it_serializes():
+    watch = lifecycle.Watch('sentinel', 'marker delivered', lifecycle.Deadline(1))
+    for index in range(100):
+        watch.observe({'sequence': index})
+    expected = list(range(10)) + list(range(60, 100))
+    assert [o['value']['sequence'] for o in watch.observations] == expected
+    assert list(watch.observations) == watch.finish('deadline')['observations']

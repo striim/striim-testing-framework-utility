@@ -355,21 +355,25 @@ class Watch:
         self.clock = deadline.clock
         self.started = self.clock.wall()
         self.first_observations = []
-        self.observations = collections.deque(maxlen=MAX_OBSERVATIONS - 10)
+        self._last_observations = collections.deque(maxlen=MAX_OBSERVATIONS - 10)
+
+    @property
+    def observations(self) -> list:
+        return self.first_observations + list(self._last_observations)
 
     def observe(self, value) -> None:
         observation = {"at": self.clock.wall(), "value": value}
         if len(self.first_observations) < 10:
             self.first_observations.append(observation)
         else:
-            self.observations.append(observation)
+            self._last_observations.append(observation)
 
     def finish(self, reason: str, witness: str | None = None) -> dict:
         ended = self.clock.wall()
         return {"kind": self.kind, "condition": self.condition,
                 "witness": witness if reason == "satisfied" else None,
                 "at": ended, "startedAt": self.started, "endedAt": ended,
-                "deadlineS": self.deadline.seconds, "observations": self.first_observations + list(self.observations),
+                "deadlineS": self.deadline.seconds, "observations": self.observations,
                 "reason": reason}
 
 
