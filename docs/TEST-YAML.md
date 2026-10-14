@@ -1623,3 +1623,4 @@ Worked case: [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md).
 Transaction seed SQL refuses `ABORT` along with other transaction-control statements; use a declared transaction step so session lifetime and rollback remain observable.
 
 Worked case: [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md). Framework gallery: [framework-transaction-seeds](../scripts/live/regression/framework/framework-transaction-seeds/README.md).
+Snapshot prefix indices must never decrease: `snapshot-prefix-regressed` fails a history that returns to an earlier committed state, even if it later reaches the final state. Repeated reads of the same prefix are allowed; sampling can skip intermediate prefixes.

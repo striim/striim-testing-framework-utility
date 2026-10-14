@@ -232,3 +232,16 @@ def test_snapshot_sample_preserves_source_transactions(case):
     tql = (root / case / 'app.tql').read_text()
     assert 'PreserveSourceTransactionBoundary: true' in tql
     assert 'FilterTransactionBoundaries: false' in tql
+
+
+def test_a_declared_prefix_cannot_regress_after_a_newer_commit():
+    full = {'a':[{'id':1}], 'b':[{'id':1}]}
+    empty = {'a':[], 'b':[]}
+    snapshots = iter([empty, full, full, empty, full])
+    o = make_observer(empty)
+    o.read = lambda *a: next(snapshots)
+    o.sample(); o.sample(); o.sample()
+    with pytest.raises(AssertionFailed, match='snapshot-prefix-regressed') as err:
+        o.sample()
+    assert [e['prefix'] for e in o.history] == [0,1,1,0]
+    assert err.value.records[0]['actual']['rows'] == o.history

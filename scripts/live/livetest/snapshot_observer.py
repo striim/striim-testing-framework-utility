@@ -140,7 +140,10 @@ class Observer:
                     choices.append(index)
             entry = {"at": time.monotonic(), "observedUtc": datetime.now(timezone.utc).isoformat(), "prefix": max(choices) if choices else None,
                      "sha256": canon.aggregate(hashes), "rows": sum(len(v) for v in rows.values())}
+            previous = max((e["prefix"] for e in self.history if e["prefix"] is not None), default=-1)
             self.history.append(entry)
+            if choices and entry["prefix"] < previous:
+                self.fail(f"snapshot-prefix-regressed: observed {entry['prefix']} after {previous}")
             if not choices:
                 entry["tables"] = {}
                 for alias, values in rows.items():
