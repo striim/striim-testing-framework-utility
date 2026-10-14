@@ -61,7 +61,7 @@ def test_audit_duplicate_fails_every_exact_route(route):
         s["exact"] = {"columns": {"value.id": "integer"}}
         r["lifecycle"]["completion"] = {"kind": "sentinel"}
         r["lifecycle"]["sentinel"] = {"observe": {"db": "kafka", "topic": "${KAFKA_TGT_TOPIC}"}}
-        tql = "CREATE TARGET ${TID}writer USING Global.KafkaWriter (Topics:'${KAFKA_TGT_TOPIC}') INPUT FROM log;"
+        tql = "CREATE TARGET ${TID}writer USING Global.KafkaWriter VERSION '2.1.0' (Topic:'${KAFKA_TGT_TOPIC}') INPUT FROM log;"
     elif route == "file":
         s = {"path": "${OWNED_DIR}/rows.json", "match": "expected/rows.csv", "exact": {"columns": {"id": "integer"}},
              "audit": {"writer": "${TID}writer"}}
@@ -175,3 +175,18 @@ def test_owned_guard_function_is_dropped_and_verified_after_tables(tmp_path, mon
     assert calls == ['DROP FUNCTION IF EXISTS "qatarget"."case_audit_guard"()']
     assert ledger._verify(entry, client=None, admins={"postgres-target": {"admin": object()}}, ctx=None)
     assert ownership.CLEANUP_ORDER.index("pg-table") < ownership.CLEANUP_ORDER.index("pg-function")
+
+
+def test_kafka_audit_accepts_the_shipped_versioned_writer_tql():
+    from pathlib import Path
+    tql = (Path(__file__).parents[1] / 'regression/services/kafka/kafka-diff/app.tql').read_text()
+    r = raw()
+    s = r['assert']['data'][0]
+    s.update(db='kafka', target='${KAFKA_TGT_TOPIC}', project='kafka_record', keys=['value.c0'])
+    s['exact'] = {'columns': {}}
+    s['audit'] = {'writer': 'KafkaTarget'}
+    r['lifecycle']['completion'] = {'kind':'sentinel'}
+    r['lifecycle']['sentinel'] = {'observe':{'db':'kafka','topic':'${KAFKA_TGT_TOPIC}'}}
+    assert audit.normalize(r, 'p', tql=tql)[0]['writer'] == 'KafkaTarget'
+    with pytest.raises(ValueError, match='audit-writer-not-append-only'):
+        audit.normalize(r, 'p', tql=tql.replace("Topic: '${KAFKA_TGT_TOPIC}'", "Topic: '${KAFKA_SRC_TOPIC}'"))

@@ -9,7 +9,7 @@ from livetest.substitute import render
 def _targets(tql):
     targets = {}
     for statement in split_sql_statements(tql):
-        match = re.match(r"CREATE\s+(?:OR\s+REPLACE\s+)?TARGET\s+(\S+)\s+USING\s+(?:Global\.)?(\w+)\s*\(", statement, re.I)
+        match = re.match(r"CREATE\s+(?:OR\s+REPLACE\s+)?TARGET\s+(\S+)\s+USING\s+(?:Global\.)?(\w+)\s*(?:VERSION\s+'[^']+'\s*)?\(", statement, re.I)
         if not match:
             continue
         # Writer properties can contain nested ColumnMap parentheses inside strings.
@@ -82,7 +82,7 @@ def normalize(raw, path, *, tql):
         if kind == "file":
             supported = adapter == "FileWriter" and props.get("filename") == spec.get("path")
         elif route == "kafka":
-            supported = adapter.startswith("KafkaWriter") and props.get("topics") == spec.get("target") and spec.get("project") == "kafka_record"
+            supported = adapter.startswith("KafkaWriter") and (props.get("topic", props.get("topics")) == spec.get("target") and not ({"topic", "topics"} <= props.keys())) and spec.get("project") == "kafka_record"
         else:
             expected = "DatabaseWriter" if route.startswith("postgres-") else "SpannerWriter" if route == "spanner-google" else "SpannerPGDialectWriter"
             supported = adapter == expected and props.get("tables") == spec.get("target")
