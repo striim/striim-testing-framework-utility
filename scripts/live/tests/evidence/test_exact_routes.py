@@ -114,3 +114,20 @@ def test_route_assertion_records_typed_multiset(tmp_path, route, broken):
         assert run()[0]["status"] == "passed"
     assert comparisons[0]["equal"] is (not broken)
     assert comparisons[0]["actual"]["owned"] is False
+
+
+def test_spanner_bytes_use_the_installed_clients_native_decoder():
+    from google.cloud.spanner_v1._helpers import _parse_value_pb
+    from google.cloud.spanner_v1.types import Type, TypeCode
+    from google.protobuf.struct_pb2 import Value
+    field_type = Type(code=TypeCode.BYTES)
+    native = _parse_value_pb(Value(string_value="3q2+7w=="), field_type, "payload")
+    class Result:
+        fields = [SimpleNamespace(name="payload", type_=field_type)]
+        def __iter__(self):
+            return iter([(native,), (None,), (b"",)])
+    snap = Snapshot([])
+    snap.execute_sql = lambda *a, **kw: Result()
+    admin = SpannerAdmin({}, database=SimpleNamespace(snapshot=lambda: snap))
+    assert exactdata.read_spanner(admin, "rows", None, 3, 1000, 2) == [
+        {"payload": bytes.fromhex("deadbeef")}, {"payload": None}, {"payload": b""}]

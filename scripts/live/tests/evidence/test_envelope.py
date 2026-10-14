@@ -555,3 +555,37 @@ def test_a_service_the_run_uses_in_docker_still_needs_its_container(good):
         doc = doc_of(good)
         doc["runtime"]["services"] = [_service(None, status)]
         assert "runtime.services[0] needs name, container and status" in str(rejected(doc, good, "evidence-invalid"))
+
+
+@pytest.mark.parametrize("route", ["spanner-google", "spanner-postgres"])
+@pytest.mark.parametrize("equal", [True, False])
+def test_spanner_diff_real_envelope_validator(good, route, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}}, db_route=True)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    good._slt_data = [{**comp, "index": 0, "type": "diff", "target": "t1_tgt", "route": route,
+        "expected": {**comp["expected"], "source": route + ":t1_src", "templateSha256": None},
+        "actual": {**comp["actual"], "owned": True}}]
+    good._slt_records = [record(type="diff", target="t1_tgt", db=route,
+        status="passed" if equal else "failed", spec={"source": "t1_src", "source_db": route})]
+    good._slt_resources["owned"] = [{"kind": "spanner-table", "name": "t1_src", "db": route,
+                                     "state": "verified-absent"}]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))
+    doc["resources"]["owned"] = []
+    with pytest.raises(EvidenceError, match="is not the source table this run witnessed and owned"):
+        evidence.validate_case(doc)
+
+
+@pytest.mark.parametrize("equal", [True, False])
+def test_kafka_sequence_real_envelope_validator(good, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}, "order": "sequence"}, db_route=False)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    good._slt_data = [{**comp, "index": 0, "type": "data", "target": "t1_topic", "route": "kafka",
+        "expected": {**comp["expected"], **{k: good._slt_data[0]["expected"][k]
+                                            for k in ("source", "templateSha256")}},
+        "actual": {**comp["actual"], "owned": False}}]
+    good._slt_records = [record(target="t1_topic", db="kafka", status="passed" if equal else "failed")]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))

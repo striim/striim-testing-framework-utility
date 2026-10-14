@@ -21,6 +21,7 @@ a v1 record (types data/diff/file, both hashes in the detail) and a comparison r
 """
 from __future__ import annotations
 
+import base64
 import json
 import posixpath
 import subprocess
@@ -118,7 +119,13 @@ def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining):
                 if len(set(names)) != len(names):
                     raise canon.CanonError("duplicate-column", table)
             row = {}
-            for name, value in zip(names, values):
+            for field, name, value in zip(result.fields, names, values):
+                from google.cloud.spanner_v1.types import TypeCode
+                if value is not None and getattr(getattr(field, "type_", None), "code", None) == TypeCode.BYTES:
+                    try:
+                        value = base64.b64decode(value, validate=True)
+                    except (ValueError, TypeError) as e:
+                        raise canon.CanonError("invalid-value", f"Spanner BYTES {name}: invalid base64") from e
                 # Spanner JSON wrappers may wrap scalars or arrays, too.
                 serialize = getattr(value, "serialize", None)
                 if callable(serialize):

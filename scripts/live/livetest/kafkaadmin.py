@@ -399,17 +399,21 @@ class KafkaAdmin:
             md = c.list_topics(_check_topic(topic), timeout=budget() if strict else 10)
             t = md.topics.get(topic)
             if t is None or t.error is not None:
+                if strict:
+                    raise RuntimeError("kafka_record topic metadata unavailable")
                 return []
             # Assign each partition at its LOW watermark and count (hi - lo). Cleared
             # topics start at 0, but a reused/live broker may have a non-zero low
             # (retention/compaction) — assuming 0 would over-count and wait out the
             # timeout, and could seek before the earliest available offset.
             tps, remaining = [], 0
+            captured = {}
             for p in t.partitions:
                 lo, hi = c.get_watermark_offsets(TopicPartition(topic, p),
                                                 timeout=budget() if strict else 10, cached=False)
                 tps.append(TopicPartition(topic, p, lo))
                 remaining += hi - lo
+                captured[p] = [lo, hi]
             c.assign(tps)
             rows, size = [], 0
             if not strict:
@@ -418,6 +422,16 @@ class KafkaAdmin:
                 msg = c.poll(min(1.0, budget()) if strict else 1.0)
                 if msg is None or msg.error() is not None:
                     continue
+                if strict:
+                    p, offset = msg.partition(), msg.offset()
+                    if p not in captured:
+                        raise RuntimeError("kafka_record received an uncaptured partition")
+                    next_offset, hi = captured[p]
+                    if offset < next_offset or offset >= hi:
+                        continue
+                    # Offset positions, not message count, bound each partition.
+                    remaining -= min(offset + 1, hi) - next_offset
+                    captured[p][0] = offset + 1
                 size += len(msg.value() or b"") + len(msg.key() or b"")
                 if max_bytes is not None and size > max_bytes:
                     from livetest.canon import CanonError
@@ -426,7 +440,8 @@ class KafkaAdmin:
                 if max_rows is not None and len(rows) > max_rows:
                     from livetest.canon import CanonError
                     raise CanonError("canonical-limit-exceeded", "Kafka decoded rows exceed max_rows")
-                remaining -= 1
+                if not strict:
+                    remaining -= 1
             if strict and remaining:
                 raise RuntimeError(f"kafka_record snapshot incomplete: {remaining} captured message(s) unread; refusing partial results")
             return rows

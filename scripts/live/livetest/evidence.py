@@ -871,16 +871,18 @@ def _diff_source_bound(c: dict, record: dict, bindings, owned) -> bool:
         return False
     if "error" in c or (c.get("actual") or {}).get("owned") is not True:
         return True
-    return any(isinstance(r, dict) and r.get("kind") == "pg-table" and r.get("db") == route
-               and r.get("name") == table.lower() and r.get("state") in _CREATED_STATES for r in (owned or []))
+    return any(isinstance(r, dict) and r.get("kind") == ("spanner-table" if route.startswith("spanner-") else "pg-table") and r.get("db") == route
+               and r.get("name") == (table if route.startswith("spanner-") else table.lower()) and r.get("state") in _CREATED_STATES for r in (owned or []))
 
 
 @functools.lru_cache(maxsize=1)
 def _diff_source():
-    """``<route>:<schema.table>``, the source witness ``exactdata.assert_exact_diff`` writes."""
+    """The route-bound source table witness; Spanner also permits an unqualified table."""
     from livetest import canon
     routes = "|".join(re.escape(r) for r in canon.DB_ROUTES)
-    return re.compile(rf"^(?:{routes}):[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+    ident = r"[A-Za-z_][A-Za-z0-9_]*"
+    spanner = "|".join(re.escape(r) for r in canon.DB_ROUTES if r.startswith("spanner-"))
+    return re.compile(rf"^(?:(?:{routes}):{ident}\.{ident}|(?:{spanner}):{ident})$")
 
 
 _DECLARATION_KEYS = {"columns", "ignore", "keys", "order", "order_by", "profile"}
@@ -925,7 +927,7 @@ def _check_comparison(c: dict, i: int) -> None:
     if decl["profile"] != canon.PROFILE or c["order"] != decl["order"] or \
             c["declarationSha256"] != canon.declaration_sha256(decl):
         _fail("evidence-invalid", f"{where}: declaration, order and declarationSha256 disagree")
-    why = _declaration_violation(decl, db_route=c["type"] != "file")
+    why = _declaration_violation(decl, db_route=c["type"] != "file" and c.get("route") != "kafka")
     if why:
         _fail("evidence-invalid", f"{where}.declaration is not a canonical declaration: {why}")
     if "error" in c:

@@ -468,7 +468,7 @@ columns need no entry.
   Missing paths stay absent; null stays null. Every decoded Avro frame is counted.
   `order: sequence` follows consumed record order and needs no `order_by`; use one partition
   when the test requires a single total order. Wire bytes and decoded rows are bounded.
-  An incomplete captured Kafka snapshot fails rather than returning a matching subset.
+  An incomplete captured Kafka snapshot fails rather than returning a matching subset. Each partition is bounded by its captured high offset; later messages cannot hide unread captured rows. Missing or erroneous topic metadata is a read failure.
   Other routes are refused at load (`exact-route-unsupported`).
 - `file`: Docker mode only; the file is read from the cluster's nodes. With `order: sequence` the
   path must match exactly one file on one node (`order-source-ambiguous`).
@@ -505,7 +505,7 @@ The declaration follows the value returned by the reader, not the formatted text
 | Spanner DATE / Avro logical date | `date` | compare the calendar date |
 | Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | this canonical profile uses microseconds; golden fractions have at most six digits. Project a separate integer/text field to check finer precision |
 | Spanner BYTES / Avro bytes or fixed | `binary:hex` or `binary:base64` | a byte value needs its declared encoding |
-| Spanner JSON, compatible arrays / Avro nested records or arrays | `json` | every nested value must be JSON-compatible; arrays of raw bytes or dates need a supported projection |
+| Spanner JSON, compatible arrays / Avro nested records or arrays | `json` | every nested value must be JSON-compatible; arrays of raw bytes or dates need a supported projection. Spanner client JSON decoding can round numbers, merge duplicate keys and conflate JSON null with SQL NULL; project raw text to check those distinctions |
 | nullable field / Avro union with null | the non-null value's declaration | `<null>` is null; incompatible mixed scalar branches need a supported projection |
 
 Kafka paths include the record section. For one message with JSON key `{"id":1}`
