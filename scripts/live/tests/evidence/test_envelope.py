@@ -770,3 +770,31 @@ def test_recovery_sentinel_result_writes_and_validates_full_evidence(good, monke
     assert result['expected']['rows'] == [{'insertPresent': True, 'deleteAbsent': True}]
     assert len(result['actual']['rows'][0]['observations']) == 2
 
+
+
+def test_owner_selection_refusal_writes_placement_reads(good):
+    from livetest import node_fault, recovery
+    from livetest.striim import StriimClient
+    servers = ['server_primary', 'server_secondary', 'server_agent']
+    class API:
+        def post_tungsten_line(self, command, timeout):
+            if command == 'LIST DEPLOYMENTGROUPS;':
+                output = [{'default': {'actualServers': [{'name': n} for n in servers]}}]
+            elif command == 'MON N.flow;':
+                output = {'status': 'RUNNING', 'diagnostic': {'reason': 'observed'}}
+            else:
+                output = [{'deployedObjects': [{'components': []}]}]
+            return [{'executionStatus': 'Success', 'output': output}]
+    nodes = {role: {'role': role, 'server': 'server_' + role, 'id': 'id_' + role}
+             for role in ('primary', 'secondary', 'agent')}
+    with pytest.raises(recovery.RecoveryError, match='fault-missed'):
+        node_fault.Target(StriimClient(API()), SimpleNamespace(mode='docker'),
+            {'hosting': 'N.flow'}, app='N.app', nodes=nodes,
+            record=good._slt_records.append, timeout=1)
+    doc = doc_of(good, status='failed')
+    path = write(good, doc)
+    saved = json.loads(path.read_text()); evidence.validate_case(saved)
+    diagnostic = saved['assertions'][-1]['actual']['rows'][0]
+    assert set(diagnostic['reads']['servers']) == set(servers)
+    assert json.loads(diagnostic['reads']['monitor']['json'])['diagnostic'] == {'reason': 'observed'}
+    assert diagnostic['interrupted'] is False and not saved['run']['qualifies']

@@ -28,3 +28,9 @@ lifecycle completion require all input pairs after failover.
 Broken-input check: replace `WITH ${TID}flow ON ONE IN ${APP_GROUP}` with
 `WITH ${TID}flow ON ALL IN ${APP_GROUP}`. The flow now has two owners, so the
 hosting selector must fail with fault-missed before any Docker fault is issued.
+
+If hosting selection fails, its failed recovery record retains the placement
+reads and Docker mapping before cleanup. Inspect MON and each queried server's
+DESCRIBE response, owner names and truncation flags. No container is interrupted
+when ownership is absent, ambiguous or cannot be read. The diagnostic record is
+retained even when the constructor fails before the fault target exists.

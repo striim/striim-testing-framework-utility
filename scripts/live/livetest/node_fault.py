@@ -16,6 +16,15 @@ from livetest.assertions import AssertionFailed
 ROLES = {"primary", "secondary", "agent"}
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _FLOW = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\Z")
+MAX_READ_CHARS = 65536
+
+
+def _capture(reads, key, value):
+    if reads is not None:
+        from livetest.striim import redact
+        text = redact(json.dumps(value, ensure_ascii=True, sort_keys=True))
+        reads[key] = {"json": text[:MAX_READ_CHARS], "characters": len(text),
+                      "truncated": len(text) > MAX_READ_CHARS}
 
 
 def normalize(raw):
@@ -26,8 +35,9 @@ def normalize(raw):
     raise ValueError("invalid-node-fault: node must be primary, secondary, agent or {hosting: named flow}")
 
 
-def node_names(client, remaining):
+def node_names(client, remaining, reads=None):
     raw = client.list_deployment_groups(timeout=remaining)
+    _capture(reads, "deploymentGroups", raw)
     names = set()
     for item in raw[0].get("output", []) if isinstance(raw, list) and raw else []:
         for group in item.values():
@@ -56,19 +66,26 @@ def deployed_flow(descriptions, flow):
     return found
 
 
-def flow_nodes(client, flow, remaining):
+def flow_nodes(client, flow, remaining, reads=None):
     if not _FLOW.fullmatch(flow): raise ValueError("invalid-placement-flow")
     deadline = time.monotonic() + remaining
-    names = node_names(client, remaining)
+    names = node_names(client, remaining, reads)
     left = deadline - time.monotonic()
     if left <= 0: raise ValueError("placement-read-deadline")
-    if client.mon(flow, timeout=left).get("status") != "RUNNING":
+    monitor = client.mon(flow, timeout=left)
+    _capture(reads, "monitor", monitor)
+    if monitor.get("status") != "RUNNING":
         return set()
     result = set()
+    servers = {} if reads is not None else None
+    if reads is not None:
+        reads["servers"] = servers
     for name in sorted(names):
         left = deadline - time.monotonic()
         if left <= 0: raise ValueError("placement-read-deadline")
-        if deployed_flow(client.describe(name, timeout=left), flow): result.add(name)
+        descriptions = client.describe(name, timeout=left)
+        _capture(servers, name, descriptions)
+        if deployed_flow(descriptions, flow): result.add(name)
     if time.monotonic() > deadline: raise ValueError("placement-read-deadline")
     return result
 
@@ -134,13 +151,15 @@ class Target:
         self.run, self.record = run, record
         self.nodes = nodes or inventory(client, ctx, run=run, timeout=timeout)
         self.refresh = nodes is None
-        self.placement = placement or (lambda flow, left: flow_nodes(client, flow, left))
+        self._placement_reads = {}
+        self.placement = placement or (lambda flow, left: flow_nodes(client, flow, left, self._placement_reads))
         self.wait_cluster = wait_cluster or _wait_cluster
         self.hosting = selection.get("hosting") if isinstance(selection, dict) else None
         if self.hosting:
-            owners = self.placement(self.hosting, timeout)
+            owners = self._owners(timeout, "owner-selection")
             candidates = [n for n in self.nodes.values() if n["server"] in owners]
             if len(owners) != 1 or len(candidates) != 1:
+                self._refusal("fault-missed: hosting flow needs one running Docker owner", "owner-selection", owners)
                 raise RecoveryError("fault-missed: hosting flow needs one running Docker owner")
             self.selected = candidates[0]
         else:
@@ -150,9 +169,32 @@ class Target:
         client.configure_failover(peers, app=app)
         self.needs_restore = False
 
+    def _refusal(self, detail, phase, owners):
+        if self.record:
+            self.record(build_assertion_result(type="recovery", target=self.hosting, db=None,
+                spec={"node": {"hosting": self.hosting}}, status="failed", detail=detail,
+                expected={"kind": "count", "count": 1}, actual={"kind": "rows", "rows": [{
+                    "phase": phase, "flow": self.hosting, "interrupted": False,
+                    "owners": sorted(owners) if owners is not None else None,
+                    "selected": getattr(self, "selected", {}).get("server"),
+                    "dockerNodes": {role: {"server": node["server"], "containerId": node["id"]}
+                                    for role, node in self.nodes.items()},
+                    "reads": dict(self._placement_reads)}]}))
+
+    def _owners(self, remaining, phase):
+        self._placement_reads.clear()
+        try:
+            return self.placement(self.hosting, remaining)
+        except Exception as error:
+            self._refusal(str(error), phase, None)
+            raise
+
     def check_owner(self, remaining):
-        if self.hosting and self.placement(self.hosting, remaining) != {self.selected["server"]}:
-            raise RecoveryError("fault-missed: hosting flow moved before interruption")
+        if self.hosting:
+            owners = self._owners(remaining, "fault-boundary")
+            if owners != {self.selected["server"]}:
+                self._refusal("fault-missed: hosting flow moved before interruption", "fault-boundary", owners)
+                raise RecoveryError("fault-missed: hosting flow moved before interruption")
 
     def _command(self, argv, remaining=None):
         r = (self.run or (lambda a: subprocess.run(a, capture_output=True, text=True,

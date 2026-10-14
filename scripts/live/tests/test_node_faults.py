@@ -143,3 +143,85 @@ def test_secondary_api_port_is_published_and_allowed():
     compose = yaml.safe_load((root / "scripts/live/services/striim/compose.yaml").read_text())
     assert "${SLT_STRIIM_NODE_HTTP_HOST_PORT:-9082}:9080" in compose["services"]["slt-node"]["ports"]
     assert "SLT_STRIIM_NODE_HTTP_HOST_PORT" in paths.SERVICE_KEYS
+
+
+def placement_client(*, owners=(), status='RUNNING', malformed=None):
+    class Metadata(Client):
+        def list_deployment_groups(self, timeout):
+            return [{'output': [{'default': {'actualServers': [
+                {'name': 'server_primary'}, {'name': 'server_secondary'}]},
+                'Agents': {'actualServers': [{'name': 'server_agent'}]}}]}]
+        def mon(self, flow, timeout): return {'status': status, 'detail': {'reason': 'observed'}}
+        def describe(self, name, timeout):
+            if malformed == name: return [{'name': name, 'deployedObjects': 'unrecognised'}]
+            return [{'name': name, 'deployedObjects': [{'name': 'N.app', 'components':
+                [{'entityType': 'FLOW', 'name': 'N.flow'}] if name in owners else []}]}]
+    return Metadata()
+
+
+@pytest.mark.parametrize('owners', [(), ('server_primary', 'server_secondary')])
+def test_refused_hosting_selection_retains_all_placement_reads(owners):
+    import json
+    from livetest import node_fault
+    records, commands = [], []
+    client = placement_client(owners=owners)
+    with pytest.raises(recovery.RecoveryError, match='fault-missed'):
+        node_fault.Target(client, SimpleNamespace(mode='docker'), {'hosting': 'N.flow'},
+            app='N.app', nodes=nodes(), run=commands.append, record=records.append, timeout=1)
+    assert not commands and len(records) == 1
+    assert records[0]['status'] == 'failed'
+    diagnostic = records[0]['actual']['rows'][0]
+    assert diagnostic['phase'] == 'owner-selection' and diagnostic['interrupted'] is False
+    assert diagnostic['owners'] == sorted(owners)
+    reads = diagnostic['reads']
+    assert json.loads(reads['deploymentGroups']['json']) == client.list_deployment_groups(1)
+    assert json.loads(reads['monitor']['json']) == client.mon('N.flow', 1)
+    assert set(reads['servers']) == {n['server'] for n in nodes().values()}
+    for name, captured in reads['servers'].items():
+        assert json.loads(captured['json']) == client.describe(name, 1)
+        assert captured['truncated'] is False
+
+
+def test_bad_placement_shape_is_retained_before_read_error():
+    import json
+    from livetest import node_fault
+    records = []
+    with pytest.raises(ValueError, match='placement-node-description-unavailable'):
+        node_fault.Target(placement_client(malformed='server_primary'),
+            SimpleNamespace(mode='docker'), {'hosting': 'N.flow'}, app='N.app',
+            nodes=nodes(), record=records.append, timeout=1)
+    diagnostic = records[0]['actual']['rows'][0]
+    assert diagnostic['owners'] is None
+    assert json.loads(diagnostic['reads']['servers']['server_primary']['json'])[0]['deployedObjects'] == 'unrecognised'
+
+
+def test_moved_flow_refusal_retains_fault_boundary_reads():
+    from livetest import node_fault
+    records = []
+    client = placement_client(owners=('server_primary',))
+    target = node_fault.Target(client, SimpleNamespace(mode='docker'), {'hosting': 'N.flow'},
+        app='N.app', nodes=nodes(), record=records.append, timeout=1)
+    client.describe = placement_client(owners=('server_secondary',)).describe
+    with pytest.raises(recovery.RecoveryError, match='flow moved'):
+        target.check_owner(1)
+    diagnostic = records[0]['actual']['rows'][0]
+    assert diagnostic['phase'] == 'fault-boundary'
+    assert diagnostic['owners'] == ['server_secondary'] and diagnostic['selected'] == 'server_primary'
+
+
+def test_owner_read_evidence_is_bounded_and_redacted(monkeypatch):
+    from livetest import node_fault, evidence
+    # This checks serialization bounds, independently of transport/read deadlines.
+    monkeypatch.setattr(node_fault.time, 'monotonic', lambda: 1.0)
+    monkeypatch.setattr(evidence, 'known_secrets', lambda: ('private-test-secret',))
+    client = placement_client()
+    client.mon = lambda *args, **kwargs: {'status': 'RUNNING', 'secret': 'private-test-secret',
+                                        'padding': 'x' * 100000}
+    records = []
+    with pytest.raises(recovery.RecoveryError):
+        node_fault.Target(client, SimpleNamespace(mode='docker'), {'hosting': 'N.flow'},
+            app='N.app', nodes=nodes(), record=records.append, timeout=1)
+    captured = records[0]['actual']['rows'][0]['reads']['monitor']
+    assert captured['truncated'] and captured['characters'] > 65536
+    assert len(captured['json']) == 65536
+    assert 'private-test-secret' not in str(records)
