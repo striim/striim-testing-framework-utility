@@ -10,7 +10,9 @@ class Clock:
     def __init__(self): self.t = 0
     def wall(self): return str(self.t)
     def monotonic(self): return self.t
-    def sleep(self, seconds): self.t += seconds
+    def sleep(self, seconds):
+        assert seconds >= 0
+        self.t += seconds
 
 
 def spec():
@@ -46,12 +48,19 @@ def test_slow_initial_snapshot_cannot_replace_boundary_read():
     clock = Clock()
     def read(*args):
         if clock.t == 0:
-            clock.t = 2
+            clock.t = 2.1
             return []
         return [{"id": 1}]
     with pytest.raises(AssertionFailed, match="nothing-arrived"):
         nothing.assert_nothing([spec()], kind="data", tokens={"PG_TARGET_SCHEMA": "qatarget", "TID": "test_"},
             completion={"kind": "sentinel", "reason": "satisfied"}, clock=clock, read=read)
+
+
+@pytest.mark.parametrize("row", [{"id": "1"}, {}, {"id": None}])
+def test_unclassifiable_output_cannot_pass_absence(row):
+    with pytest.raises(AssertionFailed, match="nothing-read-error"):
+        nothing.assert_nothing([spec()], kind="data", tokens={"PG_TARGET_SCHEMA": "qatarget", "TID": "test_"},
+            completion={"kind": "sentinel", "reason": "satisfied"}, clock=Clock(), read=lambda *a: [row])
 
 
 def test_nothing_needs_same_route_and_completion_sentinel():

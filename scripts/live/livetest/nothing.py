@@ -1,5 +1,6 @@
 """A bounded absence check, gated by a completed delivery sentinel."""
 import math
+from decimal import Decimal
 
 from livetest import lifecycle
 from livetest.assertions import AssertionFailed
@@ -19,6 +20,28 @@ def matches(row, selector):
     for key, expected in selector.items():
         present, actual = get_path(row, key)
         if not present or isinstance(actual, bool) != isinstance(expected, bool) or actual != expected:
+            return False
+    return True
+
+
+def strict_matches(row, selector):
+    """An output whose identity cannot be checked is a failure, not a non-match."""
+    for key, expected in selector.items():
+        present, actual = get_path(row, key)
+        if not present:
+            raise ValueError(f"selector field {key} is missing from output")
+        if expected is not None:
+            if isinstance(expected, bool):
+                valid = isinstance(actual, bool)
+            elif isinstance(expected, (int, float, Decimal)):
+                valid = isinstance(actual, (int, float, Decimal)) and not isinstance(actual, bool)
+                if isinstance(actual, (float, Decimal)):
+                    valid = valid and (actual.is_finite() if isinstance(actual, Decimal) else math.isfinite(actual))
+            else:
+                valid = isinstance(actual, str)
+            if not valid:
+                raise ValueError(f"selector field {key} has an incompatible token type")
+        if actual != expected:
             return False
     return True
 
@@ -48,6 +71,8 @@ def validate(raw, path, lc):
                 refuse("where needs a non-empty mapping of field paths to scalar values")
             if any(isinstance(v, (dict, list)) for v in check["where"].values()):
                 refuse("where values must be scalars")
+            if any(isinstance(v, float) and not math.isfinite(v) for v in check["where"].values()):
+                refuse("where values must be finite")
             if lc is None or lc.completion["kind"] != "sentinel":
                 refuse("nothing requires lifecycle completion kind sentinel")
             observe = lc.sentinel["observe"]
@@ -76,7 +101,7 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
                         status_probe()
                     read_started = clock.monotonic()
                     actual = [r for r in read(spec, max(0.05, deadline - clock.monotonic()))
-                              if matches(r, spec["nothing"]["where"])]
+                              if strict_matches(r, spec["nothing"]["where"])]
                     reads += 1
                     if actual:
                         detail = "nothing-arrived: forbidden input produced output during the observation window"
@@ -84,7 +109,7 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
                     if read_started >= deadline:
                         ok, detail = True, f"nothing arrived for {window}s after completion sentinel; {reads} reads"
                         break
-                    clock.sleep(min(0.2, deadline - clock.monotonic()))
+                    clock.sleep(max(0, min(0.2, deadline - clock.monotonic())))
             except Exception as e:
                 detail = f"nothing-read-error: {e}"
         records.append(build_assertion_result(type=kind, status="passed" if ok else "failed", spec=spec,
