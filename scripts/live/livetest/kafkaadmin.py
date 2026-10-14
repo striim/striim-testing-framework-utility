@@ -230,6 +230,14 @@ class KafkaAdmin:
 
     # ---- topic lifecycle ----------------------------------------------------
 
+    def check_audit_topic(self, topic):
+        from confluent_kafka.admin import ConfigResource, ResourceType
+        resource = ConfigResource(ResourceType.TOPIC, _check_topic(topic))
+        values = self._admin_client().describe_configs([resource])[resource].result(10)
+        policy = values["cleanup.policy"].value
+        if policy != "delete" or any(values[key].value != "-1" for key in ("retention.ms", "retention.bytes")):
+            raise ValueError("audit-target-not-append-only: audit topics require delete policy and unlimited retention")
+
     def topic_exists(self, topic):
         metadata = self._admin_client().list_topics(timeout=10)
         found = metadata.topics.get(_check_topic(topic))
@@ -237,13 +245,13 @@ class KafkaAdmin:
             raise RuntimeError(f"Kafka topic inventory unreadable: {topic}")
         return found is not None
 
-    def ensure_topic(self, topic: str, partitions: int = 1) -> None:
+    def ensure_topic(self, topic: str, partitions: int = 1, *, config=None) -> None:
         from confluent_kafka.admin import NewTopic
         a = self._admin_client()
         if _check_topic(topic) in a.list_topics(timeout=10).topics:
             return
         for _t, f in a.create_topics([NewTopic(topic, num_partitions=partitions,
-                                               replication_factor=1)]).items():
+                                               replication_factor=1, **({"config": config} if config is not None else {}))]).items():
             try:
                 f.result(30)
             except Exception as e:                        # noqa: BLE001

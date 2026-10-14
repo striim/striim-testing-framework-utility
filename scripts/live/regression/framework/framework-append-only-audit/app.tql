@@ -1,0 +1,26 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+CREATE OR REPLACE APPLICATION ${APP};
+CREATE TYPE ${TID}arow (id int, msg String);
+CREATE STREAM ${TID}alog OF ${TID}arow;
+CREATE SOURCE ${TID}reader USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO ${TID}src_stream;
+CREATE CQ ${TID}record INSERT INTO ${TID}alog
+SELECT TO_INT(data[0]), TO_STRING(data[1]) FROM ${TID}src_stream;
+CREATE TARGET ${TID}writer USING Global.DatabaseWriter (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_TARGET_USER}',
+  Password: '${PG_TARGET_PASSWORD}',
+  Tables: '${PG_TARGET_SCHEMA}.${TID}audit',
+  ExecuteInsertAsUpdate: false,
+  ExecuteUpdateAsInsert: false,
+  BatchPolicy: 'EventCount:1,Interval:1',
+  CommitPolicy: 'EventCount:1,Interval:1'
+) INPUT FROM ${TID}alog;
+END APPLICATION ${APP};
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

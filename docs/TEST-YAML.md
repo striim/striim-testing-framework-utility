@@ -37,10 +37,72 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
 | `recover` | mapping | no | — | interrupt the app after every `post_start` step and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
 | `exact` | mapping | no | none | turns on exact comparison for the `data`, `diff` and `file` specs that carry their own `exact:`: every row counted, values compared by declared type. See **`exact:`** below |
+| `audit` | mapping | no | none | `{version: 1}` enables audited exact specs; each names its append writer, and Spanner also names its sink-generated delivery key |
+| `transactions` | list | no | `[]` | ordered Postgres session steps; see `transactions:` below |
+| `snapshot_observer` | mapping | no | none | concurrent consistent target reads checked against declared committed prefixes |
 | `lifecycle` | mapping | no | none | how the framework knows the app is ready and has finished, before any assertion runs, and that the run cleans up only what it created. See **`lifecycle:`** below |
 | `depth` | string | no | `regression` | one of `smoke`, `gate`, `regression`, `fault`, `customer`, `measure`, `canary`; becomes the pytest marker `depth_<value>`, for selecting with `-m` |
 | `diff_poll` | number | no | `2` | seconds between the reads of an `assert.diff` poll; must be greater than 0 |
 | `generate` | list | no | `[]` | run a data generator and place its output on the Striim server: entries `{kind, workload, dest, when}`. `kind` is `ggtrail` (GoldenGate trail files from a `workload.yaml`); `workload` is relative to the test dir; `dest` is a server directory; `when` defaults to `post_start` |
+
+## `audit:` — append-only delivery targets
+
+An upserting business table can hide a replayed delivery. Add a separate audit
+branch that records deliveries and compare its hand-written golden as a counted
+multiset. Enable the top-level `audit: {version: 1}` block, then add
+`audit: {writer: '${TID}writer'}` to each audited `assert.data` or `assert.file`
+spec. Each spec also requires canonical `exact:` and `order: any` (the default),
+and lifecycle completion must observe that audited output. A vacuous block, unknown keys or an expected
+halt are refused (`invalid-audit-spec`). The top-level key makes older framework
+versions refuse the feature instead of silently treating a merge target as an audit.
+
+The named writer must be declared in the app and write to that exact table, topic
+or file. Exception handlers and automatic resume are refused, so a writer failure
+cannot be swallowed. All routes supported by exact data/file comparison are supported:
+
+- Postgres: a keyless table, with no unique/exclusion index, user trigger or
+  rewrite rule. The framework checks that shape and installs an owned trigger
+  that rejects UPDATE, DELETE and TRUNCATE with an error. The guard function is
+  acquired and confirmed in the ledger, checked by definition hash before
+  comparison, and dropped after the audit table at cleanup. Normal writer DML
+  permissions remain available. Checks run before deploy and before comparison.
+- Spanner: `audit: {writer: '${TID}writer', delivery_key: delivery_id}` requires
+  a sole primary key with a UUID default (`GENERATE_UUID()` in GoogleSQL,
+  `spanner.generate_uuid()` in PostgreSQL dialect). That key must be absent from
+  the locally typed writer input and explicitly listed in `exact.ignore`; custom
+  `KeyColumns` are refused. Each delivery gets a fresh sink-generated identity,
+  while equal business rows are all counted. Business keys cannot absorb replay.
+  In audit cases, Spanner also supports positive lifecycle baseline/source-count
+  and row-count probes, on owned tables. No empty count can prove completion.
+- Kafka: `project: kafka_record`; the owned audit topic must have `cleanup.policy:
+  delete`, `retention.ms: -1` and `retention.bytes: -1`. Framework-created target
+  topics in audit cases get those settings; compaction or bounded retention is
+  refused. Every decoded frame is counted, even for equal keys and values.
+- File: the matching FileWriter output under the owned directory, read with the
+  existing exact file reader. All matching rolled parts participate in the multiset.
+
+Database audit writers require a locally declared typed input stream, explicit
+`ExecuteInsertAsUpdate: false` and `ExecuteUpdateAsInsert: false`, and no ignored
+database errors (`audit-writer-not-append-only`). Convert CDC operations to typed
+delivery records in a CQ rather than applying updates/deletes to the audit table.
+The single-table writer's `Tables` must equal the assertion's target. Kafka
+`Topics` and FileWriter `FileName` likewise equal the asserted output. Ambiguous
+writer declarations or duplicate properties are refused.
+
+The database audit input is insert-only, so it records a CDC delete as a new
+  typed delivery row rather than removing an earlier audit row. For append
+  sentinels on files or Kafka, include marker records in the golden as well.
+  After a successful phase the framework exports `${SENTINEL_READY_ID}` /
+  `${SENTINEL_DONE_ID}` and the corresponding `_TAG` tokens to later seeds and
+  goldens. Their bindings are recorded in evidence, so marker records can be
+  derived from the sentinel SQL without copying observed output.
+
+The business target can keep its merge semantics; the audit branch records each
+delivery independently. `audit-target-not-owned` refuses foreign outputs;
+`audit-target-not-append-only` refuses unsafe storage. Duplicate rows then fail
+the existing exact multiset comparison. A Spanner duplicate-key write must halt,
+and an audit case cannot turn that halt into an expected success. The contract
+does not claim delivery counts for a business target without an audit branch.
 
 ## `snapshot_observer:` — committed transaction prefixes during the run
 

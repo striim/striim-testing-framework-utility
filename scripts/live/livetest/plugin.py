@@ -1106,7 +1106,7 @@ def _kafka_endpoints(base: dict) -> tuple[str, str]:
     return f"{base['host']}:{base['port']}", f"http://{base['host']}:{base['registry_port']}"
 
 
-def _kafka_admin(base, ledger=None):
+def _kafka_admin(base, ledger=None, audit=False):
     # One admin against the broker + registry; seeds go to the source topic, the diff
     # reads both topics.
     broker, registry_url = _kafka_endpoints(base)
@@ -1119,7 +1119,8 @@ def _kafka_admin(base, ledger=None):
         if ledger is None:
             _kafka_clear(admin, topic)
         else:
-            ledger.acquire_topic(admin, topic, lambda topic=topic: admin.ensure_topic(topic))
+            config = {"cleanup.policy": "delete", "retention.ms": "-1", "retention.bytes": "-1"} if audit and topic == base["tgt_topic"] else None
+            ledger.acquire_topic(admin, topic, lambda topic=topic: admin.ensure_topic(topic, config=config))
     return admin
 
 def _spec_route(s) -> str:
@@ -2183,7 +2184,7 @@ class LiveItem(pytest.Item):
                     gcs_cleanup += [(_gcs, resolved.base["src_bucket"]),
                                     (_gcs, resolved.base["tgt_bucket"])]
                 elif svc == "kafka":
-                    _kafka = (_kafka_admin(resolved.base, ledger=ledger) if m.lifecycle is not None
+                    _kafka = (_kafka_admin(resolved.base, ledger=ledger, audit=bool(m.audit_specs)) if m.lifecycle is not None
                               else _kafka_admin(resolved.base))
                     admins["kafka"] = {"admin": _kafka, "schema": None}
                     kafka_cleanup += [(_kafka, resolved.base["src_topic"]),
@@ -2350,6 +2351,9 @@ class LiveItem(pytest.Item):
                 # C7.2: the positive source baseline, recorded after the seed.
                 _slt_lifecycle.record_baseline(self._slt_lc, m.lifecycle, admins, tokens, owned=ledger.owns)
 
+            if m.audit_specs:
+                from livetest.audit import prepare as prepare_audit
+                prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
             # op:/udf: modules: build the OpenProcessor/UDF jar(s) against the resolved
             # release (once, if missing/stale) and upload them + their shared config
             # JSON(s) into UploadedFiles so `LOAD OPEN PROCESSOR` / `ConfigFile` resolve
@@ -3260,6 +3264,9 @@ class LiveItem(pytest.Item):
                             source_dir=m.source_dir)
                     if _snapshot_observer is not None:
                         self._slt_records += _snapshot_observer.finish()
+                    if m.audit_specs:
+                        from livetest.audit import prepare as prepare_audit
+                        prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
                     from livetest.nothing import assert_nothing
                     from livetest.sinkprobe import rows as sink_rows
                     for _kind in ("data", "file"):

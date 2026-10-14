@@ -522,10 +522,12 @@ def _inputs(item, manifest, config) -> dict:
     else:
         product = {"reason": "app-only case: no op/udf"}
     from livetest import runident
+    bindings = runident.tokens(ident) if ident is not None else {}
+    bindings.update(getattr(getattr(item, "_slt_lc", None), "sentinel_bindings", {}))
     return {"source": _source(config), "framework": framework_identity(livetest), "productBuild": product,
             "caseAssets": assets, "logicalInputsSha256": logical, "renderedInputs": rendered,
             "renderedManifestSha256": rendered_manifest,
-            "bindings": runident.tokens(ident) if ident is not None else {}}
+            "bindings": bindings}
 
 
 def _runtime(config) -> dict:

@@ -52,6 +52,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `10-bounded-nothing` | no output in a bounded window after a file sentinel |
 | `11-transaction-seeds` | overlapping sessions, savepoints and a transaction across recovery |
 | `12-snapshot-observer` | consistent snapshots of related target tables |
+| `13-append-only-audit` | immutable delivery rows with counted multiset comparison |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

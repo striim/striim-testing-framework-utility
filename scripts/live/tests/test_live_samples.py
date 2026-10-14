@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -286,3 +286,12 @@ def test_snapshot_sample_declares_atomic_two_table_prefixes():
     assert len(s["prefixes"]) == 3
     assert (SAMPLES / "12-snapshot-observer/expected/empty.csv").read_text() == "id,msg\n"
     assert (SAMPLES / "12-snapshot-observer/expected/b.csv").read_text() == "id,msg\n2,second\n"
+
+
+def test_audit_sample_is_keyless_with_hand_derived_rows():
+    root = SAMPLES / "13-append-only-audit"
+    m = load_manifest(root / "test.yaml")
+    assert len(m.audit_specs) == 1
+    assert "PRIMARY KEY" not in (root / "ddl_target.sql").read_text()
+    assert _golden("13-append-only-audit")[1] == [{"id": "1", "msg": "alpha"}, {"id": "2", "msg": "beta"}]
+    assert "ExecuteInsertAsUpdate: false" in (root / "app.tql").read_text()

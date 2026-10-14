@@ -30,7 +30,7 @@ VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
     "op", "udf", "server_files", "generate", "timeout", "diff_poll", "tags", "disabled",
     "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
-    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer",
+    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit",
     "lifecycle",   # C7.2
     "exact",   # C8.1
 }
@@ -43,7 +43,9 @@ _HARNESS_TOKENS = frozenset({
     "APP_GROUP", "SOURCE_GROUP", "STRIIM_WEB_URL",
     "STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "JAVA_RELEASE",
     "MSSQL_JDBC_VERSION",
-    "RUN_ID", "WORKER", "ATTEMPT", "OWNED_DIR"})   # livetest.runident.tokens
+    "RUN_ID", "WORKER", "ATTEMPT", "OWNED_DIR",
+    "SENTINEL_ID", "SENTINEL_TAG", "SENTINEL_READY_ID", "SENTINEL_DONE_ID",
+    "SENTINEL_READY_TAG", "SENTINEL_DONE_TAG"})   # livetest.runident.tokens
 _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
 # `recover.mode` values. The three are deliberately NOT interchangeable -- they exercise
@@ -928,6 +930,7 @@ class TestManifest:
                                          # (auto-detected via regex, no manual config needed)
     source_dir: Path = None             # where tql/ddl/seed/upload are read from
     local_files: frozenset = frozenset()  # ddl/seed/upload names marked `local: true`: read from `dir`
+    audit_specs: list = field(default_factory=list)
     snapshot_spec: dict | None = None
     transaction_steps: list = field(default_factory=list)
     lifecycle: object = None            # livetest.lifecycle.LifecycleSpec, or None (legacy)
@@ -1412,6 +1415,13 @@ def load_manifest(path: Path) -> TestManifest:
         warnings.warn(f"{path}: could not detect persistent streams from {tql}: {e}",
                       stacklevel=2)
 
+    from livetest.audit import normalize as normalize_audit
+    try:
+        audit_specs = normalize_audit(raw, path, tql=(source_dir / tql).read_text()) if "audit" in raw or any(
+            isinstance(s, dict) and "audit" in s for specs in (raw.get("assert") or {}).values()
+            if isinstance(specs, list) for s in specs) else []
+    except (ValueError, OSError) as e:
+        raise ManifestError(str(e)) from None
     from livetest.snapshot_observer import normalize as normalize_snapshot
     try:
         snapshot_spec = normalize_snapshot(raw.get("snapshot_observer"), path,
@@ -1454,6 +1464,7 @@ def load_manifest(path: Path) -> TestManifest:
         tql=tql,
         transaction_steps=transaction_steps,
         snapshot_spec=snapshot_spec,
+        audit_specs=audit_specs,
         dir=path.parent,
         depth=depth,
         topology=topology,

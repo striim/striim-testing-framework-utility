@@ -139,8 +139,8 @@ def _err(path, msg: str):
     raise LifecycleSpecError(f"{path}: lifecycle: {msg}")
 
 
-def _route(path, value, what: str) -> str:
-    if value not in DB_ROUTES:
+def _route(path, value, what: str, allow_spanner=False) -> str:
+    if value not in DB_ROUTES and not (allow_spanner and value in ("spanner-google", "spanner-postgres")):
         _err(path, f"{what} {value!r} is an unsupported lifecycle route for this resource type (supported: "
                    f"{', '.join(DB_ROUTES)}; other engines are unsupported)")
     return value
@@ -155,10 +155,10 @@ def _positive_int(path, value, what: str) -> int:
     return value
 
 
-def _table_ref(path, value, what: str) -> dict:
+def _table_ref(path, value, what: str, allow_spanner=False) -> dict:
     if not isinstance(value, dict) or set(value) != {"db", "table"}:
         _err(path, f"{what} must be a mapping with exactly db and table, got {value!r}")
-    _route(path, value["db"], f"{what}.db")
+    _route(path, value["db"], f"{what}.db", allow_spanner)
     if not isinstance(value["table"], str) or not value["table"]:
         _err(path, f"{what}.table must be a non-empty string")
     return dict(value)
@@ -176,7 +176,7 @@ def _kind_block(path, value, what: str, kinds) -> dict:
     return dict(value)
 
 
-def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
+def parse_spec(block, path, *, timeout=120, allow_spanner_counts=False) -> LifecycleSpec:
     if not isinstance(block, dict):
         _err(path, f"must be a mapping, got {block!r}")
     extra = set(block) - _BLOCK_KEYS
@@ -216,11 +216,11 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
         _err(path, "completion kind file-lines requires sink file")
 
     if rk == "baseline-landed":
-        readiness["source"] = _table_ref(path, readiness.get("source"), "readiness.source")
+        readiness["source"] = _table_ref(path, readiness.get("source"), "readiness.source", allow_spanner_counts)
         if sink == "db":
             if "path" in readiness:
                 _err(path, "readiness.path is only for sink file")
-            readiness["target"] = _table_ref(path, readiness.get("target"), "readiness.target")
+            readiness["target"] = _table_ref(path, readiness.get("target"), "readiness.target", allow_spanner_counts)
         else:
             if "target" in readiness:
                 _err(path, "readiness.target is only for sink db")
@@ -233,10 +233,10 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
                        f"this readiness kind (only postgres-source: pg_replication_slots.active for ${{PG_SLOT}}; "
                        f"other engines are unsupported)")
     if ck == "source-count":
-        completion["source"] = _table_ref(path, completion.get("source"), "completion.source")
-        completion["target"] = _table_ref(path, completion.get("target"), "completion.target")
+        completion["source"] = _table_ref(path, completion.get("source"), "completion.source", allow_spanner_counts)
+        completion["target"] = _table_ref(path, completion.get("target"), "completion.target", allow_spanner_counts)
     elif ck == "row-count":
-        _route(path, completion.get("db"), "completion.db")
+        _route(path, completion.get("db"), "completion.db", allow_spanner_counts)
         if not isinstance(completion.get("table"), str) or not completion["table"]:
             _err(path, "completion.table must be a non-empty string")
         _positive_int(path, completion.get("expect"), "completion.expect")
@@ -297,7 +297,8 @@ def parse_manifest_block(raw: dict, path) -> LifecycleSpec | None:
     if block is None:
         return None
     timeout = raw.get("timeout", 120)
-    spec = parse_spec(block, path, timeout=timeout if isinstance(timeout, (int, float)) else 120)
+    spec = parse_spec(block, path, timeout=timeout if isinstance(timeout, (int, float)) else 120,
+                      allow_spanner_counts=raw.get("audit") is not None)
     paths = []
     if spec.sentinel is not None and "path" in spec.sentinel["observe"]:
         paths.append(("sentinel.observe.path", spec.sentinel["observe"]["path"]))
@@ -868,7 +869,14 @@ def await_running_bounded(client, apps, deadline: Deadline) -> dict:
 def _count_observer(admins, ref, tokens):
     if ref["db"].startswith("spanner-"):
         from livetest.sinkprobe import rows
-        return lambda remaining: len(rows(ref, admins, tokens, remaining)), _render(ref["table"], tokens)
+        from livetest.spanneradmin import _check_table
+        table = _check_table(_render(ref["table"], tokens))
+        admin = _admin(admins, ref["db"])
+        def count(remaining):
+            with admin._db().snapshot() as snap:
+                result = list(snap.execute_sql(f"SELECT count(*) FROM {table}", timeout=max(0.05, remaining)))
+                return int(result[0][0])
+        return count, table
     table = _table(_render(ref["table"], tokens))
     probe = make_probe(_admin(admins, ref["db"]))
 
@@ -981,6 +989,15 @@ def _source_sql_reader(ctx_dir):
     return read
 
 
+def publish_sentinels(state, tokens, ident):
+    bindings = {}
+    for phase, value in getattr(state, "sentinel_ids", {}).items():
+        bindings[f"SENTINEL_{phase.upper()}_ID"] = str(value)
+        bindings[f"SENTINEL_{phase.upper()}_TAG"] = f"slt-{ident.per_test}-{ident.attempt}-{phase}"
+    state.sentinel_bindings = bindings
+    tokens.update(bindings)
+
+
 def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens, ident,
                     read_files, owned, source_dir=None, clock=None, id_source=None) -> list[dict]:
     """H3: bounded RUNNING for every app (the smoke record), then the declared capture readiness and
@@ -1052,6 +1069,7 @@ def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, 
     state.ready = watch.finish(reason, witness)
     if reason != "satisfied":
         raise LifecycleError(f"lifecycle readiness {kind} failed: {reason}", state.ready, [smoke])
+    publish_sentinels(state, tokens, ident)
     return [smoke]
 
 
@@ -1125,4 +1143,5 @@ def complete(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens,
     state.completion = watch.finish(reason, witness)
     if reason != "satisfied":
         raise LifecycleError(f"lifecycle completion {kind} failed: {reason}", state.completion)
+    publish_sentinels(state, tokens, ident)
     return state.completion
