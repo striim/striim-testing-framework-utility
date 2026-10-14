@@ -499,3 +499,9 @@ the Striim server (`server_files:`), and every assertion tier.
 The framework tests itself with one small live test per `test.yaml` feature, in
 `scripts/live/regression/framework/`. Its [README](../scripts/live/regression/framework/README.md)
 lists which folder shows which key.
+
+### Check typed, counted Spanner rows
+
+Start with [07-spanner-exact](../samples/live/07-spanner-exact/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md).
+
+Evidence for **Typed exact rows**: `data.comparisons[]`: `declaration`, declaration hash, `expected`/`actual` counts and SHA-256, `equal`, and mismatch samples. Require `equal: true` for each comparison.

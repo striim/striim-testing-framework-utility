@@ -436,7 +436,7 @@ near your data's size, so a runaway target fails fast.
 | `columns` | `{}` | column name → type (table below). Values of a typed column compare by meaning, so `118.0` and `118.00` are equal as `decimal:2` |
 | `ignore` | `[]` | columns removed from both sides before comparing (a load timestamp, say). Each must exist on at least one side, and cannot also be typed |
 | `order` | `any` | `any`: the rows compare as a multiset, in any order. `sequence`: also in the same order |
-| `order_by` | none | the columns the target is read in order of. Required with `order: sequence` on `data` and `diff`, refused otherwise. The values must be unique per row (`order-not-total` if not) |
+| `order_by` | none | the columns the target is read in order of. Required with `order: sequence` on database `data` and `diff`, refused on Kafka/file routes. The values must be unique per row (`order-not-total` if not) |
 
 The spec's own `keys:` (a projection) still applies, before `ignore`.
 
@@ -490,6 +490,54 @@ again until it matches or `timeout` runs out.
 
 `diff: [{..., exact: true}]` without the top-level block keeps its older meaning: the source and target
 rows compared as text, with their counts.
+
+### Native values on Spanner and Kafka
+
+The declaration follows the value returned by the reader, not the formatted text.
+
+| Returned value | Declaration | Limit or refusal |
+|---|---|---|
+| Spanner INT64 / Avro int or long | `integer` | booleans and quoted numbers are not integers |
+| Spanner NUMERIC / Avro logical decimal | `decimal:<s>` | choose the required scale; any value needing rounding fails |
+| Spanner FLOAT64 / Avro float or double | `decimal:<s>` when exactly representable at that scale | non-finite values and lossy scale fail; project another supported representation if required |
+| Spanner BOOL / Avro boolean | `boolean` | strings are not booleans |
+| Spanner STRING / Avro string or enum | native text, no declaration required | text remains text |
+| Spanner DATE / Avro logical date | `date` | compare the calendar date |
+| Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | this canonical profile uses microseconds; golden fractions have at most six digits. Project a separate integer/text field to check finer precision |
+| Spanner BYTES / Avro bytes or fixed | `binary:hex` or `binary:base64` | a byte value needs its declared encoding |
+| Spanner JSON, compatible arrays / Avro nested records or arrays | `json` | every nested value must be JSON-compatible; arrays of raw bytes or dates need a supported projection |
+| nullable field / Avro union with null | the non-null value's declaration | `<null>` is null; incompatible mixed scalar branches need a supported projection |
+
+Kafka paths include the record section. For one message with JSON key `{"id":1}`
+and decoded Avro value `{"id":1,"active":true}`, the hand-derived golden header is
+`key.id,value.id,value.active` and its row is `1,1,true`.
+
+<!-- snippet: fragment -->
+```yaml
+exact: {version: 1, max_rows: 10, max_bytes: 4096}
+assert:
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      project: kafka_record
+      keys: [key.id, value.id, value.active]
+      match: expected/messages.csv
+      exact:
+        columns:
+          key.id: integer
+          value.id: integer
+          value.active: boolean
+        order: sequence
+```
+
+Use a single-partition topic for this sequence claim. Every decoded frame counts
+as a row, including duplicates; each frame retains its message key. The top-level
+`exact.max_rows` bounds decoded frames (default 100000, maximum 1000000), and
+`exact.max_bytes` bounds both Kafka wire bytes and canonical comparison bytes
+(default 64 MiB, maximum 512 MiB). There is no separate frame-limit setting. Reads
+must consume the complete captured watermark range before their deadline.
+This is a worked syntax example, with hermetic coverage; it is not a recorded
+live qualification of Kafka exact.
 
 ## `lifecycle:` — prove the app finished
 
@@ -731,7 +779,7 @@ assert:
 ```
 No specs — just asserts the app reaches and stays RUNNING through a short settle window.
 
-### `data` — Postgres/Oracle/MSSQL target row assertions
+### `data` — database rows and Kafka records
 <!-- snippet: fragment -->
 ```yaml
 assert:
@@ -745,6 +793,9 @@ assert:
 Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `match` compares
 *stringified* values; use `<null>` in the golden CSV for SQL/JSON null. By default it compares
 distinct sets; pin `rows: N` too if cardinality matters.
+
+Database data specs can add `exact:` as described above. Kafka typed comparison
+uses `project: kafka_record` with full `key.*`/`value.*` projection paths.
 
 For a Kafka target with JSON message keys and length-delimited Avro values, opt into
 `project: kafka_record` to compare the key and value of each record together:
@@ -1108,3 +1159,5 @@ differing only in case — none of them is a readable test-name slug. Write ever
 - **Parallel runs are opt-in and leave teardown to you** — see `docs/internals/ENGINE.md` "Parallel runs
   (`SLT_PARALLEL=1 -n N`)" for the coordination machinery (`SLT_KEEP_SERVICES=1`, one-time
   provisioning, register-once OP jars, no automatic teardown).
+
+Worked case: [07-spanner-exact](../samples/live/07-spanner-exact/README.md).

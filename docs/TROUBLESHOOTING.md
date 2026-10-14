@@ -70,7 +70,7 @@ either the same way.
 | `exact-block-missing` | a spec has `exact:` but the top-level `exact: {version: 1}` is missing | add the block |
 | `undeclared-conversion:amount:Decimal` | a numeric, date or JSON column without a type | add it under `exact.columns` |
 | `invalid-value:expected:amount` | a golden cell does not parse as the column's type | fix the cell; write `<null>` for NULL |
-| `exact-route-unsupported`, or a `lifecycle:` route refused | `exact:` and `lifecycle:` read Postgres only | on other databases use `data` with `rows:` or `match:`, or `diff`, and no `lifecycle:` |
+| `exact-route-unsupported`, or a `lifecycle:` route refused | the selected route or projection does not support that check | check the [route matrix](WHAT-IS-SUPPORTED.md#check-routes); exact supports Postgres, both Spanner dialects and Kafka `kafka_record`, plus Docker files. Keep supported exact checks |
 | a `ddl:` file refused: schema or publication | the framework creates and drops the schemas a test uses | remove the `CREATE SCHEMA` / `CREATE PUBLICATION` |
 
 ## During a run
@@ -79,7 +79,7 @@ either the same way.
 |---|---|---|
 | `run` printed `run-dir:` and nothing else | a framework pinned before the result line printed only failures: nothing more means the run passed | `outcome.json` in the run directory says `"exit": 0`; move `framework.pin` to a newer release and run `python3 scripts/sync-framework.py` for the result line |
 | `exact data assertion failed`, with `samples.missing` / `samples.extra` | the target differs from the golden | read the two lists: fix the app, or the golden if the golden is wrong |
-| a `match:` test passes with a duplicated row | without `exact:`, `match` compares the distinct set of rows as text | add `exact:` (Postgres), or pin the count with `rows: N` |
+| a `match:` test passes with a duplicated row | without `exact:`, `match` compares the distinct set of rows as text | add `exact:` on a supported route; a hand-written row count alone cannot check every value |
 | lifecycle `deadline` at readiness | the app never delivered the sentinel, or never reached the baseline | check the app reached RUNNING, the replication slot, and the sentinel's `observe` table and `key` |
 | lifecycle `terminal-status:HALT` | the app halted | the Striim server log; the reason is in `evidence.json` |
 | lifecycle `zero-count` | the source had no rows to count | seed the source; for an empty correct result use the sentinel kinds |
@@ -131,3 +131,14 @@ which nothing executed as **exit 3, not a pass**.
 | `another integration-test session is already running against this checkout` | one integration run per checkout | wait for it, or use `--parallel` inside one run |
 | `NoSuchFileException` under `target/`, or a run that reports one case fewer than expected | you ran Maven in the module while the tier was building it | let the run finish; do not build the module at the same time |
 | a case reports a mismatch in event N, section, column | the emitted events differ from `expected/` | the message names the first difference |
+
+## Check typed, counted Spanner rows
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-declaration` | The exact declaration is malformed or has an unknown key/type. | Use the declared keys and types in TEST-YAML; retain the exact check. |
+| `invalid-exact-spec` | The exact declaration is malformed or has an unknown key/type. | Use the declared keys and types in TEST-YAML; retain the exact check. |
+| `exact-route-unsupported` | This route/projection cannot return typed exact rows. | Use a supported exact route or the route-appropriate assertion; see the route matrix. |
+| `canonical-limit-exceeded` | A read exceeds the declared row or byte budget. | Check unexpected rows/duplicates first; choose a sufficient bounded budget for the hand-derived input. |
+| `exact-read-error` | The typed target query failed. | Read the nested driver error, check privileges and target naming, and correct the route. |
+| `exact-read-timeout` | The typed query did not finish inside its deadline. | Check target reachability and query blocking; the read cannot qualify the result. |

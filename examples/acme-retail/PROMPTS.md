@@ -45,7 +45,7 @@ Insert orders (1001,2001,25.00,placed), (1002,2002,7.50,placed),
 (1003,2003,120.25,placed), then update 1003 to 118.00/shipped and delete 1002.
 Changes run post_start with after: 10s. Use depth: gate, requires: [postgres, mysql],
 smoke, rows: 2 with a hand-written golden, and a cross-database diff. Do not use
-exact or lifecycle against MySQL, since the documented support is PostgreSQL only.
+exact or lifecycle against MySQL, since those checks do not support that database route.
 Use documented tokens and supported assertions. Derive the golden from the input
 and explain each expected row. Do not run infrastructure probes or live tests yet.
 ```
@@ -105,7 +105,8 @@ Insert events (3001,order_placed,1001),
 Use example: apps/events, depth: gate, requires: [mysql, kafka], smoke and a Kafka
 data assertion with db: kafka, rows: 4, the three projected keys, and a hand-written
 expected/messages.csv. Explain the terminal row and the append-only scope.
-Do not claim stream ordering or add unsupported lifecycle/exact keys.
+Keep this existing legacy projection. For a new typed comparison use documented
+project: kafka_record with full key/value paths; do not claim global stream ordering.
 Use documented tokens and supported assertions. Derive the golden from the input
 and explain each expected row. Do not run infrastructure probes or live tests yet.
 ```

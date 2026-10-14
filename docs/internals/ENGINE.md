@@ -236,3 +236,7 @@ waits 60 s and then fails naming the open transactions.
 - [design/c8-exact-data.md](design/c8-exact-data.md): exact comparison.
 - [PERF_SPEC.md](PERF_SPEC.md): the integration tier's performance extension.
 - [RELEASING.md](RELEASING.md): cutting a tagged release.
+
+### Check typed, counted Spanner rows
+
+The live engine modules `exactdata`, `canon` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [07-spanner-exact fixture](../../samples/live/07-spanner-exact/README.md).

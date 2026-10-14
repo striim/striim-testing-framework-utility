@@ -46,7 +46,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `04-lifecycle-check` | a CDC app whose correct result is an empty target, and how `lifecycle:` proves it ran |
 | `05-mysql-initial-load` | an initial load on MySQL |
 | `06-mysql-cdc` | binlog CDC on MySQL: inserts, an update and a delete |
-| `07-spanner-exact` | typed and counted Spanner rows |
+| `07-spanner-exact` | typed and counted Spanner rows; requires the Spanner service |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

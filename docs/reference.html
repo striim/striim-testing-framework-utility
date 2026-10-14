@@ -355,7 +355,7 @@ footer { padding:1.75rem 0; font-size:12px; color:var(--muted); }
   <div class="section-head"><div><p class="eyebrow">Start here</p><h2>Try it yourself.</h2></div><p>See how the framework works by running a finished example on your own machine: set up a test repository, check it offline, then run it against Striim. You do not write anything first.</p></div>
   <div class="app-grid">
    <article class="app-card"><span class="route">FINISHED EXAMPLE</span><h3>Acme Retail example</h3><p><code>examples/acme-retail/</code>: three apps and three tests (PostgreSQL CDC to MySQL, PostgreSQL load and CDC, MySQL to Kafka), each with its expected result. All three passed on a live Striim. Copy it and run it as it is.</p><a href="../examples/acme-retail/README.md">Example README →</a></article>
-   <article class="app-card"><span class="route">ONE IDEA EACH</span><h3>Six samples</h3><p><code>samples/live/</code>: an initial load, a transform, file output, a lifecycle check, a MySQL load and MySQL CDC. Each is a complete test with its own README.</p><a href="RUN-YOUR-FIRST-TEST.md">Run your first sample →</a></article>
+   <article class="app-card"><span class="route">ONE IDEA EACH</span><h3>Live samples</h3><p><code>samples/live/</code>: initial loads, transforms, file output, lifecycle checks, MySQL CDC and typed Spanner comparisons; the catalog lists their prerequisites. Each is a complete test with its own README.</p><a href="RUN-YOUR-FIRST-TEST.md">Run your first sample →</a></article>
    <article class="app-card"><span class="route">FOR YOUR OWN TESTS</span><h3>Starter template</h3><p><code>templates/consumer-repo/</code>: the skeleton of a repository for your own tests, with one working test to copy. Use it when you start writing tests for your apps (“Create the repository” in the walkthrough below).</p><a href="../templates/consumer-repo/README.md">Template README →</a></article>
   </div>
   <ol class="steps" id="try-steps" data-tabs="Try it yourself">
@@ -564,7 +564,7 @@ assert:
       target: ${MYSQL_TARGET_SCHEMA}.${TID}orders_copy
       target_db: mysql-target</code></pre></div>
     <p>Derive the golden from the input: order <strong>1001</strong> stays at <strong>25.00 / placed</strong>; <strong>1002</strong> is deleted; <strong>1003</strong> becomes <strong>118.00 / shipped</strong>. The expected file is never recorded from a run.</p>
-    <div class="callout"><strong>Match the check to the route.</strong> Database <code>exact:</code> and <code>lifecycle:</code> support PostgreSQL routes only. Orders and events poll their assertions up to <code>timeout: 180</code>. Customers uses baseline readiness, a final count of three, five seconds of stability and a typed exact golden.</div>
+    <div class="callout"><strong>Match the check to the route.</strong> Typed <code>exact:</code> supports PostgreSQL, both Spanner dialects and Kafka record projections, plus Docker files. Choose lifecycle witnesses from the <a href="WHAT-IS-SUPPORTED.md#check-routes">route matrix</a>. Orders and events poll their assertions up to <code>timeout: 180</code>. Customers uses baseline readiness, a final count of three, five seconds of stability and a typed exact golden.</div>
     <p>The customers fixture keeps the source quiet until the initial load lands, then releases CDC changes. The baseline reader can finish while the CDC reader keeps the app running; readiness and completion check both phases. This is a controlled startup, with the source held quiet during the initial load.</p>
     <p>The events case checks delivery and values of append-only records, including <code>batch_complete</code>. It projects fields as strings for a portable comparison and makes no claim about updates, deletes or Kafka partition ordering.</p>
     <p class="step-links"><a href="TEST-YAML.md">Every manifest key</a> · <a href="../examples/acme-retail/tests/live/orders-cdc/test.yaml">Full orders test</a> · <a href="../examples/acme-retail/tests/live/orders-cdc/expected/rows.csv">Orders golden</a> · <a href="../examples/acme-retail/README.md">All golden derivations</a></p>
@@ -597,7 +597,7 @@ Insert orders (1001,2001,25.00,placed), (1002,2002,7.50,placed),
 (1003,2003,120.25,placed), then update 1003 to 118.00/shipped and delete 1002.
 Changes run post_start with after: 10s. Use depth: gate, requires: [postgres, mysql],
 smoke, rows: 2 with a hand-written golden, and a cross-database diff. Do not use
-exact or lifecycle against MySQL, since the documented support is PostgreSQL only.
+exact or lifecycle against MySQL, since those checks do not support that database route.
 Use documented tokens and supported assertions. Derive the golden from the input
 and explain each expected row. Do not run infrastructure probes or live tests yet.</code></pre></div>
     <p><strong>New test or old one?</strong> Prompts 2 to 4 built Acme: their apps and tests are already in your copy, so pasting one rebuilds a test you have. To watch an assistant add a test of its own, use prompt 6, a new test for the orders app that already exists:</p>
