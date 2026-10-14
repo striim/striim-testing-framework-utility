@@ -508,7 +508,9 @@ then absent; append sinks observe insertion then its deletion event.
 A new ID/tag is allocated per recovery cycle; `SENTINEL_RECOVERY_1_ID` and
 `SENTINEL_RECOVERY_1_TAG` (then 2, 3, ...) become tokens and evidence bindings
 after proof succeeds. The prefix is reserved. A recovery assertion record retains
-its marker observations. Missing, unreadable or terminal routes fail with
+its marker observations and real expected insert-present/delete-absent states,
+so the complete written evidence validates without an inapplicable-field reason.
+Missing, unreadable or terminal routes fail with
 `post-recovery-sentinel-missed`, never as an expected data failure, even when the
 final golden was already met. See `samples/live/16-recovery-sentinel` for a marker
 suppression check. File reads still require Docker mode.

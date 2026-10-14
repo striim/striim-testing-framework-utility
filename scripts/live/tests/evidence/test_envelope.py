@@ -746,3 +746,27 @@ def test_checkpoint_read_error_after_interrupt_is_valid_diagnostic_evidence(good
     saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
     row = saved['assertions'][-1]['actual']['rows'][0]
     assert row['interrupted'] is True and row['afterInterrupt']['error']
+
+def test_recovery_sentinel_result_writes_and_validates_full_evidence(good, monkeypatch):
+    from types import SimpleNamespace
+    from livetest import recovery_sentinel
+    monkeypatch.setattr(lifecycle, 'check_witness_refs', lambda *args: None)
+    class Marker:
+        def __init__(self, *args, **kwargs): pass
+        def run(self, watch, terminal):
+            watch.observe({'step': 'present', 'count': 1})
+            watch.observe({'step': 'absent', 'count': 0})
+            return 'satisfied'
+    monkeypatch.setattr(lifecycle, 'Sentinel', Marker)
+    spec = SimpleNamespace(completion_s=1, sentinel={'observe': {'db': 'postgres-target'}})
+    recovery_sentinel.run(lifecycle.State('cdc'), spec, client=None, app='N.app', admins={},
+        tokens={}, ident=None, read_files=None, owned=lambda *args: True, source_dir='.',
+        cycle=1, record=good._slt_records.append)
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    result = next(r for r in saved['assertions'] if r['type'] == 'recovery')
+    assert result['expected']['rows'] == [{'insertPresent': True, 'deleteAbsent': True}]
+    assert len(result['actual']['rows'][0]['observations']) == 2
+

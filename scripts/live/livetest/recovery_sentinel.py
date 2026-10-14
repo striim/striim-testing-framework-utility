@@ -27,7 +27,7 @@ def run(state, spec, *, client, app, admins, tokens, ident, read_files, owned,
     record(build_assertion_result(type="recovery", status="passed" if reason == "satisfied" else "failed",
         spec={"sentinel": True, "cycle": cycle}, target=app, db=spec.sentinel["observe"].get("db"),
         detail="ok" if reason == "satisfied" else f"post-recovery-sentinel-missed: {reason}",
-        expected={"kind": "rows", "rows": [{"reason": "satisfied"}]},
+        expected={"kind": "rows", "rows": [{"insertPresent": True, "deleteAbsent": True}]},
         actual={"kind": "rows", "rows": [witness]}))
     if reason != "satisfied":
         raise RecoveryError(f"post-recovery-sentinel-missed: {reason}")
