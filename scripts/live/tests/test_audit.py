@@ -190,3 +190,22 @@ def test_kafka_audit_accepts_the_shipped_versioned_writer_tql():
     assert audit.normalize(r, 'p', tql=tql)[0]['writer'] == 'KafkaTarget'
     with pytest.raises(ValueError, match='audit-writer-not-append-only'):
         audit.normalize(r, 'p', tql=tql.replace("Topic: '${KAFKA_TGT_TOPIC}'", "Topic: '${KAFKA_SRC_TOPIC}'"))
+
+
+@pytest.mark.parametrize('database', ['${SPANNER_GSQL_DB}', '${OTHER_DB}', 'foreign'])
+def test_spanner_audit_binds_the_selected_database_and_exact_table(database):
+    r = raw()
+    s = r['assert']['data'][0]
+    s.update(db='spanner-google', target='${TID}audit')
+    s['audit']['delivery_key'] = 'delivery_id'
+    s['exact']['ignore'] = ['delivery_id']
+    r['lifecycle']['completion'].update(db='spanner-google', table=s['target'])
+    tql = TQL.replace('DatabaseWriter', 'SpannerWriter').replace(
+        '${PG_TARGET_SCHEMA}.${TID}audit', database + '.${TID}audit')
+    if database == '${SPANNER_GSQL_DB}':
+        assert audit.normalize(r, 'p', tql=tql)[0]['route'] == 'spanner-google'
+        with pytest.raises(ValueError, match='audit-writer-not-append-only'):
+            audit.normalize(r, 'p', tql=tql.replace('.${TID}audit', '.${TID}other'))
+    else:
+        with pytest.raises(ValueError, match='audit-writer-not-append-only'):
+            audit.normalize(r, 'p', tql=tql)

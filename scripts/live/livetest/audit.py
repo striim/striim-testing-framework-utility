@@ -85,7 +85,10 @@ def normalize(raw, path, *, tql):
             supported = adapter.startswith("KafkaWriter") and (props.get("topic", props.get("topics")) == spec.get("target") and not ({"topic", "topics"} <= props.keys())) and spec.get("project") == "kafka_record"
         else:
             expected = "DatabaseWriter" if route.startswith("postgres-") else "SpannerWriter" if route == "spanner-google" else "SpannerPGDialectWriter"
-            supported = adapter == expected and props.get("tables") == spec.get("target")
+            table_matches = props.get("tables") == spec.get("target")
+            if route == "spanner-google" and isinstance(spec.get("target"), str):
+                table_matches = table_matches or props.get("tables") == "${SPANNER_GSQL_DB}." + spec["target"]
+            supported = adapter == expected and table_matches
             stream = re.search(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?STREAM\s+" + re.escape(source) + r"\s+OF\s+([^\s;]+)", tql, re.I)
             local_type = stream and re.search(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?TYPE\s+" + re.escape(stream.group(1)) + r"\s*\(", tql, re.I)
             supported = supported and bool(local_type) and all(props.get(k) == "false" for k in ("executeinsertasupdate", "executeupdateasinsert"))
