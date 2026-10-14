@@ -1066,7 +1066,7 @@ def load_manifest(path: Path) -> TestManifest:
         try:
             parse_monitor_specs(assert_["monitor"])
         except MonitorSpecError as e:
-            raise ManifestError(str(e)) from None
+            raise ManifestError(f"{path}: {e}") from None
         _monitor_recaptures = []
         for n, spec in enumerate(assert_["monitor"]):
             for j, c in enumerate(spec.get("recapture") or []):
@@ -1089,13 +1089,13 @@ def load_manifest(path: Path) -> TestManifest:
         try:
             parse_checkpoint_history_spec(assert_["checkpoint_history"])
         except CheckpointHistorySpecError as e:
-            raise ManifestError(str(e)) from None
+            raise ManifestError(f"{path}: {e}") from None
     if assert_ and assert_.get("jmx") is not None:
         from livetest.assertions.jmx import JmxSpecError, parse_jmx_specs
         try:
             parse_jmx_specs(assert_["jmx"])
         except JmxSpecError as e:
-            raise ManifestError(str(e)) from None
+            raise ManifestError(f"{path}: {e}") from None
     # A recover phase whose result nothing inspects proves nothing: the app was interrupted
     # and restarted, and no claim was made about what survived. `smoke: true` alone does not
     # count -- it only re-asserts RUNNING, which `recover` already waits for.
