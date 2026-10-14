@@ -56,6 +56,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `14-progress-recovery` | interrupt CDC inside a declared target progress window |
 | `15-fault-evidence` | fault-time progress evidence and missed-window failure |
 | `16-recovery-sentinel` | fresh route proof after recovery and before assertions |
+| `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

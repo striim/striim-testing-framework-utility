@@ -1,0 +1,76 @@
+name: one-node-failover
+purpose: A flow moves to the survivor after its single owner is killed mid-run, with
+  complete data.
+tql: app.tql
+topology: cluster
+requires:
+- postgres
+timeout: 240
+tags:
+- sample
+- cdc
+- postgres
+- exact
+- lifecycle
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: postgres-target
+- file: slot.sql
+  db: postgres-source
+seed:
+- file: changes.sql
+  db: postgres-source
+  when: post_start
+exact:
+  version: 1
+assert:
+  smoke: true
+  data:
+  - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+    target_db: postgres-target
+    match: expected/rows.csv
+    exact:
+      columns:
+        id: integer
+  placement:
+  - flow: ${NS}.${TID}flow
+    node: survivor
+    timeout: 90s
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness:
+    kind: sentinel
+  completion:
+    kind: sentinel
+  stability: 5s
+  deadlines:
+    readiness: 90s
+    completion: 120s
+  reset: owned
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: postgres-target
+      table: ${PG_TARGET_SCHEMA}.${TID}tgt
+      key: id
+recover:
+  mode: kill
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: ${PG_TARGET_SCHEMA}.${TID}tgt
+    above: 100
+    below: 5000
+    timeout: 90s
+    poll: 100ms
+  settle: 1s
+  sentinel: true
+  node:
+    hosting: ${NS}.${TID}flow
+disabled_parallel: true

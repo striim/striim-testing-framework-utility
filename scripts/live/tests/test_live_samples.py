@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel", "17-one-node-failover"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -372,3 +372,15 @@ def test_recovery_sentinel_stop_sample_keeps_the_fault_window_open():
     assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
     assert _golden('16-recovery-sentinel')[1] == [
         {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_failover_sample_declares_single_flow_owner_and_complete_golden():
+    root = SAMPLES / "17-one-node-failover"
+    m = load_manifest(root / "test.yaml")
+    assert m.topology == "cluster"
+    assert m.recover["mode"] == "kill"
+    assert m.recover["node"] == {"hosting": "${NS}.${TID}flow"}
+    assert m.assert_["placement"] == [{"flow": "${NS}.${TID}flow", "node": "survivor", "timeout": "90s"}]
+    assert "WITH ${TID}flow ON ONE IN ${APP_GROUP}" in (root / "app.tql").read_text()
+    assert _golden("17-one-node-failover")[1] == [{"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
+

@@ -500,6 +500,61 @@ pass and would prove nothing.
 Example: `scripts/live/regression/framework/framework-recover`, a writer on a tight commit policy
 that survives a `STOP`.
 
+### Single-node faults and flow placement
+
+In Docker mode, add `recover.node` to scope `stop`, `kill` or `restart` to
+one container. Use `primary`, `secondary`, `agent`, or `{hosting: named flow}`.
+The hosting flow must belong to this case's namespace and have exactly one
+running owner in current Striim deployment metadata. Its owner is checked again
+before the final progress read and fault command. Ambiguous selectors and unknown
+keys fail with `invalid-node-fault`; a moved or nonunique flow fails `fault-missed`.
+`quiesce` cannot target a node. `restart` requires a node. Native mode skips named
+node faults, and continues to refuse legacy kill.
+
+<!-- snippet: fragment -->
+```yaml
+recover:
+  mode: kill
+  node: {hosting: '${NS}.${TID}flow'}
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: '${PG_TARGET_SCHEMA}.${TID}tgt'
+    above: 100
+    below: 5000
+assert:
+  placement:
+    - {flow: '${NS}.${TID}flow', node: survivor, timeout: 90s}
+  data:
+    - {target: '${PG_TARGET_SCHEMA}.${TID}tgt', db: postgres-target, rows: 5000}
+```
+
+Docker commands use the captured container ID and verify its resulting running
+state. A failed command fails `node-fault-error`. Only that container is started
+again, including after a failed case. A hosted app-node flow must move to the
+other app node while its owner is stopped; missing failover fails
+`fault-node-no-failover` under the restore deadline. The agent has no app-node
+survivor requirement. Each cycle selects the hosting flow's current owner afresh.
+
+The surviving app node's published API port is discovered by Docker inspection.
+The second node publishes 9082 by default (`SLT_STRIIM_NODE_HTTP_HOST_PORT`).
+Missing fallback endpoints fail `fault-fallback-unavailable` before interruption.
+Read-only status, monitor, description and checkpoint reads share a bounded
+budget with authentication to a surviving endpoint after connection, timeout or
+endpoint authentication failures. State-changing API calls execute once.
+Legacy recovery without `node` retains its existing behavior.
+
+`assert.placement` is a nonempty list of `flow`, `node`, and optional positive
+`timeout` (default case timeout). Unknown keys fail `invalid-placement-spec`.
+`flow` must name this case's qualified flow. `node` is an exact live Striim server
+name, a Docker role above, or `survivor` (requires an app-node fault).
+The assertion reads running flow status and per-node deployed-flow metadata;
+exactly the requested node must own the flow. Zero, multiple or wrong owners fail
+`placement-mismatch`; unreadable metadata fails `placement-read-error`.
+Placement records retain expected and actual nodes. See
+`samples/live/17-one-node-failover` for a two-node case with complete data and a
+post-recovery sentinel.
+
 ### Post-recovery route proof
 
 | Recovery marker key | Contract |
