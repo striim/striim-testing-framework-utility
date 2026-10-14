@@ -137,3 +137,44 @@ def test_status_cannot_use_up_deadline_then_send_read():
     with pytest.raises(ProgressError):
         wait(normalize(spec()), lambda left: pytest.fail("read after deadline"),
              now=clock.now, sleep=clock.sleep, status=status)
+
+
+@pytest.mark.parametrize("kind", ["postgres-slot", "kafka-end", "kafka-consumer"])
+def test_progress_reader_uses_real_confirmed_ledger(kind, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from livetest import progress, ownership, lifecycle
+    ledger = ownership.Ledger(tmp_path / "ledger.json", SimpleNamespace(attempt="current"),
+                              {"entries": []}, env={})
+    calls = []
+    class Probe:
+        def __init__(self, admin): pass
+        def query(self, sql, params=None, remaining=10):
+            calls.append((sql, params, remaining)); return [("0/20",)]
+    class Consumer:
+        def get_watermark_offsets(self, tp, timeout, cached):
+            calls.append((tp.topic, tp.partition, timeout)); return (0, 32)
+        def committed(self, tps, timeout):
+            calls.append((tps[0].topic, tps[0].partition, timeout))
+            return [SimpleNamespace(offset=32, error=None)]
+        def close(self): pass
+    monkeypatch.setattr(lifecycle, "PgProbe", Probe)
+    if kind == "postgres-slot":
+        db, resource, name = "postgres-source", "pg-slot", "case_slot"
+        spec = {"kind": kind, "db": db, "slot": "${PG_SLOT}", "above": "0/10"}
+    else:
+        db, resource, name = "kafka", "kafka-topic", "case_events"
+        spec = {"kind": kind, "topic": "${TID}events", "partition": 0, "above": 16}
+        if kind == "kafka-consumer": spec["group"] = "${TID}reader"
+    entry = ledger.add(resource, name, db, "confirmed")
+    admin = SimpleNamespace(_consumer=lambda group: Consumer())
+    kwargs = dict(admins={db: {"admin": admin}}, tokens={"PG_SLOT": "case_slot", "TID": "case_"},
+                  client=None, app="N.A", owned=ledger.owns)
+    normalized = progress.normalize(spec)
+    assert progress.reader(normalized, **kwargs)(.5) == 32
+    assert len(calls) == 1
+    for field, value in [("state", "intended"), ("attempt", "prior"), ("db", "other-route")]:
+        original = entry[field]; entry[field] = value
+        with pytest.raises(progress.ProgressError, match="progress-target-not-owned"):
+            progress.reader(normalized, **kwargs)
+        assert len(calls) == 1
+        entry[field] = original

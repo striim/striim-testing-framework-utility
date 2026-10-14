@@ -106,7 +106,7 @@ def reader(s, *, admins, tokens, client, app, owned):
     name = render(s[name_key], tokens)
     db = s.get("db", "kafka")
     resource = "pg-table" if db.startswith("postgres") and kind == "target-count" else (
-        "spanner-table" if kind == "target-count" else "pg-slot" if kind == "postgres-slot" else "kafka-topic")
+        "spanner-table" if kind == "target-count" else "pg-slot" if kind == "postgres-slot" else "topic")
     if not owned(resource, db, name):
         raise ProgressError(f"progress-target-not-owned: {name}")
     admin = admins[db]["admin"]
