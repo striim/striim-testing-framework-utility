@@ -42,6 +42,42 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `diff_poll` | number | no | `2` | seconds between the reads of an `assert.diff` poll; must be greater than 0 |
 | `generate` | list | no | `[]` | run a data generator and place its output on the Striim server: entries `{kind, workload, dest, when}`. `kind` is `ggtrail` (GoldenGate trail files from a `workload.yaml`); `workload` is relative to the test dir; `dest` is a server directory; `when` defaults to `post_start` |
 
+## `transactions:` — overlapping Postgres seed sessions
+
+The optional ordered `transactions:` list controls named seed sessions. Each
+step has `session` and `op`, optional `when` (`pre_deploy`, `post_start` (default)
+or `post_recover`), and optional `after` (a duration from the start of that
+transaction phase). The phases must occur in that order; steps within a phase
+execute in list order. Existing ordinary seed files run before the transaction
+steps of the same phase. Post-start steps require lifecycle readiness;
+post-recover steps require `recover:` and run after the last restore, before settle.
+
+- `op: begin` requires `db: postgres-source` or `postgres-target` and opens a new
+  owned connection. Begin two sessions before committing either to overlap them.
+- `op: sql` requires `file`, read and token-rendered like a seed file. It executes
+  in that session's open transaction. Transaction-control statements in these
+  files are refused (`transaction-control-in-sql`); use explicit steps.
+- `op: savepoint`, `rollback_to` or `release` requires a plain identifier `name`.
+  Rollback-to keeps its savepoint and removes later savepoints; release removes
+  it and later savepoints. Rolled-back SQL remains in the input evidence.
+- `op: commit` or `rollback` closes that session. List commits in the desired
+  order. A session can stay open across steps and across `recover:` until a
+  post-recover commit or rollback.
+
+Unknown keys, invalid operations, routes, paths or session/savepoint state are
+`invalid-transaction-seed`. Every declared session must eventually close. The
+framework rolls back and closes all remaining sessions on any failure, before
+table teardown, even when resources are kept. Connections and SQL statements
+use the case timeout. No connection is shared with another case. Pre-deploy
+steps cannot have a non-zero delay.
+
+<!-- snippet: fragment -->
+```yaml
+transactions:
+  - {session: a, op: begin, db: postgres-source, when: pre_deploy}
+  - {session: a, op: rollback, when: pre_deploy}
+```
+
 ## `seed:` — `when` and `after`
 
 Each `seed` entry chooses its own lifecycle point, so one test can lay down a baseline before

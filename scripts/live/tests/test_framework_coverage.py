@@ -55,10 +55,6 @@ EXEMPT = {
     "tql": "structural",
     "assert": "structural -- the tiers inside it are checked separately",
     "ddl": "covered implicitly by every example; no example demonstrates routing on its own",
-    "exact": (
-        "exact data semantics (C8, slt-canon/1) are covered hermetically by tests/evidence; a live framework "
-        "example needs a real Postgres target and a real FileWriter output, which live qualification checks"
-    ),
     # --- assert tiers ---
     "gcs": "GCS object assertions, needs the emulator",
     "json": "JSON column assertions, needs the Spanner emulator",

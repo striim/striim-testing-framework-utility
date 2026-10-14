@@ -1,0 +1,77 @@
+name: transaction-seeds
+purpose: Overlapping transactions preserve chosen commit order and savepoint rollback
+  across recovery.
+tql: app.tql
+topology: single
+requires:
+- postgres
+timeout: 180
+tags:
+- sample
+- postgres
+- transactions
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: postgres-target
+- file: slot.sql
+  db: postgres-source
+exact:
+  version: 1
+assert:
+  data:
+  - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+    db: postgres-target
+    match: expected/rows.csv
+    exact:
+      columns:
+        id: integer
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness:
+    kind: source-progress
+    db: postgres-source
+  completion:
+    kind: row-count
+    db: postgres-target
+    table: ${PG_TARGET_SCHEMA}.${TID}tgt
+    expect: 2
+  stability: 5s
+  deadlines:
+    readiness: 90s
+    completion: 120s
+  reset: owned
+recover:
+  mode: stop
+  after: 0
+  settle: 1
+transactions:
+- session: a
+  op: begin
+  db: postgres-source
+- session: b
+  op: begin
+  db: postgres-source
+- session: a
+  op: sql
+  file: a.sql
+- session: a
+  op: savepoint
+  name: keep
+- session: a
+  op: sql
+  file: discard.sql
+- session: a
+  op: rollback_to
+  name: keep
+- session: b
+  op: sql
+  file: b.sql
+- session: b
+  op: commit
+- session: a
+  op: commit
+  when: post_recover

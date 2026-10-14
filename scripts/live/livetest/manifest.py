@@ -30,7 +30,7 @@ VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
     "op", "udf", "server_files", "generate", "timeout", "diff_poll", "tags", "disabled",
     "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
-    "kafka_cleanup_topics", "depth", "tokens",
+    "kafka_cleanup_topics", "depth", "tokens", "transactions",
     "lifecycle",   # C7.2
     "exact",   # C8.1
 }
@@ -928,6 +928,7 @@ class TestManifest:
                                          # (auto-detected via regex, no manual config needed)
     source_dir: Path = None             # where tql/ddl/seed/upload are read from
     local_files: frozenset = frozenset()  # ddl/seed/upload names marked `local: true`: read from `dir`
+    transaction_steps: list = field(default_factory=list)
     lifecycle: object = None            # livetest.lifecycle.LifecycleSpec, or None (legacy)
     exact: object = None                # livetest.canon.check_manifest resolution, or None
 
@@ -1410,6 +1411,12 @@ def load_manifest(path: Path) -> TestManifest:
         warnings.warn(f"{path}: could not detect persistent streams from {tql}: {e}",
                       stacklevel=2)
 
+    from livetest.transactions import normalize as normalize_transactions
+    try:
+        transaction_steps = normalize_transactions(raw.get("transactions"), path,
+            recover=bool(recover), lifecycle=raw.get("lifecycle") is not None)
+    except ValueError as e:
+        raise ManifestError(str(e)) from None
     # C7.2: the lifecycle block is validated at load, before any
     # provisioning (and offline through `striim-test validate`).
     from livetest import lifecycle as _slt_lifecycle
@@ -1438,6 +1445,7 @@ def load_manifest(path: Path) -> TestManifest:
         lifecycle=_slt_lc_spec,
         exact=_slt_exact_spec,
         tql=tql,
+        transaction_steps=transaction_steps,
         dir=path.parent,
         depth=depth,
         topology=topology,

@@ -193,11 +193,13 @@ def _cluster_provision_lock() -> Path:
 
 
 def _restore_then_post_recover(restore, run_files, seeds, settle, last,
-                                sleep=time.sleep, now=time.monotonic, hb=None, report=None):
+                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None):
     """Restore one recovery cycle and seed after the last restore when configured."""
     _post_rec = seeds if last else []
-    restore(0.0 if (_post_rec or not last) else settle)
-    if not _post_rec:
+    restore(0.0 if (_post_rec or not last or post_restore) else settle)
+    if post_restore is not None and last:
+        post_restore()
+    if not _post_rec and not (post_restore is not None and last):
         return
 
     if report is not None:
@@ -2051,6 +2053,7 @@ class LiveItem(pytest.Item):
         gcs_cleanup = []     # (admin, bucket) to delete on teardown (spec §A.4)
         kafka_cleanup = []   # (admin, topic) to delete on teardown (spec §A.4)
         client = None
+        _tx_pool = None
         deployed = False
         deploy_attempted = False
         in_use_held = False
@@ -2322,6 +2325,11 @@ class LiveItem(pytest.Item):
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
                                  run_one=lambda _db, _f: _run_files([(_db, _f)]), acquire_sinks=m.lifecycle is not None)
+            if m.transaction_steps:
+                from livetest.transactions import Pool
+                _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),
+                                timeout=m.timeout, record=self._slt_inputs.record)
+                _tx_pool.run_phase(m.transaction_steps, "pre_deploy")
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
                 _report(m.name, "seeding data")
@@ -2817,6 +2825,8 @@ class LiveItem(pytest.Item):
                                     _hb_wait(_elapsed, _after)
                                     time.sleep(min(2.0, _left))
                             _run_files([(_db, _f)])
+                    if _tx_pool is not None and _await_running_for_seed():
+                        _tx_pool.run_phase(m.transaction_steps, "post_start")
                     # Generate post_start data once RUNNING, before the post_start
                     # server_files drop (same no-race ordering as the pre_deploy phase).
                     if (any(g["when"] == "post_start" for g in m.generate_specs)
@@ -2892,6 +2902,8 @@ class LiveItem(pytest.Item):
                                     progress=_hb(f"recover: waiting for app RUNNING{_tag}")),
                                 run_files=_run_files,
                                 seeds=_post_rec,
+                                post_restore=(lambda: _tx_pool.run_phase(m.transaction_steps, "post_recover"))
+                                    if _tx_pool is not None and any(s["when"] == "post_recover" for s in m.transaction_steps) else None,
                                 settle=_rc["settle"],
                                 last=_last,
                                 hb=_hb,
@@ -3360,6 +3372,12 @@ class LiveItem(pytest.Item):
                 pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, monitor, checkpoint_history, jmx)")
             succeeded = True
         finally:
+            _tx_cleanup_error = None
+            if _tx_pool is not None:
+                try:
+                    _tx_pool.close()
+                except Exception as e:
+                    _tx_cleanup_error = e
             self._slt_cleanup_active = True
             # Stop the run-level progress line before teardown emits its own output.
             _clear_progress()
@@ -3449,6 +3467,8 @@ class LiveItem(pytest.Item):
             # C7.4: a cleanup failure fails a run that had nothing else in
             # flight; an exception already propagating is never replaced.
             import sys as _slt_sys
+            if _slt_sys.exc_info()[0] is None and _tx_cleanup_error is not None:
+                raise _tx_cleanup_error
             if _slt_sys.exc_info()[0] is None and cleanup is not None and cleanup.status == "failed":
                 raise _slt_ownership.CleanupError(f"{m.name}: cleanup failed: {cleanup.detail}")
 

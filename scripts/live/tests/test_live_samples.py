@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -268,3 +268,11 @@ def test_bounded_nothing_sample_is_gated_by_file_sentinel():
     assert s["nothing"] == {"window": "3s", "where": {"data.id": 1}}
     sql = (SAMPLES / name / "rollback.sql").read_text()
     assert sql.startswith("BEGIN;") and sql.endswith("ROLLBACK;\n")
+
+
+def test_transaction_sample_keeps_only_committed_input():
+    m = load_manifest(SAMPLES / "11-transaction-seeds/test.yaml")
+    assert [s["session"] for s in m.transaction_steps if s["op"] == "commit"] == ["b", "a"]
+    assert m.transaction_steps[-1]["when"] == "post_recover"
+    assert any(s["op"] == "rollback_to" for s in m.transaction_steps)
+    assert _golden("11-transaction-seeds")[1] == [{"id": "1", "msg": "first"}, {"id": "2", "msg": "second"}]
