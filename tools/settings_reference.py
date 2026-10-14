@@ -133,6 +133,7 @@ SECTIONS = (
          "([RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md) has the format)."),
         ("SLT_STRIIM_MIN_FREE_GB", "`35`", "Free Docker disk, in GB, a first image build requires."),
         ("SLT_STRIIM_HTTP_HOST_PORT", None, "Host port of the console and REST API."),
+        ("SLT_STRIIM_NODE_HTTP_HOST_PORT", None, "Host port of the second node's REST API, used during single-node faults."),
         ("SLT_STRIIM_HTTPS_HOST_PORT", None, "Host port of HTTPS."),
         ("SLT_STRIIM_JMX_HOST_PORT", None, "Host port of the primary's JMX Prometheus exporter."),
         ("SLT_STRIIM_NODE_JMX_HOST_PORT", None, "Host port of the second node's JMX exporter."),

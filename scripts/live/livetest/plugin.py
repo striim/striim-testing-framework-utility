@@ -2064,6 +2064,7 @@ class LiveItem(pytest.Item):
         client = None
         _tx_pool = None
         _snapshot_observer = None
+        _fault_target = None
         deployed = False
         deploy_attempted = False
         in_use_held = False
@@ -2811,6 +2812,20 @@ class LiveItem(pytest.Item):
                             case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout,
                             report=lambda msg: _report(m.name, msg))
                         _snapshot_observer.start()
+                    if m.recover and m.recover.get("node") is not None and not skip_verify:
+                        from livetest.node_fault import Target as _NodeTarget
+                        _ok, _why = recovery.supported(m.recover["mode"], ctx, node=m.recover["node"])
+                        if not _ok:
+                            pytest.skip(_why)
+                        _selection = m.recover["node"]
+                        if isinstance(_selection, dict):
+                            _flow = render(_selection["hosting"], tokens)
+                            if not _flow.startswith(ns + "."):
+                                raise recovery.RecoveryError("invalid-node-fault: hosting flow must belong to this case")
+                            _selection = {"hosting": _flow}
+                        client.await_running(app, timeout=m.timeout)
+                        _fault_target = _NodeTarget(client, ctx, _selection, app=app,
+                            record=self._slt_records.append, timeout=recovery._restore_budget())
                     _progress_read = None
                     _progress_baseline = 0
                     if m.recover and "trigger" in m.recover and not skip_verify:
@@ -2885,7 +2900,7 @@ class LiveItem(pytest.Item):
                     if m.recover and not skip_verify:
                         _rc = m.recover
                         from livetest.recovery_sentinel import run as _post_recovery_sentinel
-                        _ok, _why = recovery.supported(_rc["mode"], ctx)
+                        _ok, _why = recovery.supported(_rc["mode"], ctx, node=_rc.get("node"))
                         if not _ok:
                             pytest.skip(_why)
                         # One interruption is often not enough to observe anything: the field
@@ -2895,6 +2910,9 @@ class LiveItem(pytest.Item):
                         # settling between interruptions would just wait out the very in-flight
                         # window the next interruption needs.
                         for _i in range(_rc["times"]):
+                            if _i and _fault_target is not None:
+                                _fault_target = _NodeTarget(client, ctx, _selection, app=app,
+                                    record=self._slt_records.append, timeout=recovery._restore_budget())
                             _wait = _rc["after"] if _i == 0 else _rc["every"]
                             _last = (_i == _rc["times"] - 1)
                             _tag = "" if _rc["times"] == 1 else f" [{_i + 1}/{_rc['times']}]"
@@ -2924,6 +2942,12 @@ class LiveItem(pytest.Item):
                                     if left <= 0:
                                         raise _fault_progress.ProgressError("progress-deadline during source observations")
                                 status = client.current_status(app, timeout=min(5.0, left))
+                                if _fault_target is not None:
+                                    left -= time.monotonic() - began
+                                    began = time.monotonic()
+                                    if left <= 0:
+                                        raise _fault_progress.ProgressError("progress-deadline during status read")
+                                    _fault_target.check_owner(left)
                                 if _progress_read is None:
                                     return status
                                 if status != "RUNNING":
@@ -2934,7 +2958,7 @@ class LiveItem(pytest.Item):
                                 return _progress_read(left)
                             _progress_observed = _fault_progress.at_fault(
                                 _rc.get("trigger"), _read_at_fault,
-                                lambda: recovery.interrupt(client, ctx, app, _rc["mode"],
+                                lambda: _fault_target.interrupt(_rc["mode"]) if _fault_target is not None else recovery.interrupt(client, ctx, app, _rc["mode"],
                                     verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                     report=lambda msg: _report(m.name, msg)),
                                 record=self._slt_records.append, cycle=_i + 1,
@@ -2948,7 +2972,8 @@ class LiveItem(pytest.Item):
                             _post_rec = [(db, f, a) for db, f, when, a in m.seed_files
                                          if when == "post_recover"]
                             def _restore_cycle(_settle):
-                                status = recovery.restore(
+                                status = _fault_target.restore(expect_running=_rc["expect_running"], settle=_settle) \
+                                    if _fault_target is not None else recovery.restore(
                                     client, ctx, app, _rc["mode"], timeout=m.timeout,
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
@@ -3304,6 +3329,11 @@ class LiveItem(pytest.Item):
                             source_dir=m.source_dir)
                     if _snapshot_observer is not None:
                         self._slt_records += _snapshot_observer.finish()
+                    if m.assert_.get("placement"):
+                        from livetest.node_fault import assert_placement
+                        self._slt_records += assert_placement(m.assert_["placement"], client=client,
+                            ctx=ctx, tokens=tokens, timeout=m.timeout, target=_fault_target)
+                        ran = True
                     if m.audit_specs:
                         from livetest.audit import prepare as prepare_audit
                         prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
@@ -3443,6 +3473,13 @@ class LiveItem(pytest.Item):
             succeeded = True
         finally:
             _tx_cleanup_error = None
+            if _fault_target is not None:
+                try:
+                    _fault_target.close()
+                except Exception as e:
+                    _tx_cleanup_error = e
+                finally:
+                    client.configure_failover([])
             if _snapshot_observer is not None:
                 try:
                     import sys

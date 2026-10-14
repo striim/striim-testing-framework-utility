@@ -16,7 +16,7 @@ VALID_TEST_STATUSES = {"passed", "failed", "skipped", "error"}
 VALID_ASSERTION_STATUSES = {"passed", "failed"}
 VALID_ASSERTION_TYPES = {
     "smoke", "data", "diff", "file", "gcs", "json", "halt", "monitor", "checkpoint_history",
-    "jmx", "transaction", "recovery"}
+    "jmx", "transaction", "recovery", "placement"}
 # The spec's worked example only shows single|cluster, but `manifest.py`'s
 # VALID_TOPOLOGIES also allows "agent" (single-node-with-agent deploys), and this field
 # is meant to carry the EFFECTIVE topology the framework actually ran under (see spec §3

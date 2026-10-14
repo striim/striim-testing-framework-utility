@@ -150,6 +150,7 @@ services:
          - "host.docker.internal:host-gateway"
       ports:
          # Host port is overridable; :7071 is the node's JMX Prometheus exporter.
+         - "${SLT_STRIIM_NODE_HTTP_HOST_PORT:-9082}:9080" # surviving node API
          - "${SLT_STRIIM_NODE_JMX_HOST_PORT:-7075}:7071"
       volumes:
          - slt-striim-shared:/shared

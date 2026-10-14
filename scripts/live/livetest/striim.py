@@ -124,7 +124,7 @@ class StriimClient:
         self.api = api
 
     @classmethod
-    def from_url(cls, url: str, username: str, password: str) -> "StriimClient":
+    def from_url(cls, url: str, username: str, password: str, login_timeout=None) -> "StriimClient":
         parsed = urlparse(url if "://" in url else "http://" + url)
         host = parsed.hostname or "localhost"
         port = parsed.port or 9080
@@ -133,7 +133,47 @@ class StriimClient:
         timeout = paths.setting("STRIIM_API_TIMEOUT")
         if timeout is not None and not os.environ.get("STRIIM_API_TIMEOUT", "").strip():
             os.environ["STRIIM_API_TIMEOUT"] = timeout
-        return cls(striim_api.StriimApi(host, port, username, password, login_timeout=POLL_TIMEOUT))
+        return cls(striim_api.StriimApi(host, port, username, password, login_timeout=POLL_TIMEOUT if login_timeout is None else login_timeout))
+
+    def configure_failover(self, urls, app=None, factory=None):
+        """Only verified Docker peer endpoints; writes still execute exactly once."""
+        self._fallback_urls = list(dict.fromkeys(urls))
+        self._fallback_app = app
+        self._fallback_factory = factory or (lambda url, left: type(self).from_url(
+            url, self.api.username, self.api.password, login_timeout=left).api)
+
+    def _read_only(self, call, timeout, probe=True):
+        urls = getattr(self, "_fallback_urls", [])
+        if not urls:
+            return call(self.api, timeout)
+        seconds = sum(timeout) if isinstance(timeout, (tuple, list)) else float(timeout)
+        deadline = time.monotonic() + seconds
+        candidates = [None] + [u for u in urls if u.rstrip("/") != self.api.url_base.rstrip("/")]
+        last = None
+        for index, url in enumerate(candidates):
+            left = deadline - time.monotonic()
+            if left <= 0: break
+            attempt_deadline = time.monotonic() + left / (len(candidates) - index)
+            try:
+                api = self.api if url is None else self._fallback_factory(url, attempt_deadline - time.monotonic())
+                def remaining():
+                    left = attempt_deadline - time.monotonic()
+                    if left <= 0: raise requests.Timeout("read-only failover deadline")
+                    connect = min(10.0, left / 2)
+                    return (connect, left - connect)
+                if probe and getattr(self, "_fallback_app", None):
+                    api.status_application(self._fallback_app, timeout=remaining())
+                value = call(api, remaining())
+                if time.monotonic() > deadline: raise requests.Timeout("read-only response after deadline")
+                self.api = api
+                return value
+            except Exception as e:
+                retryable = isinstance(e, (requests.ConnectionError, requests.Timeout)) or (
+                    isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code in (401, 502, 503, 504)) or (
+                    isinstance(e, RuntimeError) and "-> HTTP 401:" in str(e))
+                if not retryable: raise
+                last = e
+        raise StriimError(f"read-only API failover failed within its deadline: {last}")
 
     def deploy_tql(self, tql_text: str) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".tql", delete=False) as f:
@@ -168,7 +208,7 @@ class StriimClient:
                 raise StriimError(redact(
                     f"{failure.get('command')!r} failed: {failure.get('failureMessage')}"))
 
-    def mon(self, name: str) -> dict:
+    def mon(self, name: str, timeout=None) -> dict:
         """`MON <name>;` -- an app's component tree, or one component's monitor figures --
         as the console reads them. The endpoint answers a list of command results; the
         figures are the first result's `output`."""
@@ -176,7 +216,8 @@ class StriimClient:
         # one-line failure under hundreds of MON payloads.
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                resp = self.api.post_tungsten_line(f"MON {name};", timeout=POLL_TIMEOUT)
+                resp = self._read_only(lambda api, t: api.post_tungsten_line(f"MON {name};", timeout=t),
+                                       POLL_TIMEOUT if timeout is None else timeout)
         except Exception as e:
             raise StriimError(f"could not read MON {name}: {e!r}") from e
         if isinstance(resp, list) and resp:
@@ -187,13 +228,14 @@ class StriimClient:
             return out if isinstance(out, dict) else {}
         return resp if isinstance(resp, dict) else {}
 
-    def describe(self, name: str) -> list:
+    def describe(self, name: str, timeout=None) -> list:
         """`DESCRIBE <name>;` -- the component's definition and, for a source in an app with
         RECOVERY, its `Checkpoint` entries (`Source Restart Position` and the like). Returns the
         first result's `output` as a list (one object per described entity)."""
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                resp = self.api.post_tungsten_line(f"DESCRIBE {name};", timeout=POLL_TIMEOUT)
+                resp = self._read_only(lambda api, t: api.post_tungsten_line(f"DESCRIBE {name};", timeout=t),
+                                       POLL_TIMEOUT if timeout is None else timeout)
         except Exception as e:
             raise StriimError(f"could not read DESCRIBE {name}: {e!r}") from e
         if isinstance(resp, list) and resp:
@@ -218,8 +260,8 @@ class StriimClient:
         no RECOVERY clause at all" both read the same way, which is what they are."""
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                resp = self.api.post_tungsten_line(f"SHOW {app} CHECKPOINT HISTORY;",
-                                                   timeout=POLL_TIMEOUT if timeout is None else timeout)
+                resp = self._read_only(lambda api, t: api.post_tungsten_line(f"SHOW {app} CHECKPOINT HISTORY;", timeout=t),
+                                       POLL_TIMEOUT if timeout is None else timeout)
         except Exception as e:
             raise StriimError(f"could not read SHOW {app} CHECKPOINT HISTORY: {e!r}") from e
         if isinstance(resp, list) and resp:
@@ -232,7 +274,8 @@ class StriimClient:
 
     def current_status(self, app: str, timeout=None) -> str:
         try:
-            return self.api.status_application(app, timeout=POLL_TIMEOUT if timeout is None else timeout)
+            return self._read_only(lambda api, t: api.status_application(app, timeout=t),
+                                   POLL_TIMEOUT if timeout is None else timeout, probe=False)
         except StriimError:
             raise
         except Exception as e:
@@ -638,8 +681,9 @@ class StriimClient:
                 "as 'nothing is loaded' and would reload every jar on the cluster.")
         return names
 
-    def list_deployment_groups(self) -> list:
-        resp = self.api.post_tungsten_line("LIST DEPLOYMENTGROUPS;", timeout=POLL_TIMEOUT)
+    def list_deployment_groups(self, timeout=None) -> list:
+        resp = self._read_only(lambda api, t: api.post_tungsten_line("LIST DEPLOYMENTGROUPS;", timeout=t),
+                               POLL_TIMEOUT if timeout is None else timeout)
         if isinstance(resp, list) and resp and resp[0].get("executionStatus") == "Failure":
             raise StriimError(f"LIST DEPLOYMENTGROUPS failed: {resp[0].get('failureMessage')}")
         return resp

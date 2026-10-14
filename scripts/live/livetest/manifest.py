@@ -19,7 +19,7 @@ VALID_TOPOLOGIES = {"single", "agent", "cluster"}
 # Assertion tiers an `xfail.tiers` may name. The record `type` each assert_* function writes
 # (resultschema.build_assertion_result) is the vocabulary; `smoke` is deliberately absent.
 XFAIL_TIERS_ALLOWED = frozenset(
-    {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx"})
+    {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx", "placement"})
 XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED
 VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # Every key load_manifest reads. Anything else is a typo or a key dropped in a schema change,
@@ -60,8 +60,8 @@ _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 #              for NODE_APP_QUIESCE_FLUSHED, then checkpoints. The drain. Use it as the
 #              CONTROL arm: a test that loses data under `stop` and not under `quiesce` has
 #              localised the fault to the shutdown path rather than to the pipeline.
-VALID_RECOVER_MODES = {"kill", "stop", "quiesce"}
-_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel"}
+VALID_RECOVER_MODES = {"kill", "stop", "quiesce", "restart"}
+_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel", "node"}
 _SERVICE_OUTAGE_KEYS = {"type", "service", "cycles", "delay_before", "down_for", "signal",
                         "ready_timeout", "settle", "concurrent"}
 _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -627,6 +627,16 @@ def _normalize_recover(raw, path) -> dict | None:
             f"stopped app and report success without interrupting anything")
     result = {"mode": mode, "after": after, "settle": settle,
               "expect_running": expect_running, "times": times, "every": every}
+    if "node" in raw:
+        from livetest.node_fault import normalize
+        if mode not in ("kill", "stop", "restart"):
+            raise ManifestError(f"{path}: invalid-node-fault: quiesce is an app operation")
+        try:
+            result["node"] = normalize(raw["node"])
+        except ValueError as e:
+            raise ManifestError(f"{path}: {e}") from e
+    elif mode == "restart":
+        raise ManifestError(f"{path}: invalid-node-fault: restart requires one node")
     if "sentinel" in raw:
         if raw["sentinel"] is not True or not expect_running:
             raise ManifestError(f"{path}: invalid-post-recovery-sentinel: sentinel must be true and expect_running must be true")
@@ -1116,6 +1126,12 @@ def load_manifest(path: Path) -> TestManifest:
             parse_jmx_specs(assert_["jmx"])
         except JmxSpecError as e:
             raise ManifestError(f"{path}: {e}") from None
+    if (assert_ or {}).get("placement") is not None:
+        from livetest.node_fault import normalize_placement
+        try:
+            normalize_placement(assert_["placement"], has_node_fault=bool(recover and recover.get("node")))
+        except ValueError as e:
+            raise ManifestError(f"{path}: {e}") from e
     # A recover phase whose result nothing inspects proves nothing: the app was interrupted
     # and restarted, and no claim was made about what survived. `smoke: true` alone does not
     # count -- it only re-asserts RUNNING, which `recover` already waits for.
