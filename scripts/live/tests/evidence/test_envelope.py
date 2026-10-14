@@ -707,3 +707,24 @@ def test_abandoned_snapshot_history_is_written_on_completion_failure(good):
     assert 'observer-incomplete' in record['detail']
     assert record['actual']['rows'][0]['prefix'] == 0
     assert record['actual']['rows'][0]['observedUtc']
+
+
+def test_failed_snapshot_keys_survive_written_evidence(good):
+    from livetest.snapshot_observer import Observer
+    from livetest.assertions import AssertionFailed
+    spec = {'db': 'postgres-target', 'tables': {
+        'a': {'target': '${TID}a', 'columns': {'id': 'integer'}, 'keys': ['id']},
+        'b': {'target': '${TID}b', 'columns': {'id': 'integer'}, 'keys': ['id']}},
+        'prefixes': [{'a': 'empty.csv', 'b': 'empty.csv'}]}
+    observer = Observer(spec, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: b'id\n'),
+        read=lambda *a: {'a': [{'id': 2}], 'b': []})
+    with pytest.raises(AssertionFailed):
+        observer.sample()
+    doc = doc_of(good, status='failed')
+    doc['assertions'].append(observer.abandon('completion failed'))
+    path = write(good, doc)
+    saved = json.loads(Path(path).read_text())
+    evidence.validate_case(saved)
+    tables = saved['assertions'][-1]['actual']['rows'][-1]['tables']
+    assert tables['a']['keys'] == [['2']] and tables['b']['keys'] == []

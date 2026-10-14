@@ -94,11 +94,13 @@ snapshot_observer:
   tables:
     a:
       target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      keys: [id]
       columns:
         id: integer
         msg: text
     b:
       target: ${PG_TARGET_SCHEMA}.${TID}tgt_aux
+      keys: [id]
       columns:
         id: integer
         msg: text

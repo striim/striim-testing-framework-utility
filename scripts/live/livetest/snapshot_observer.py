@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 
-from livetest import canon, exactdata, lifecycle as _lifecycle
+from livetest import canon, diagnostics, exactdata, lifecycle as _lifecycle
 from livetest.assertions import AssertionFailed
 from livetest.resultschema import build_assertion_result
 from livetest.substitute import render
@@ -24,8 +24,8 @@ def normalize(raw, path, *, lifecycle=False):
     if not isinstance(tables, dict) or not tables:
         refuse("tables must be a non-empty mapping")
     for alias, table in tables.items():
-        if not isinstance(alias, str) or not alias or not isinstance(table, dict) or set(table) != {"target", "columns"}:
-            refuse("each table alias needs exactly target and columns")
+        if not isinstance(alias, str) or not alias or not isinstance(table, dict) or not {"target", "columns"} <= set(table) or set(table) - {"target", "columns", "keys"}:
+            refuse("each table alias needs target and columns, with optional keys")
         if not isinstance(table["target"], str) or "${TID}" not in table["target"]:
             refuse("each target must contain ${TID}")
         if not isinstance(table["columns"], dict) or not table["columns"]:
@@ -34,6 +34,10 @@ def normalize(raw, path, *, lifecycle=False):
             canon.declaration({"columns": table["columns"]}, db_route=True)
         except ValueError as e:
             refuse(str(e))
+        if "keys" in table:
+            keys = table["keys"]
+            if not isinstance(keys, list) or not keys or any(not isinstance(k, str) or k not in table["columns"] for k in keys) or len(set(keys)) != len(keys):
+                refuse("table keys must be a non-empty list of unique declared columns")
     prefixes = raw.get("prefixes")
     if not isinstance(prefixes, list) or not prefixes:
         refuse("prefixes must be a non-empty list of complete states")
@@ -138,6 +142,18 @@ class Observer:
                      "sha256": canon.aggregate(hashes), "rows": sum(len(v) for v in rows.values())}
             self.history.append(entry)
             if not choices:
+                entry["tables"] = {}
+                for alias, values in rows.items():
+                    names = self.spec["tables"][alias].get("keys", list(self.declarations[alias].columns))
+                    samples, clipped = [], False
+                    for row in values[:diagnostics.MAX_KEYS]:
+                        cells = canon.canon_row({k: row[k] for k in names if k in row}, self.declarations[alias], "actual")
+                        text = {cell[0]: cell[-1] for cell in cells}
+                        keys = [text.get(k) for k in names]
+                        clipped = clipped or any(v is not None and len(v) > diagnostics.MAX_KEY_CHARS for v in keys)
+                        samples.append([v[:diagnostics.MAX_KEY_CHARS] if v is not None else None for v in keys])
+                    entry["tables"][alias] = {"keyColumns": names, "keys": samples, "rows": len(values),
+                        "keysTruncated": len(values) > diagnostics.MAX_KEYS, "valuesTruncated": clipped}
                 self.fail("snapshot-not-committed-prefix: related tables show an undeclared state")
         except AssertionFailed:
             raise

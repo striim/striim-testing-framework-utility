@@ -52,7 +52,7 @@ or one multi-use Spanner read-only snapshot. All tables must be confirmed resour
 of this attempt. This observer never checks tables in separate transactions.
 
 Required keys are `db` (an exact database route), `tables` (alias to a mapping
-with exactly `target` and `columns`) and `prefixes` (a non-empty list). Each prefix
+with required `target` and `columns`, plus optional `keys`) and `prefixes` (a non-empty list). Each prefix
 maps every alias to a hand-written case-relative CSV golden. Declare every
 compared column, using the exact type vocabulary. Every complete snapshot must
 equal one complete prefix, with row multiplicity intact; matching each table to
@@ -72,6 +72,19 @@ with `invalid-snapshot-spec`. Runtime failures include `snapshot-target-not-owne
 `snapshot-final-prefix-missing`. The data assertion record includes every
 observation's prefix index, row count and combined canonical hash. Goldens are
 read from the case's input snapshot; the framework never derives them from output.
+
+Each table's optional `keys` is a non-empty list of unique declared column names,
+used only for diagnostics; it defaults to all declared columns. Prefix comparison
+always checks all declared columns. An undeclared state records `tables` per alias:
+`keyColumns`, canonical `keys` arrays, total `rows`, `keysTruncated` and
+`valuesTruncated`. It retains the first 50 rows per table and at most 256 characters
+per value, including when an earlier failure abandons the observer. Null remains
+null; other values use the exact canonical type representation.
+
+A CDC sample that promises atomic target transactions must pass source transaction
+boundaries and enable the writer's transaction preservation. Sample 12 uses
+`FilterTransactionBoundaries: false` and `PreserveSourceTransactionBoundary: true`;
+without these, a partial transaction can be expected behavior.
 
 Sampling checks every observed snapshot. It cannot rule out a bad state between
 reads. Choose an interval suitable for the behavior under test. The observer is

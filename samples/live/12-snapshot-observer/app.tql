@@ -8,6 +8,7 @@ CREATE OR REPLACE SOURCE ${TID}source USING Global.PostgreSQLReader (
   Username: '${PG_SOURCE_USER}',
   Password: '${PG_SOURCE_PASSWORD}',
   Tables: '${PG_SOURCE_SCHEMA}.${TID}src;${PG_SOURCE_SCHEMA}.${TID}src_aux',
+  FilterTransactionBoundaries: false,
   ReplicationSlotName: '${PG_SLOT}'
 ) OUTPUT TO ${TID}stream;
 
@@ -16,6 +17,7 @@ CREATE OR REPLACE TARGET ${TID}writer USING Global.DatabaseWriter (
   Username: '${PG_TARGET_USER}',
   Password: '${PG_TARGET_PASSWORD}',
   Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt;${PG_SOURCE_SCHEMA}.${TID}src_aux,${PG_TARGET_SCHEMA}.${TID}tgt_aux',
+  PreserveSourceTransactionBoundary: true,
   BatchPolicy: 'EventCount:100,Interval:1',
   CommitPolicy: 'EventCount:100,Interval:1'
 ) INPUT FROM ${TID}stream;

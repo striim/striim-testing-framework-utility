@@ -174,3 +174,61 @@ def test_plugin_retains_observer_records_on_an_earlier_case_failure():
             _abandon_snapshot(o, records, 'completion failed')
     assert len(records) == 1 and records[0]['status'] == 'failed'
     assert records[0]['actual']['rows'][0]['prefix'] == 0
+
+
+def test_partial_snapshot_records_keys_for_each_table():
+    o = make_observer({'a': [{'id': 1}], 'b': []})
+    with pytest.raises(AssertionFailed):
+        o.sample()
+    record = o.abandon('completion failed')
+    tables = record['actual']['rows'][-1]['tables']
+    assert tables['a'] == {'keyColumns': ['id'], 'keys': [['1']], 'rows': 1,
+                           'keysTruncated': False, 'valuesTruncated': False}
+    assert tables['b']['keys'] == [] and tables['b']['rows'] == 0
+
+
+@pytest.mark.parametrize('keys', [[], ['missing'], ['id', 'id'], 'id', [1]])
+def test_invalid_diagnostic_keys_are_refused(keys):
+    s = spec(); s['tables']['a']['keys'] = keys
+    with pytest.raises(ValueError, match='invalid-snapshot-spec'):
+        observer.normalize(s, 'p', lifecycle=True)
+
+
+def test_diagnostic_projection_does_not_weaken_prefix_comparison():
+    s = spec()
+    for table in s['tables'].values():
+        table['columns']['msg'] = 'text'
+        table['keys'] = ['id']
+    observer.normalize(s, 'p', lifecycle=True)
+    data = {'empty.csv': b'id,msg\n', 'full.csv': b'id,msg\n1,correct\n'}
+    o = observer.Observer(s, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: data[p.name]),
+        read=lambda *a: {'a': [{'id': 1, 'msg': 'wrong'}],
+                         'b': [{'id': 1, 'msg': 'correct'}]})
+    with pytest.raises(AssertionFailed, match='snapshot-not-committed-prefix'):
+        o.sample()
+    assert o.history[-1]['tables']['a']['keys'] == [['1']]
+
+
+def test_diagnostic_keys_have_explicit_bounds():
+    s = spec(); s['tables']['a']['columns']['id'] = 'text'
+    data = {'empty.csv': b'id\n', 'full.csv': b'id\n1\n'}
+    o = observer.Observer(s, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: data[p.name]),
+        read=lambda *a: {'a': [{'id': 'x' * 300}] * 51, 'b': []})
+    with pytest.raises(AssertionFailed):
+        o.sample()
+    table = o.history[-1]['tables']['a']
+    assert table['rows'] == 51 and len(table['keys']) == 50
+    assert table['keysTruncated'] and table['valuesTruncated']
+    assert all(values == ['x' * 256] for values in table['keys'])
+
+
+@pytest.mark.parametrize('case', ['samples/live/12-snapshot-observer',
+    'scripts/live/regression/framework/framework-snapshot-observer'])
+def test_snapshot_sample_preserves_source_transactions(case):
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    tql = (root / case / 'app.tql').read_text()
+    assert 'PreserveSourceTransactionBoundary: true' in tql
+    assert 'FilterTransactionBoundaries: false' in tql
