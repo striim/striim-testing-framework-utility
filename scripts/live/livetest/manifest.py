@@ -61,7 +61,7 @@ _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 #              CONTROL arm: a test that loses data under `stop` and not under `quiesce` has
 #              localised the fault to the shutdown path rather than to the pipeline.
 VALID_RECOVER_MODES = {"kill", "stop", "quiesce"}
-_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every"}
+_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger"}
 _SERVICE_OUTAGE_KEYS = {"type", "service", "cycles", "delay_before", "down_for", "signal",
                         "ready_timeout", "settle", "concurrent"}
 _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -625,8 +625,17 @@ def _normalize_recover(raw, path) -> dict | None:
             f"{path}: 'recover.times: {times}' requires 'recover.expect_running: true' -- the "
             f"app is left stopped after cycle 1, so later cycles would 'interrupt' an already "
             f"stopped app and report success without interrupting anything")
-    return {"mode": mode, "after": after, "settle": settle,
-            "expect_running": expect_running, "times": times, "every": every}
+    result = {"mode": mode, "after": after, "settle": settle,
+              "expect_running": expect_running, "times": times, "every": every}
+    if "trigger" in raw:
+        from livetest.progress import normalize
+        if "after" in raw or "every" in raw:
+            raise ManifestError(f"{path}: invalid-progress-trigger: trigger cannot coexist with after/every")
+        try:
+            result["trigger"] = normalize(raw["trigger"])
+        except ValueError as e:
+            raise ManifestError(f"{path}: {e}") from e
+    return result
 
 
 def _extract_persistent_streams(tql_content: str) -> list[str]:

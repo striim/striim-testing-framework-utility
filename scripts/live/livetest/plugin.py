@@ -2809,6 +2809,15 @@ class LiveItem(pytest.Item):
                             case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout,
                             report=lambda msg: _report(m.name, msg))
                         _snapshot_observer.start()
+                    _progress_read = None
+                    _progress_baseline = 0
+                    if m.recover and "trigger" in m.recover and not skip_verify:
+                        from livetest import progress as _fault_progress
+                        _progress_read = _fault_progress.reader(m.recover["trigger"], admins=admins,
+                            tokens=tokens, client=client, app=app, owned=ledger.owns)
+                        if m.recover["trigger"]["kind"] == "checkpoint" and "above" not in m.recover["trigger"]:
+                            _progress_baseline = _progress_read(m.recover["trigger"]["timeout"])
+
                     _post_seed = [(db, f, a) for db, f, when, a in m.seed_files
                                   if when == "post_start"]
                     if _post_seed and _await_running_for_seed():
@@ -2886,6 +2895,12 @@ class LiveItem(pytest.Item):
                             _wait = _rc["after"] if _i == 0 else _rc["every"]
                             _last = (_i == _rc["times"] - 1)
                             _tag = "" if _rc["times"] == 1 else f" [{_i + 1}/{_rc['times']}]"
+                            if _progress_read is not None:
+                                _progress_observed = _fault_progress.wait(_rc["trigger"], _progress_read,
+                                    baseline=_progress_baseline,
+                                    status=lambda: client.current_status(app, timeout=min(5, _rc["trigger"]["timeout"])))
+                                if _rc["trigger"]["kind"] == "checkpoint" and "above" not in _rc["trigger"]:
+                                    _progress_baseline = _progress_observed["value"]
                             if _wait:
                                 _hb_r = _hb(f"waiting to {_rc['mode']} the app{_tag}")
                                 _rt0 = time.monotonic()

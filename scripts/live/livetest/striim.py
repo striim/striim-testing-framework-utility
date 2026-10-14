@@ -206,7 +206,7 @@ class StriimClient:
             return [out] if isinstance(out, dict) else []
         return []
 
-    def checkpoint_history(self, app: str) -> list:
+    def checkpoint_history(self, app: str, timeout=None) -> list:
         """`SHOW <app> CHECKPOINT HISTORY;` -- the platform's own recovery-checkpoint record
         for the app, over the same Tungsten endpoint MON reads (Grammar.cup: `SHOW name
         CHECKPOINT HISTORY`; API path: APICheckpointHistoryCommandExecutor).
@@ -219,7 +219,7 @@ class StriimClient:
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 resp = self.api.post_tungsten_line(f"SHOW {app} CHECKPOINT HISTORY;",
-                                                   timeout=POLL_TIMEOUT)
+                                                   timeout=POLL_TIMEOUT if timeout is None else timeout)
         except Exception as e:
             raise StriimError(f"could not read SHOW {app} CHECKPOINT HISTORY: {e!r}") from e
         if isinstance(resp, list) and resp:
@@ -230,9 +230,9 @@ class StriimClient:
             return out if isinstance(out, list) else []
         return []
 
-    def current_status(self, app: str) -> str:
+    def current_status(self, app: str, timeout=None) -> str:
         try:
-            return self.api.status_application(app, timeout=POLL_TIMEOUT)
+            return self.api.status_application(app, timeout=POLL_TIMEOUT if timeout is None else timeout)
         except StriimError:
             raise
         except Exception as e:

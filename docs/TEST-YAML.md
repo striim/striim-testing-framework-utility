@@ -494,6 +494,47 @@ pass and would prove nothing.
 Example: `scripts/live/regression/framework/framework-recover`, a writer on a tight commit policy
 that survives a `STOP`.
 
+### Recovery progress triggers
+
+Use `recover.trigger` instead of `after`/`every` to interrupt when progress is
+observed. Each cycle waits afresh; timeout and poll are positive durations
+(default 60s and 100ms). Unknown keys fail with `invalid-progress-trigger`.
+Target tables, slots and topics must belong to the current attempt. Reads are
+bounded by the remaining trigger deadline. A read finishing late cannot satisfy
+the barrier. A terminal app, unreadable position, deadline or overshot window
+fails the case before interruption. Timed `after:` recovery keeps its behavior.
+
+<!-- snippet: fragment -->
+```yaml
+recover:
+  mode: stop
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: '${PG_TARGET_SCHEMA}.${TID}tgt'
+    above: 100
+    below: 5000
+    timeout: 90s
+    poll: 100ms
+assert:
+  data:
+    - {target: "${PG_TARGET_SCHEMA}.${TID}tgt", db: postgres-target, min_rows: 1}
+```
+
+Trigger kinds:
+
+| kind | Fields and condition |
+|---|---|
+| `target-count` | `db`, `table`, integer `above`, `below`; count must be strictly between both bounds. Postgres and both Spanner dialects. |
+| `checkpoint` | optional `field` (default serialNo), optional integer `above`; maximum history field must advance past above. Without above, the baseline is read before post-start input, using the existing checkpoint-history reader. Missing fields fail. |
+| `kafka-end` | `topic`, integer `partition`, integer `above`; fresh topic end offset must exceed above. |
+| `kafka-consumer` | same plus `group`; committed consumer offset must exceed above. A group without a committed offset has not passed the barrier. |
+| `postgres-slot` | Postgres `db`, `slot`, `above` as hexadecimal LSN (for example 0/10); confirmed_flush_lsn must exceed it. Full 64-bit positions are compared. |
+
+Kafka offsets describe the next record position; the trigger observes the named
+partition, never a sum across partitions. Checkpoint advances are measured anew
+in each cycle. See `samples/live/14-progress-recovery`.
+
 ## `action: service_outage` — take a required service down mid-run
 
 Stops a service container while the app runs, starts it again, and watches the app ride it out.

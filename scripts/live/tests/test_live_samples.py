@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -295,3 +295,12 @@ def test_audit_sample_is_keyless_with_hand_derived_rows():
     assert "PRIMARY KEY" not in (root / "ddl_target.sql").read_text()
     assert _golden("13-append-only-audit")[1] == [{"id": "1", "msg": "alpha"}, {"id": "2", "msg": "beta"}]
     assert "ExecuteInsertAsUpdate: false" in (root / "app.tql").read_text()
+
+
+def test_progress_sample_golden_is_derived_from_its_series():
+    root = SAMPLES / "14-progress-recovery"
+    m = load_manifest(root / "test.yaml")
+    assert m.recover["trigger"]["below"] == 5000
+    assert "generate_series(1,5000)" in (root / "changes.sql").read_text()
+    assert _golden("14-progress-recovery")[1] == [
+        {"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
