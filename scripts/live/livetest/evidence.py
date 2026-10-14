@@ -896,6 +896,8 @@ def _declaration_violation(decl: dict, *, db_route: bool) -> str | None:
     from livetest import canon
     try:
         spec = {"columns": decl["columns"], "order": decl["order"]}
+        if "strict_json" in decl:
+            spec["strict_json"] = decl["strict_json"]
         if decl["ignore"] != []:
             spec["ignore"] = decl["ignore"]
         if decl["order_by"] is not None:
@@ -923,7 +925,8 @@ def _check_comparison(c: dict, i: int) -> None:
     if c.get("type") not in ("data", "diff", "file") or not _nonempty(c.get("target")):
         _fail("evidence-invalid", f"{where}: type and target are required")
     decl = c.get("declaration")
-    _keys(decl, _DECLARATION_KEYS, f"{where}.declaration")
+    optional = {"strict_json"} if isinstance(decl, dict) and "strict_json" in decl else set()
+    _keys(decl, _DECLARATION_KEYS | optional, f"{where}.declaration")
     if decl["profile"] != canon.PROFILE or c["order"] != decl["order"] or \
             c["declarationSha256"] != canon.declaration_sha256(decl):
         _fail("evidence-invalid", f"{where}: declaration, order and declarationSha256 disagree")

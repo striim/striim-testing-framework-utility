@@ -103,6 +103,27 @@ def report(when="call", outcome="passed", text=""):
     return SimpleNamespace(when=when, outcome=outcome, longrepr=text or None, longreprtext=text, user_properties=[], duration=0.1)
 
 
+def test_strict_json_file_comparison_writes_and_validates_full_evidence(good):
+    decl = canon.declaration({"columns": {"id": "integer"}, "strict_json": True}, db_route=False)
+    golden = canon.parse_golden(b"id\n1\n2\n", db_route=False)
+    comp = canon.compare(golden, [{"id": 1}, {"id": 2}], decl)
+    old = good._slt_data[0]
+    target = "/owned/rows.json"
+    good._slt_data = [{**old, **comp, "type": "file", "target": target, "route": "file",
+        "expected": {**comp["expected"], "source": old["expected"]["source"],
+                     "templateSha256": old["expected"]["templateSha256"]},
+        "actual": {**comp["actual"], "owned": True}}]
+    good._slt_records = [record(type="file", target=target, db="file",
+        spec={"path": target, "match": "expected/tgt.csv",
+              "exact": {"columns": {"id": "integer"}, "strict_json": True}})]
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    assert saved["data"]["comparisons"][0]["declaration"]["strict_json"] is True
+    assert saved["data"]["comparisons"][0]["equal"] is True
+
+
 def doc_of(item, status="passed"):
     return evidence.case_envelope(item, report(), status)
 
