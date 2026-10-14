@@ -119,7 +119,7 @@ class Observer:
     def fail(self, detail):
         raise AssertionFailed(detail, [self.record(False, detail)])
 
-    def sample(self):
+    def sample(self, *, final=False):
         if len(self.history) >= self.spec.get("max_snapshots", 10000):
             self.fail("snapshot-limit-exceeded: max_snapshots reached")
         try:
@@ -138,9 +138,14 @@ class Observer:
                 hashes = [c["actual"]["sha256"] for c in comps]
                 if all(c["equal"] for c in comps):
                     choices.append(index)
-            entry = {"at": time.monotonic(), "observedUtc": datetime.now(timezone.utc).isoformat(), "prefix": max(choices) if choices else None,
-                     "sha256": canon.aggregate(hashes), "rows": sum(len(v) for v in rows.values())}
             previous = max((e["prefix"] for e in self.history if e["prefix"] is not None), default=-1)
+            compatible = [index for index in choices if index >= previous]
+            # Repeated states can name several prefixes. Preserve a possible
+            # monotone history until completion identifies the final state.
+            selected = ((max(compatible) if final else min(compatible)) if compatible
+                        else max(choices) if choices else None)
+            entry = {"at": time.monotonic(), "observedUtc": datetime.now(timezone.utc).isoformat(), "prefix": selected,
+                     "sha256": canon.aggregate(hashes), "rows": sum(len(v) for v in rows.values())}
             self.history.append(entry)
             if choices and entry["prefix"] < previous:
                 self.fail(f"snapshot-prefix-regressed: observed {entry['prefix']} after {previous}")
@@ -211,7 +216,7 @@ class Observer:
             self.stop()
             if self.error:
                 raise self.error
-            self.sample()
+            self.sample(final=True)
             if self.history[-1]["prefix"] != len(self.prefixes) - 1:
                 self.fail("snapshot-final-prefix-missing")
         except AssertionFailed:

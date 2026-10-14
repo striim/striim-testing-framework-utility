@@ -245,3 +245,38 @@ def test_a_declared_prefix_cannot_regress_after_a_newer_commit():
         o.sample()
     assert [e['prefix'] for e in o.history] == [0,1,1,0]
     assert err.value.records[0]['actual']['rows'] == o.history
+
+
+def repeated_state_observer():
+    o = make_observer({'a': [], 'b': []})
+    o.prefixes.append(o.prefixes[0])
+    return o
+
+
+def test_repeated_declared_state_keeps_a_valid_monotone_history():
+    o = repeated_state_observer()
+    empty = {'a': [], 'b': []}
+    full = {'a': [{'id': 1}], 'b': [{'id': 1}]}
+    for rows in (empty, full, empty):
+        o.read = lambda *a, rows=rows: rows
+        o.sample()
+    assert [e['prefix'] for e in o.history] == [0, 1, 2]
+    assert o.finish()[0]['status'] == 'passed'
+
+
+def test_final_read_can_select_a_repeated_final_state():
+    o = repeated_state_observer()
+    o.sample()
+    assert o.history[0]['prefix'] == 0
+    assert o.finish()[0]['status'] == 'passed'
+    assert o.history[-1]['prefix'] == 2
+
+
+def test_repeated_state_does_not_allow_a_later_regression():
+    o = repeated_state_observer()
+    for rows in ({'a': [{'id': 1}], 'b': [{'id': 1}]}, {'a': [], 'b': []}):
+        o.read = lambda *a, rows=rows: rows
+        o.sample()
+    o.read = lambda *a: {'a': [{'id': 1}], 'b': [{'id': 1}]}
+    with pytest.raises(AssertionFailed, match='snapshot-prefix-regressed'):
+        o.sample()
