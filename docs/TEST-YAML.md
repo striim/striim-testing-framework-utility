@@ -1360,3 +1360,5 @@ Worked case: [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
 Kafka `payload: json` comparisons retain their file/record declaration rules in evidence validation, including `strict_json: true` and record sequence order without a database `order_by`. Passing and failing comparisons both retain a validated envelope.
 
 Worked case: [09-raw-file](../samples/live/09-raw-file/README.md). Framework gallery: [framework-raw-file](../scripts/live/regression/framework/framework-raw-file/README.md).
+
+Absence selector string values expand case tokens before matching. Finite numeric selectors compare by decimal value, so YAML `9.99` matches a delivered numeric `9.99`; booleans and strings retain distinct token types. Missing fields or incompatible output types still fail the read.

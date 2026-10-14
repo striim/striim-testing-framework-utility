@@ -41,6 +41,8 @@ def strict_matches(row, selector):
                 valid = isinstance(actual, str)
             if not valid:
                 raise ValueError(f"selector field {key} has an incompatible token type")
+        if isinstance(expected, (int, float, Decimal)) and not isinstance(expected, bool):
+            actual, expected = Decimal(str(actual)), Decimal(str(expected))
         if actual != expected:
             return False
     return True
@@ -103,12 +105,14 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
             deadline = clock.monotonic() + window
             reads = 0
             try:
+                selector = {k: render(v, tokens) if isinstance(v, str) else v
+                            for k, v in spec["nothing"]["where"].items()}
                 while True:
                     if status_probe:
                         status_probe()
                     read_started = clock.monotonic()
                     actual = [r for r in read(spec, read_timeout)
-                              if strict_matches(r, spec["nothing"]["where"])]
+                              if strict_matches(r, selector)]
                     reads += 1
                     if actual:
                         detail = "nothing-arrived: forbidden input produced output during the observation window"

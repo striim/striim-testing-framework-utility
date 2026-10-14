@@ -118,3 +118,23 @@ def test_new_sink_presence_precedes_delete(monkeypatch, sink, delivered):
     watch = lifecycle.Watch("sentinel", "delivery", lifecycle.Deadline(2, Clock()))
     assert sentinel.run(watch) == ("satisfied" if delivered else "deadline")
     assert actions == (["insert", "delete"] if delivered else ["insert"])
+
+
+@pytest.mark.parametrize('expected,actual', [(9.99, '9.99'), (0.1, '0.1'), (2, '2.0')])
+def test_decimal_selector_detects_the_delivered_row(expected, actual):
+    from decimal import Decimal
+    check = spec()
+    check['nothing']['where'] = {'price': expected}
+    with pytest.raises(AssertionFailed, match='nothing-arrived'):
+        nothing.assert_nothing([check], kind='data', tokens={'PG_TARGET_SCHEMA':'qatarget','TID':'t1_'},
+            completion={'kind':'sentinel','reason':'satisfied'}, clock=Clock(),
+            read=lambda *a: [{'price': Decimal(actual)}])
+
+
+def test_selector_tokens_are_rendered_before_matching():
+    check = spec()
+    check['nothing']['where'] = {'name': '${TID}row'}
+    with pytest.raises(AssertionFailed, match='nothing-arrived'):
+        nothing.assert_nothing([check], kind='data', tokens={'PG_TARGET_SCHEMA':'qatarget','TID':'t1_'},
+            completion={'kind':'sentinel','reason':'satisfied'}, clock=Clock(),
+            read=lambda *a: [{'name':'t1_row'}])
