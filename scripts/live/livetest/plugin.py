@@ -2922,6 +2922,8 @@ class LiveItem(pytest.Item):
                             recovery.interrupt(client, ctx, app, _rc["mode"],
                                                verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                                report=lambda msg: _report(m.name, msg))
+                            if _progress_read is not None:
+                                _fault_progress.after_interrupt(_rc["trigger"], _progress_read)
                             _report(m.name, f"recover: restoring app{_tag}")
                             # `when: post_recover` seeds: after the LAST
                             # restore reaches RUNNING, before the settle -- a parent that

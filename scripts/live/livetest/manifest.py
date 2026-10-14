@@ -633,6 +633,8 @@ def _normalize_recover(raw, path) -> dict | None:
             raise ManifestError(f"{path}: invalid-progress-trigger: trigger cannot coexist with after/every")
         try:
             result["trigger"] = normalize(raw["trigger"])
+            if times > 1 and not (result["trigger"]["kind"] == "checkpoint" and "above" not in result["trigger"]):
+                raise ValueError("invalid-progress-trigger: absolute triggers require times: 1; checkpoint without above advances each cycle")
         except ValueError as e:
             raise ManifestError(f"{path}: {e}") from e
     return result

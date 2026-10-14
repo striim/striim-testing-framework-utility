@@ -94,7 +94,7 @@ def test_kafka_offset_reads_and_closes_consumer(monkeypatch):
     assert kafka_position(admin, {**s, "kind": "kafka-consumer", "group": "reader"}, 1) == 7
 
 
-def test_postgres_count_and_slot_use_bounded_parameterized_reads(monkeypatch):
+def test_postgres_count_and_slot_use_bounded_parameterized_reads(monkeypatch, tmp_path):
     from livetest.progress import normalize, reader
     import livetest.lifecycle as lc
     calls = []
@@ -104,8 +104,13 @@ def test_postgres_count_and_slot_use_bounded_parameterized_reads(monkeypatch):
             calls.append((sql, params, remaining))
             return [("1/FFFFFFFF",)] if "pg_replication_slots" in sql else [(4,)]
     monkeypatch.setattr(lc, "PgProbe", Probe)
+    from types import SimpleNamespace
+    from livetest.ownership import Ledger
+    ledger = Ledger(tmp_path / "ledger.json", SimpleNamespace(attempt="current"), {"entries": []}, env={})
+    ledger.add("pg-table", "qatarget.rows", "postgres-target", "confirmed")
+    ledger.add("pg-slot", "owned_slot", "postgres-target", "confirmed")
     kw = dict(admins={"postgres-target": {"admin": object()}}, tokens={}, client=None,
-              app="N.A", owned=lambda *args: True)
+              app="N.A", owned=ledger.owns)
     assert reader(normalize(spec()), **kw)(.5) == 4
     assert calls[-1] == ('SELECT count(*) FROM "qatarget"."rows"', None, .5)
     s = normalize(dict(kind="postgres-slot", db="postgres-target", slot="owned_slot", above="0/10"))
@@ -114,7 +119,7 @@ def test_postgres_count_and_slot_use_bounded_parameterized_reads(monkeypatch):
 
 
 @pytest.mark.parametrize("route", ["spanner-google", "spanner-postgres"])
-def test_spanner_count_snapshot_closes_and_has_rpc_deadline(route):
+def test_spanner_count_snapshot_closes_and_has_rpc_deadline(route, tmp_path):
     from livetest.progress import normalize, reader
     from types import SimpleNamespace
     calls = []
@@ -124,8 +129,11 @@ def test_spanner_count_snapshot_closes_and_has_rpc_deadline(route):
         def execute_sql(self, sql, timeout): calls.append((sql, timeout)); return [(4,)]
     admin = SimpleNamespace(_db=lambda: SimpleNamespace(snapshot=Snapshot))
     s = normalize({**spec(), "db": route, "table": "rows"})
+    from livetest.ownership import Ledger
+    ledger = Ledger(tmp_path / "ledger.json", SimpleNamespace(attempt="current"), {"entries": []}, env={})
+    ledger.add("spanner-table", "rows", route, "confirmed")
     read = reader(s, admins={route: {"admin": admin}}, tokens={}, client=None,
-                  app="N.A", owned=lambda *args: True)
+                  app="N.A", owned=ledger.owns)
     assert read(.3) == 4 and calls[-1] == "closed"
     assert calls[0][1] == .3
 
@@ -178,3 +186,28 @@ def test_progress_reader_uses_real_confirmed_ledger(kind, tmp_path, monkeypatch)
             progress.reader(normalized, **kwargs)
         assert len(calls) == 1
         entry[field] = original
+
+
+@pytest.mark.parametrize('value', [10, 11])
+def test_post_interrupt_read_refuses_work_finished_during_stop(value):
+    from livetest import progress
+    clock = Clock()
+    with pytest.raises(progress.ProgressError, match='fault-missed') as err:
+        progress.after_interrupt(progress.normalize(spec()), lambda left: value, now=clock.now)
+    assert err.value.after_interrupt['value'] == value
+
+
+def test_post_interrupt_read_has_its_own_bounded_deadline():
+    from livetest import progress
+    clock = Clock(); budgets = []
+    clock.t = 120  # an asynchronous STOP took longer than the trigger window
+    got = progress.after_interrupt(progress.normalize(spec()), lambda left: budgets.append(left) or 4, now=clock.now)
+    assert got['value'] == 4 and got['observedAt'] == 120 and budgets == [1]
+    def late(left): clock.t += left + 0.1; return 4
+    with pytest.raises(progress.ProgressError, match='fault-missed'):
+        progress.after_interrupt(progress.normalize(spec()), late, now=clock.now)
+
+
+def test_repeated_absolute_trigger_is_refused():
+    with pytest.raises(ManifestError, match='invalid-progress-trigger'):
+        _normalize_recover({'mode':'stop','times':2,'trigger':spec()}, 'test.yaml')

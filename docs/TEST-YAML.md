@@ -513,7 +513,7 @@ recover:
     db: postgres-target
     table: '${PG_TARGET_SCHEMA}.${TID}tgt'
     above: 100
-    below: 5000
+    below: 2500
     timeout: 90s
     poll: 100ms
 assert:
@@ -1832,3 +1832,4 @@ Worked case: [12-snapshot-observer](../samples/live/12-snapshot-observer/README.
 Audit writer declarations accept an optional `VERSION` clause. KafkaWriter `Topic` must name the audited topic; the compatibility spelling `Topics` is also accepted, but specifying both is refused as ambiguous.
 
 Worked case: [13-append-only-audit](../samples/live/13-append-only-audit/README.md). Framework gallery: [framework-append-only-audit](../scripts/live/regression/framework/framework-append-only-audit/README.md).
+After an interruption takes effect, a fresh progress read has at most five seconds (or the shorter trigger timeout). A target count at or above `below` fails `fault-missed`, even when the pre-command read held. Absolute triggers require `times: 1`; only a checkpoint trigger without `above` supports repeated cycles with an advancing baseline.

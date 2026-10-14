@@ -160,3 +160,24 @@ def wait(s, read, *, baseline=0, now=time.monotonic, sleep=time.sleep, status=No
             raise ProgressError(f"progress-window-missed: observed {last}")
         sleep(max(0, min(s["poll"], deadline - now())))
     raise ProgressError(f"progress-deadline: last observed {last}")
+
+
+def after_interrupt(s, read, *, now=time.monotonic):
+    """Read once after the interruption takes effect under a fresh bounded budget."""
+    from datetime import datetime, timezone
+    budget = min(5.0, s['timeout'])
+    deadline = now() + budget
+    observation = {'value': None, 'observedAt': None, 'observedUtc': None}
+    try:
+        observation['value'] = _integer(read(budget))
+        observation['observedAt'] = now()
+        observation['observedUtc'] = datetime.now(timezone.utc).isoformat()
+        if now() > deadline:
+            raise ValueError('post-interruption progress read exceeded its deadline')
+        if s['kind'] == 'target-count' and observation['value'] >= s['below']:
+            raise ValueError('work finished before interruption took effect')
+    except Exception as e:
+        error = ProgressError(f'fault-missed: {e}')
+        error.after_interrupt = observation
+        raise error from e
+    return observation
