@@ -15,7 +15,7 @@ CREATE OR REPLACE SOURCE ${TID}source USING Global.DatabaseReader (
 -- One event per line, as the lifecycle's file-lines witnesses count them: no enclosing array,
 -- and the members of an event joined by a space rather than a newline.
 CREATE OR REPLACE TARGET ${TID}writer USING Global.FileWriter (
-  FileName: '${OWNED_DIR}/rows.csv',
+  FileName: '${OWNED_DIR}/${TID}rows.csv',
   FlushPolicy: 'EventCount:1,Interval:1s'
 ) FORMAT USING Global.DSVFormatter (
   ColumnDelimiter: ',',

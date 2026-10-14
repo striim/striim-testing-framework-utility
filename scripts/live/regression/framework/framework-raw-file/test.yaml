@@ -17,7 +17,7 @@ seed:
   when: pre_deploy
 assert:
   file:
-  - path: ${OWNED_DIR}/rows.csv
+  - path: ${OWNED_DIR}/${TID}rows.csv
     raw:
       format: lines
       files:
@@ -34,10 +34,10 @@ lifecycle:
     source:
       db: postgres-source
       table: ${PG_SOURCE_SCHEMA}.${TID}src
-    path: ${OWNED_DIR}/rows.csv
+    path: ${OWNED_DIR}/${TID}rows.csv
   completion:
     kind: file-lines
-    path: ${OWNED_DIR}/rows.csv
+    path: ${OWNED_DIR}/${TID}rows.csv
     lines: 2
   stability: 1s
   deadlines:

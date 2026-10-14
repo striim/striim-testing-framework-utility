@@ -66,7 +66,7 @@ def _read_inventory(spec, tokens, remaining, inventory, read):
     if len(found) > len(raw["files"]):
         raise ValueError("raw-file-inventory-mismatch: extra files or duplicate names across nodes")
     names = [posixpath.basename(p) for _, p in found]
-    if sorted(names) != sorted(raw["files"]):
+    if sorted(names) != sorted(render(name, tokens) for name in raw["files"]):
         raise ValueError(f"raw-file-inventory-mismatch: expected {sorted(raw['files'])}, found {sorted(names)}")
     for node, file in found:
         if posixpath.dirname(file) != directory or posixpath.normpath(file) != file:
@@ -77,7 +77,8 @@ def _read_inventory(spec, tokens, remaining, inventory, read):
             raise ValueError("raw-file-limit-exceeded: output exceeds max_bytes")
         name = posixpath.basename(file)
         row = {"name": name, "bytes": len(data), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
-        if "records" in raw["files"][name]:
+        expected_files = {render(n, tokens): v for n, v in raw["files"].items()}
+        if "records" in expected_files[name]:
             if raw.get("format", "lines") == "json":
                 try:
                     row["records"] = len(strictjson.events(data.decode("utf-8")))
@@ -95,7 +96,7 @@ def assert_raw_files(specs, *, timeout, tokens, mode, inventory=None, read=None,
     validate_specs(specs)
     records = []
     for spec in specs:
-        expected = sorted([{"name": n, **v} for n, v in spec["raw"]["files"].items()], key=lambda r: r["name"])
+        expected = sorted([{"name": render(n, tokens), **v} for n, v in spec["raw"]["files"].items()], key=lambda r: r["name"])
         deadline, actual, detail, ok = time.monotonic() + timeout, [], "", False
         while True:
             if status_probe:
