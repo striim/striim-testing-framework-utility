@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL)
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -222,3 +222,16 @@ def test_mysql_cdc_golden_follows_the_changes():
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
 def test_readme_shows_how_to_run_it(name):
     assert f"striim-test run samples/live/{name}" in (SAMPLES / name / "README.md").read_text()
+
+
+def test_spanner_exact_sample():
+    name = "07-spanner-exact"
+    raw = _raw(name)
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.requires == ["spanner"]
+    assert canon.check_manifest(raw)["specs"][0][0] == "data"
+    _header, rows = _golden(name)
+    seed = (SAMPLES / name / "seed.sql").read_text()
+    pairs = re.findall(r"\((\d+), '([^']*)'\)", seed)
+    assert [(r["id"], r["msg"]) for r in rows] == pairs
+    assert {p.relative_to(SAMPLES / name).as_posix() for p in (SAMPLES / name).rglob("*") if p.is_file()} == COMMON | {"ddl.sql", "seed.sql"}

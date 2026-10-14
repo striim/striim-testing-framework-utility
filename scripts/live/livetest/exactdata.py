@@ -98,6 +98,72 @@ def _run(argv, timeout: float):
     return subprocess.run(argv, capture_output=True, timeout=timeout)
 
 
+def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining):
+    """Stream a limited, typed Spanner snapshot; never use the legacy text reader."""
+    from livetest.spanneradmin import _check_table, _IDENT
+    table = _check_table(table)
+    if any(not _IDENT.fullmatch(c) for c in (order_by or [])):
+        raise canon.CanonError("invalid-declaration", "order_by needs plain column names")
+    sql = f"SELECT * FROM {table}"
+    if order_by:
+        sql += " ORDER BY " + ", ".join(order_by)
+    sql += f" LIMIT {max_rows + 1}"
+    rows, size = [], 0
+    with admin._db().snapshot() as snap:
+        result = snap.execute_sql(sql, timeout=max(0.05, remaining))
+        names = None
+        for values in result:
+            if names is None:
+                names = [f.name for f in result.fields]
+                if len(set(names)) != len(names):
+                    raise canon.CanonError("duplicate-column", table)
+            row = {}
+            for name, value in zip(names, values):
+                # Spanner JSON wrappers may wrap scalars or arrays, too.
+                serialize = getattr(value, "serialize", None)
+                if callable(serialize):
+                    text = serialize()
+                    row[name] = None if text is None else canon.JsonText(text)
+                else:
+                    row[name] = value
+                size += len(value) if isinstance(value, bytes) else len(str(value).encode("utf-8"))
+            rows.append(row)
+            if len(rows) > max_rows or size > TRANSFER_FACTOR * max_bytes:
+                raise canon.CanonError("canonical-limit-exceeded", table)
+    return rows
+
+
+def project_records(records, paths):
+    """Project nested Kafka fields without inventing NULL for an absent field."""
+    out = []
+    for record in records:
+        row = {}
+        for path in paths:
+            value = record
+            for segment in path.split("."):
+                if not isinstance(value, dict) or segment not in value:
+                    break
+                value = value[segment]
+            else:
+                row[path] = value
+        out.append(row)
+    return out
+
+
+def _route_ref(tokens, table, route):
+    if route.startswith("postgres-"):
+        rendered, sql, name = _pg_ref(tokens, table)
+        return rendered, sql, name, "pg-table"
+    from livetest.spanneradmin import _check_table
+    rendered = render(table, tokens)
+    return rendered, _check_table(rendered), rendered, "engine-tables"
+
+
+def _read_route(admin, route, table, decl, max_rows, max_bytes, remaining):
+    reader = read_spanner if route.startswith("spanner-") else read_pg
+    return reader(admin, table, decl.order_by, max_rows, max_bytes, remaining)
+
+
 def head_file(node: str, path: str, max_bytes: int, remaining: float, run=None) -> bytes:
     argv = ["docker", "exec", node, "head", "-c", str(max_bytes + 1), "--", path]
     try:
@@ -315,19 +381,30 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
     max_rows, max_bytes = canon.limits(m.exact["block"])
     prepared = []
     for index, spec, decl in exact_specs:
-        route = spec.get("target_db", spec.get("db", "postgres-source"))
+        route = spec.get("target_db", spec.get("db", "kafka" if spec.get("project") == "kafka_record"
+                                             else "postgres-source"))
         target = render(str(spec["target"]), tokens)
 
         def build(kw, spec=spec, decl=decl, route=route):
-            golden = _golden(kw, spec, m, inputs, tokens, db_route=True)
-            _rendered, table_sql, name = _pg_ref(tokens, str(spec["target"]))
+            kafka = spec.get("project") == "kafka_record"
+            golden = _golden(kw, spec, m, inputs, tokens, db_route=not kafka)
+            if kafka:
+                _rendered = table_sql = name = render(str(spec["target"]), tokens)
+                resource_kind = "topic"
+            else:
+                _rendered, table_sql, name, resource_kind = _route_ref(tokens, str(spec["target"]), route)
             admin = _admin(admins, route)
 
             def evaluate(remaining):
-                if lifecycle and not owned("pg-table", route, name):
+                if lifecycle and not owned(resource_kind, route, name):
                     raise ExactReadError("exact-target-not-owned", f"{route}:{name} is not a confirmed table of this "
                                                                    f"attempt; nothing was read")
-                actual = read_pg(admin, table_sql, decl.order_by, max_rows, max_bytes, remaining)
+                if kafka:
+                    records = admin.select_records(table_sql, poll_budget=remaining,
+                                                   max_rows=max_rows, max_bytes=max_bytes)
+                    actual = project_records(records, spec["keys"])
+                else:
+                    actual = _read_route(admin, route, table_sql, decl, max_rows, max_bytes, remaining)
                 return canon.compare(golden, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens))
             return evaluate
@@ -346,24 +423,25 @@ def assert_exact_diff(admins: dict, exact_specs: list, m, *, tokens: dict, owned
         target = render(str(spec["target"]), tokens)
 
         def build(kw, spec=spec, decl=decl, src_route=src_route, tgt_route=tgt_route):
-            src_render, src_sql, src_name = _pg_ref(tokens, str(spec["source"]))
-            _t, tgt_sql, tgt_name = _pg_ref(tokens, str(spec["target"]))
+            src_render, src_sql, src_name, src_kind = _route_ref(tokens, str(spec["source"]), src_route)
+            _t, tgt_sql, tgt_name, tgt_kind = _route_ref(tokens, str(spec["target"]), tgt_route)
             kw["source"], kw["spec_source"] = f"{src_route}:{src_render}", src_render
             src_admin, tgt_admin = _admin(admins, src_route), _admin(admins, tgt_route)
             clock_ = clock or _lifecycle.Clock
 
             def evaluate(remaining):
                 if lifecycle:
-                    for route, name, what in ((src_route, src_name, "source"), (tgt_route, tgt_name, "target")):
-                        if not owned("pg-table", route, name):
+                    for route, name, kind, what in ((src_route, src_name, src_kind, "source"),
+                                                    (tgt_route, tgt_name, tgt_kind, "target")):
+                        if not owned(kind, route, name):
                             raise ExactReadError("exact-target-not-owned",
                                                  f"diff {what} {route}:{name} is not a confirmed table of this "
                                                  f"attempt; nothing was read")
                 started = clock_.monotonic()
-                source = read_pg(src_admin, src_sql, decl.order_by, max_rows, max_bytes, remaining)
+                source = _read_route(src_admin, src_route, src_sql, decl, max_rows, max_bytes, remaining)
                 if not source:
                     raise ExactReadError("exact-source-empty", f"source {src_render} is empty; nothing to propagate")
-                actual = read_pg(tgt_admin, tgt_sql, decl.order_by, max_rows, max_bytes,
+                actual = _read_route(tgt_admin, tgt_route, tgt_sql, decl, max_rows, max_bytes,
                                  max(0.05, remaining - (clock_.monotonic() - started)))
                 return canon.compare(source, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens), expected_observed=True)

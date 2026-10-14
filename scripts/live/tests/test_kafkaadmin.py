@@ -164,20 +164,22 @@ def test_record_view_refuses_unread_bytes_after_or_inside_a_frame():
 
 def test_record_view_refuses_matching_prefix_before_captured_high_watermark(monkeypatch):
     closed = []
+    now = [0.0]
     class Consumer(_FakeConsumer):
         def close(self): closed.append(True)
+        def poll(self, timeout):
+            now[0] += 0.3
+            return super().poll(timeout)
     frames = [_mk_frame(str(i), "row") for i in range(5)]
     admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
                        consumer_factory=lambda group: Consumer("slt_tgt", frames))
-    # Consumer ID, deadline, four successful polls, then budget exhaustion.
-    clock_values = [0, 0, 0.1, 0.2, 0.3, 0.4, 2]
-    clock = iter(clock_values)
-    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
     assert len(admin.select_rows("slt_tgt", poll_budget=1)) == 4
-    clock = iter(clock_values)
+    now[0] = 0
     with pytest.raises(RuntimeError, match="1 captured message.*unread"):
         admin.select_records("slt_tgt", poll_budget=1)
     assert closed == [True, True]
+
 
 def test_decode_multiframe_and_strips_striim_metadata():
     # Striim packs several records into ONE message as consecutive frames, and

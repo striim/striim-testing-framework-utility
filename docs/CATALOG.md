@@ -47,6 +47,7 @@ Runnable regression guides are included under Contributing and internals.
 | [04 Lifecycle check](../samples/live/04-lifecycle-check/README.md) | `samples/live/04-lifecycle-check/README.md` | A change-data-capture (CDC) test whose correct result is an empty target. |
 | [05 MySQL initial load](../samples/live/05-mysql-initial-load/README.md) | `samples/live/05-mysql-initial-load/README.md` | The same shape as 01-plain-replication, on MySQL: DatabaseReader reads five rows that exist before the app starts, and DatabaseWriter copies them to a target table. |
 | [06 MySQL CDC](../samples/live/06-mysql-cdc/README.md) | `samples/live/06-mysql-cdc/README.md` | The MySQL counterpart of 04-lifecycle-check's CDC pipeline: MySQLReader reads the binary log and DatabaseWriter applies every insert, update and delete to a copy. |
+| [07 Spanner exact rows](../samples/live/07-spanner-exact/README.md) | `samples/live/07-spanner-exact/README.md` | SpannerBatchReader copies a seeded Spanner table through SpannerWriter. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services

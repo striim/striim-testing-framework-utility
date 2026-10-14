@@ -35,7 +35,7 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 MAX_MAX_BYTES = 512 * 1024 * 1024
 SAMPLE_ROWS = 20
 SAMPLE_BYTES = 64 * 1024
-DB_ROUTES = ("postgres-source", "postgres-target")
+DB_ROUTES = ("postgres-source", "postgres-target", "spanner-google", "spanner-postgres")
 BINDING_TOKENS = ("TID", "TID_UPPER", "TID_ORACLE", "NS", "APP", "APP_BARE", "PG_SLOT", "OWNED_DIR",
                   "RUN_ID", "WORKER", "ATTEMPT")          # plus every SENTINEL_* token
 _SPEC_KEYS = {"columns", "ignore", "order", "order_by"}
@@ -194,7 +194,9 @@ def check_manifest(raw: dict, case_dir=None) -> dict:
         if kind in ("data", "file"):
             if "match" not in spec:
                 raise CanonError("invalid-exact-spec", f"{where}: exact requires match")
-            bad = [k for k in _INCOMPATIBLE if k in spec]
+            bad = [k for k in _INCOMPATIBLE if k in spec and not
+                   (k == "project" and kind == "data" and spec[k] == "kafka_record"
+                    and spec.get("target_db", spec.get("db", "kafka")) == "kafka")]
             if bad:
                 raise CanonError("invalid-exact-spec", f"{where}: exact cannot be combined with {bad}")
             if case_dir is not None:
@@ -203,18 +205,26 @@ def check_manifest(raw: dict, case_dir=None) -> dict:
                 if target != base and base not in target.parents:
                     raise CanonError("invalid-exact-spec", f"{where}: match {spec['match']!r} escapes the case dir")
         if kind == "data":
-            route = spec.get("target_db", spec.get("db", "postgres-source"))
-            if route not in DB_ROUTES:
-                raise CanonError("exact-route-unsupported", f"{where}: route {route!r} (C8.3: postgres only)")
+            kafka = spec.get("project") == "kafka_record"
+            route = spec.get("target_db", spec.get("db", "kafka" if kafka else "postgres-source"))
+            if kafka:
+                from livetest.assertions.data import parse_data_specs, DataSpecError
+                try:
+                    parse_data_specs([spec])
+                except DataSpecError as e:
+                    raise CanonError("invalid-exact-spec", f"{where}: {e}") from None
+            if route not in DB_ROUTES and not (route == "kafka" and spec.get("project") == "kafka_record"):
+                raise CanonError("exact-route-unsupported", f"{where}: route {route!r}")
         elif kind == "diff":
             for end in ("source", "target"):
                 route = spec.get(f"{end}_db", spec.get("db", "postgres-source"))
                 if route not in DB_ROUTES:
-                    raise CanonError("exact-route-unsupported", f"{where}: {end} route {route!r} (C8.3: postgres only)")
+                    raise CanonError("exact-route-unsupported", f"{where}: {end} route {route!r}")
         elif spec.get("native"):
             raise CanonError("exact-route-unsupported", f"{where}: native-mode file reads are not exact routes")
         try:
-            decl = declaration(spec["exact"], spec.get("keys"), db_route=kind != "file")
+            decl = declaration(spec["exact"], spec.get("keys"),
+                               db_route=kind != "file" and spec.get("project") != "kafka_record")
         except CanonError as e:
             raise CanonError(e.code, f"{where}: {e}") from None
         resolved.append((kind, i, decl))

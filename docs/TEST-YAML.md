@@ -457,12 +457,19 @@ columns need no entry.
 
 **Golden files.** A UTF-8 CSV without a byte-order mark, with a header row of unique names:
 - `<null>` is NULL. An empty cell is an empty string, and is refused in a typed column.
-- `<absent>` (file specs only) is a column the record does not carry.
+- `<absent>` (file and Kafka record specs only) is a column the record does not carry.
 - Write the golden by hand from your data. The framework never writes one.
 
 **Where it works.**
-- `data` and `diff`: the `postgres-source` and `postgres-target` routes only. Another route is
-  refused at load (`exact-route-unsupported`).
+- `data` and `diff`: `postgres-source`, `postgres-target`, `spanner-google` and
+  `spanner-postgres`. Spanner reads retain native types within a bounded read-only snapshot.
+- `data` also supports `db: kafka` with `project: kafka_record` and `keys:` rooted at
+  `key` or `value`. Declare types using those full paths (for example `value.id: integer`).
+  Missing paths stay absent; null stays null. Every decoded Avro frame is counted.
+  `order: sequence` follows consumed record order and needs no `order_by`; use one partition
+  when the test requires a single total order. Wire bytes and decoded rows are bounded.
+  An incomplete captured Kafka snapshot fails rather than returning a matching subset.
+  Other routes are refused at load (`exact-route-unsupported`).
 - `file`: Docker mode only; the file is read from the cluster's nodes. With `order: sequence` the
   path must match exactly one file on one node (`order-source-ambiguous`).
 - With a `lifecycle:` block, every table an exact spec reads (a diff's source too) must be one this
@@ -471,7 +478,8 @@ columns need no entry.
 **Refused at load** (by `striim-test doctor --case`, and at the start of a run):
 - a spec with `exact:` and no top-level block (`exact-block-missing`), or a block with no spec that
   uses it;
-- `exact:` without `match:`, or together with `rows`, `min_rows`, `ordered` or `project`;
+- `exact:` without `match:`, or together with `rows`, `min_rows` or `ordered`; `project` is allowed only for
+  Kafka `data` with `project: kafka_record`;
 - an unknown key or type, a column both typed and ignored;
 - a `match:` path outside the test's folder.
 

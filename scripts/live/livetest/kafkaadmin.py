@@ -375,11 +375,13 @@ class KafkaAdmin:
     def select_rows(self, topic: str, poll_budget: float = 8.0) -> list[dict]:
         return self._select(topic, poll_budget, lambda message: self._decode(message.value()))
 
-    def select_records(self, topic: str, poll_budget: float = 8.0) -> list[dict]:
+    def select_records(self, topic: str, poll_budget: float = 8.0, *, max_rows=None, max_bytes=None) -> list[dict]:
         """Read JSON keys and Avro values together, without stringifying nested data."""
-        return self._select(topic, poll_budget, self._decode_record, strict=True)
+        return self._select(topic, poll_budget, self._decode_record, strict=True,
+                            max_rows=max_rows, max_bytes=max_bytes)
 
-    def _select(self, topic: str, poll_budget: float, decode_message, *, strict: bool = False) -> list[dict]:
+    def _select(self, topic: str, poll_budget: float, decode_message, *, strict: bool = False,
+                max_rows=None, max_bytes=None) -> list[dict]:
         # poll_budget bounds ONE read of currently-available messages — NOT the total wait.
         # The assertion tiers (diff/data) already re-poll select_rows in a loop bounded by the
         # manifest `timeout`, so that outer loop is authoritative; a small per-call budget keeps
@@ -388,7 +390,13 @@ class KafkaAdmin:
         from confluent_kafka import TopicPartition
         c = self._consumer(f"slt-read-{topic}-{int(time.monotonic()*1000)}")
         try:
-            md = c.list_topics(_check_topic(topic), timeout=10)
+            deadline = time.monotonic() + poll_budget if strict else 0
+            def budget():
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise RuntimeError("kafka_record read deadline exceeded")
+                return min(10, left)
+            md = c.list_topics(_check_topic(topic), timeout=budget() if strict else 10)
             t = md.topics.get(topic)
             if t is None or t.error is not None:
                 return []
@@ -398,17 +406,26 @@ class KafkaAdmin:
             # timeout, and could seek before the earliest available offset.
             tps, remaining = [], 0
             for p in t.partitions:
-                lo, hi = c.get_watermark_offsets(TopicPartition(topic, p), timeout=10, cached=False)
+                lo, hi = c.get_watermark_offsets(TopicPartition(topic, p),
+                                                timeout=budget() if strict else 10, cached=False)
                 tps.append(TopicPartition(topic, p, lo))
                 remaining += hi - lo
             c.assign(tps)
-            rows = []
-            deadline = time.monotonic() + poll_budget
+            rows, size = [], 0
+            if not strict:
+                deadline = time.monotonic() + poll_budget
             while remaining > 0 and time.monotonic() < deadline:
-                msg = c.poll(1.0)
+                msg = c.poll(min(1.0, budget()) if strict else 1.0)
                 if msg is None or msg.error() is not None:
                     continue
+                size += len(msg.value() or b"") + len(msg.key() or b"")
+                if max_bytes is not None and size > max_bytes:
+                    from livetest.canon import CanonError
+                    raise CanonError("canonical-limit-exceeded", "Kafka wire bytes exceed max_bytes")
                 rows.extend(decode_message(msg))   # a message may hold >1 frame
+                if max_rows is not None and len(rows) > max_rows:
+                    from livetest.canon import CanonError
+                    raise CanonError("canonical-limit-exceeded", "Kafka decoded rows exceed max_rows")
                 remaining -= 1
             if strict and remaining:
                 raise RuntimeError(f"kafka_record snapshot incomplete: {remaining} captured message(s) unread; refusing partial results")
