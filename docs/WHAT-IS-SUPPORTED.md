@@ -176,7 +176,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `lifecycle:` `initial-load` with a file (`baseline-landed`, `file-lines`) | **tested**: sample 03 (Docker mode) |
 | `lifecycle:` `cdc` with `sentinel` | **tested**: sample 04 |
 | `lifecycle:` `source-progress`, `row-count` | **supported, not exercised here** |
-| `lifecycle:` on a database other than Postgres | **not supported**: witnesses read Postgres only. Use no `lifecycle:` block (the test then polls its assertions until `timeout`) |
+| File/Kafka/Spanner lifecycle sentinel and bounded absence | File: **tested**, sample 10 reported passing on Striim 5.4.2. Kafka/Spanner: **supported, not exercised here**, hermetic coverage. The sentinel SQL source remains Postgres; table-count witnesses remain Postgres |
 | Strict JSON file payload | **tested**: sample 08 reported passing on Striim 5.4.2. Kafka JSON/Avro strict mode: **supported, not exercised here**, hermetic coverage |
 | Raw file bytes/inventory | **tested**: sample 09 reported passing on Striim 5.4.2, Docker mode; extra empty files fail |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
@@ -234,3 +234,5 @@ row above for recorded runs; a skip is never a pass.
 | Typed `exact:` diff | yes | both dialects | no typed diff; use record goldens | use file assertions | Both database sides must use supported exact routes |
 | Strict JSON payload | refused | refused | JSON or decoded Avro | JSON | Kafka: native or Docker; owned file reads: Docker |
 | Raw bytes and exact inventory | — | — | — | yes | Docker owned output directory; every empty/hidden rolled file counts |
+| Lifecycle sentinel | yes | both dialects | yes | yes | Postgres source; fresh owned sinks; file requires Docker; Kafka can use native |
+| Bounded `nothing:` | yes | both dialects | yes | yes | Only after the completion sentinel proves this route; file requires Docker |

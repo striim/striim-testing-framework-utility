@@ -248,3 +248,7 @@ The live engine modules `strictjson` implement this check. Manifest loading vali
 ### Check file bytes, hashes and the exact rolled inventory
 
 The live engine modules `rawfile` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [09-raw-file fixture](../../samples/live/09-raw-file/README.md).
+
+### Prove no matching data arrived after a sentinel
+
+The live engine modules `sinkprobe`, `nothing` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [10-bounded-nothing fixture](../../samples/live/10-bounded-nothing/README.md).

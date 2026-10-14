@@ -163,3 +163,22 @@ which nothing executed as **exit 3, not a pass**.
 | `raw-file-invalid-json` | The bytes cannot be parsed as complete strict JSON objects for raw.format: json. | Fix the emitted JSON record; counts cannot establish byte correctness. |
 | `raw-file-route-unsupported` | Raw inventory needs Docker access to owned output files. | Run the case in Docker mode with its owned directory. |
 | `raw-file-target-not-owned` | The raw path is outside this attempt's confirmed owned directory. | Use ${OWNED_DIR} and let the framework acquire the exact output scope. |
+
+## Prior-attempt Spanner or Kafka resources
+
+Replay refuses these saved entries because matching endpoints cannot prove an
+object's incarnation. Read the failed attempt's ledger for exact table/topic
+names and backend binding. Confirm the attempt is abandoned and no active run
+owns those objects, then remove only those exact names through the backend's
+normal table/topic deletion command. Re-run with a fresh attempt. A broad prefix
+drop or replay bypass does not establish ownership.
+
+## Prove no matching data arrived after a sentinel
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-nothing-spec` | The absence spec has invalid keys, predicate or timing. | Use the route-appropriate nothing block; content keys and project are refused on data absence specs. |
+| `nothing-sentinel-unproven` | No satisfied route sentinel authorizes the bounded absence check. | Declare and deliver the lifecycle sentinel through the route reaching the input before checking absence. |
+| `nothing-arrived` | A matching row arrived during the declared absence window. | Inspect the offending row and fix the app/input; do not shorten the window to hide it. |
+| `nothing-read-error` | An absence probe failed or missed its read deadline. | Correct route reachability/ownership and inspect the nested error; an unreadable sink is not empty. |
+| `witness-unresolvable` | A lifecycle observation cannot be rendered/resolved. | Check sentinel tokens, route, table/path/topic and key declarations against the sink shape. |

@@ -404,8 +404,10 @@ field must match with its token type intact. Missing identity fields or incompat
 token types fail rather than silently counting as non-matches. Use fixed identity
 fields that the route emits on every checked event. For file events use paths such as `data.id`;
 for Kafka records use `value.id`. Data specs name `target` and `db` (or
-`target_db`); file specs name `path`. No `match`, count or `exact` keys are allowed
-on the same spec. Kafka may also choose `payload: json` (default `avro`).
+`target_db`); file specs name `path`. Data absence specs take only `target`, `db`/`target_db`, `nothing` and optional
+`payload`; file absence specs take only `path` and `nothing`. `project` is refused
+here: Kafka selectors already use full record paths. No content match/count/exact
+key can coexist. Kafka may choose `payload: json` (default `avro`).
 
 The case must have `lifecycle.completion.kind: sentinel`, and that sentinel must
 observe the same output table, topic or file. Invalid combinations, unknown keys
@@ -737,7 +739,7 @@ lifecycle:
 |---|---|---|---|
 | `version` | **yes** | — | `1` |
 | `mode` | **yes** | — | `initial-load` (the app reads what exists, then stops producing, or loads a controlled baseline followed by CDC as described in WRITING-TESTS.md) or `cdc` (it captures changes while it runs) |
-| `sink` | **yes** | — | `db` (the app writes a table) or `file` (it writes a file) |
+| `sink` | **yes** | — | `db` (table), `file` (file) or `kafka` (topic) |
 | `readiness` | **yes** | — | `{kind: ..., ...}`: when the app is ready for the test's `post_start` data |
 | `completion` | **yes** | — | `{kind: ..., ...}`: when the app has finished |
 | `stability` | no | `5s` | how long the witnessed value must then stay unchanged; `500ms`, `5s`, `2m` or a number of seconds |
@@ -751,11 +753,11 @@ lifecycle:
 |---|---|---|---|
 | readiness `baseline-landed` | `initial-load` | `source: {db, table}`, and `target: {db, table}` (sink `db`) or `path:` (sink `file`) | the app is RUNNING and the target's row count, or the file's line count, equals the source's count taken before deploy |
 | readiness `source-progress` | `cdc` | `db: postgres-source` | the replication slot `${PG_SLOT}` is active |
-| readiness `sentinel` | `cdc`, sink `db` | none | the ready sentinel was seen on the target, then seen gone |
+| readiness `sentinel` | `cdc`, sink `db`, `file` or `kafka` | none | the ready insert and delete were witnessed; append sinks acknowledge deletion with the declared signal |
 | completion `source-count` | `initial-load`, sink `db` | `source: {db, table}`, `target: {db, table}` | the target's count equals the source's, and is above 0 |
 | completion `row-count` | sink `db` | `db`, `table`, `expect` (above 0) | the table's count equals `expect` |
 | completion `file-lines` | sink `file` | `path`, `lines` (above 0) | the file has `lines` lines, counted across its rollover files, blank lines ignored |
-| completion `sentinel` | `cdc`, sink `db` | none | the done sentinel, inserted after the `post_start` data, was seen on the target, then seen gone |
+| completion `sentinel` | `cdc`, sink `db`, `file` or `kafka` | none | the done sentinel, inserted after the `post_start` data, proves both insert and delete delivery |
 
 Zero is never proof: `expect: 0` and `lines: 0` are refused, and a source baseline of 0 fails the run
 with `zero-count`. For a test whose correct result is an empty target, use the `sentinel` kinds
@@ -777,14 +779,16 @@ sentinel:
 
 For each phase the framework picks a new id, runs `insert` with it as `${SENTINEL_ID}` (and
 `${SENTINEL_TAG}`, a text unique to the run and phase), waits until a row with that id is on the
-target, runs `delete`, and waits until it is gone. Only a row the app carried from source to target can
+target, runs `delete`, and waits for absence (database) or the declared deletion signal (append sink). Only a row the app carried from source to target can
 satisfy it. The source table must accept a row that has only the key and the values your `insert`
 file gives: fill any `NOT NULL` columns there.
 
 ### Rules
 
-- **Routes.** Every `db:` in the block is `postgres-source` or `postgres-target`. A file sink needs
-  Docker mode.
+- **Routes.** Source SQL and table-count witnesses use Postgres. Sentinel output may be
+  Postgres, either Spanner dialect, a freshly owned Kafka topic, or an owned file.
+  File sinks require Docker. Kafka completion must be sentinel, with sentinel
+  or source-progress readiness. See the output references below.
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
   `dest`, and the block's own `path`s start with `${OWNED_DIR}/`, with no `.`, `..` or empty parts.
   `${OWNED_DIR}` is a directory on the Striim nodes that the run creates for itself and removes at
@@ -799,11 +803,114 @@ file gives: fill any `NOT NULL` columns there.
   observations.
 
 **Clean-up (`reset: owned`).** The run records each object before it creates it, and removes only
-those, by exact name: Postgres tables and replication slots, the namespace, and `${OWNED_DIR}`. An
+those, by exact name: Postgres tables and replication slots, acquired Spanner sink tables and Kafka topics, the namespace, and `${OWNED_DIR}`. An
 object with the same name that the run did not create is left alone and fails the run
-(`collision:<kind>:<name>`). Tables on other databases are not tracked, and are reported as not
-verified. With `--keep-resources` nothing is removed; `striim-test doctor` then names the
-`python -m livetest.ownership replay <ledger>` command that removes it later.
+(`collision:<kind>:<name>`). Tables on other database engines are not tracked and are reported as unverified.
+With `--keep-resources` nothing is removed. Replay can remove the saved Postgres/file
+resources; it refuses prior-attempt Spanner/Kafka entries without incarnation proof.
+See [the exact-name cleanup guidance](TROUBLESHOOTING.md#prior-attempt-spanner-or-kafka-resources).
+
+### Sentinel output references
+
+The insert/delete SQL executes through the declared Postgres source route. The
+application must transport both events to the observed sink, with a stable
+identity and deletion signal. Append sinks keep both events in their output;
+empty output cannot prove that deletion arrived. These snippets show lifecycle
+and bounded absence together; supply the source DDL, SQL files and app route in
+the case. The prohibited identity is explicit and distinct from sentinel IDs.
+
+**File.**
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      path: ${OWNED_DIR}/events.json
+      key: data.id
+      deletion: {metadata.OperationName: DELETE}
+assert:
+  file:
+    - path: ${OWNED_DIR}/events.json
+      nothing:
+        window: 3s
+        read_timeout: 5s
+        where: {data.id: 999}
+```
+
+**Kafka.**
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: kafka
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: kafka
+      topic: ${KAFKA_TGT_TOPIC}
+      key: value.id
+      deletion: {value.operation: DELETE}
+      payload: json
+assert:
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      payload: json
+      nothing:
+        window: 3s
+        read_timeout: 5s
+        where: {value.id: 999}
+```
+
+**Spanner.**
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: spanner-google
+      table: ${TID}tgt
+      key: id
+assert:
+  data:
+    - target: ${TID}tgt
+      db: spanner-google
+      nothing:
+        window: 3s
+        read_timeout: 5s
+        where: {id: 999}
+```
+
+The Kafka example assumes the formatter emits id and operation fields in its
+message value. Its topic must be freshly acquired by this attempt. Native mode
+is possible for Kafka with the required services and owned topic; file sentinels
+require Docker access to an owned output directory. Spanner uses owned tables;
+spanner-postgres selects the other dialect. These routes have hermetic coverage;
+sample 10 exercises the file route live, not Kafka or Spanner sentinels.
 
 ## Infrastructure ownership (`SLT_INFRA_OWNERSHIP`)
 
@@ -1362,3 +1469,5 @@ Kafka `payload: json` comparisons retain their file/record declaration rules in 
 Worked case: [09-raw-file](../samples/live/09-raw-file/README.md). Framework gallery: [framework-raw-file](../scripts/live/regression/framework/framework-raw-file/README.md).
 
 Absence selector string values expand case tokens before matching. Finite numeric selectors compare by decimal value, so YAML `9.99` matches a delivered numeric `9.99`; booleans and strings retain distinct token types. Missing fields or incompatible output types still fail the read.
+
+Worked case: [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md). Framework gallery: [framework-bounded-nothing](../scripts/live/regression/framework/framework-bounded-nothing/README.md).

@@ -212,6 +212,10 @@ Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `Kaf
 - A topic your app creates that the framework does not know about (a persisted stream's topic, for
   example) goes in `kafka_cleanup_topics:` so it is removed at the end.
 
+Kafka sentinel/absence cases require freshly acquired framework source/target topics,
+not a reused or custom unclaimed topic. See [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md)
+for the file counterpart, and [TEST-YAML.md](TEST-YAML.md) for Kafka/Spanner references.
+
 ## Spanner (`spanner`)
 
 Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (GoogleSQL) and `pgdb`

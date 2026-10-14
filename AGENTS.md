@@ -47,7 +47,8 @@ Follow [docs/WRITING-TESTS.md](docs/WRITING-TESTS.md). The rules:
 - Use typed, counted `exact:` on Postgres and both Spanner routes, and Kafka data with
   `project: kafka_record`. Exact file reads require Docker mode. Use the
   [route matrix](docs/WHAT-IS-SUPPORTED.md#check-routes) for other checks; Postgres tests
-  also use `lifecycle:` to prove completion. Other database routes use documented `data` or `diff`.
+  also use `lifecycle:` to prove completion. CDC sentinel sinks also support Spanner,
+  Kafka and Docker files with a Postgres SQL source. Other database routes use documented `data` or `diff`.
 - Use only the `assert:` tiers listed in `docs/TEST-YAML.md`. An unknown tier name is silently
   ignored, so the test checks less than it says.
 - `purpose:` is one line naming the one behaviour the test proves.
