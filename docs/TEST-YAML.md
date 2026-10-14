@@ -247,6 +247,12 @@ op:
 - Local files get the same token rendering and isolation checks as example files.
 
 
+Snapshot histories include both monotonic time and `observedUtc` so they can be
+aligned with transaction steps. Worker failures are reported immediately. If a
+case fails before observer assertions, `Observer.abandon()` retains the bounded
+history in a failed `observer-incomplete` record. A finished observer is not
+reported incomplete during teardown; the original case failure is preserved.
+
 ## `recover:` — interrupt the app, bring it back, then assert
 
 Every other phase verifies a pipeline that ran undisturbed. That cannot observe a whole class of

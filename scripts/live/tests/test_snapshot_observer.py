@@ -124,3 +124,53 @@ def test_spanner_one_multi_use_snapshot(monkeypatch):
     observer.read_snapshot(s, {"spanner-google": {"admin": admin}},
                            {"PG_TARGET_SCHEMA": "qatarget", "TID": "case_"}, 2)
     assert calls == ["opened", "read", "read", "closed"]
+
+
+def test_abandon_retains_history_when_lifecycle_failed_before_finish():
+    from datetime import datetime
+    o = make_observer({'a': [], 'b': []})
+    o.sample()
+    record = o.abandon('lifecycle completion deadline')
+    assert record['status'] == 'failed' and 'observer-incomplete' in record['detail']
+    assert record['actual']['rows'] == o.history
+    assert datetime.fromisoformat(o.history[0]['observedUtc']).utcoffset().total_seconds() == 0
+    assert o.abandon('second cleanup') is None
+
+
+def test_finished_observer_is_not_abandoned():
+    o = make_observer({'a':[{'id':1}], 'b':[{'id':1}]})
+    assert o.finish()[0]['status'] == 'passed'
+    assert o.abandon('teardown') is None
+
+
+def test_worker_error_reports_immediately_and_abandon_keeps_it():
+    import threading
+    gate, reported = threading.Event(), threading.Event()
+    calls, messages = [], []
+    o = make_observer({'a': [], 'b': []})
+    def read(*args):
+        calls.append(1)
+        if len(calls) > 2:
+            assert gate.wait(2)
+            return {'a':[{'id':1}], 'b':[]}
+        return {'a':[], 'b':[]}
+    o.read = read
+    o.report = lambda msg: (messages.append(msg), reported.set())
+    o.start(); gate.set()
+    assert reported.wait(2)
+    record = o.abandon('completion failed')
+    assert 'snapshot-not-committed-prefix' in record['detail']
+    assert record['actual']['rows'][-1]['prefix'] is None
+    assert any('snapshot-not-committed-prefix' in m for m in messages)
+
+
+def test_plugin_retains_observer_records_on_an_earlier_case_failure():
+    from livetest.plugin import _abandon_snapshot
+    records = []; o = make_observer({'a': [], 'b': []}); o.sample()
+    with pytest.raises(RuntimeError, match='completion failed'):
+        try:
+            raise RuntimeError('completion failed')
+        finally:
+            _abandon_snapshot(o, records, 'completion failed')
+    assert len(records) == 1 and records[0]['status'] == 'failed'
+    assert records[0]['actual']['rows'][0]['prefix'] == 0

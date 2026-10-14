@@ -3,6 +3,7 @@ import math
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timezone
 
 from livetest import canon, exactdata, lifecycle as _lifecycle
 from livetest.assertions import AssertionFailed
@@ -87,10 +88,11 @@ def read_snapshot(spec, admins, tokens, remaining):
 
 
 class Observer:
-    def __init__(self, spec, *, admins, tokens, case_dir, inputs, read=None, owned=None, timeout=120):
+    def __init__(self, spec, *, admins, tokens, case_dir, inputs, read=None, owned=None, timeout=120, report=None):
         self.spec, self.admins, self.tokens, self.timeout = spec, admins, tokens, timeout
         self.read = read or read_snapshot
         self.history, self.error = [], None
+        self.report, self.finalized = report, False
         self.stop_event, self.first_read = threading.Event(), threading.Event()
         self.thread = None
         self.declarations = {a: canon.declaration({"columns": t["columns"]}, db_route=True)
@@ -132,7 +134,7 @@ class Observer:
                 hashes = [c["actual"]["sha256"] for c in comps]
                 if all(c["equal"] for c in comps):
                     choices.append(index)
-            entry = {"at": time.monotonic(), "prefix": max(choices) if choices else None,
+            entry = {"at": time.monotonic(), "observedUtc": datetime.now(timezone.utc).isoformat(), "prefix": max(choices) if choices else None,
                      "sha256": canon.aggregate(hashes), "rows": sum(len(v) for v in rows.values())}
             self.history.append(entry)
             if not choices:
@@ -154,6 +156,12 @@ class Observer:
                         break
             except BaseException as e:
                 self.error = e
+                if self.report:
+                    try:
+                        from livetest.striim import redact
+                        self.report(redact(f"snapshot observer failed: {e}"))
+                    except Exception:
+                        pass
                 self.first_read.set()
         self.thread = threading.Thread(target=work, daemon=True, name="snapshot-observer")
         self.thread.start()
@@ -169,11 +177,26 @@ class Observer:
             if self.thread.is_alive():
                 self.fail("snapshot-read-timeout: worker did not finish")
 
+    def abandon(self, reason):
+        if self.finalized:
+            return None
+        try:
+            self.stop()
+        except Exception as e:
+            self.error = self.error or e
+        self.finalized = True
+        return self.record(False, f"observer-incomplete: {self.error or reason}")
+
     def finish(self):
-        self.stop()
-        if self.error:
-            raise self.error
-        self.sample()
-        if self.history[-1]["prefix"] != len(self.prefixes) - 1:
-            self.fail("snapshot-final-prefix-missing")
+        try:
+            self.stop()
+            if self.error:
+                raise self.error
+            self.sample()
+            if self.history[-1]["prefix"] != len(self.prefixes) - 1:
+                self.fail("snapshot-final-prefix-missing")
+        except AssertionFailed:
+            self.finalized = True  # the raised failure already carries the history record
+            raise
+        self.finalized = True
         return [self.record(True, f"{len(self.history)} consistent snapshots match declared committed prefixes")]

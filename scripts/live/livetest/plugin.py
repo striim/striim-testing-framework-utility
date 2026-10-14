@@ -1913,6 +1913,12 @@ def _prepare_service(defn, env, mode):
         pytest.skip(f"service {defn.name} unavailable: {why}")
 
 
+def _abandon_snapshot(observer, records, reason):
+    record = observer.abandon(reason)
+    if record is not None:
+        records.append(record)
+
+
 class LiveItem(pytest.Item):
     def __init__(self, *, manifest_path, services=(), depth=None, **kw):
         super().__init__(**kw)
@@ -2796,7 +2802,8 @@ class LiveItem(pytest.Item):
                     if m.snapshot_spec is not None and _await_running_for_seed():
                         from livetest.snapshot_observer import Observer
                         _snapshot_observer = Observer(m.snapshot_spec, admins=admins, tokens=tokens,
-                            case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout)
+                            case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout,
+                            report=lambda msg: _report(m.name, msg))
                         _snapshot_observer.start()
                     _post_seed = [(db, f, a) for db, f, when, a in m.seed_files
                                   if when == "post_start"]
@@ -3391,7 +3398,9 @@ class LiveItem(pytest.Item):
             _tx_cleanup_error = None
             if _snapshot_observer is not None:
                 try:
-                    _snapshot_observer.stop()
+                    import sys
+                    _abandon_snapshot(_snapshot_observer, self._slt_records,
+                        str(sys.exc_info()[1] or "case ended before snapshot assertions"))
                 except Exception as e:
                     _tx_cleanup_error = e
             if _tx_pool is not None:

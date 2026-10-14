@@ -14,3 +14,9 @@ Deliberately broken input: remove the auxiliary insert from b.sql. Once id 2
 lands in just one target, a snapshot must fail as snapshot-not-committed-prefix.
 Sampling checks each observed state; it cannot prove that an invalid state never
 existed between reads. The interval is explicit and every observed prefix is recorded.
+
+Recovery is enabled explicitly; commit evidence records source transaction IDs,
+server commit status and both source key sets. Failed completion records target
+id values. If completion fails before observer assertions, abandon retains the
+full bounded history and the worker error, with UTC and monotonic timestamps.
+The observer reports a worker failure when it occurs. Expected rows are unchanged.

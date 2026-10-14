@@ -685,3 +685,25 @@ def test_observed_commit_writes_source_keys_and_slot_evidence(good):
     assert event['txid'] == 41 and event['commitStatus'] == 'committed'
     assert event['source']['tables'][0]['keys'] == ['1','2']
     assert event['source']['slot']['restartLsn'] == '0/08'
+
+
+def test_abandoned_snapshot_history_is_written_on_completion_failure(good):
+    from livetest.snapshot_observer import Observer
+    from livetest.plugin import _abandon_snapshot
+    spec = {'db':'postgres-target','tables':{
+        'a':{'target':'${PG_TARGET_SCHEMA}.${TID}a','columns':{'id':'integer'}},
+        'b':{'target':'${PG_TARGET_SCHEMA}.${TID}b','columns':{'id':'integer'}}},
+        'prefixes':[{'a':'empty.csv','b':'empty.csv'}]}
+    observer = Observer(spec, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: b'id\n'), read=lambda *args: {'a':[], 'b':[]})
+    observer.sample()
+    good._slt_lc.completion = {**good._slt_lc.completion, 'reason':'deadline', 'witness':None}
+    _abandon_snapshot(observer, good._slt_records, 'lifecycle completion deadline')
+    doc = evidence.case_envelope(good, report(outcome='failed',text='completion deadline'), 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved,secrets=())
+    assert saved['run']['status'] == 'failed' and not saved['run']['qualifies']
+    record = saved['assertions'][-1]
+    assert 'observer-incomplete' in record['detail']
+    assert record['actual']['rows'][0]['prefix'] == 0
+    assert record['actual']['rows'][0]['observedUtc']
