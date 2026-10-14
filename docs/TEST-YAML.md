@@ -48,8 +48,9 @@ The optional ordered `transactions:` list controls named seed sessions. Each
 step has `session` and `op`, optional `when` (`pre_deploy`, `post_start` (default)
 or `post_recover`), and optional `after` (a duration from the start of that
 transaction phase). The phases must occur in that order; steps within a phase
-execute in list order. Existing ordinary seed files run before the transaction
-steps of the same phase. Post-start steps require lifecycle readiness;
+execute in list order. Transaction steps run before ordinary seed files during
+pre-deploy and post-recovery; post-start ordinary seeds run first. Post-start
+steps require lifecycle readiness;
 post-recover steps require `recover:` and run after the last restore, before settle.
 
 - `op: begin` requires `db: postgres-source` or `postgres-target` and opens a new
