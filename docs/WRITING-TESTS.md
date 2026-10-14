@@ -346,6 +346,7 @@ In it, under `live/`:
 - `data.comparisons[]`: one entry per exact comparison. `equal` says whether it matched, and
   `samples.missing` and `samples.extra` list the rows that differ, with their counts.
 - `resources`: what the run created, reused and cleaned up.
+- **Raw files**: A `file` assertion carries complete `expected.rows` and `actual.rows` inventory entries: `name`, `bytes`, `sha256`, and optional `records`. Its status and detail distinguish inventory, byte/hash and record-count failures.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -511,3 +512,7 @@ Evidence for **Typed exact rows**: `data.comparisons[]`: `declaration`, declarat
 Start with [08-strict-json](../samples/live/08-strict-json/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md).
 
 Evidence for **Strict JSON**: The comparison declaration includes `strict_json: true`. `payload` in the assertion spec selects JSON or Avro; observed values keep token types before canonicalization.
+
+### Check file bytes, hashes and the exact rolled inventory
+
+Start with [09-raw-file](../samples/live/09-raw-file/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-raw-file/README.md) exercises the same framework contract.

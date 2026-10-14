@@ -151,3 +151,15 @@ which nothing executed as **exit 3, not a pass**.
 | `invalid-json` | The payload is malformed JSON, has duplicate keys/non-finite numbers, or has invalid framing. | Fix the producer; NaN and Infinity must not be emitted as JSON. |
 | `invalid-value:actual:<column>` | The observed token/value does not match its declared type. | Keep numeric/boolean/null token types; fix a formatter that quotes numbers, and declare binary encoding explicitly. |
 | `evidence-invalid` | The framework could not validate the written evidence envelope. | Treat the run as failed even when assertions passed. Report the framework commit and sanitized evidence/stdout through CONTRIBUTING; do not bypass validation. |
+
+## Check file bytes, hashes and the exact rolled inventory
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-raw-file-spec` | The raw inventory declaration is malformed or mixed with content assertions. | Use only path and raw on the spec; declare every expected rolled file, bytes, SHA-256 and records. |
+| `raw-file-inventory-mismatch` | The file names present differ from the complete declared inventory. | Check the .00 first-roll name, ${TID} rendering, and empty/hidden extra files; fix writer rollover rather than ignoring extras. |
+| `raw-file-mismatch` | An expected file has different bytes, hash or record count. | Check formatter members, encoding, separators and headers against the hand-derived golden. |
+| `raw-file-limit-exceeded` | The raw read exceeds max_bytes. | Check unintended output first, then declare an adequate bounded max_bytes. |
+| `raw-file-invalid-json` | The bytes cannot be parsed as complete strict JSON objects for raw.format: json. | Fix the emitted JSON record; counts cannot establish byte correctness. |
+| `raw-file-route-unsupported` | Raw inventory needs Docker access to owned output files. | Run the case in Docker mode with its owned directory. |
+| `raw-file-target-not-owned` | The raw path is outside this attempt's confirmed owned directory. | Use ${OWNED_DIR} and let the framework acquire the exact output scope. |

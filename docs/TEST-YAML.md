@@ -399,10 +399,18 @@ nothing about another. List the releases a matrix run actually measured failing.
 
 Use `assert.file[].raw` for byte-exact output. `path` names the base output file;
 `raw.files` declares the complete inventory of its parent directory across all
-app nodes. A name on two nodes, an extra file or a missing file fails. The
+app nodes. A name on two nodes, an extra file or a missing file fails. Hidden files and
+empty rolled files are inventory entries, never filtered out. The
 directory should hold only the output being tested. Docker mode is required
 (`raw-file-route-unsupported`). `path` must be under `${OWNED_DIR}/` and the
 runtime directory must belong to this attempt (`raw-file-target-not-owned`).
+
+FileWriter's first rolled file inserts `.00` before the extension:
+`FileName: rows.csv` produces `rows.00.csv`, not `rows.csv`. Inventory keys are
+actual basenames and may contain framework tokens such as `${TID}`; names are
+rendered before comparison. The `path` supplies the parent directory to inventory,
+so it may name the base output or its first rolled file; it does not filter out
+other directory entries.
 
 Empty files are inventory entries too: an undeclared empty rolled file fails.
 Declare an expected empty file with zero bytes, the SHA-256 of empty bytes and
@@ -429,7 +437,7 @@ assert:
       raw:
         format: lines
         files:
-          rows.csv:
+          rows.00.csv:
             bytes: 0
             sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
             records: 0
@@ -971,6 +979,10 @@ target rows, and a missing copy or changed amount fails. This is a route-binding
 example, not a claim of live Spanner diff qualification.
 
 ### `file` — `FileWriter`/`JSONFormatter` target assertions
+
+File specs can add typed `exact:` or use a standalone `raw:` inventory as
+described above. A raw spec takes only `path` and `raw`: content/projection
+keys cannot coexist with the inventory.
 <!-- snippet: fragment -->
 ```yaml
 assert:
@@ -1294,3 +1306,5 @@ differing only in case — none of them is a readable test-name slug. Write ever
 Worked case: [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
 
 Kafka `payload: json` comparisons retain their file/record declaration rules in evidence validation, including `strict_json: true` and record sequence order without a database `order_by`. Passing and failing comparisons both retain a validated envelope.
+
+Worked case: [09-raw-file](../samples/live/09-raw-file/README.md). Framework gallery: [framework-raw-file](../scripts/live/regression/framework/framework-raw-file/README.md).

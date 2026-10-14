@@ -244,3 +244,7 @@ The live engine modules `exactdata`, `canon` implement this check. Manifest load
 ### Keep JSON token types in payload comparisons
 
 The live engine modules `strictjson` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [08-strict-json fixture](../../samples/live/08-strict-json/README.md).
+
+### Check file bytes, hashes and the exact rolled inventory
+
+The live engine modules `rawfile` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [09-raw-file fixture](../../samples/live/09-raw-file/README.md).

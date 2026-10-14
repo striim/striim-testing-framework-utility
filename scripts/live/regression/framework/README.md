@@ -62,6 +62,7 @@ filtering, dest rendering and unknown-kind failure).
 | `framework-xfail` | `xfail:` — a manifest that documents a defect, reported as expected-fail rather than red |
 | `framework-drop-recreate` | drop and recreate the app while checking its final data |
 | `framework-kafka-cleanup` | named Kafka topics are cleaned up |
+| [framework-raw-file](framework-raw-file/README.md) | Check file bytes, hashes and the exact rolled inventory |
 
 ## The gate
 
