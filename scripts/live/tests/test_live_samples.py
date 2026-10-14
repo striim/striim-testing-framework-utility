@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -257,3 +257,14 @@ def test_raw_file_sample_digest_follows_seed():
     expected = m.assert_["file"][0]["raw"]["files"]["rows.00.csv"]
     assert expected == {"bytes": len(data), "records": len(pairs), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
     assert m.lifecycle.completion["lines"] == len(pairs)
+
+
+def test_bounded_nothing_sample_is_gated_by_file_sentinel():
+    name = "10-bounded-nothing"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.lifecycle.sink == "file" and m.lifecycle.completion["kind"] == "sentinel"
+    s = m.assert_["file"][0]
+    assert s["path"] == m.lifecycle.sentinel["observe"]["path"]
+    assert s["nothing"] == {"window": "3s", "where": {"data.id": 1}}
+    sql = (SAMPLES / name / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and sql.endswith("ROLLBACK;\n")

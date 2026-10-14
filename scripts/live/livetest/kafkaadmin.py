@@ -230,6 +230,13 @@ class KafkaAdmin:
 
     # ---- topic lifecycle ----------------------------------------------------
 
+    def topic_exists(self, topic):
+        metadata = self._admin_client().list_topics(timeout=10)
+        found = metadata.topics.get(_check_topic(topic))
+        if found is not None and getattr(found, "error", None) is not None:
+            raise RuntimeError(f"Kafka topic inventory unreadable: {topic}")
+        return found is not None
+
     def ensure_topic(self, topic: str, partitions: int = 1) -> None:
         from confluent_kafka.admin import NewTopic
         a = self._admin_client()

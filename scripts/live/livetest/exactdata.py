@@ -163,7 +163,7 @@ def _route_ref(tokens, table, route):
         return rendered, sql, name, "pg-table"
     from livetest.spanneradmin import _check_table
     rendered = render(table, tokens)
-    return rendered, _check_table(rendered), rendered, "engine-tables"
+    return rendered, _check_table(rendered), rendered, "spanner-table"
 
 
 def _read_route(admin, route, table, decl, max_rows, max_bytes, remaining):

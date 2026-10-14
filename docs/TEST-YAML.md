@@ -395,6 +395,52 @@ within one patch line (`5.4.0.6-5.4.0.6F`; the unlettered base sorts before `A`)
 lines (`5.4.0.2-5.4.0.6G`) is rejected at load: patch lines ship in parallel, so a fix in one says
 nothing about another. List the releases a matrix run actually measured failing.
 
+## Bounded absence after a sentinel
+
+`nothing: {window: 3s, where: {id: 1}}` on an `assert.data` or `assert.file`
+spec requires that no matching row arrive during the entire positive window.
+`where` is a non-empty mapping of field paths to scalar values; every field must
+match with its token type intact. For file events use paths such as `data.id`;
+for Kafka records use `value.id`. Data specs name `target` and `db` (or
+`target_db`); file specs name `path`. No `match`, count or `exact` keys are allowed
+on the same spec. Kafka may also choose `payload: json` (default `avro`).
+
+The case must have `lifecycle.completion.kind: sentinel`, and that sentinel must
+observe the same output table, topic or file. Invalid combinations, unknown keys
+and an invalid window are `invalid-nothing-spec`. At runtime absence is refused
+unless completion actually succeeded (`nothing-sentinel-unproven`). A late
+matching event fails with `nothing-arrived`; a read failure is `nothing-read-error`.
+Selectors name the prohibited input explicitly, so append-sink sentinel records
+remain visible and are not silently excluded. This is a bounded claim, not a
+claim that nothing can ever arrive afterward.
+
+The lifecycle sentinel source remains Postgres SQL. Its `observe` supports:
+
+- Postgres: the existing `{db, table, key}` present-then-absent probe.
+- Spanner: `{db: spanner-google}` or `spanner-postgres`, `table` containing
+  `${TID}`, and `key`. Use `sink: db`. Tables are acquired from the catalog before
+  DDL and confirmed afterward; exact reads can use the same confirmed tables.
+- File: `sink: file`, with `observe: {path, key, deletion}`. The path is under
+  `${OWNED_DIR}/`, the key is an event field path (for example `data.id`), and
+  `deletion: {metadata.OperationName: DELETE}` identifies the delivered deletion.
+- Kafka: `sink: kafka`, with `observe: {db: kafka, topic, key, deletion}` and
+  optional `payload: avro` or `json`. Keys and deletion selectors use record paths
+  rooted at key or value. Only freshly acquired framework topics qualify.
+
+Append sinks require both insertion and deletion events for the fresh sentinel
+id. An empty file/topic cannot prove deletion because insertion is observed
+first. Their readiness is sentinel (or existing source-progress for Kafka), and
+completion is sentinel. Unknown observe keys are refused. No sentinel rows are
+removed from content assertions. Declare their expected records if also checking
+the complete append output.
+
+Spanner tables and Kafka topics are checked for collisions before creation and
+deleted by exact confirmed name. Since these backends expose no immutable
+incarnation id here, cleanup of their prior-attempt ledger entries is refused;
+matching endpoint configuration alone never authorizes a replayed delete.
+File sentinels require Docker-mode server file access. An unsupported route or
+unowned output fails; it cannot turn the absence check green.
+
 ## Raw file bytes and rolled-file inventories
 
 Use `assert.file[].raw` for byte-exact output. `path` names the base output file;

@@ -215,6 +215,15 @@ class SpannerAdmin:
             cols = [f.name for f in rs.fields]
             return cols, rows
 
+    def list_owned_tables(self):
+        from livetest.lifecycle import bounded
+        _cols, rows = bounded(lambda: self._query(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema IN ('', 'public')"), 30)
+        return {r[0] for r in rows}
+
+    def drop_owned_table(self, table):
+        self._db().update_ddl([f"DROP TABLE {_check_table(table)}"]).result(30)
+
     def count_rows(self, table: str) -> int:
         _, rows = self._query(f"SELECT count(*) FROM {_check_table(table)}")
         return int(rows[0][0])

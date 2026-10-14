@@ -50,6 +50,7 @@ Runnable regression guides are included under Contributing and internals.
 | [07 Spanner exact rows](../samples/live/07-spanner-exact/README.md) | `samples/live/07-spanner-exact/README.md` | SpannerBatchReader copies a seeded Spanner table through SpannerWriter. |
 | [08 Strict JSON payloads](../samples/live/08-strict-json/README.md) | `samples/live/08-strict-json/README.md` | A DatabaseReader copies two seeded rows to FileWriter with JSONFormatter. |
 | [09 Raw file bytes](../samples/live/09-raw-file/README.md) | `samples/live/09-raw-file/README.md` | DatabaseReader reads the two seed rows in id order. |
+| [10 Bounded absence after delivery](../samples/live/10-bounded-nothing/README.md) | `samples/live/10-bounded-nothing/README.md` | A PostgreSQLReader feeds FileWriter. Readiness and completion each insert a fresh sentinel, observe its insert, delete it and observe the delete event in the same file. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services
@@ -107,6 +108,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Integration engine (scripts/integration/)](../scripts/integration/README.md) | `scripts/integration/README.md` | The integration tier: inttest, which drives an Open Processor's or UDF's code directly, event in and event out, with no Striim server. striim-test run --tier integration drives it. |
 | [Live engine (scripts/live/)](../scripts/live/README.md) | `scripts/live/README.md` | The live tier: livetest, a pytest plugin that deploys whole Striim apps and checks what they do. striim-test run drives it. |
 | [framework/ — the harness testing itself](../scripts/live/regression/framework/README.md) | `scripts/live/regression/framework/README.md` | Other tests check an app, an Open Processor or a writer. |
+| [Bounded absence](../scripts/live/regression/framework/framework-bounded-nothing/README.md) | `scripts/live/regression/framework/framework-bounded-nothing/README.md` | Run striim-test run scripts/live/regression/framework/framework-bounded-nothing in Docker mode. |
 | [Raw file inventory](../scripts/live/regression/framework/framework-raw-file/README.md) | `scripts/live/regression/framework/framework-raw-file/README.md` | Run striim-test run scripts/live/regression/framework/framework-raw-file in Docker mode. |
 | [hello-cluster](../scripts/live/regression/hello/hello-cluster/README.md) | `scripts/live/regression/hello/hello-cluster/README.md` | Exercises topology-aware placement: the reader flow (SourceFlow, DatabaseReader) is deployed to the agent group (${SOURCE_GROUP}) while the writer flow (AppFlow, DatabaseWriter) is deployed to the cluster group (${APP_GROUP}), via DEPLOY APPLICATION ... |
 | [hello-single](../scripts/live/regression/hello/hello-single/README.md) | `scripts/live/regression/hello/hello-single/README.md` | The single-topology twin of hello-cluster. |
