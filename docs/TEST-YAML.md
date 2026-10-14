@@ -544,6 +544,15 @@ budget with authentication to a surviving endpoint after connection, timeout or
 endpoint authentication failures. State-changing API calls execute once.
 Legacy recovery without `node` retains its existing behavior.
 
+Docker topology resolution requires a fresh observation of at least two app
+nodes in `default` and an agent in `Agents` after node join has settled. A
+temporarily incomplete observation is retried within the original 300-second
+join budget plus `SLT_CLUSTER_SETTLE` (default 20 seconds); it is not cached as
+single-node after successful registration. Late reads cannot prove readiness.
+Persistent missing membership skips the case with `CLUSTER-READY`, the
+last group counts and saved node logs when the run has a JUnit output directory.
+The cluster requirement of a `topology: cluster` case is unchanged.
+
 `assert.placement` is a nonempty list of `flow`, `node`, and optional positive
 `timeout` (default case timeout). Unknown keys fail `invalid-placement-spec`.
 `flow` must name this case's qualified flow. `node` is an exact live Striim server

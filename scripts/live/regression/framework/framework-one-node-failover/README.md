@@ -6,6 +6,13 @@ REST API port; the compose default is 9082, configurable with
 `SLT_STRIIM_NODE_HTTP_HOST_PORT`. Existing stacks need the updated port mapping
 before this sample runs. Run it without concurrent cases sharing these nodes.
 
+Before deployment, the framework confirms full membership again after node
+join settles and prints the app-node and agent counts. Transient membership is
+retried within the existing join budget; persistent missing membership skips
+with `CLUSTER-READY` and retains node logs, rather than caching a single-node
+topology after registration succeeded. A live run must execute the fault,
+placement and equality assertions to pass this sample.
+
 The named flow runs on one app node. While its target count is strictly between
 100 and 5000, the framework verifies its current owner and kills only that
 container ID. Read-only API calls authenticate to the surviving node. Restore

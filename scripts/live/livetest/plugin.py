@@ -749,7 +749,22 @@ def _resolve_striim(config):
             # so it reads as "hung" with zero output rather than "cluster is broken".
             report, _clear_progress = _make_progress(config)
             try:
+                join_deadline = time.monotonic() + 300
                 _sp.wait_cluster_ready(client, progress=report)
+                # Registration can regress while node join settles. Cache only a fresh
+                # full-membership observation, within the original join + settle budget.
+                settle = float(os.environ.get("SLT_CLUSTER_SETTLE", "20"))
+                if provisioned:
+                    report("cluster", "settling (node join)")
+                time.sleep(settle)
+                try:
+                    client.api.post_tungsten_line("ALTER CLUSTER DISABLE RESOURCE_LIMIT_POLICY;")
+                except Exception:
+                    pass
+                topo = _sp.wait_cluster_ready(client,
+                    timeout=max(0, join_deadline + settle - time.monotonic()), progress=report)
+                report("cluster", f"membership confirmed after settle: default={len(topo.groups['default'])}, "
+                                  f"Agents={len(topo.groups['Agents'])}")
             except Exception as e:
                 _clear_progress()
                 _, node_c, agent_c = stack.cluster_containers()
@@ -760,18 +775,9 @@ def _resolve_striim(config):
                 return _fail(f"Striim cluster is not fully formed (2nd node/agent never joined): {e} "
                              f"— check `docker logs {node_c}` / `docker logs {agent_c}`, "
                              f"or re-provision the cluster from the console's Settings page{where}")
-            # A cluster that JUST reached full membership isn't deploy-ready yet
-            # (node join settles asynchronously); a brief settle avoids a flaky
-            # first deploy. Once per session (resolution is cached).
-            if provisioned:
-                report("cluster", "settling (node join)")
-            time.sleep(float(os.environ.get("SLT_CLUSTER_SETTLE", "20")))
-            try:
-                client.api.post_tungsten_line("ALTER CLUSTER DISABLE RESOURCE_LIMIT_POLICY;")
-            except Exception:
-                pass
+        else:
+            topo = parse_deployment_groups(client.list_deployment_groups())
         _clear_progress()
-        topo = parse_deployment_groups(client.list_deployment_groups())
     except Exception as e:
         _clear_progress()
         return _fail(f"could not read Striim topology: {e}")

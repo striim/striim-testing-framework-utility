@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from livetest import docker_disk, stack
-from livetest.topology import parse_deployment_groups
+from livetest.topology import parse_deployment_groups, Topology
 
 _DEFAULT_STRIIM_VERSION = "5.4.2"
 
@@ -927,7 +927,7 @@ def wait_agent_registered(client, timeout: int = 300, poll: float = 10) -> None:
         time.sleep(poll or 0.05)
 
 def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=None,
-                       context: str = "") -> None:
+                       context: str = "") -> Topology:
     # `context` is appended to either timeout message: restart_app_nodes uses it to say whether
     # its re-authentication deadline had already expired, so the two deadlines are never confused.
     # The full provisioned topology is ready only when BOTH the 2nd node has joined
@@ -941,12 +941,15 @@ def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=No
     # reporting it as a cluster problem sends the operator to look at healthy nodes.
     answered = False
     last_error: Exception | None = None
+    last_topology = None
     while True:
         try:
-            t = parse_deployment_groups(client.list_deployment_groups())
+            t = parse_deployment_groups(client.list_deployment_groups(
+                timeout=max(0, deadline - time.monotonic())))
             answered = True
-            if t.has_cluster and t.has_agent:
-                return
+            last_topology = t
+            if t.has_cluster and t.has_agent and time.monotonic() <= deadline:
+                return t
         except Exception as e:
             last_error = e
         if time.monotonic() >= deadline:
@@ -958,8 +961,10 @@ def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=No
                     f"restart looks exactly like this. {context}".rstrip())
             raise TimeoutError(f"CLUSTER-READY deadline ({timeout}s) expired: cluster "
                                f"(>=2 nodes + agent) not ready within {timeout}s. "
+                               f"Last membership: default={len(last_topology.groups.get('default', []))}, "
+                               f"Agents={len(last_topology.groups.get('Agents', []))}. "
                                f"{context}".rstrip())
         if progress:
             elapsed = time.monotonic() - started
             progress("cluster", f"waiting for node + agent to register ({elapsed:.0f}s/{timeout}s)")
-        time.sleep(poll or 0.05)
+        time.sleep(min(poll or 0.05, max(0, deadline - time.monotonic())))
