@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -246,3 +246,14 @@ def test_strict_json_sample_declares_every_field():
     seed = (SAMPLES / name / "seed.sql").read_text()
     pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", seed)
     assert [(r["id"], r["name"]) for r in rows] == pairs
+
+
+def test_raw_file_sample_digest_follows_seed():
+    import hashlib
+    name = "09-raw-file"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
+    data = "".join(f"{i},{name}\r\n" for i, name in pairs).encode()
+    expected = m.assert_["file"][0]["raw"]["files"]["rows.csv"]
+    assert expected == {"bytes": len(data), "records": len(pairs), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+    assert m.lifecycle.completion["lines"] == len(pairs)

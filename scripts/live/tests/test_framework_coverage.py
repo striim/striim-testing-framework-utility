@@ -55,11 +55,6 @@ EXEMPT = {
     "tql": "structural",
     "assert": "structural -- the tiers inside it are checked separately",
     "ddl": "covered implicitly by every example; no example demonstrates routing on its own",
-    "lifecycle": (
-        "the deterministic lifecycle block (C7.2) is covered hermetically by tests/lifecycle; a live "
-        "framework example needs positive readiness and completion on a real cluster, which live qualification "
-        "qualifies"
-    ),
     "exact": (
         "exact data semantics (C8, slt-canon/1) are covered hermetically by tests/evidence; a live framework "
         "example needs a real Postgres target and a real FileWriter output, which live qualification checks"

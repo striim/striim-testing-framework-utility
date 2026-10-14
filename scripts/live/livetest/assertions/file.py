@@ -26,6 +26,10 @@ def parse_file_specs(raw: list) -> list[dict]:
     for spec in raw:
         if not isinstance(spec, dict) or not spec.get("path"):
             raise FileSpecError(f"file spec needs a 'path': {spec!r}")
+        if "raw" in spec:
+            from livetest.rawfile import validate_specs
+            validate_specs([spec])
+            continue
         if not any(k in spec for k in ("match", "min_events", "events", "distinct_events")):
             raise FileSpecError(
                 f"file spec {spec['path']!r} needs one of match/min_events/events/distinct_events")

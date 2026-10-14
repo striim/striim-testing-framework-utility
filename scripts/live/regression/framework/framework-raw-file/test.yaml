@@ -1,0 +1,46 @@
+name: framework-raw-file
+purpose: FileWriter emits exactly the declared CRLF bytes and file inventory.
+tql: app.tql
+topology: single
+requires:
+- postgres
+timeout: 120
+tags:
+- framework
+- raw-file
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+assert:
+  file:
+  - path: ${OWNED_DIR}/rows.csv
+    raw:
+      format: lines
+      files:
+        rows.csv:
+          bytes: 17
+          sha256: sha256:d6b71b51dde25d362ed1090dcc5fa23eaaa550e74a86cabd01148c7103f76f6b
+          records: 2
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: file
+  readiness:
+    kind: baseline-landed
+    source:
+      db: postgres-source
+      table: ${PG_SOURCE_SCHEMA}.${TID}src
+    path: ${OWNED_DIR}/rows.csv
+  completion:
+    kind: file-lines
+    path: ${OWNED_DIR}/rows.csv
+    lines: 2
+  stability: 1s
+  deadlines:
+    readiness: 60s
+    completion: 60s
+  reset: owned

@@ -3262,7 +3262,13 @@ class LiveItem(pytest.Item):
                                 _slt_exact_specs, m, tokens=tokens, owned=ledger.owns,
                                 lifecycle=m.lifecycle is not None, inputs=self._slt_inputs, mode=ctx.mode,
                                 collector=self._slt_data, status_probe=_terminal_probe)
-                        fspecs = parse_file_specs(_slt_raw)
+                        from livetest.rawfile import assert_raw_files
+                        raw_specs = [s for s in _slt_raw if "raw" in s]
+                        if raw_specs:
+                            self._slt_records += assert_raw_files(raw_specs, timeout=m.timeout,
+                                tokens=tokens, mode=ctx.mode, owned=ledger.owns,
+                                lifecycle=m.lifecycle is not None, status_probe=_terminal_probe)
+                        fspecs = parse_file_specs([s for s in _slt_raw if "raw" not in s])
                         for _fs in fspecs:
                             _fs["path"] = render(_fs["path"], tokens)
                         self._slt_records += assert_file(

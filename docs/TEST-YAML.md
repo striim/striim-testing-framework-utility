@@ -395,6 +395,45 @@ within one patch line (`5.4.0.6-5.4.0.6F`; the unlettered base sorts before `A`)
 lines (`5.4.0.2-5.4.0.6G`) is rejected at load: patch lines ship in parallel, so a fix in one says
 nothing about another. List the releases a matrix run actually measured failing.
 
+## Raw file bytes and rolled-file inventories
+
+Use `assert.file[].raw` for byte-exact output. `path` names the base output file;
+`raw.files` declares the complete inventory of its parent directory across all
+app nodes. A name on two nodes, an extra file or a missing file fails. The
+directory should hold only the output being tested. Docker mode is required
+(`raw-file-route-unsupported`). `path` must be under `${OWNED_DIR}/` and the
+runtime directory must belong to this attempt (`raw-file-target-not-owned`).
+
+Each filename maps to `bytes` (non-negative integer) and `sha256` (`sha256:` plus
+64 lowercase hex digits). Optional `records` counts records in that individual
+file: `raw.format: lines` (default) counts LF-delimited records, including a final
+unterminated record; `json` counts complete JSON objects with the strict parser.
+CR bytes remain part of the hashed bytes. An inventory cannot be empty.
+Optional `raw.max_bytes` caps total bytes (default 64 MiB, maximum 512 MiB).
+Unknown keys, unsafe names and invalid counts or digests are
+`invalid-raw-file-spec`. A raw spec takes only `path` and `raw`, without `exact`.
+
+<!-- snippet: fragment -->
+```yaml
+assert:
+  file:
+    - path: ${OWNED_DIR}/rows.csv
+      raw:
+        format: lines
+        files:
+          rows.csv:
+            bytes: 0
+            sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+            records: 0
+```
+
+Hashes and lengths are compared before text conversion. Failures report
+`raw-file-inventory-mismatch`, `raw-file-mismatch`, `raw-file-limit-exceeded`
+or `raw-file-invalid-json` in the file assertion record. With lifecycle
+completion, the inventory is read once after completion; otherwise it is polled
+until it matches or the case timeout expires. Derive the expected bytes and
+counts from the input and formatter contract, never from captured output.
+
 ## `exact:` — compare rows exactly
 
 A plain `match:` compares the **distinct set** of rows, as text: a duplicated row passes, a row that

@@ -1417,6 +1417,11 @@ def load_manifest(path: Path) -> TestManifest:
         _slt_lc_spec = _slt_lifecycle.parse_manifest_block(raw, path)
     except _slt_lifecycle.LifecycleSpecError as e:
         raise ManifestError(str(e)) from None
+    from livetest.rawfile import validate_specs as validate_raw_specs
+    try:
+        validate_raw_specs((raw.get("assert") or {}).get("file") or [])
+    except ValueError as e:
+        raise ManifestError(f"{path}: {e}") from None
     # C8.1: the exact block and every exact spec are validated at load, too.
     from livetest import exactdata as _slt_exact
     try:
