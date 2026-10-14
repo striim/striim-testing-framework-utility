@@ -424,6 +424,12 @@ op:
 
 
 
+Samples 11 and 12 enable recovery, wait for B to reach the target before STOP
+with a 0 < count < 2 progress window, and prove a fresh post-recovery sentinel
+before committing held session A. Sample 12 uses separate marker tables on
+the same reader/writer so sentinel traffic does not alter snapshot prefixes.
+Their hand-derived expected rows are unchanged.
+
 ## `recover:` — interrupt the app, bring it back, then assert
 
 Every other phase verifies a pipeline that ran undisturbed. That cannot observe a whole class of

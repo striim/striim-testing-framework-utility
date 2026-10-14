@@ -18,7 +18,7 @@ def run(state, spec, *, client, app, admins, tokens, ident, read_files, owned,
         if ids is None:
             ids = state.sentinel_ids = {}
         sentinel = lc.Sentinel(spec, admins, tokens, ident, phase, ids,
-            lc._source_sql_reader(source_dir), record=getattr(state, "record_inputs", None),
+            lc._source_sql_reader(source_dir), record=getattr(state, "record_input", None),
             read_files=read_files)
         reason = sentinel.run(watch, lc._terminal_of(client, [app]))
     except Exception as e:

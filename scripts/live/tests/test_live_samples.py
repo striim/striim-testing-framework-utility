@@ -344,3 +344,17 @@ def test_recovery_sentinel_sample_reuses_its_declared_marker():
     m = load_manifest(SAMPLES / "16-recovery-sentinel/test.yaml")
     assert m.recover["sentinel"] is True and m.lifecycle.sentinel is not None
     assert _golden("16-recovery-sentinel")[1] == _golden("14-progress-recovery")[1]
+
+
+@pytest.mark.parametrize('name', ['11-transaction-seeds','12-snapshot-observer'])
+def test_transaction_recovery_samples_prove_b_landed_and_reader_resumed(name):
+    m = load_manifest(SAMPLES / name / 'test.yaml')
+    trigger = m.recover['trigger']
+    assert trigger['kind'] == 'target-count' and (trigger['above'],trigger['below']) == (0,2)
+    assert m.recover['sentinel'] is True
+    assert m.lifecycle.readiness['kind'] == 'sentinel'
+    assert 'RECOVERY 1 SECOND INTERVAL' in (SAMPLES / name / 'app.tql').read_text()
+    assert m.lifecycle.completion['key'] == 'id'
+    assert _golden(name)[1] == [{'id':'1','msg':'first'},{'id':'2','msg':'second'}]
+    if name == '12-snapshot-observer':
+        assert m.lifecycle.sentinel['observe']['table'] not in {t['target'] for t in m.snapshot_spec['tables'].values()}

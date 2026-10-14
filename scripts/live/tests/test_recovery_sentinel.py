@@ -91,3 +91,22 @@ def test_recovery_marker_binding_cannot_be_shadowed(tmp_path):
     p.write_text('name: probe\ntql: app.tql\ntokens: {SENTINEL_RECOVERY_1_ID: 10}\nassert: {smoke: true}\n')
     with pytest.raises(ManifestError, match="harness-provided"):
         load_manifest(p)
+
+
+def test_recovery_sentinel_records_the_rendered_input_sql(monkeypatch):
+    from livetest import recovery_sentinel
+    state = lc.State('cdc'); inputs = []
+    state.record_input = lambda *args, **kwargs: inputs.append(args)
+    monkeypatch.setattr(lc,'check_witness_refs',lambda *args: None)
+    class Marker:
+        def __init__(self,*args,record=None,**kwargs): self.record = record
+        def run(self,watch,terminal):
+            if self.record:
+                self.record('sentinel','insert.sql','INSERT marker')
+                self.record('sentinel','delete.sql','DELETE marker')
+            watch.observe({'step':'present','count':1}); watch.observe({'step':'absent','count':0})
+            return 'satisfied'
+    monkeypatch.setattr(lc,'Sentinel',Marker)
+    recovery_sentinel.run(state,fixture(),client=None,app='N.app',admins={},tokens={},ident=None,
+        read_files=None,owned=lambda *args:True,source_dir='.',cycle=1,record=lambda row:None)
+    assert inputs == [('sentinel','insert.sql','INSERT marker'),('sentinel','delete.sql','DELETE marker')]
