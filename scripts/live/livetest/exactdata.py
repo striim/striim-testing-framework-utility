@@ -186,8 +186,14 @@ def head_file(node: str, path: str, max_bytes: int, remaining: float, run=None) 
     return out if isinstance(out, bytes) else str(out).encode("utf-8")
 
 
-def parse_events(text: str, where: str) -> list[dict]:
+def parse_events(text: str, where: str, *, strict=False) -> list[dict]:
     """``assertions.file.parse_json_events`` semantics with JSON numbers as Decimal (no float enters)."""
+    if strict:
+        from livetest import strictjson
+        try:
+            return strictjson.events(text)
+        except ValueError as e:
+            raise canon.CanonError("invalid-json", f"{where}: {e}") from None
     dec = json.JSONDecoder(parse_float=Decimal)
     out, i, n = [], 0, len(text)
     while i < n:
@@ -407,8 +413,9 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                     raise ExactReadError("exact-target-not-owned", f"{route}:{name} is not a confirmed table of this "
                                                                    f"attempt; nothing was read")
                 if kafka:
+                    options = {"strict_json": True, "payload": spec.get("payload", "avro")} if decl.strict_json else {}
                     records = admin.select_records(table_sql, poll_budget=remaining,
-                                                   max_rows=max_rows, max_bytes=max_bytes)
+                                                   max_rows=max_rows, max_bytes=max_bytes, **options)
                     actual = project_records(records, spec["keys"])
                 else:
                     actual = _read_route(admin, route, table_sql, decl, max_rows, max_bytes, remaining)
@@ -505,7 +512,7 @@ def assert_exact_file(exact_specs: list, m, *, tokens: dict, owned, lifecycle: b
                         text = data.decode("utf-8")
                     except UnicodeDecodeError as e:
                         raise canon.CanonError(f"invalid-value:actual:{f}", str(e)) from None
-                    events += parse_events(text, f)
+                    events += parse_events(text, f, strict=decl.strict_json)
                 rows = [_file._project(e, "data", spec.get("metadata") or [], None) for e in events]
                 return canon.compare(golden, rows, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens))

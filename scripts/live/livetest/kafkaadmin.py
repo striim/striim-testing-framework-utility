@@ -211,7 +211,7 @@ class KafkaAdmin:
             values.append(decoded)
         return values
 
-    def _decode_record(self, message) -> list[dict]:
+    def _decode_record(self, message, *, strict_json=False) -> list[dict]:
         """Keep each JSON message key attached to its typed Avro value frame.
 
         This opt-in view deliberately rejects non-JSON keys. A null Kafka key,
@@ -219,7 +219,11 @@ class KafkaAdmin:
         """
         raw_key = message.key()
         try:
-            key = None if raw_key is None else json.loads(raw_key)
+            if strict_json:
+                from livetest.strictjson import loads
+            else:
+                loads = json.loads
+            key = None if raw_key is None else loads(raw_key)
         except (ValueError, UnicodeDecodeError) as error:
             raise ValueError("kafka_record requires a JSON message key or a null Kafka key") from error
         return [{"key": key, "value": value} for value in self._decode_values(message.value(), strict=True)]
@@ -375,9 +379,26 @@ class KafkaAdmin:
     def select_rows(self, topic: str, poll_budget: float = 8.0) -> list[dict]:
         return self._select(topic, poll_budget, lambda message: self._decode(message.value()))
 
-    def select_records(self, topic: str, poll_budget: float = 8.0, *, max_rows=None, max_bytes=None) -> list[dict]:
+    def select_records(self, topic: str, poll_budget: float = 8.0, *, max_rows=None, max_bytes=None,
+                       strict_json=False, payload="avro") -> list[dict]:
         """Read JSON keys and Avro values together, without stringifying nested data."""
-        return self._select(topic, poll_budget, self._decode_record, strict=True,
+        def decode(message):
+            if payload == "json":
+                from livetest.strictjson import loads
+                try:
+                    return [{"key": None if message.key() is None else loads(message.key()),
+                             "value": loads(message.value())}]
+                except (ValueError, TypeError) as e:
+                    from livetest.canon import CanonError
+                    raise CanonError("invalid-json", str(e)) from None
+            try:
+                return self._decode_record(message, strict_json=strict_json)
+            except ValueError as e:
+                if strict_json:
+                    from livetest.canon import CanonError
+                    raise CanonError("invalid-json", str(e)) from None
+                raise
+        return self._select(topic, poll_budget, decode, strict=True,
                             max_rows=max_rows, max_bytes=max_bytes)
 
     def _select(self, topic: str, poll_budget: float, decode_message, *, strict: bool = False,

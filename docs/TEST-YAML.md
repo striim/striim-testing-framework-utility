@@ -460,6 +460,27 @@ columns need no entry.
 - `<absent>` (file and Kafka record specs only) is a column the record does not carry.
 - Write the golden by hand from your data. The framework never writes one.
 
+**Strict JSON payloads.** Set `exact.strict_json: true` on a file or Kafka record
+spec. It is refused on database routes (`invalid-declaration`). Declare every
+compared column, including text and null columns; `keys` and `ignore` still select
+what is compared. An undeclared compared column fails with `undeclared-column`.
+`text` requires a string token (including an empty string); `number` requires a
+finite numeric token and compares its exact numeric value. Existing `integer`,
+`boolean`, `decimal:N`, `json` and `binary:hex` / `binary:base64` declarations work.
+A `json` column retains scalar token types: number 1 differs from string "1".
+Byte values require `binary:hex` or `binary:base64`; an object identity string is
+refused by those encodings. The golden stays a hand-written CSV; JSON columns
+contain JSON text, and `<null>` still means a null column.
+
+Strict file reads refuse duplicate object keys, non-finite constants, incomplete
+JSON and non-object events (`invalid-json`). They accept arrays of event objects
+and successive complete event objects or arrays. Kafka `project: kafka_record`
+uses Avro values by default; add `payload: json` to decode each message value as
+strict JSON. `payload` takes `avro` or `json` and requires `strict_json: true`
+(`invalid-exact-spec`). Message keys are strict JSON too. Unknown `exact` keys
+are refused; the strict flag must be boolean. Legacy declarations keep their
+existing parsing and comparison behavior.
+
 **Where it works.**
 - `data` and `diff`: `postgres-source`, `postgres-target`, `spanner-google` and
   `spanner-postgres`. Spanner reads retain native types within a bounded read-only snapshot.
