@@ -1,4 +1,4 @@
--- Two pre-deploy Postgres rows flow through a real DatabaseReader into a JSON FileWriter.
+-- Two pre-deploy Postgres rows flow through a real DatabaseReader into a DSV FileWriter.
 -- The framework allocates OWNED_DIR uniquely per attempt and removes that directory at teardown.
 CREATE NAMESPACE ${NS};
 USE ${NS};
@@ -12,8 +12,7 @@ CREATE OR REPLACE SOURCE ${TID}source USING Global.DatabaseReader (
   Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
 ) OUTPUT TO ${TID}stream;
 
--- One event per line, as the lifecycle's file-lines witnesses count them: no enclosing array,
--- and the members of an event joined by a space rather than a newline.
+-- DSV records use comma fields and CRLF delimiters; the first rolled file has counter 00.
 CREATE OR REPLACE TARGET ${TID}writer USING Global.FileWriter (
   FileName: '${OWNED_DIR}/rows.csv',
   FlushPolicy: 'EventCount:1,Interval:1s'

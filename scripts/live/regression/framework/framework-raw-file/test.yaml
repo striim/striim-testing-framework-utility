@@ -21,7 +21,7 @@ assert:
     raw:
       format: lines
       files:
-        rows.csv:
+        rows.00.csv:
           bytes: 17
           sha256: sha256:d6b71b51dde25d362ed1090dcc5fa23eaaa550e74a86cabd01148c7103f76f6b
           records: 2

@@ -254,6 +254,6 @@ def test_raw_file_sample_digest_follows_seed():
     m = load_manifest(SAMPLES / name / "test.yaml")
     pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
     data = "".join(f"{i},{name}\r\n" for i, name in pairs).encode()
-    expected = m.assert_["file"][0]["raw"]["files"]["rows.csv"]
+    expected = m.assert_["file"][0]["raw"]["files"]["rows.00.csv"]
     assert expected == {"bytes": len(data), "records": len(pairs), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
     assert m.lifecycle.completion["lines"] == len(pairs)
