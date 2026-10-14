@@ -211,3 +211,12 @@ drop or replay bypass does not establish ownership.
 | `snapshot-final-prefix-missing` | The final observed snapshot is not the declared final prefix. | Check completion and full transaction delivery; retain every expected row. |
 | `observer-incomplete` | The case ended before the observer could finish qualification. | Read the primary failure and the abandoned observer history; incomplete observation cannot pass. |
 | `snapshot-prefix-regressed` | A snapshot matched an earlier declared state after a newer prefix was observed. | Check replay order and transaction preservation; retain the failed history and keep prefixes derived from intended committed states. |
+
+## Reject replay duplicates with an append-only audit
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-audit-spec` | An audit declaration is malformed or lacks lifecycle/exact requirements. | Use the audit block and matching exact append target with multiset comparison. |
+| `audit-writer-not-append-only` | The declared writer/typed input/target mapping permits upsert or does not match. | Use the route-specific append writer, identical textual target mapping and required false upsert flags. |
+| `audit-target-not-append-only` | The target schema/guard permits replacing an existing delivery. | Remove upsert/unique conflicts from the audit sink and retain duplicate rows for comparison. |
+| `audit-target-not-owned` | The audit target is not confirmed for this attempt. | Use framework-created ${TID} tables/topics or ${OWNED_DIR} output. |

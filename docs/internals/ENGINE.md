@@ -260,3 +260,7 @@ The live engine modules `transactions`, `diagnostics` implement this check. Mani
 ### Check consistent target snapshots against committed prefixes
 
 The live engine modules `snapshot_observer` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [12-snapshot-observer fixture](../../samples/live/12-snapshot-observer/README.md).
+
+### Reject replay duplicates with an append-only audit
+
+The live engine modules `audit` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [13-append-only-audit fixture](../../samples/live/13-append-only-audit/README.md).

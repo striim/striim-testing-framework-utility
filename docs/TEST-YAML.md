@@ -85,9 +85,23 @@ Database audit writers require a locally declared typed input stream, explicit
 `ExecuteInsertAsUpdate: false` and `ExecuteUpdateAsInsert: false`, and no ignored
 database errors (`audit-writer-not-append-only`). Convert CDC operations to typed
 delivery records in a CQ rather than applying updates/deletes to the audit table.
-The single-table writer's `Tables` must equal the assertion's target. Kafka
-`Topics` and FileWriter `FileName` likewise equal the asserted output. Ambiguous
-writer declarations or duplicate properties are refused.
+Writer bindings are compared as written, before token rendering. Use the same
+tokens in TQL and the assertion; a literal spelling that happens to render to
+the same name is refused. Only one output binding is allowed.
+
+| Exact route | Required adapter | Output property |
+|---|---|---|
+| `postgres-source`, `postgres-target` | `DatabaseWriter` | `Tables` equals `target` |
+| `spanner-google` | `SpannerWriter` | `Tables` equals `target`, or `${SPANNER_GSQL_DB}.` followed by that exact target |
+| `spanner-postgres` | `SpannerPGDialectWriter` | `Tables` equals `target` |
+| Kafka `project: kafka_record` | `KafkaWriter` (including versioned variants) | `Topic` equals `target`; compatibility `Topics` accepted, both refused |
+| File | `FileWriter` | `FileName` equals `path`; exact reads include the matching rolled parts |
+
+All database adapters require the locally declared typed input and false upsert
+flags above; Kafka/FileWriter do not require those database-only properties.
+A writer may have an optional `VERSION` clause. Ambiguous declarations, duplicate
+properties, foreign database qualifiers and source-to-target `Tables` mappings
+are refused for an audit writer. Use a CQ to project onto its typed stream.
 
 The database audit input is insert-only, so it records a CDC delete as a new
   typed delivery row rather than removing an earlier audit row. For append
@@ -103,6 +117,77 @@ delivery independently. `audit-target-not-owned` refuses foreign outputs;
 the existing exact multiset comparison. A Spanner duplicate-key write must halt,
 and an audit case cannot turn that halt into an expected success. The contract
 does not claim delivery counts for a business target without an audit branch.
+
+### Audit bindings on other routes
+
+These fragments show the audited assertion; combine each with a completion
+probe observing the same output, using the lifecycle sentinel forms below.
+Goldens describe deliveries by hand, including any emitted marker rows. An ignored
+generated delivery identity permits every repeated business row to be counted.
+
+<!-- snippet: shape partial audit assertion; requires the matching TQL writer and lifecycle described here -->
+```yaml
+audit: {version: 1}
+exact: {version: 1}
+assert:
+  data:
+    - db: spanner-google
+      target: '${TID}audit'
+      match: expected/deliveries.csv
+      exact:
+        columns: {id: integer, msg: text}
+        ignore: [delivery_id]
+      audit: {writer: '${TID}writer', delivery_key: delivery_id}
+```
+
+Declare a local `${TID}row` type with `id` and `msg` and a `${TID}log` stream
+of that type. Its writer uses `Global.SpannerWriter`,
+`Tables: '${SPANNER_GSQL_DB}.${TID}audit'`,
+`ExecuteInsertAsUpdate: false` and `ExecuteUpdateAsInsert: false`.
+The table declares `delivery_id STRING(36) DEFAULT (GENERATE_UUID())` as its sole
+primary key; do not put that field in the input stream. PostgreSQL-dialect
+Spanner uses `Global.SpannerPGDialectWriter`, an identical `Tables`/`target`
+spelling and the `spanner.generate_uuid()` default. In an audit case, positive
+Spanner lifecycle counts are allowed; zero rows still cannot prove completion.
+
+<!-- snippet: shape partial audit assertion; requires the matching TQL writer and lifecycle described here -->
+```yaml
+audit: {version: 1}
+exact: {version: 1}
+assert:
+  data:
+    - db: kafka
+      target: '${KAFKA_TGT_TOPIC}'
+      project: kafka_record
+      keys: [value.id, value.msg]
+      match: expected/deliveries.csv
+      exact: {columns: {value.id: integer, value.msg: text}}
+      audit: {writer: '${TID}writer'}
+```
+
+The matching KafkaWriter has `Topic: '${KAFKA_TGT_TOPIC}'`. Use the declared
+lifecycle sentinel to acquire this fresh framework topic. The golden header is
+`value.id,value.msg`; two identical source deliveries require two identical
+rows, regardless of the Kafka record key.
+
+<!-- snippet: shape partial audit assertion; requires the matching TQL writer and lifecycle described here -->
+```yaml
+audit: {version: 1}
+exact: {version: 1}
+assert:
+  file:
+    - path: '${OWNED_DIR}/rows.json'
+      match: expected/deliveries.csv
+      payload: json
+      exact: {strict_json: true, columns: {id: integer, msg: text}}
+      audit: {writer: '${TID}writer'}
+```
+
+The FileWriter has `FileName: '${OWNED_DIR}/rows.json'` and a JSON formatter
+emitting the declared fields. Exact file reads expand the base name to its
+rolled parts; raw inventory assertions instead name every physical file.
+The golden `id,msg` contains one row per data or marker delivery. Adding a
+business merge target alongside these audit branches does not change that count.
 
 ## `snapshot_observer:` — committed transaction prefixes during the run
 
@@ -1699,3 +1784,5 @@ Snapshot prefix indices must never decrease: `snapshot-prefix-regressed` fails a
 
 Worked case: [12-snapshot-observer](../samples/live/12-snapshot-observer/README.md). Framework gallery: [framework-snapshot-observer](../scripts/live/regression/framework/framework-snapshot-observer/README.md).
 Audit writer declarations accept an optional `VERSION` clause. KafkaWriter `Topic` must name the audited topic; the compatibility spelling `Topics` is also accepted, but specifying both is refused as ambiguous.
+
+Worked case: [13-append-only-audit](../samples/live/13-append-only-audit/README.md). Framework gallery: [framework-append-only-audit](../scripts/live/regression/framework/framework-append-only-audit/README.md).

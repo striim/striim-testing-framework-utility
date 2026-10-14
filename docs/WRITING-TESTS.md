@@ -350,6 +350,7 @@ In it, under `live/`:
 - **Bounded absence**: A `data` or `file` assertion expects count zero and records the last matching count. Success detail states the completed window and read count. A zero count alone does not qualify a failed probe; require a passed assertion and the satisfied completion sentinel.
 - **Transaction seeds**: `transaction` assertions record session, operation, phase, UTC start/end, duration and outcome. Observed commits add `txid`, `commitSucceeded`, `commitStatus` and `source` key/slot read-back. Recovery source observations show `pre_interrupt`/`post_restore` and UTC. Failed row-count completion with `key` adds bounded `targetKeys`; the original completion reason remains.
 - **Consistent snapshots**: A `data` assertion for `snapshot:<db>` contains history rows with `observedUtc`, monotonic `at`, matched zero-based `prefix` (null when none matched), aggregate `sha256` and total `rows`. Failure before final qualification keeps an `observer-incomplete` record and worker error. This uses the `data` record type; there is no separate snapshot assertion tier. An undeclared state also records per-table keyColumns, bounded canonical keys, total rows and truncation flags, retained through abandon().
+- **Append-only audit**: Audit uses the normal exact multiset comparison, so repeated deliveries appear as extra counted rows. The declaration records ignored sink-generated delivery keys; it must still retain every payload delivery.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -531,3 +532,7 @@ Start with [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md
 ### Check consistent target snapshots against committed prefixes
 
 Start with [12-snapshot-observer](../samples/live/12-snapshot-observer/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-snapshot-observer/README.md) exercises the same framework contract.
+
+### Reject replay duplicates with an append-only audit
+
+Start with [13-append-only-audit](../samples/live/13-append-only-audit/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-append-only-audit/README.md) exercises the same framework contract.

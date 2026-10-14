@@ -182,6 +182,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Raw file bytes/inventory | **tested**: sample 09 reported passing on Striim 5.4.2, Docker mode; extra empty files fail |
 | Overlapping Postgres seed sessions and held-open recovery commit | **tested**: sample 11 reported passing on Striim 5.4.2 with explicit RECOVERY, progress-triggered STOP and fresh recovery sentinel; expected rows unchanged |
 | Transaction snapshot observer | **supported, not exercised here** with the corrected PSTB sample; hermetic multi-table consistency/failure-history coverage. A prior live run detected an expected partial transaction without preservation |
+| Append-only delivery audit | **supported, not exercised here**: hermetic duplicate checks on every exact route; sample 13 has no reported live qualification |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
@@ -244,3 +245,4 @@ row above for recorded runs; a skip is never a pass.
 | Bounded `nothing:` | yes | both dialects | yes | yes | Only after the completion sentinel proves this route; file requires Docker |
 | Transaction seeds | source or target | — | — | — | Native or Docker Postgres; post-start requires lifecycle readiness |
 | Snapshot observer | repeatable read/read only | multi-use read-only transaction | — | — | Native or Docker; declared lifecycle and owned target tables |
+| Append-only audit | yes | both dialects | kafka_record | yes | Native or Docker database/Kafka; Docker file; append writer and fresh owned target |

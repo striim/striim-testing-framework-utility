@@ -11,7 +11,7 @@ striim-test run samples/live/13-append-only-audit
 ```
 
 Deliberately broken input: add a second DatabaseWriter target consuming the same
-alog stream and inserting into the same audit table with the same false upsert
+`${TID}alog` stream and inserting into the same audit table with the same false upsert
 flags. Each source row is then delivered twice. Completion/count or exact
 multiset comparison must fail; a keyless audit table cannot absorb those inserts.
 Enabling either upsert flag must be refused before deployment.
