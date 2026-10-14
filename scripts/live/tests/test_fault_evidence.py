@@ -13,11 +13,11 @@ def spec():
 
 
 def test_condition_rechecked_immediately_before_interruption():
-    clock = Clock(); values = iter([3, 4]); events = []; records = []
+    clock = Clock(); values = iter([3, 4, 5]); events = []; records = []
     def read(left): events.append("read"); return next(values)
     progress.at_fault(progress.normalize(spec()), read, lambda: events.append("interrupt"),
         record=records.append, cycle=1, now=clock.now, sleep=clock.sleep)
-    assert events == ["read", "read", "interrupt"]
+    assert events == ["read", "read", "interrupt", "read"]
     actual = records[0]["actual"]["rows"][0]
     assert actual["value"] == 4 and actual["held"] is True
     assert actual["issuedAt"] == actual["observedAt"] == 0
@@ -65,3 +65,22 @@ def test_record_schema_accepts_recovery_fault_record():
     assert records[0]["type"] == "recovery"
     from livetest.resultschema import _validate_assertion
     _validate_assertion(records[0], "fault")
+
+
+def test_stop_that_drains_the_last_batch_fails_and_retains_both_boundaries():
+    clock = Clock(); values = iter([3, 4, 10]); records = []
+    with pytest.raises(progress.ProgressError, match='fault-missed'):
+        progress.at_fault(progress.normalize(spec()), lambda left: next(values), lambda: None,
+            record=records.append, cycle=1, now=clock.now, sleep=clock.sleep)
+    actual = records[0]['actual']['rows'][0]
+    assert records[0]['status'] == 'failed' and actual['interrupted'] is True
+    assert actual['windowOpened']['value'] == 3
+    assert actual['value'] == 4 and actual['afterInterrupt']['value'] == 10
+
+
+def test_success_retains_the_first_window_and_post_interrupt_observation():
+    clock = Clock(); values = iter([3,4,5]); records = []
+    progress.at_fault(progress.normalize(spec()), lambda left: next(values), lambda: None,
+        record=records.append, cycle=1, now=clock.now, sleep=clock.sleep)
+    actual = records[0]['actual']['rows'][0]
+    assert actual['windowOpened']['value'] == 3 and actual['afterInterrupt']['value'] == 5

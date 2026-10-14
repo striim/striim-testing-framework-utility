@@ -2935,11 +2935,9 @@ class LiveItem(pytest.Item):
                                     verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                     report=lambda msg: _report(m.name, msg)),
                                 record=self._slt_records.append, cycle=_i + 1,
-                                baseline=_progress_baseline)
+                                baseline=_progress_baseline, after_read=_progress_read)
                             if _rc.get("trigger", {}).get("kind") == "checkpoint" and "above" not in _rc["trigger"]:
                                 _progress_baseline = _progress_observed["value"]
-                            if _progress_read is not None:
-                                _fault_progress.after_interrupt(_rc["trigger"], _progress_read)
                             _report(m.name, f"recover: restoring app{_tag}")
                             # `when: post_recover` seeds: after the LAST
                             # restore reaches RUNNING, before the settle -- a parent that

@@ -192,7 +192,7 @@ def after_interrupt(s, read, *, now=time.monotonic):
 
 
 def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
-             now=time.monotonic, sleep=time.sleep, status=None):
+             now=time.monotonic, sleep=time.sleep, status=None, after_read=None):
     """Re-read at the command boundary; retain evidence even if no command is sent.
 
     This is a bounded observation immediately before the command, not an atomic
@@ -203,7 +203,8 @@ def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
     from livetest.resultschema import build_assertion_result
     observation = {"cycle": cycle, "value": None, "held": False,
                    "observedAt": None, "issuedAt": None, "interrupted": False,
-                   "baseline": baseline, "deadline": now() + s["timeout"] if s else None}
+                   "baseline": baseline, "deadline": now() + s["timeout"] if s else None,
+                   "windowOpened": None, "afterInterrupt": None}
     def observed(left):
         value = read(left)
         observation.update(value=value, observedAt=now(),
@@ -222,6 +223,8 @@ def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
             observation["held"] = value == "RUNNING"
         else:
             found = wait(s, observed, baseline=baseline, now=now, sleep=sleep, status=status)
+            observation["windowOpened"] = {"value": found["value"], "observedAt": found["observedAt"],
+                "observedUtc": observation["observedUtc"]}
             observation["deadline"] = found["deadline"]
             left = found["deadline"] - now()
             if left <= 0:
@@ -245,5 +248,12 @@ def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
         save(False, f"fault-interrupt-error: {e}")
         raise
     observation["interrupted"] = True
+    if s is not None:
+        try:
+            observation["afterInterrupt"] = after_interrupt(s, after_read or read, now=now)
+        except ProgressError as e:
+            observation["afterInterrupt"] = e.after_interrupt
+            save(False, str(e))
+            raise
     save(True, "ok")
     return observation

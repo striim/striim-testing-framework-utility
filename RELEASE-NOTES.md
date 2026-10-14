@@ -2,6 +2,10 @@
 
 One entry per release, newest first: the pull requests it contains.
 
+## Unreleased
+
+Timed recovery now requires the app to be RUNNING at the fault boundary. A completed or halted app fails `fault-missed` instead of counting as an interruption. Progress-triggered recovery checks again after the interruption takes effect, refusing a target count that reached its upper bound.
+
 ## v0.1.0 (2026-10-08)
 
 First public release.
