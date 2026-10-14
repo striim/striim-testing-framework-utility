@@ -8,6 +8,7 @@ import yaml
 
 from livetest import paths
 from livetest import stack
+from livetest.service_cache import watch, watch_services
 
 _SERVICES_DIR = paths.services_dir()
 
@@ -37,7 +38,7 @@ def _stub(d: Path) -> bool:
     """A connection-only definition: neither ``compose`` nor ``container``. A consumer service
     of the same name that ships a container is what it waits for, so replacing it is no news."""
     try:
-        raw = yaml.safe_load((d / "service.yaml").read_text()) or {}
+        raw = yaml.safe_load(Path(watch(d / "service.yaml")).read_text()) or {}
     except (OSError, yaml.YAMLError):
         return False
     return isinstance(raw, dict) and not raw.get("compose") and not raw.get("container")
@@ -87,6 +88,7 @@ def all_services(services_dir: Path | None = None) -> list[str]:
     provisioned by striim_provision, not by the service registry) fall out on its own."""
     names = set()
     for base in _roots(services_dir):
+        watch_services(base)
         if base.is_dir():
             names.update(p.name for p in base.iterdir() if (p / "service.yaml").is_file())
     return sorted(names)
@@ -290,6 +292,7 @@ def load_service(name: str, services_dir: Path | None = None, env=None) -> Servi
         searched = ", ".join(str(r) for r in _roots(services_dir))
         raise RegistryError(f"unknown service {name!r} (no {name}/service.yaml under {searched})")
     path = found / "service.yaml"
+    watch(path)
     try:
         raw = yaml.safe_load(path.read_text()) or {}
     except yaml.YAMLError as e:
