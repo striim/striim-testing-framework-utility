@@ -61,7 +61,7 @@ _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 #              CONTROL arm: a test that loses data under `stop` and not under `quiesce` has
 #              localised the fault to the shutdown path rather than to the pipeline.
 VALID_RECOVER_MODES = {"kill", "stop", "quiesce"}
-_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger"}
+_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel"}
 _SERVICE_OUTAGE_KEYS = {"type", "service", "cycles", "delay_before", "down_for", "signal",
                         "ready_timeout", "settle", "concurrent"}
 _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -627,6 +627,10 @@ def _normalize_recover(raw, path) -> dict | None:
             f"stopped app and report success without interrupting anything")
     result = {"mode": mode, "after": after, "settle": settle,
               "expect_running": expect_running, "times": times, "every": every}
+    if "sentinel" in raw:
+        if raw["sentinel"] is not True or not expect_running:
+            raise ManifestError(f"{path}: invalid-post-recovery-sentinel: sentinel must be true and expect_running must be true")
+        result["sentinel"] = True
     if "trigger" in raw:
         from livetest.progress import normalize
         if "after" in raw or "every" in raw:
@@ -842,10 +846,10 @@ def _check_capture_tokens(action_specs: list, modules: list, tokens: dict, path)
             name = cap["token"]
             if reserved is None:
                 reserved = _reserved_tokens(modules)
-            if name in reserved or name in tokens:
+            if name in reserved or name.startswith("SENTINEL_RECOVERY_") or name in tokens:
                 raise ManifestError(
                     f"{path}: capture token {name!r} collides with a "
-                    f"{'harness-provided' if name in reserved else 'tokens:'} token")
+                    f"{'harness-provided' if name in reserved or name.startswith('SENTINEL_RECOVERY_') else 'tokens:'} token")
             if name in seen:
                 raise ManifestError(f"{path}: capture token {name!r} is captured twice")
             seen.add(name)
@@ -866,7 +870,7 @@ def _normalize_tokens(raw, modules: list, path) -> dict:
         if not isinstance(name, str) or not _TOKEN_NAME.match(name):
             raise ManifestError(
                 f"{path}: 'tokens' name {name!r} must match [A-Z][A-Z0-9_]*")
-        if name in reserved:
+        if name in reserved or name.startswith("SENTINEL_RECOVERY_"):
             raise ManifestError(
                 f"{path}: 'tokens' name {name!r} collides with a harness-provided token")
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
@@ -1452,6 +1456,8 @@ def load_manifest(path: Path) -> TestManifest:
         _slt_lc_spec = _slt_lifecycle.parse_manifest_block(raw, path)
     except _slt_lifecycle.LifecycleSpecError as e:
         raise ManifestError(str(e)) from None
+    if recover and recover.get("sentinel") and (_slt_lc_spec is None or _slt_lc_spec.sentinel is None):
+        raise ManifestError(f"{path}: invalid-post-recovery-sentinel: requires a declared lifecycle sentinel")
     from livetest.nothing import validate as validate_nothing
     try:
         validate_nothing(raw, path, _slt_lc_spec)

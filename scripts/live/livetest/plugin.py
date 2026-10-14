@@ -193,13 +193,15 @@ def _cluster_provision_lock() -> Path:
 
 
 def _restore_then_post_recover(restore, run_files, seeds, settle, last,
-                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None):
+                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None, after_restore=None):
     """Restore one recovery cycle and seed after the last restore when configured."""
     _post_rec = seeds if last else []
-    restore(0.0 if (_post_rec or not last or post_restore) else settle)
+    restore(0.0 if (_post_rec or not last or post_restore or after_restore) else settle)
+    if after_restore is not None:
+        after_restore()
     if post_restore is not None and last:
         post_restore()
-    if not _post_rec and not (post_restore is not None and last):
+    if not _post_rec and not (post_restore is not None and last) and not (after_restore is not None and last):
         return
 
     if report is not None:
@@ -2882,6 +2884,7 @@ class LiveItem(pytest.Item):
                     # one nobody trusts. `recover.after` tunes the window explicitly instead.
                     if m.recover and not skip_verify:
                         _rc = m.recover
+                        from livetest.recovery_sentinel import run as _post_recovery_sentinel
                         _ok, _why = recovery.supported(_rc["mode"], ctx)
                         if not _ok:
                             pytest.skip(_why)
@@ -2958,6 +2961,12 @@ class LiveItem(pytest.Item):
                                 restore=_restore_cycle,
                                 run_files=_run_files,
                                 seeds=_post_rec,
+                                after_restore=(lambda: _post_recovery_sentinel(
+                                    self._slt_lc, m.lifecycle, client=client, app=app, admins=admins,
+                                    tokens=tokens, ident=ident,
+                                    read_files=lambda _p, **_k: read_server_files(ctx, _p, **_k),
+                                    owned=ledger.owns, source_dir=m.source_dir, cycle=_i + 1,
+                                    record=self._slt_records.append)) if _rc.get("sentinel") else None,
                                 post_restore=(lambda: _tx_pool.run_phase(m.transaction_steps, "post_recover"))
                                     if _tx_pool is not None and any(s["when"] == "post_recover" for s in m.transaction_steps) else None,
                                 settle=_rc["settle"],

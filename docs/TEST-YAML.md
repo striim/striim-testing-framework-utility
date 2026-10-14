@@ -494,6 +494,25 @@ pass and would prove nothing.
 Example: `scripts/live/regression/framework/framework-recover`, a writer on a tight commit policy
 that survives a `STOP`.
 
+### Post-recovery route proof
+
+Set `recover.sentinel: true` to insert a fresh lifecycle marker after **every**
+restore reaches RUNNING, before post-recovery transaction steps, ordinary seeds,
+settling and assertions. It requires `expect_running: true` and a declared
+`lifecycle.sentinel`; false, mappings and unknown values are refused with
+`invalid-post-recovery-sentinel`. The existing Postgres-source SQL and all A4
+sink kinds (Postgres, Spanner, file, Kafka) are reused with current-attempt
+ownership and the lifecycle completion deadline. Database sinks observe present
+then absent; append sinks observe insertion then its deletion event.
+
+A new ID/tag is allocated per recovery cycle; `SENTINEL_RECOVERY_1_ID` and
+`SENTINEL_RECOVERY_1_TAG` (then 2, 3, ...) become tokens and evidence bindings
+after proof succeeds. The prefix is reserved. A recovery assertion record retains
+its marker observations. Missing, unreadable or terminal routes fail with
+`post-recovery-sentinel-missed`, never as an expected data failure, even when the
+final golden was already met. See `samples/live/16-recovery-sentinel` for a marker
+suppression check. File reads still require Docker mode.
+
 ### Recovery progress triggers
 
 Use `recover.trigger` instead of `after`/`every` to interrupt when progress is

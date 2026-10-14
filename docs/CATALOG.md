@@ -56,6 +56,7 @@ Runnable regression guides are included under Contributing and internals.
 | [13 Append-only audit target](../samples/live/13-append-only-audit/README.md) | `samples/live/13-append-only-audit/README.md` | DatabaseReader emits two rows. A CQ converts them to a locally declared typed stream, so DatabaseWriter records deliveries as inserts. |
 | [Recovery inside a progress window](../samples/live/14-progress-recovery/README.md) | `samples/live/14-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
 | [Fault-time evidence](../samples/live/15-fault-evidence/README.md) | `samples/live/15-fault-evidence/README.md` | The 5000 golden pairs are derived from generate_series(1,5000) and row- plus id. |
+| [A fresh marker after restore](../samples/live/16-recovery-sentinel/README.md) | `samples/live/16-recovery-sentinel/README.md` | Run striim-test run samples/live/16-recovery-sentinel on a configured Striim host. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services
@@ -118,6 +119,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Fault-time evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md) | `scripts/live/regression/framework/framework-fault-evidence/README.md` | The 5000 golden pairs are derived from generate_series(1,5000) and row- plus id. |
 | [Recovery inside a progress window](../scripts/live/regression/framework/framework-progress-recovery/README.md) | `scripts/live/regression/framework/framework-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
 | [Raw file inventory](../scripts/live/regression/framework/framework-raw-file/README.md) | `scripts/live/regression/framework/framework-raw-file/README.md` | Run striim-test run scripts/live/regression/framework/framework-raw-file in Docker mode. |
+| [A fresh marker after restore](../scripts/live/regression/framework/framework-recovery-sentinel/README.md) | `scripts/live/regression/framework/framework-recovery-sentinel/README.md` | Run striim-test run samples/live/16-recovery-sentinel on a configured Striim host. |
 | [Consistent snapshots](../scripts/live/regression/framework/framework-snapshot-observer/README.md) | `scripts/live/regression/framework/framework-snapshot-observer/README.md` | Run striim-test run scripts/live/regression/framework/framework-snapshot-observer. |
 | [Transaction sessions](../scripts/live/regression/framework/framework-transaction-seeds/README.md) | `scripts/live/regression/framework/framework-transaction-seeds/README.md` | Run striim-test run scripts/live/regression/framework/framework-transaction-seeds. |
 | [hello-cluster](../scripts/live/regression/hello/hello-cluster/README.md) | `scripts/live/regression/hello/hello-cluster/README.md` | Exercises topology-aware placement: the reader flow (SourceFlow, DatabaseReader) is deployed to the agent group (${SOURCE_GROUP}) while the writer flow (AppFlow, DatabaseWriter) is deployed to the cluster group (${APP_GROUP}), via DEPLOY APPLICATION ... |
