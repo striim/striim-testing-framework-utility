@@ -505,14 +505,21 @@ that survives a `STOP`.
 In Docker mode, add `recover.node` to scope `stop`, `kill` or `restart` to
 one container. Use `primary`, `secondary`, `agent`, or `{hosting: named flow}`.
 The hosting flow must belong to this case's namespace and have exactly one
-running owner in current Striim deployment metadata. Its owner is checked again
+running owner in current Striim deployment metadata. A flow MON identifies the
+flow; it does not provide application status. Server DESCRIBE binds that flow to
+one full parent-application name, and STATUS on that same server must report the
+application RUNNING. Missing identity, parent or runtime state fails with
+`placement-flow-monitor-unavailable`, `placement-application-unavailable` or
+`placement-node-status-unavailable`; a deployed but stopped app is not a running
+owner. Its owner is checked again
 before the final progress read and fault command. Ambiguous selectors and unknown
 keys fail with `invalid-node-fault`; a moved or nonunique flow fails `fault-missed`.
 A refused hosting selection or changed owner records a failed `recovery` assertion
 before raising. Its row includes the phase (`owner-selection` or `fault-boundary`),
 flow, observed owners, selected server when available, Docker server/container
 mapping, `interrupted: false` and placement `reads`. Those reads preserve the
-returned deployment-group, MON and queried per-server DESCRIBE values as redacted
+returned deployment-group, MON, queried per-server DESCRIBE and runtime STATUS
+values as redacted
 JSON strings, with original redacted character counts and truncation flags.
 Each response is capped at 65536 characters; a truncated string is not complete
 JSON. A read error retains the responses already obtained and reports owners as

@@ -776,15 +776,11 @@ def test_owner_selection_refusal_writes_placement_reads(good):
     from livetest import node_fault, recovery
     from livetest.striim import StriimClient
     servers = ['server_primary', 'server_secondary', 'server_agent']
+    replies = json.loads((Path(__file__).parents[1] / 'fixtures/striim/flow-placement-5.4.2.json').read_text())['queries']
+    replies['MON N.flow;'][0]['output']['diagnostic'] = {'reason': 'observed'}
     class API:
         def post_tungsten_line(self, command, timeout):
-            if command == 'LIST DEPLOYMENTGROUPS;':
-                output = [{'default': {'actualServers': [{'name': n} for n in servers]}}]
-            elif command == 'MON N.flow;':
-                output = {'status': 'RUNNING', 'diagnostic': {'reason': 'observed'}}
-            else:
-                output = [{'deployedObjects': [{'components': []}]}]
-            return [{'executionStatus': 'Success', 'output': output}]
+            return replies[command]
     nodes = {role: {'role': role, 'server': 'server_' + role, 'id': 'id_' + role}
              for role in ('primary', 'secondary', 'agent')}
     with pytest.raises(recovery.RecoveryError, match='fault-missed'):
@@ -798,3 +794,5 @@ def test_owner_selection_refusal_writes_placement_reads(good):
     assert set(diagnostic['reads']['servers']) == set(servers)
     assert json.loads(diagnostic['reads']['monitor']['json'])['diagnostic'] == {'reason': 'observed'}
     assert diagnostic['interrupted'] is False and not saved['run']['qualifies']
+    assert diagnostic['owners'] == ['server_primary', 'server_secondary']
+    assert set(diagnostic['reads']['statuses']) == {'server_primary', 'server_secondary'}

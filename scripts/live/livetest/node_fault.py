@@ -66,6 +66,23 @@ def deployed_flow(descriptions, flow):
     return found
 
 
+def flow_application(descriptions, flow):
+    if not deployed_flow(descriptions, flow):
+        return None
+    applications = set()
+    for description in descriptions:
+        for obj in description["deployedObjects"]:
+            components = obj["components"]
+            if any(c.get("entityType") == "FLOW" and c.get("name") == flow for c in components):
+                names = [c.get("name") for c in components if c.get("entityType") == "APPLICATION"]
+                if len(names) != 1 or not isinstance(names[0], str) or not _FLOW.fullmatch(names[0]):
+                    raise ValueError("placement-application-unavailable")
+                applications.add(names[0])
+    if len(applications) != 1:
+        raise ValueError("placement-application-unavailable")
+    return next(iter(applications))
+
+
 def flow_nodes(client, flow, remaining, reads=None):
     if not _FLOW.fullmatch(flow): raise ValueError("invalid-placement-flow")
     deadline = time.monotonic() + remaining
@@ -74,18 +91,34 @@ def flow_nodes(client, flow, remaining, reads=None):
     if left <= 0: raise ValueError("placement-read-deadline")
     monitor = client.mon(flow, timeout=left)
     _capture(reads, "monitor", monitor)
-    if monitor.get("status") != "RUNNING":
-        return set()
+    # Flow MON has no application status in 5.4.2. Verify its identity, then
+    # prove runtime state on each server that actually deploys this flow.
+    if monitor.get("entityType") != "FLOW" or monitor.get("fullName") != flow:
+        raise ValueError("placement-flow-monitor-unavailable")
     result = set()
     servers = {} if reads is not None else None
     if reads is not None:
         reads["servers"] = servers
+    statuses = {} if reads is not None else None
+    if reads is not None:
+        reads["statuses"] = statuses
     for name in sorted(names):
         left = deadline - time.monotonic()
         if left <= 0: raise ValueError("placement-read-deadline")
         descriptions = client.describe(name, timeout=left)
         _capture(servers, name, descriptions)
-        if deployed_flow(descriptions, flow): result.add(name)
+        application = flow_application(descriptions, flow)
+        if application is not None:
+            left = deadline - time.monotonic()
+            if left <= 0: raise ValueError("placement-read-deadline")
+            status = client.node_status(name, timeout=left)
+            _capture(statuses, name, status)
+            if status.get("server") != name or not isinstance(status.get("applications"), list):
+                raise ValueError("placement-node-status-unavailable")
+            matches = [a for a in status["applications"] if isinstance(a, dict) and a.get("app") == application]
+            if len(matches) != 1 or not isinstance(matches[0].get("status"), str) or not matches[0]["status"]:
+                raise ValueError("placement-node-status-unavailable")
+            if matches[0]["status"] == "RUNNING": result.add(name)
     if time.monotonic() > deadline: raise ValueError("placement-read-deadline")
     return result
 

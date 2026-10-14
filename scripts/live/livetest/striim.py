@@ -272,6 +272,22 @@ class StriimClient:
             return out if isinstance(out, list) else []
         return []
 
+    def node_status(self, name: str, timeout=None) -> dict:
+        """The runtime application states reported by ``STATUS <server>;``."""
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                resp = self._read_only(lambda api, t: api.post_tungsten_line(f"STATUS {name};", timeout=t),
+                                       POLL_TIMEOUT if timeout is None else timeout)
+        except Exception as e:
+            raise StriimError(f"placement-node-status-unavailable: could not read STATUS {name}: {e!r}") from e
+        if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+            first = resp[0]
+            if first.get("executionStatus") == "Failure":
+                raise StriimError(f"placement-node-status-unavailable: STATUS {name} failed: {first.get('failureMessage')}")
+            if isinstance(first.get("output"), dict):
+                return first["output"]
+        raise StriimError(f"placement-node-status-unavailable: STATUS {name} returned no runtime application states")
+
     def current_status(self, app: str, timeout=None) -> str:
         try:
             return self._read_only(lambda api, t: api.status_application(app, timeout=t),

@@ -31,6 +31,11 @@ hosting selector must fail with fault-missed before any Docker fault is issued.
 
 If hosting selection fails, its failed recovery record retains the placement
 reads and Docker mapping before cleanup. Inspect MON and each queried server's
-DESCRIBE response, owner names and truncation flags. No container is interrupted
+DESCRIBE response, the matched parent application's STATUS on that server,
+owner names and truncation flags. No container is interrupted
 when ownership is absent, ambiguous or cannot be read. The diagnostic record is
 retained even when the constructor fails before the fault target exists.
+
+Flow MON need not contain status. The owner check uses the flow deployment and
+the parent application's RUNNING state reported by that same server. A stopped
+or unreadable parent cannot qualify as a running owner.

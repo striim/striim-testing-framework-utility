@@ -151,11 +151,15 @@ def placement_client(*, owners=(), status='RUNNING', malformed=None):
             return [{'output': [{'default': {'actualServers': [
                 {'name': 'server_primary'}, {'name': 'server_secondary'}]},
                 'Agents': {'actualServers': [{'name': 'server_agent'}]}}]}]
-        def mon(self, flow, timeout): return {'status': status, 'detail': {'reason': 'observed'}}
+        def mon(self, flow, timeout):
+            return {'entityType': 'FLOW', 'fullName': flow, 'numServers': str(len(owners)),
+                    'flowComponents': [], 'detail': {'reason': 'observed'}}
+        def node_status(self, name, timeout):
+            return {'server': name, 'applications': [{'app': 'N.app', 'status': status}]}
         def describe(self, name, timeout):
             if malformed == name: return [{'name': name, 'deployedObjects': 'unrecognised'}]
             return [{'name': name, 'deployedObjects': [{'name': 'N.app', 'components':
-                [{'entityType': 'FLOW', 'name': 'N.flow'}] if name in owners else []}]}]
+                [{'entityType': 'FLOW', 'name': 'N.flow'}, {'entityType': 'APPLICATION', 'name': 'N.app'}] if name in owners else []}]}]
     return Metadata()
 
 
@@ -215,7 +219,7 @@ def test_owner_read_evidence_is_bounded_and_redacted(monkeypatch):
     monkeypatch.setattr(node_fault.time, 'monotonic', lambda: 1.0)
     monkeypatch.setattr(evidence, 'known_secrets', lambda: ('private-test-secret',))
     client = placement_client()
-    client.mon = lambda *args, **kwargs: {'status': 'RUNNING', 'secret': 'private-test-secret',
+    client.mon = lambda *args, **kwargs: {'entityType': 'FLOW', 'fullName': 'N.flow', 'secret': 'private-test-secret',
                                         'padding': 'x' * 100000}
     records = []
     with pytest.raises(recovery.RecoveryError):
