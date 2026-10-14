@@ -384,3 +384,15 @@ def test_failover_sample_declares_single_flow_owner_and_complete_golden():
     assert "WITH ${TID}flow ON ONE IN ${APP_GROUP}" in (root / "app.tql").read_text()
     assert _golden("17-one-node-failover")[1] == [{"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
 
+
+
+def test_node_fault_sample_keeps_a_window_open_without_changing_the_golden():
+    root = SAMPLES / '17-one-node-failover'
+    trigger = _raw('17-one-node-failover')['recover']['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'a per-row target delay is needed before the progress fault'
+    assert trigger['below'] < 5000
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('17-one-node-failover')[1] == [
+        {'id':str(n),'msg':f'row-{n}'} for n in range(1,5001)]

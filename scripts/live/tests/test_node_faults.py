@@ -210,7 +210,8 @@ def test_moved_flow_refusal_retains_fault_boundary_reads():
         target.check_owner(1)
     diagnostic = records[0]['actual']['rows'][0]
     assert diagnostic['phase'] == 'fault-boundary'
-    assert diagnostic['owners'] == ['server_secondary'] and diagnostic['selected'] == 'server_primary'
+    assert diagnostic['owners'] == [] and diagnostic['selected'] == 'server_primary'
+    assert set(diagnostic['reads']['servers']) == {'server_primary'}
 
 
 def test_owner_read_evidence_is_bounded_and_redacted(monkeypatch):

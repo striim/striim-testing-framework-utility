@@ -108,3 +108,23 @@ def test_failed_runtime_status_has_a_stable_code(reply):
     data = replies(single=True); data['STATUS server_secondary;'] = reply
     with pytest.raises(StriimError, match='placement-node-status-unavailable'):
         node_fault.flow_nodes(client_for(data), 'N.flow', 2)
+
+
+def test_native_boundary_check_reads_only_the_selected_server(monkeypatch):
+    data = replies(single=True); calls = []
+    class API:
+        def post_tungsten_line(self, command, timeout):
+            calls.append(command)
+            return copy.deepcopy(data[command])
+    client = StriimClient(API())
+    client.configure_failover = lambda *a, **kw: None
+    nodes = {role:{'role':role,'server':'server_'+role,'id':'id_'+role,'url':'endpoint_'+role}
+             for role in ['primary','secondary','agent']}
+    target = node_fault.Target(client, SimpleNamespace(mode='docker'), {'hosting':'N.flow'},
+                              app='N.app', nodes=nodes, timeout=2)
+    calls.clear()
+    target.check_owner(2)
+    assert calls == ['MON N.flow;', 'DESCRIBE server_secondary;', 'STATUS server_secondary;']
+    data['MON N.flow;'][0]['output']['numServers'] = 2
+    with pytest.raises(recovery.RecoveryError, match='fault-missed'):
+        target.check_owner(2)

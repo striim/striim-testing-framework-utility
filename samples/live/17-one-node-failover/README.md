@@ -14,7 +14,7 @@ topology after registration succeeded. A live run must execute the fault,
 placement and equality assertions to pass this sample.
 
 The named flow runs on one app node. While its target count is strictly between
-100 and 5000, the framework verifies its current owner and kills only that
+100 and 2500, the framework rechecks its selected owner and kills only that
 container ID. Read-only API calls authenticate to the surviving node. Restore
 requires the flow to run on the survivor while its original owner remains down,
 then starts the original container and proves a fresh post-recovery sentinel.
@@ -39,3 +39,5 @@ retained even when the constructor fails before the fault target exists.
 Flow MON need not contain status. The owner check uses the flow deployment and
 the parent application's RUNNING state reported by that same server. A stopped
 or unreadable parent cannot qualify as a running owner.
+
+Owner selection finishes before the seed. Progress polling reads status and count; once the window opens, one bounded check reads flow MON plus the selected server's DESCRIBE and STATUS, then rechecks count before issuance. Evidence retains the window-opening value/time and the post-interruption count. The target table CHECK sleeps 10ms per inserted row without changing its values; the 2400-row window therefore lasts about24seconds with one writer. The check belongs to the owned table and disappears when that table is dropped. If the window still closes, the case fails and retains both observations.

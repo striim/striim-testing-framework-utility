@@ -83,10 +83,10 @@ def flow_application(descriptions, flow):
     return next(iter(applications))
 
 
-def flow_nodes(client, flow, remaining, reads=None):
+def flow_nodes(client, flow, remaining, reads=None, *, server=None):
     if not _FLOW.fullmatch(flow): raise ValueError("invalid-placement-flow")
     deadline = time.monotonic() + remaining
-    names = node_names(client, remaining, reads)
+    names = {server} if server is not None else node_names(client, remaining, reads)
     left = deadline - time.monotonic()
     if left <= 0: raise ValueError("placement-read-deadline")
     monitor = client.mon(flow, timeout=left)
@@ -95,6 +95,8 @@ def flow_nodes(client, flow, remaining, reads=None):
     # prove runtime state on each server that actually deploys this flow.
     if monitor.get("entityType") != "FLOW" or monitor.get("fullName") != flow:
         raise ValueError("placement-flow-monitor-unavailable")
+    if server is not None and str(monitor.get("numServers")) != "1":
+        return set()  # the boundary must still have exactly one flow owner
     result = set()
     servers = {} if reads is not None else None
     if reads is not None:
@@ -185,6 +187,7 @@ class Target:
         self.nodes = nodes or inventory(client, ctx, run=run, timeout=timeout)
         self.refresh = nodes is None
         self._placement_reads = {}
+        self.boundary_placement = placement
         self.placement = placement or (lambda flow, left: flow_nodes(client, flow, left, self._placement_reads))
         self.wait_cluster = wait_cluster or _wait_cluster
         self.hosting = selection.get("hosting") if isinstance(selection, dict) else None
@@ -217,6 +220,9 @@ class Target:
     def _owners(self, remaining, phase):
         self._placement_reads.clear()
         try:
+            if phase == "fault-boundary" and self.boundary_placement is None:
+                return flow_nodes(self.client, self.hosting, remaining, self._placement_reads,
+                                  server=self.selected["server"])
             return self.placement(self.hosting, remaining)
         except Exception as error:
             self._refusal(str(error), phase, None)

@@ -2948,12 +2948,6 @@ class LiveItem(pytest.Item):
                                     if left <= 0:
                                         raise _fault_progress.ProgressError("progress-deadline during source observations")
                                 status = client.current_status(app, timeout=min(5.0, left))
-                                if _fault_target is not None:
-                                    left -= time.monotonic() - began
-                                    began = time.monotonic()
-                                    if left <= 0:
-                                        raise _fault_progress.ProgressError("progress-deadline during status read")
-                                    _fault_target.check_owner(left)
                                 if _progress_read is None:
                                     return status
                                 if status != "RUNNING":
@@ -2968,7 +2962,8 @@ class LiveItem(pytest.Item):
                                     verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                     report=lambda msg: _report(m.name, msg)),
                                 record=self._slt_records.append, cycle=_i + 1,
-                                baseline=_progress_baseline, after_read=_progress_read)
+                                baseline=_progress_baseline, after_read=_progress_read,
+                                before_issue=_fault_target.check_owner if _fault_target is not None else None)
                             if _rc.get("trigger", {}).get("kind") == "checkpoint" and "above" not in _rc["trigger"]:
                                 _progress_baseline = _progress_observed["value"]
                             _report(m.name, f"recover: restoring app{_tag}")

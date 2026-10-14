@@ -192,7 +192,7 @@ def after_interrupt(s, read, *, now=time.monotonic):
 
 
 def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
-             now=time.monotonic, sleep=time.sleep, status=None, after_read=None):
+             now=time.monotonic, sleep=time.sleep, status=None, after_read=None, before_issue=None):
     """Re-read at the command boundary; retain evidence even if no command is sent.
 
     This is a bounded observation immediately before the command, not an atomic
@@ -219,6 +219,8 @@ def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
             actual={"kind": "rows", "rows": [dict(observation)]}))
     try:
         if s is None:
+            if before_issue is not None:
+                before_issue(5.0)
             value = observed(5.0)
             observation["held"] = value == "RUNNING"
         else:
@@ -234,6 +236,11 @@ def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
             left = found["deadline"] - now()
             if left <= 0:
                 raise ProgressError("deadline before fault recheck")
+            if before_issue is not None:
+                before_issue(left)
+                left = found["deadline"] - now()
+                if left <= 0:
+                    raise ProgressError("deadline during owner recheck")
             value = observed(left)
             observation["held"] = now() <= found["deadline"] and held(s, value, baseline)
         if not observation["held"]:

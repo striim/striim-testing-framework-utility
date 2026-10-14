@@ -84,3 +84,14 @@ def test_success_retains_the_first_window_and_post_interrupt_observation():
         record=records.append, cycle=1, now=clock.now, sleep=clock.sleep)
     actual = records[0]['actual']['rows'][0]
     assert actual['windowOpened']['value'] == 3 and actual['afterInterrupt']['value'] == 5
+
+
+def test_owner_check_runs_once_after_window_opens_then_progress_is_rechecked():
+    clock = Clock(); events = []; records = []; values = iter([0,3,4,5])
+    def read(left): events.append('read'); return next(values)
+    def check(left): events.append('owner'); clock.t += .05
+    progress.at_fault(progress.normalize(spec()), read, lambda: events.append('interrupt'),
+        record=records.append, cycle=1, now=clock.now, sleep=clock.sleep, before_issue=check)
+    assert events == ['read','read','owner','read','interrupt','read']
+    actual = records[0]['actual']['rows'][0]
+    assert actual['windowOpened']['value'] == 3 and actual['value'] == 4

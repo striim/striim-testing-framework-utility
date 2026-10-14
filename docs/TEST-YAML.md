@@ -539,7 +539,7 @@ recover:
     db: postgres-target
     table: '${PG_TARGET_SCHEMA}.${TID}tgt'
     above: 100
-    below: 5000
+    below: 2500
 assert:
   placement:
     - {flow: '${NS}.${TID}flow', node: survivor, timeout: 90s}
@@ -2000,3 +2000,4 @@ Fault evidence retains `windowOpened` (the first in-window value and time), the 
 Worked case: [15-fault-evidence](../samples/live/15-fault-evidence/README.md). Framework gallery: [framework-fault-evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md).
 
 Worked case: [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.md). Framework gallery: [framework-recovery-sentinel](../scripts/live/regression/framework/framework-recovery-sentinel/README.md).
+A hosting-node fault resolves all owners before post-start seeds. At issuance it checks flow MON's single-owner count and the selected server's deployment and runtime STATUS once, outside progress polling, then re-reads progress. An unreadable, moved or multi-owner flow refuses the fault. Sample17 paces each target insert with a10ms table CHECK, leaving the exact expected rows unchanged.
