@@ -49,7 +49,7 @@ Runnable regression guides are included under Contributing and internals.
 | [06 MySQL CDC](../samples/live/06-mysql-cdc/README.md) | `samples/live/06-mysql-cdc/README.md` | The MySQL counterpart of 04-lifecycle-check's CDC pipeline: MySQLReader reads the binary log and DatabaseWriter applies every insert, update and delete to a copy. |
 | [07 Spanner exact rows](../samples/live/07-spanner-exact/README.md) | `samples/live/07-spanner-exact/README.md` | SpannerBatchReader copies a seeded Spanner table through SpannerWriter. |
 | [08 Strict JSON payloads](../samples/live/08-strict-json/README.md) | `samples/live/08-strict-json/README.md` | A DatabaseReader copies two seeded rows to FileWriter with JSONFormatter. |
-| [09 Raw file bytes](../samples/live/09-raw-file/README.md) | `samples/live/09-raw-file/README.md` | DatabaseReader writes the two seed rows through DSVFormatter to one file, with comma delimiters, CRLF row delimiters, no header and no quotes. |
+| [09 Raw file bytes](../samples/live/09-raw-file/README.md) | `samples/live/09-raw-file/README.md` | DatabaseReader reads the two seed rows in id order. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services

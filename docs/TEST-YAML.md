@@ -404,6 +404,14 @@ directory should hold only the output being tested. Docker mode is required
 (`raw-file-route-unsupported`). `path` must be under `${OWNED_DIR}/` and the
 runtime directory must belong to this attempt (`raw-file-target-not-owned`).
 
+Empty files are inventory entries too: an undeclared empty rolled file fails.
+Declare an expected empty file with zero bytes, the SHA-256 of empty bytes and
+zero records. Sample 09 instead uses an event-count-only rollover policy above
+its two-row input, so a timer cannot create an empty extra file. Its typed CQ
+and explicit formatter members select only the two data columns, avoiding
+variable event metadata; its ordered query and CRLF formatter derive the same
+17 expected bytes.
+
 Each filename maps to `bytes` (non-negative integer) and `sha256` (`sha256:` plus
 64 lowercase hex digits). Optional `records` counts records in that individual
 file: `raw.format: lines` (default) counts LF-delimited records, including a final
