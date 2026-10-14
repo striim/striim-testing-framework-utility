@@ -74,13 +74,14 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
                 while True:
                     if status_probe:
                         status_probe()
+                    read_started = clock.monotonic()
                     actual = [r for r in read(spec, max(0.05, deadline - clock.monotonic()))
                               if matches(r, spec["nothing"]["where"])]
                     reads += 1
                     if actual:
                         detail = "nothing-arrived: forbidden input produced output during the observation window"
                         break
-                    if clock.monotonic() >= deadline:
+                    if read_started >= deadline:
                         ok, detail = True, f"nothing arrived for {window}s after completion sentinel; {reads} reads"
                         break
                     clock.sleep(min(0.2, deadline - clock.monotonic()))

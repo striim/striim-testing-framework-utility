@@ -42,6 +42,18 @@ def test_late_arrival_fails():
             read=lambda *a: [{"id": 1}] if clock.t >= 1 else [])
 
 
+def test_slow_initial_snapshot_cannot_replace_boundary_read():
+    clock = Clock()
+    def read(*args):
+        if clock.t == 0:
+            clock.t = 2
+            return []
+        return [{"id": 1}]
+    with pytest.raises(AssertionFailed, match="nothing-arrived"):
+        nothing.assert_nothing([spec()], kind="data", tokens={"PG_TARGET_SCHEMA": "qatarget", "TID": "test_"},
+            completion={"kind": "sentinel", "reason": "satisfied"}, clock=clock, read=read)
+
+
 def test_nothing_needs_same_route_and_completion_sentinel():
     raw = {"assert": {"data": [spec()]}}
     with pytest.raises(ValueError, match="invalid-nothing-spec"):
