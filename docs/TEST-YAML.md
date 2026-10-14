@@ -399,8 +399,10 @@ nothing about another. List the releases a matrix run actually measured failing.
 
 `nothing: {window: 3s, where: {id: 1}}` on an `assert.data` or `assert.file`
 spec requires that no matching row arrive during the entire positive window.
-`where` is a non-empty mapping of field paths to scalar values; every field must
-match with its token type intact. For file events use paths such as `data.id`;
+`where` is a non-empty mapping of identity field paths to scalar values; every
+field must match with its token type intact. Missing identity fields or incompatible
+token types fail rather than silently counting as non-matches. Use fixed identity
+fields that the route emits on every checked event. For file events use paths such as `data.id`;
 for Kafka records use `value.id`. Data specs name `target` and `db` (or
 `target_db`); file specs name `path`. No `match`, count or `exact` keys are allowed
 on the same spec. Kafka may also choose `payload: json` (default `avro`).
@@ -410,6 +412,10 @@ observe the same output table, topic or file. Invalid combinations, unknown keys
 and an invalid window are `invalid-nothing-spec`. At runtime absence is refused
 unless completion actually succeeded (`nothing-sentinel-unproven`). A late
 matching event fails with `nothing-arrived`; a read failure is `nothing-read-error`.
+Each read has an independent positive `nothing.read_timeout` (default `5s`),
+including a fresh read started at the window boundary. This avoids reducing the
+final transport budget to a few milliseconds. Slow reads can extend observation
+past the minimum window; an event visible on that final read also fails.
 Selectors name the prohibited input explicitly, so append-sink sentinel records
 remain visible and are not silently excluded. This is a bounded claim, not a
 claim that nothing can ever arrive afterward.

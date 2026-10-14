@@ -36,6 +36,14 @@ def test_full_window_is_required():
     assert reads[0] == 0 and reads[-1] >= 2
 
 
+def test_transport_keeps_a_real_budget_at_the_boundary():
+    budgets = []
+    nothing.assert_nothing([spec()], kind="data", tokens={"PG_TARGET_SCHEMA": "qatarget", "TID": "test_"},
+        completion={"kind": "sentinel", "reason": "satisfied"}, clock=Clock(),
+        read=lambda spec, remaining: budgets.append(remaining) or [])
+    assert min(budgets) >= 1
+
+
 def test_late_arrival_fails():
     clock = Clock()
     with pytest.raises(AssertionFailed, match="nothing-arrived"):

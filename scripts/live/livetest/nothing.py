@@ -57,14 +57,20 @@ def validate(raw, path, lc):
             if set(spec) - allowed:
                 refuse("nothing cannot be combined with content-match keys")
             check = spec["nothing"]
-            if not isinstance(check, dict) or set(check) != {"window", "where"}:
-                refuse("nothing needs exactly window and where")
+            if not isinstance(check, dict) or set(check) - {"window", "where", "read_timeout"} or not {"window", "where"} <= set(check):
+                refuse("nothing needs window and where, with optional read_timeout")
             try:
                 seconds = lifecycle.parse_duration(check["window"], "nothing.window", path)
             except ValueError as e:
                 refuse(str(e))
             if seconds <= 0 or not math.isfinite(seconds):
                 refuse("window must be positive and finite")
+            try:
+                read_timeout = lifecycle.parse_duration(check.get("read_timeout", "5s"), "nothing.read_timeout", path)
+            except ValueError as e:
+                refuse(str(e))
+            if read_timeout <= 0:
+                refuse("read_timeout must be positive")
             if not isinstance(check["where"], dict) or not check["where"] or any(
                     not isinstance(k, str) or not k or any(not s for s in k.split("."))
                     for k in check["where"]):
@@ -93,6 +99,7 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
         ok, detail, actual = False, "nothing-sentinel-unproven: completion sentinel did not succeed", []
         if completion and completion.get("kind") == "sentinel" and completion.get("reason") == "satisfied":
             window = lifecycle.parse_duration(spec["nothing"]["window"], "nothing.window", target)
+            read_timeout = lifecycle.parse_duration(spec["nothing"].get("read_timeout", "5s"), "nothing.read_timeout", target)
             deadline = clock.monotonic() + window
             reads = 0
             try:
@@ -100,7 +107,7 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
                     if status_probe:
                         status_probe()
                     read_started = clock.monotonic()
-                    actual = [r for r in read(spec, max(0.05, deadline - clock.monotonic()))
+                    actual = [r for r in read(spec, read_timeout)
                               if strict_matches(r, spec["nothing"]["where"])]
                     reads += 1
                     if actual:
