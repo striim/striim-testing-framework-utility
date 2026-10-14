@@ -61,7 +61,7 @@ recover:
     db: postgres-target
     table: ${PG_TARGET_SCHEMA}.${TID}tgt
     above: 100
-    below: 5000
+    below: 2500
     timeout: 90s
     poll: 100ms
   settle: 1s
