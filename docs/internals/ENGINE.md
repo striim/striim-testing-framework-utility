@@ -240,3 +240,7 @@ waits 60 s and then fails naming the open transactions.
 ### Check typed, counted Spanner rows
 
 The live engine modules `exactdata`, `canon` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [07-spanner-exact fixture](../../samples/live/07-spanner-exact/README.md).
+
+### Keep JSON token types in payload comparisons
+
+The live engine modules `strictjson` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [08-strict-json fixture](../../samples/live/08-strict-json/README.md).

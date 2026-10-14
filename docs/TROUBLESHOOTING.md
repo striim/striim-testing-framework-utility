@@ -142,3 +142,12 @@ which nothing executed as **exit 3, not a pass**.
 | `canonical-limit-exceeded` | A read exceeds the declared row or byte budget. | Check unexpected rows/duplicates first; choose a sufficient bounded budget for the hand-derived input. |
 | `exact-read-error` | The typed target query failed. | Read the nested driver error, check privileges and target naming, and correct the route. |
 | `exact-read-timeout` | The typed query did not finish inside its deadline. | Check target reachability and query blocking; the read cannot qualify the result. |
+
+## Keep JSON token types in payload comparisons
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `undeclared-column` | Strict JSON contains a column absent from the declaration. | Declare every intended column with its token type, or fix the payload producer. |
+| `invalid-json` | The payload is malformed JSON, has duplicate keys/non-finite numbers, or has invalid framing. | Fix the producer; NaN and Infinity must not be emitted as JSON. |
+| `invalid-value:actual:<column>` | The observed token/value does not match its declared type. | Keep numeric/boolean/null token types; fix a formatter that quotes numbers, and declare binary encoding explicitly. |
+| `evidence-invalid` | The framework could not validate the written evidence envelope. | Treat the run as failed even when assertions passed. Report the framework commit and sanitized evidence/stdout through CONTRIBUTING; do not bypass validation. |

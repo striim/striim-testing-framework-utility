@@ -505,3 +505,9 @@ lists which folder shows which key.
 Start with [07-spanner-exact](../samples/live/07-spanner-exact/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md).
 
 Evidence for **Typed exact rows**: `data.comparisons[]`: `declaration`, declaration hash, `expected`/`actual` counts and SHA-256, `equal`, and mismatch samples. Require `equal: true` for each comparison.
+
+### Keep JSON token types in payload comparisons
+
+Start with [08-strict-json](../samples/live/08-strict-json/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md).
+
+Evidence for **Strict JSON**: The comparison declaration includes `strict_json: true`. `payload` in the assertion spec selects JSON or Avro; observed values keep token types before canonicalization.

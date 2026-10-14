@@ -434,6 +434,7 @@ near your data's size, so a runaway target fails fast.
 | key | default | meaning |
 |---|---|---|
 | `columns` | `{}` | column name → type (table below). Values of a typed column compare by meaning, so `118.0` and `118.00` are equal as `decimal:2` |
+| `strict_json` | `false` | preserve JSON token types and require a declaration for every compared column; file or Kafka only |
 | `ignore` | `[]` | columns removed from both sides before comparing (a load timestamp, say). Each must exist on at least one side, and cannot also be typed |
 | `order` | `any` | `any`: the rows compare as a multiset, in any order. `sequence`: also in the same order |
 | `order_by` | none | the columns the target is read in order of. Required with `order: sequence` on database `data` and `diff`, refused on Kafka/file routes. The values must be unique per row (`order-not-total` if not) |
@@ -447,6 +448,8 @@ columns need no entry.
 | type | golden cell | compared as |
 |---|---|---|
 | `integer` | `-12` | the number |
+| `text` | any text, including an empty cell | a string value; strict payloads require a string token |
+| `number` | `1.25` | a finite numeric value; quoted numbers and booleans fail |
 | `decimal:<s>` (s 0 to 38) | `118.00` | the value at `s` places; a value that does not fit exactly is `lossy-decimal`, never rounded |
 | `boolean` | `true` or `false` | the value |
 | `timestamptz` | ISO 8601 with `Z` or `±hh:mm` (`2026-09-01T08:00:00+00:00`) | the instant, in UTC |
@@ -456,14 +459,16 @@ columns need no entry.
 | `json` | JSON text | the JSON, with keys sorted; numbers keep their exact text (`1.0` is not `1.00`) |
 
 **Golden files.** A UTF-8 CSV without a byte-order mark, with a header row of unique names:
-- `<null>` is NULL. An empty cell is an empty string, and is refused in a typed column.
+- `<null>` is NULL. An empty cell is an empty string: accepted by `text`, refused by numeric/date/binary/JSON declarations.
 - `<absent>` (file and Kafka record specs only) is a column the record does not carry.
 - Write the golden by hand from your data. The framework never writes one.
 
 **Strict JSON payloads.** Set `exact.strict_json: true` on a file or Kafka record
 spec. It is refused on database routes (`invalid-declaration`). Declare every
 compared column, including text and null columns; `keys` and `ignore` still select
-what is compared. An undeclared compared column fails with `undeclared-column`.
+what is compared. An undeclared compared column fails with `undeclared-column`. A quoted integer
+or another token/type mismatch fails `invalid-value:actual:<column>`; fix the
+producer rather than changing the expected token type.
 `text` requires a string token (including an empty string); `number` requires a
 finite numeric token and compares its exact numeric value. Existing `integer`,
 `boolean`, `decimal:N`, `json` and `binary:hex` / `binary:base64` declarations work.
@@ -512,6 +517,39 @@ again until it matches or `timeout` runs out.
 `diff: [{..., exact: true}]` without the top-level block keeps its older meaning: the source and target
 rows compared as text, with their counts.
 
+### Strict Kafka JSON example
+
+A JSON key `{"id":1}` and value `{"id":1,"active":true,"note":null}` produce the
+hand-derived header `key.id,value.id,value.active,value.note` and row
+`1,1,true,<null>`. Every selected field is declared, including the nullable note.
+
+<!-- snippet: fragment -->
+```yaml
+exact: {version: 1}
+assert:
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      project: kafka_record
+      payload: json
+      keys: [key.id, value.id, value.active, value.note]
+      match: expected/messages.csv
+      exact:
+        strict_json: true
+        columns:
+          key.id: integer
+          value.id: integer
+          value.active: boolean
+          value.note: text
+```
+
+Changing value.id to the string "1" must fail even though its printed characters
+match. This Kafka example has hermetic coverage; sample 08 qualifies the file
+route live, not Kafka JSON payloads.
+
+
+Worked case: [08-strict-json](../samples/live/08-strict-json/README.md).
+
 ### Native values on Spanner and Kafka
 
 The declaration follows the value returned by the reader, not the formatted text.
@@ -520,9 +558,9 @@ The declaration follows the value returned by the reader, not the formatted text
 |---|---|---|
 | Spanner INT64 / Avro int or long | `integer` | booleans and quoted numbers are not integers |
 | Spanner NUMERIC / Avro logical decimal | `decimal:<s>` | choose the required scale; any value needing rounding fails |
-| Spanner FLOAT64 / Avro float or double | `decimal:<s>` when exactly representable at that scale | non-finite values and lossy scale fail; project another supported representation if required |
+| Spanner FLOAT64 / Avro float or double | `number`, or `decimal:<s>` when exactly representable at that scale | non-finite values and lossy scale fail |
 | Spanner BOOL / Avro boolean | `boolean` | strings are not booleans |
-| Spanner STRING / Avro string or enum | native text, no declaration required | text remains text |
+| Spanner STRING / Avro string or enum | `text` (or native undeclared text outside strict mode) | strict mode requires the declaration |
 | Spanner DATE / Avro logical date | `date` | compare the calendar date |
 | Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | this canonical profile uses microseconds; golden fractions have at most six digits. Project a separate integer/text field to check finer precision |
 | Spanner BYTES / Avro bytes or fixed | `binary:hex` or `binary:base64` | a byte value needs its declared encoding |
@@ -816,7 +854,9 @@ Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `ma
 distinct sets; pin `rows: N` too if cardinality matters.
 
 Database data specs can add `exact:` as described above. Kafka typed comparison
-uses `project: kafka_record` with full `key.*`/`value.*` projection paths.
+uses `project: kafka_record` with full `key.*`/`value.*` projection paths. Its
+optional `payload` selects `avro` (default) or `json` and requires
+`exact.strict_json: true`; neither key creates a new assertion tier.
 
 For a Kafka target with JSON message keys and length-delimited Avro values, opt into
 `project: kafka_record` to compare the key and value of each record together:

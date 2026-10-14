@@ -47,7 +47,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `05-mysql-initial-load` | an initial load on MySQL |
 | `06-mysql-cdc` | binlog CDC on MySQL: inserts, an update and a delete |
 | `07-spanner-exact` | typed and counted Spanner rows; requires the Spanner service |
-| `08-strict-json` | preserve JSON token types and reject undeclared fields |
+| `08-strict-json` | preserve JSON token types and reject undeclared fields; Docker file access |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.
