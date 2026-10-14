@@ -1078,6 +1078,9 @@ refs) is `${TOKEN}`-substituted before use. Tokens come from these places:
 
 The suite runs **serially by default** (one shared cluster + service containers);
 `SLT_PARALLEL=1` opts in to concurrent runs (`striim-test run --parallel`, or `pytest-xdist -n N`).
+Under xdist the integration tier orders cases longest first by their durations in earlier runs
+(kept in `integration-durations.json` in the state directory), with Teradata cases first among
+those it has not timed, so a long case starts while there is still other work beside it.
 For an *author* the flag changes only token values: a serial run renders
 `${TID}`/`${TID_UPPER}`/`${TID_ORACLE}` as `""`; a concurrent run renders a short per-test id
 with the trailing `_` separator baked in — `${TID}users` → `users` serially, `t1a2b3c4d_users`

@@ -66,6 +66,7 @@ from .tokens import build_tokens as _build_tokens
 
 # PERF_SPEC.md's own YAML tree/pytest wiring (section 12 below). Same module-alias
 # convention as above.
+from . import ordering as ordering_mod
 from . import perf as perf_mod
 from . import perfmanifest as perfmanifest_mod
 from . import perfreport as perfreport_mod
@@ -556,6 +557,20 @@ def pytest_unconfigure(config):
     _release_session_lock()
 
 
+_RECORDED_DURATIONS: dict = {}
+
+
+def _durations_path() -> Path:
+    return paths_mod.state_dir() / ordering_mod.FILE_NAME
+
+
+def pytest_runtest_logreport(report):
+    # The call phase of every case, on the controller (xdist forwards workers' reports to it) or in
+    # a serial run; saved at the end of the session for the next run's ordering.
+    if report.when == "call" and not os.environ.get("PYTEST_XDIST_WORKER"):
+        _RECORDED_DURATIONS[report.nodeid] = float(report.duration)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Tear down every service THIS host brought up -- but only from the xdist
     controller (workers each reach sessionfinish independently and must not race each
@@ -568,6 +583,8 @@ def pytest_sessionfinish(session, exitstatus):
     as already-up and not re-register it), so a stale registry entry pointing at a
     service THIS session no longer owns must not survive to be misread as "this
     session started it" by a future `pytest_sessionfinish`."""
+    if not os.environ.get("PYTEST_XDIST_WORKER") and not session.config.getoption("--perf"):
+        ordering_mod.save(_durations_path(), _RECORDED_DURATIONS)
     if _shared_services():
         return
     if os.environ.get("PYTEST_XDIST_WORKER"):
@@ -2702,4 +2719,11 @@ def pytest_collection_modifyitems(config, items):
 
     if deselected:
         config.hook.pytest_deselected(items=deselected)
+    # Longest first under xdist only: a serial run keeps collection order, which some suites
+    # read as their run order.
+    if (not config.getoption("--perf") and getattr(getattr(config, "option", None), "numprocesses", None)
+            and not os.environ.get("PYTEST_XDIST_WORKER")):
+        selected = ordering_mod.longest_first(
+            selected, ordering_mod.load(_durations_path()),
+            lambda item: "teradata" in getattr(getattr(item, "manifest", None), "requires", ()))
     items[:] = selected
