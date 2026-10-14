@@ -114,3 +114,24 @@ def test_reused_session_without_observe_does_not_inherit_commit_diagnostics():
     p.run_phase(schedule,'post_start')
     commits = [r['actual']['rows'][0] for r in records if r['spec'].get('op') == 'commit']
     assert 'txid' in commits[0] and 'txid' not in commits[1]
+
+
+def test_slot_diagnostics_accept_only_current_confirmed_ledger_resources(tmp_path):
+    from livetest.ownership import Ledger
+    ledger = Ledger(tmp_path / 'ledger.json', SimpleNamespace(attempt='current'),
+                    {'entries': []}, env={})
+    ledger.add('pg-table', 'qasource.case_src', 'postgres-source', 'confirmed')
+    slot = ledger.add('pg-slot', 'case_slot', 'postgres-source', 'confirmed')
+    source, records = Source(), []
+    p = pool(source, records, owned=ledger.owns)
+    p.run_phase(steps(), 'post_start')
+    p.run_phase(steps(), 'post_recover')
+    assert records[-1]['actual']['rows'][0]['source']['slot']['confirmedFlushLsn'] == '0/20'
+    for field, value in [('state', 'intended'), ('attempt', 'prior'), ('db', 'postgres-target')]:
+        original = slot[field]
+        slot[field] = value
+        rejected = Source()
+        with pytest.raises(ValueError, match='transaction-observe-not-owned'):
+            pool(rejected, [], owned=ledger.owns).run_phase(steps(), 'post_start')
+        assert not rejected.connections and not rejected.queries
+        slot[field] = original

@@ -447,11 +447,11 @@ class Ledger:
         self.persist()
 
     def owns(self, kind: str, db, name: str) -> bool:
-        """Witness ownership (C7.2): a confirmed table of this attempt on ``db``, or a normalized path
+        """Witness ownership: a confirmed resource of this attempt on ``db``, or a normalized path
         inside a confirmed owned directory of this attempt."""
         mine = self.ident.attempt
-        if kind == "pg-table":
-            return any(e["kind"] == "pg-table" and e["name"] == name and e.get("db") == db and e["attempt"] == mine
+        if kind in ("pg-table", "pg-slot"):
+            return any(e["kind"] == kind and e["name"] == name and e.get("db") == db and e["attempt"] == mine
                        and e["state"] == "confirmed" for e in self.entries)
         if kind in ("spanner-table", "topic"):
             actual_kind = "kafka-topic" if kind == "topic" else kind
