@@ -256,3 +256,7 @@ The live engine modules `sinkprobe`, `nothing` implement this check. Manifest lo
 ### Control overlapping seed transactions and recovery commits
 
 The live engine modules `transactions`, `diagnostics` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [11-transaction-seeds fixture](../../samples/live/11-transaction-seeds/README.md).
+
+### Check consistent target snapshots against committed prefixes
+
+The live engine modules `snapshot_observer` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [12-snapshot-observer fixture](../../samples/live/12-snapshot-observer/README.md).

@@ -193,3 +193,21 @@ drop or replay bypass does not establish ownership.
 | `transaction-step-error` | A scheduled transaction operation failed. | Read the transaction record for session/op/phase and driver error; check source constraints and held sessions. |
 | `transaction-cleanup-error` | A held session could not be rolled back/closed during teardown. | Inspect the session error and ensure the source connection can be closed; cleanup failure is retained. |
 | `transaction-observe-not-owned` | A diagnostic table/slot is not confirmed for this attempt and route. | Create/declare it through framework DDL; do not use prior-attempt or foreign resources. |
+
+## Check consistent target snapshots against committed prefixes
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-snapshot-spec` | The observer declaration is malformed or outside budgets. | Declare every table and every complete prefix, supported types and positive bounded limits. |
+| `snapshot-target-not-owned` | A snapshot table is not owned by this attempt. | Create the target in DDL with ${TID} and use the same route. |
+| `snapshot-not-committed-prefix` | A consistent observed state matches no declared committed prefix. | Inspect retained history (prefix null, aggregate SHA-256 and total row count) and the completion key diagnostics; correct transaction visibility or the hand-derived prefixes. |
+| `snapshot-table-set-mismatch` | A read/golden does not name exactly the declared tables. | Include each table alias in every complete prefix. |
+| `snapshot-target-ambiguous` | Two aliases resolve to the same physical target. | Give each alias a distinct owned target table. |
+| `snapshot-duplicate-column` | A table returns duplicate column names. | Use unique column names matching the declaration. |
+| `snapshot-undeclared-column` | A snapshot has a column outside the declared set. | Declare the complete intended schema or fix the target schema. |
+| `snapshot-limit-exceeded` | The observer exceeds row, byte or history limits. | Inspect excess output and set adequate bounded budgets; history is capped. |
+| `snapshot-read-error` | The consistent snapshot could not be read inside its deadline. | Check connectivity, privileges and blocked queries; inspect retained observer error/history. |
+| `snapshot-read-timeout` | The consistent snapshot could not be read inside its deadline. | Check connectivity, privileges and blocked queries; inspect retained observer error/history. |
+| `snapshot-final-prefix-missing` | The final observed snapshot is not the declared final prefix. | Check completion and full transaction delivery; retain every expected row. |
+| `observer-incomplete` | The case ended before the observer could finish qualification. | Read the primary failure and the abandoned observer history; incomplete observation cannot pass. |
+| `snapshot-prefix-regressed` | A snapshot matched an earlier declared state after a newer prefix was observed. | Check replay order and transaction preservation; retain the failed history and keep prefixes derived from intended committed states. |

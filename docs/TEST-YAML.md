@@ -58,6 +58,11 @@ compared column, using the exact type vocabulary. Every complete snapshot must
 equal one complete prefix, with row multiplicity intact; matching each table to
 a different prefix is a failure. The final snapshot must equal the last prefix.
 Targets contain `${TID}` and two aliases cannot render to the same table.
+When several prefixes declare the same state, intermediate reads choose the
+earliest matching index compatible with the observed history. The final read
+chooses the latest compatible match, so a repeated final state can complete.
+This proves a possible monotone history; it does not prove every intermediate
+prefix was observed.
 
 Optional `interval` is a positive duration (default 100ms). `max_rows` caps total
 rows in a read (default 100000, maximum 1000000); `max_bytes` bounds each table's
@@ -68,8 +73,10 @@ of silently discarding reads. The case timeout bounds a snapshot read.
 Unknown keys, invalid routes, types, durations, alias sets or golden paths fail
 with `invalid-snapshot-spec`. Runtime failures include `snapshot-target-not-owned`,
 `snapshot-not-committed-prefix`, `snapshot-undeclared-column`,
+`snapshot-table-set-mismatch`, `snapshot-target-ambiguous`, `snapshot-duplicate-column`,
 `snapshot-limit-exceeded`, `snapshot-read-error`, `snapshot-read-timeout` and
-`snapshot-final-prefix-missing`. The data assertion record includes every
+`snapshot-final-prefix-missing`. This is an assertion record of type `data` (`xfail.tiers: [data]` addresses
+all observer failures, including read failures; there is no snapshot tier). The record includes every
 observation's prefix index, row count and combined canonical hash. Goldens are
 read from the case's input snapshot; the framework never derives them from output.
 
@@ -1624,3 +1631,5 @@ Transaction seed SQL refuses `ABORT` along with other transaction-control statem
 
 Worked case: [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md). Framework gallery: [framework-transaction-seeds](../scripts/live/regression/framework/framework-transaction-seeds/README.md).
 Snapshot prefix indices must never decrease: `snapshot-prefix-regressed` fails a history that returns to an earlier committed state, even if it later reaches the final state. Repeated reads of the same prefix are allowed; sampling can skip intermediate prefixes.
+
+Worked case: [12-snapshot-observer](../samples/live/12-snapshot-observer/README.md). Framework gallery: [framework-snapshot-observer](../scripts/live/regression/framework/framework-snapshot-observer/README.md).
