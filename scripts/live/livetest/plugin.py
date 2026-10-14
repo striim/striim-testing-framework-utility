@@ -2895,12 +2895,6 @@ class LiveItem(pytest.Item):
                             _wait = _rc["after"] if _i == 0 else _rc["every"]
                             _last = (_i == _rc["times"] - 1)
                             _tag = "" if _rc["times"] == 1 else f" [{_i + 1}/{_rc['times']}]"
-                            if _progress_read is not None:
-                                _progress_observed = _fault_progress.wait(_rc["trigger"], _progress_read,
-                                    baseline=_progress_baseline,
-                                    status=lambda: client.current_status(app, timeout=min(5, _rc["trigger"]["timeout"])))
-                                if _rc["trigger"]["kind"] == "checkpoint" and "above" not in _rc["trigger"]:
-                                    _progress_baseline = _progress_observed["value"]
                             if _wait:
                                 _hb_r = _hb(f"waiting to {_rc['mode']} the app{_tag}")
                                 _rt0 = time.monotonic()
@@ -2917,11 +2911,33 @@ class LiveItem(pytest.Item):
                             # the default would report a WORKING stop as "not interrupted".
                             # Floored at the default so a short-timeout manifest cannot make
                             # verification stricter than the library intends.
-                            if _tx_pool is not None:
-                                _tx_pool.observe_recovery("pre_interrupt")
-                            recovery.interrupt(client, ctx, app, _rc["mode"],
-                                               verify_timeout=max(120.0, float(m.timeout) / 2.0),
-                                               report=lambda msg: _report(m.name, msg))
+                            from livetest import progress as _fault_progress
+                            def _read_at_fault(left):
+                                began = time.monotonic()
+                                if _tx_pool is not None:
+                                    _tx_pool.observe_recovery("pre_interrupt", remaining=min(2.0, left))
+                                    left -= time.monotonic() - began
+                                    began = time.monotonic()
+                                    if left <= 0:
+                                        raise _fault_progress.ProgressError("progress-deadline during source observations")
+                                status = client.current_status(app, timeout=min(5.0, left))
+                                if _progress_read is None:
+                                    return status
+                                if status != "RUNNING":
+                                    raise _fault_progress.ProgressError("progress-app-not-running")
+                                left -= time.monotonic() - began
+                                if left <= 0:
+                                    raise _fault_progress.ProgressError("progress-deadline during status read")
+                                return _progress_read(left)
+                            _progress_observed = _fault_progress.at_fault(
+                                _rc.get("trigger"), _read_at_fault,
+                                lambda: recovery.interrupt(client, ctx, app, _rc["mode"],
+                                    verify_timeout=max(120.0, float(m.timeout) / 2.0),
+                                    report=lambda msg: _report(m.name, msg)),
+                                record=self._slt_records.append, cycle=_i + 1,
+                                baseline=_progress_baseline)
+                            if _rc.get("trigger", {}).get("kind") == "checkpoint" and "above" not in _rc["trigger"]:
+                                _progress_baseline = _progress_observed["value"]
                             if _progress_read is not None:
                                 _fault_progress.after_interrupt(_rc["trigger"], _progress_read)
                             _report(m.name, f"recover: restoring app{_tag}")

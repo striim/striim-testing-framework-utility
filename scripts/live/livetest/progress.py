@@ -189,3 +189,61 @@ def after_interrupt(s, read, *, now=time.monotonic):
         error.after_interrupt = observation
         raise error from e
     return observation
+
+
+def at_fault(s, read, interrupt, *, record, cycle, baseline=0,
+             now=time.monotonic, sleep=time.sleep, status=None):
+    """Re-read at the command boundary; retain evidence even if no command is sent.
+
+    This is a bounded observation immediately before the command, not an atomic
+    transaction with the product. No retry of a state-changing command is made.
+    Timed recovery (s=None) verifies RUNNING after its existing delay.
+    """
+    from datetime import datetime, timezone
+    from livetest.resultschema import build_assertion_result
+    observation = {"cycle": cycle, "value": None, "held": False,
+                   "observedAt": None, "issuedAt": None, "interrupted": False,
+                   "baseline": baseline, "deadline": now() + s["timeout"] if s else None}
+    def observed(left):
+        value = read(left)
+        observation.update(value=value, observedAt=now(),
+            observedUtc=datetime.now(timezone.utc).isoformat())
+        return value
+    def save(ok, detail):
+        record(build_assertion_result(type="recovery", status="passed" if ok else "failed",
+            spec={"trigger": s or {"kind": "timed", "status": "RUNNING"}},
+            target=(s or {}).get("table", (s or {}).get("topic", (s or {}).get("slot", "application"))),
+            db=(s or {}).get("db"), detail=detail,
+            expected={"kind": "rows", "rows": [{"held": True, "interrupted": True}]},
+            actual={"kind": "rows", "rows": [dict(observation)]}))
+    try:
+        if s is None:
+            value = observed(5.0)
+            observation["held"] = value == "RUNNING"
+        else:
+            found = wait(s, observed, baseline=baseline, now=now, sleep=sleep, status=status)
+            observation["deadline"] = found["deadline"]
+            left = found["deadline"] - now()
+            if left <= 0:
+                raise ProgressError("deadline before fault recheck")
+            if status is not None and status() != "RUNNING":
+                raise ProgressError("app left RUNNING before fault")
+            left = found["deadline"] - now()
+            if left <= 0:
+                raise ProgressError("deadline before fault recheck")
+            value = observed(left)
+            observation["held"] = now() <= found["deadline"] and held(s, value, baseline)
+        if not observation["held"]:
+            raise ProgressError("precondition did not hold at the fault boundary")
+    except Exception as e:
+        save(False, f"fault-missed: {e}")
+        raise ProgressError(f"fault-missed: {e}") from e
+    observation["issuedAt"] = now()
+    try:
+        interrupt()
+    except Exception as e:
+        save(False, f"fault-interrupt-error: {e}")
+        raise
+    observation["interrupted"] = True
+    save(True, "ok")
+    return observation

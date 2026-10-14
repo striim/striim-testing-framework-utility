@@ -54,6 +54,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `12-snapshot-observer` | consistent snapshots of related target tables |
 | `13-append-only-audit` | immutable delivery rows with counted multiset comparison |
 | `14-progress-recovery` | interrupt CDC inside a declared target progress window |
+| `15-fault-evidence` | fault-time progress evidence and missed-window failure |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

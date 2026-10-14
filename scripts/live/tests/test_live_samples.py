@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -318,3 +318,9 @@ def test_progress_stop_sample_keeps_the_fault_window_open():
     assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
     assert _golden('14-progress-recovery')[1] == [
         {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_fault_evidence_sample_declares_a_nonfinal_window():
+    m = load_manifest(SAMPLES / "15-fault-evidence/test.yaml")
+    assert m.recover["trigger"]["above"] == 100
+    assert _golden("15-fault-evidence")[1] == _golden("14-progress-recovery")[1]

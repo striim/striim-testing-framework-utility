@@ -552,6 +552,18 @@ lifecycle, rather than an unclaimed custom topic. A slot must already be recorde
 as owned; naming a shared slot does not grant permission to observe it.
 Only target-count recovery has reported live qualification (sample 14);
 checkpoint, slot and Kafka position triggers have hermetic coverage.
+Every fault receives an assertion record of type `recovery` in `evidence.json`
+and the results sidecar. Its actual row contains the cycle, observed value,
+`held`, monotonic `observedAt` and `issuedAt`, UTC `observedUtc`, deadline,
+baseline and `interrupted`. Progress is re-read immediately before the command;
+the earlier poll alone is insufficient. This read and the interruption are
+separate operations, so the observation does not claim an atomic product snapshot
+at the physical kill instant. A missed deadline, unreadable position, closed
+window or app that left RUNNING fails with `fault-missed` and records `held: false`
+and `issuedAt: null`; no command is issued. This framework error is never an
+expected assertion failure. A command failure records held progress but does not
+record a passed interruption. Timed recovery checks RUNNING at its fault boundary.
+See `samples/live/15-fault-evidence` for the broken-window check.
 
 Kafka offsets describe the next record position; the trigger observes the named
 partition, never a sum across partitions. Checkpoint advances are measured anew
