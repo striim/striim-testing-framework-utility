@@ -51,6 +51,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `09-raw-file` | byte hashes, lengths and an exact file inventory; Docker file access |
 | `10-bounded-nothing` | no output in a bounded window after a file sentinel |
 | `11-transaction-seeds` | overlapping sessions, savepoints and a transaction across recovery |
+| `12-snapshot-observer` | consistent snapshots of related target tables |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

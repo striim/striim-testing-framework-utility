@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -276,3 +276,13 @@ def test_transaction_sample_keeps_only_committed_input():
     assert m.transaction_steps[-1]["when"] == "post_recover"
     assert any(s["op"] == "rollback_to" for s in m.transaction_steps)
     assert _golden("11-transaction-seeds")[1] == [{"id": "1", "msg": "first"}, {"id": "2", "msg": "second"}]
+
+
+def test_snapshot_sample_declares_atomic_two_table_prefixes():
+    m = load_manifest(SAMPLES / "12-snapshot-observer/test.yaml")
+    s = m.snapshot_spec
+    assert set(s["tables"]) == {"a", "b"}
+    assert all(prefix["a"] == prefix["b"] for prefix in s["prefixes"])
+    assert len(s["prefixes"]) == 3
+    assert (SAMPLES / "12-snapshot-observer/expected/empty.csv").read_text() == "id,msg\n"
+    assert (SAMPLES / "12-snapshot-observer/expected/b.csv").read_text() == "id,msg\n2,second\n"

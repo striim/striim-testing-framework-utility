@@ -30,7 +30,7 @@ VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
     "op", "udf", "server_files", "generate", "timeout", "diff_poll", "tags", "disabled",
     "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
-    "kafka_cleanup_topics", "depth", "tokens", "transactions",
+    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer",
     "lifecycle",   # C7.2
     "exact",   # C8.1
 }
@@ -928,6 +928,7 @@ class TestManifest:
                                          # (auto-detected via regex, no manual config needed)
     source_dir: Path = None             # where tql/ddl/seed/upload are read from
     local_files: frozenset = frozenset()  # ddl/seed/upload names marked `local: true`: read from `dir`
+    snapshot_spec: dict | None = None
     transaction_steps: list = field(default_factory=list)
     lifecycle: object = None            # livetest.lifecycle.LifecycleSpec, or None (legacy)
     exact: object = None                # livetest.canon.check_manifest resolution, or None
@@ -1411,6 +1412,12 @@ def load_manifest(path: Path) -> TestManifest:
         warnings.warn(f"{path}: could not detect persistent streams from {tql}: {e}",
                       stacklevel=2)
 
+    from livetest.snapshot_observer import normalize as normalize_snapshot
+    try:
+        snapshot_spec = normalize_snapshot(raw.get("snapshot_observer"), path,
+                                          lifecycle=raw.get("lifecycle") is not None)
+    except ValueError as e:
+        raise ManifestError(str(e)) from None
     from livetest.transactions import normalize as normalize_transactions
     try:
         transaction_steps = normalize_transactions(raw.get("transactions"), path,
@@ -1446,6 +1453,7 @@ def load_manifest(path: Path) -> TestManifest:
         exact=_slt_exact_spec,
         tql=tql,
         transaction_steps=transaction_steps,
+        snapshot_spec=snapshot_spec,
         dir=path.parent,
         depth=depth,
         topology=topology,

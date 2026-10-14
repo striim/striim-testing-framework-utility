@@ -52,6 +52,7 @@ Runnable regression guides are included under Contributing and internals.
 | [09 Raw file bytes](../samples/live/09-raw-file/README.md) | `samples/live/09-raw-file/README.md` | DatabaseReader reads the two seed rows in id order. |
 | [10 Bounded absence after delivery](../samples/live/10-bounded-nothing/README.md) | `samples/live/10-bounded-nothing/README.md` | A PostgreSQLReader feeds FileWriter. Readiness and completion each insert a fresh sentinel, observe its insert, delete it and observe the delete event in the same file. |
 | [11 Transaction seed sessions](../samples/live/11-transaction-seeds/README.md) | `samples/live/11-transaction-seeds/README.md` | Two source transactions overlap. B inserts id 2 and commits first. |
+| [12 Consistent target snapshots](../samples/live/12-snapshot-observer/README.md) | `samples/live/12-snapshot-observer/README.md` | The transaction-session sample writes each row to two source tables in the same transaction. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services
@@ -111,6 +112,7 @@ Runnable regression guides are included under Contributing and internals.
 | [framework/ — the harness testing itself](../scripts/live/regression/framework/README.md) | `scripts/live/regression/framework/README.md` | Other tests check an app, an Open Processor or a writer. |
 | [Bounded absence](../scripts/live/regression/framework/framework-bounded-nothing/README.md) | `scripts/live/regression/framework/framework-bounded-nothing/README.md` | Run striim-test run scripts/live/regression/framework/framework-bounded-nothing in Docker mode. |
 | [Raw file inventory](../scripts/live/regression/framework/framework-raw-file/README.md) | `scripts/live/regression/framework/framework-raw-file/README.md` | Run striim-test run scripts/live/regression/framework/framework-raw-file in Docker mode. |
+| [Consistent snapshots](../scripts/live/regression/framework/framework-snapshot-observer/README.md) | `scripts/live/regression/framework/framework-snapshot-observer/README.md` | Run striim-test run scripts/live/regression/framework/framework-snapshot-observer. |
 | [Transaction sessions](../scripts/live/regression/framework/framework-transaction-seeds/README.md) | `scripts/live/regression/framework/framework-transaction-seeds/README.md` | Run striim-test run scripts/live/regression/framework/framework-transaction-seeds. |
 | [hello-cluster](../scripts/live/regression/hello/hello-cluster/README.md) | `scripts/live/regression/hello/hello-cluster/README.md` | Exercises topology-aware placement: the reader flow (SourceFlow, DatabaseReader) is deployed to the agent group (${SOURCE_GROUP}) while the writer flow (AppFlow, DatabaseWriter) is deployed to the cluster group (${APP_GROUP}), via DEPLOY APPLICATION ... |
 | [hello-single](../scripts/live/regression/hello/hello-single/README.md) | `scripts/live/regression/hello/hello-single/README.md` | The single-topology twin of hello-cluster. |

@@ -481,7 +481,7 @@ def register_exact_json(conn) -> None:
 
 
 def exact_read(conn, table_sql: str, order_by, max_rows: int, max_transfer: int, cancelled,
-               fetch_rows: int | None = None) -> tuple[list, list]:
+               fetch_rows: int | None = None, start_snapshot=True) -> tuple[list, list]:
     """One exact read on a fresh connection (C8.3; r1 F1, F7): ``(column names, typed rows)``.
 
     - json/jsonb arrive as raw text (``register_exact_json``) on a driver connection.
@@ -501,7 +501,8 @@ def exact_read(conn, table_sql: str, order_by, max_rows: int, max_transfer: int,
 
     cur = conn.cursor()
     try:
-        cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        if start_snapshot:
+            cur.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         stop()
         cur.execute(f"SELECT count(*), coalesce(sum({row_text}), 0), coalesce(max({row_text}), 0) "
                     f"FROM (SELECT * FROM {table_sql} LIMIT %s) _slt_r", (max_rows + 1,))

@@ -2054,6 +2054,7 @@ class LiveItem(pytest.Item):
         kafka_cleanup = []   # (admin, topic) to delete on teardown (spec §A.4)
         client = None
         _tx_pool = None
+        _snapshot_observer = None
         deployed = False
         deploy_attempted = False
         in_use_held = False
@@ -2792,6 +2793,11 @@ class LiveItem(pytest.Item):
                     # CDC sources capture only post-start commits: seed after RUNNING. Each
                     # entry's `after` is an offset from the moment RUNNING was reached (not
                     # from the previous file), so entries at 10s and 30s fire 10s and 30s in.
+                    if m.snapshot_spec is not None and _await_running_for_seed():
+                        from livetest.snapshot_observer import Observer
+                        _snapshot_observer = Observer(m.snapshot_spec, admins=admins, tokens=tokens,
+                            case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout)
+                        _snapshot_observer.start()
                     _post_seed = [(db, f, a) for db, f, when, a in m.seed_files
                                   if when == "post_start"]
                     if _post_seed and _await_running_for_seed():
@@ -3245,6 +3251,8 @@ class LiveItem(pytest.Item):
                             tokens=tokens, ident=ident, owned=ledger.owns,
                             read_files=lambda _p, **_k: read_server_files(ctx, _p, **_k),
                             source_dir=m.source_dir)
+                    if _snapshot_observer is not None:
+                        self._slt_records += _snapshot_observer.finish()
                     from livetest.nothing import assert_nothing
                     from livetest.sinkprobe import rows as sink_rows
                     for _kind in ("data", "file"):
@@ -3381,6 +3389,11 @@ class LiveItem(pytest.Item):
             succeeded = True
         finally:
             _tx_cleanup_error = None
+            if _snapshot_observer is not None:
+                try:
+                    _snapshot_observer.stop()
+                except Exception as e:
+                    _tx_cleanup_error = e
             if _tx_pool is not None:
                 try:
                     _tx_pool.close()

@@ -42,6 +42,41 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `diff_poll` | number | no | `2` | seconds between the reads of an `assert.diff` poll; must be greater than 0 |
 | `generate` | list | no | `[]` | run a data generator and place its output on the Striim server: entries `{kind, workload, dest, when}`. `kind` is `ggtrail` (GoldenGate trail files from a `workload.yaml`); `workload` is relative to the test dir; `dest` is a server directory; `when` defaults to `post_start` |
 
+## `snapshot_observer:` — committed transaction prefixes during the run
+
+The optional `snapshot_observer:` mapping starts a concurrent reader after
+lifecycle readiness and before post-start input. It stops after completion,
+then takes a final snapshot. The case must have `lifecycle:`. Each read observes
+all named target tables in one transaction: PostgreSQL repeatable read/read only,
+or one multi-use Spanner read-only snapshot. All tables must be confirmed resources
+of this attempt. This observer never checks tables in separate transactions.
+
+Required keys are `db` (an exact database route), `tables` (alias to a mapping
+with exactly `target` and `columns`) and `prefixes` (a non-empty list). Each prefix
+maps every alias to a hand-written case-relative CSV golden. Declare every
+compared column, using the exact type vocabulary. Every complete snapshot must
+equal one complete prefix, with row multiplicity intact; matching each table to
+a different prefix is a failure. The final snapshot must equal the last prefix.
+Targets contain `${TID}` and two aliases cannot render to the same table.
+
+Optional `interval` is a positive duration (default 100ms). `max_rows` caps total
+rows in a read (default 100000, maximum 1000000); `max_bytes` bounds each table's
+read and canonical comparison (default 64 MiB, maximum 512 MiB). `max_snapshots`
+caps evidence history (default 10000, maximum 100000); reaching it fails instead
+of silently discarding reads. The case timeout bounds a snapshot read.
+
+Unknown keys, invalid routes, types, durations, alias sets or golden paths fail
+with `invalid-snapshot-spec`. Runtime failures include `snapshot-target-not-owned`,
+`snapshot-not-committed-prefix`, `snapshot-undeclared-column`,
+`snapshot-limit-exceeded`, `snapshot-read-error`, `snapshot-read-timeout` and
+`snapshot-final-prefix-missing`. The data assertion record includes every
+observation's prefix index, row count and combined canonical hash. Goldens are
+read from the case's input snapshot; the framework never derives them from output.
+
+Sampling checks every observed snapshot. It cannot rule out a bad state between
+reads. Choose an interval suitable for the behavior under test. The observer is
+joined before cleanup, including when seeding or recovery fails.
+
 ## `transactions:` — overlapping Postgres seed sessions
 
 The optional ordered `transactions:` list controls named seed sessions. Session
