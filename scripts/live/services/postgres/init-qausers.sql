@@ -14,3 +14,24 @@ CREATE ROLE qatarget LOGIN REPLICATION PASSWORD 'striim';
 GRANT CONNECT ON DATABASE sltdb TO qasource, qatarget;
 CREATE SCHEMA qasource AUTHORIZATION qasource;
 CREATE SCHEMA qatarget AUTHORIZATION qatarget;
+
+-- Scope the idle-transaction backstop to disposable data roles in this database.
+-- The custom server input is read only during first initialization. An intentional
+-- held transaction can use SET LOCAL with its own explicit, bounded budget.
+DO $idle_budget$
+DECLARE
+    budget text := COALESCE(NULLIF(current_setting('slt.idle_transaction_timeout_ms', true), ''), '600000');
+    role_name text;
+BEGIN
+    IF budget !~ '^[1-9][0-9]{0,9}$' THEN
+        RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: expected positive milliseconds';
+    END IF;
+    IF budget::bigint > 2147483647 THEN
+        RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: exceeds server limit';
+    END IF;
+    FOREACH role_name IN ARRAY ARRAY['qasource', 'qatarget'] LOOP
+        EXECUTE format('ALTER ROLE %I IN DATABASE %I SET idle_in_transaction_session_timeout = %L',
+                       role_name, current_database(), budget || 'ms');
+    END LOOP;
+END;
+$idle_budget$;

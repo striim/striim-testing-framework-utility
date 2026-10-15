@@ -33,7 +33,8 @@ services:
       # writes zoneinfo links, so it needs no database and runs first either way.
       - ./sql/init-tzdata.sh:/tz-init.sh:ro
       - ./sql/init.sql:/docker-entrypoint-initdb.d/10-qausers.sql:ro
-    command: ["sh", "-c", "sh /tz-init.sh; exec docker-entrypoint.sh postgres"]
+    command: ["sh", "-c", 'sh /tz-init.sh; exec docker-entrypoint.sh "$$@"', "--", "postgres",
+              "-c", "slt.idle_transaction_timeout_ms=${INT_PG_IDLE_TRANSACTION_TIMEOUT_MS:-600000}"]
     networks:
       - int-postgres-net
     healthcheck:

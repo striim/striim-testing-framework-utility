@@ -1100,3 +1100,14 @@ differing only in case — none of them is a readable test-name slug. Write ever
 - **Parallel runs are opt-in and leave teardown to you** — see `docs/internals/ENGINE.md` "Parallel runs
   (`SLT_PARALLEL=1 -n N`)" for the coordination machinery (`SLT_KEEP_SERVICES=1`, one-time
   provisioning, register-once OP jars, no automatic teardown).
+
+## Intentional idle Postgres transactions
+
+The disposable Postgres service closes data-role transactions left idle for ten minutes.
+When a seed deliberately keeps a session open across a later step or recovery, set an
+explicit budget inside that transaction, for example
+`SET LOCAL idle_in_transaction_session_timeout = '30min';`, or set
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000` before initializing the disposable service.
+Budget the full idle period, including recovery; expected rows and lifecycle assertions
+remain unchanged. [SERVICES.md](SERVICES.md#postgres-postgres) describes the service scope
+and the integration equivalent. External databases retain their own policy.
