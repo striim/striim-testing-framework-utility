@@ -817,3 +817,23 @@ def test_node_failover_wait_writes_valid_evidence_on_success_and_failure(good, m
     event = saved['assertions'][-1]['actual']['rows'][0]
     assert event['phase'] == 'failover-wait' and event['failedOver'] is succeeded
     assert event['observations'] and saved['assertions'][-1]['status'] == ('passed' if succeeded else 'failed')
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_initial_placement_records_validate_on_pass_and_failure(good, succeeded):
+    from livetest import node_fault
+    from ..test_judge_b4 import Clock
+    clock = Clock(); records = []
+    def read(flow, left):
+        if succeeded: return {'server_secondary'}
+        raise ValueError('server not ready')
+    kw = dict(client=None, flow='N.flow', servers={'server_secondary'}, timeout=1,
+        record=records.append, read=read, now=clock.now, sleep=clock.sleep)
+    if succeeded: node_fault.initial_placement(**kw)
+    else:
+        with pytest.raises(node_fault.RecoveryError): node_fault.initial_placement(**kw)
+    good._slt_records.extend(records)
+    doc = doc_of(good, status='passed' if succeeded else 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
+    assert saved['assertions'][-1]['actual']['rows'][0]['phase'] == 'initial-placement'

@@ -592,12 +592,20 @@ class Ledger:
             raise OwnershipError(f"collision:deployment-group:{name} already exists; left untouched")
         entry = self.add("deployment-group", name, servers=list(servers))
         members = ",".join('"' + n + '"' for n in servers)
+        from requests.exceptions import ConnectionError, Timeout
+        from livetest.striim import StriimTimeout
+        can_confirm = False
         try:
             client.deploy_tql(f"USE Global; CREATE DG {name} ({members});")
+            can_confirm = True
+        except (ConnectionError, Timeout, StriimTimeout):
+            can_confirm = True  # a lost response can follow a successful CREATE
+            raise
         finally:
-            groups = deployment_groups(client)
-            if name in groups:
-                self._set(entry, "confirmed")
+            if can_confirm:
+                groups = deployment_groups(client)
+                if name in groups:
+                    self._set(entry, "confirmed")
         if groups.get(name) != set(servers):
             raise OwnershipError("deployment-group-membership: initial members differ")
         return entry

@@ -20,7 +20,7 @@ VALID_TOPOLOGIES = {"single", "agent", "cluster"}
 # (resultschema.build_assertion_result) is the vocabulary; `smoke` is deliberately absent.
 XFAIL_TIERS_ALLOWED = frozenset(
     {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx", "placement"})
-XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED
+XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED - {"placement"}
 VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # Every key load_manifest reads. Anything else is a typo or a key dropped in a schema change,
 # and both used to load silently: `timout: 30` simply never applied its timeout, and a manifest
@@ -658,6 +658,8 @@ def _normalize_recover(raw, path) -> dict | None:
             raise ManifestError(f"{path}: invalid-node-fault: quiesce is an app operation")
         try:
             result["node"] = normalize(raw["node"])
+            if isinstance(result["node"], dict) and times > 1:
+                raise ValueError("invalid-node-fault: hosting faults require times: 1; the next owner may host metadata")
         except ValueError as e:
             raise ManifestError(f"{path}: {e}") from e
     elif mode == "restart":

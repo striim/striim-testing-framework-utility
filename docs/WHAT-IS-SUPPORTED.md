@@ -156,7 +156,7 @@ The reference for each is [TEST-YAML.md](TEST-YAML.md).
 | `data`: a target table's rows, count or golden (Postgres, Oracle, SQL Server, MySQL, Teradata, Vertica, Spanner, Kafka) | **tested**: samples 01, 02 and 04 (Postgres), the code samples |
 | `diff`: the target's rows equal the source's | **supported, not exercised here** (`scripts/live/regression/services/postgres/postgres-diff`) |
 | `file`: what a `FileWriter` wrote | **tested**: sample 03 (with `exact:`), the code samples (without) |
-| `placement`: live flow owner against a named node or survivor | **supported, not yet qualified**: sample 17 issued an in-window fault live; failover verification remains under investigation |
+| `placement`: live flow owner against a named node or survivor | **supported and live-qualified**: sample 17 killed its secondary worker in-window, proved primary takeover while it was down, and passed lifecycle, sentinel and strict 5000-row equality checks |
 | `gcs`: an object's bytes, size or hash in the GCS emulator | **supported, not exercised here** |
 | `json`: a JSON column, compared by meaning | **supported, not exercised here** |
 | `monitor`: what Striim's monitor shows for a target | **supported, not exercised here** (`scripts/live/regression/framework/framework-assert-monitor`) |

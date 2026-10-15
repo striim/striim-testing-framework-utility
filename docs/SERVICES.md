@@ -85,9 +85,13 @@ SLT_PG_ADMIN_PASSWORD=...
 ## Striim peer API for node faults
 
 Named-node recovery uses the framework's two-app-node Docker cluster plus agent.
-The survivor publishes REST on `SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082).
-Shared-mode reuse does not add missing port mappings; coordinate stack users and
-follow [UPGRADING.md](UPGRADING.md) to recreate an older disposable test stack.
+Sample 17 faults the secondary worker and keeps the primary API (default 9080).
+The second-node REST mapping `SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082) is
+needed only when the secondary is the survivor; the bundled metadata-primary
+fault is refused.
+Shared-mode reuse does not add missing port mappings. If the secondary must
+serve fallback reads and its mapping is missing, coordinate stack users and
+follow [UPGRADING.md](UPGRADING.md). Sample 17 needs no such recreation.
 The primary API host determines the peer host; Docker inspection supplies its
 published port. Native services can still support database/Kafka checks, but
 named-node Docker recovery is skipped against native Striim.

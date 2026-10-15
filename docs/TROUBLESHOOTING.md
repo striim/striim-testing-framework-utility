@@ -261,7 +261,7 @@ drop or replay bypass does not establish ownership.
 | `fault-node-inventory-unreadable` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
 | `fault-node-inventory-ambiguous` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
 | `fault-node-inventory-deadline` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
-| `fault-node-restore-status` | The selected container did not reach the required state after restore. | Inspect that container and the restore command error; teardown restores only the selected node. |
+| `fault-node-restore-status` | The app left RUNNING/COMPLETED during the restore settle. | Inspect app status and server logs; the container-state check is a separate node-fault check. |
 | `fault-api-origin-unavailable` | The original API host cannot supply a surviving peer URL. | Use a resolvable Striim API URL and the published second-node REST mapping. |
 | `placement-mismatch` | The flow owner differs from the declared node/survivor. | Inspect running MON ownership and deployment placement; correct the deployment group. |
 | `placement-read-error` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |

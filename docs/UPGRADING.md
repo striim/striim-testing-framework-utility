@@ -2,7 +2,12 @@
 
 Review the changes below before reusing services started by an older framework.
 
-## Publish the survivor API for named-node recovery
+## Publish the secondary API only when it is the survivor
+
+Sample 17 kills the secondary worker and reads the primary API, so it does not
+need this upgrade or stack recreation. Apply the following only when an allowed
+fault uses the secondary as its API survivor. The bundled primary also hosts
+metadata and is refused as a node-fault target.
 
 A Striim stack started before named-node recovery was added does not publish the
 second app node's REST API port. Shared mode reuses that stack without changing

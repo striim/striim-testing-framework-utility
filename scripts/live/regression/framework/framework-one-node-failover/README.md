@@ -2,10 +2,12 @@
 
 This case kills one app node hosting a single-owner flow, then requires placement
 on its survivor and complete typed data. It needs Docker mode, `topology: cluster`,
-two app nodes plus an agent, and the survivor REST port (default 9082).
+two app nodes plus an agent, and the primary REST API (default 9080), which stays
+available when this case kills the secondary. It does not require port 9082.
 Coordinate every stack user; `disabled_parallel: true` excludes concurrent
 selection but does not lock the shared nodes. See
-[the upgrade guide](../../../../../docs/UPGRADING.md) before reusing an older stack.
+[the upgrade guide](../../../../../docs/UPGRADING.md) only when the secondary
+must serve fallback reads; this sample needs no such stack recreation.
 
 Run `striim-test run scripts/live/regression/framework/framework-one-node-failover` only after those prerequisites hold.
 

@@ -55,3 +55,19 @@ deployment_groups:
     assert env["lifecycle"]["cleanup"]["status"] == ("failed" if drop_error else "ok")
     assert any(e["kind"] == "deployment-group" and e["state"] == ("delete-failed" if drop_error else "verified-absent")
                for e in env["resources"]["owned"])
+
+
+def test_native_owned_placement_skips_before_acquiring_resources(run_case):
+    def prepare(root, name):
+        with (root / 'conftest.py').open('a') as f:
+            f.write("\n_resolve_striim = P._resolve_striim\ndef native_context(config):\n    ctx = _resolve_striim(config); ctx.mode = 'native'; return ctx\nP._resolve_striim = native_context\n")
+    run = run_case('legacy', prepare=prepare, edit=lambda y: y + """
+deployment_groups:
+- name: ${TID}workers
+  flow: ${NS}.${TID}flow
+  servers: ['${STRIIM_SECONDARY_SERVER}']
+  add_after_deploy: ['${STRIIM_PRIMARY_SERVER}']
+""")
+    assert run.ret == 0 and run.junit()[0] == 'skipped', run.text
+    assert 'Docker' in run.junit()[2]
+    assert 'deploy' not in run.names()

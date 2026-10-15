@@ -23,7 +23,9 @@ class Client:
         servers = re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"', text)
         if "CREATE DG" in text:
             self.groups[name] = set(servers)
-            if self.fail_create: raise RuntimeError("response lost")
+            if self.fail_create:
+                from livetest.striim import StriimTimeout
+                raise StriimTimeout("response lost")
         elif "ALTER DG" in text: self.groups[name].update(servers)
         else: self.groups.pop(name, None)
 
@@ -53,7 +55,8 @@ def test_collision_and_foreign_name_are_never_modified(tmp_path):
 
 def test_failed_create_readback_preserves_cleanup_authority(tmp_path):
     l = ledger(tmp_path); c = Client(); c.fail_create = True
-    with pytest.raises(RuntimeError, match="response lost"):
+    from livetest.striim import StriimTimeout
+    with pytest.raises(StriimTimeout, match="response lost"):
         l.acquire_deployment_group(c, l.ident.tid + "workers", ["server_secondary"])
     assert l.entries[0]["state"] == "confirmed"
 

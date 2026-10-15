@@ -162,7 +162,7 @@ def inventory(client, ctx, *, run=None, timeout=30):
         ports = row.get("NetworkSettings", {}).get("Ports", {}).get("9080/tcp") or []
         peer = None
         if ports and role != "agent":
-            parsed = urlparse(ctx.url)
+            parsed = urlparse(ctx.url if "://" in ctx.url else "http://" + ctx.url)
             host = parsed.hostname
             if not host: raise RecoveryError("fault-api-origin-unavailable")
             peer = f"{parsed.scheme}://{host}:{int(ports[0]['HostPort'])}"
@@ -184,12 +184,12 @@ def _wait_cluster(client, remaining):
 
 class Target:
     def __init__(self, client, ctx, selection, *, app, nodes=None, run=None, record=None,
-                 timeout=120, placement=None, wait_cluster=None):
+                 timeout=120, placement=None, wait_cluster=None, refresh=None):
         if ctx.mode != "docker": raise RecoveryError("invalid-node-fault: Docker mode required")
         self.client, self.ctx, self.app, self.timeout = client, ctx, app, timeout
         self.run, self.record = run, record
         self.nodes = nodes or inventory(client, ctx, run=run, timeout=timeout)
-        self.refresh = nodes is None
+        self.refresh = nodes is None if refresh is None else refresh
         self._placement_reads = {}
         self.boundary_placement = placement
         self.placement = placement or (lambda flow, left: flow_nodes(client, flow, left, self._placement_reads))
@@ -365,6 +365,34 @@ def normalize_placement(raw, *, has_node_fault=False):
     return raw
 
 
+def initial_placement(*, client, flow, servers, timeout, record, read=None,
+                      now=time.monotonic, sleep=time.sleep):
+    deadline = now() + timeout
+    reads, actual, last_error, ok = {}, None, None, False
+    while now() < deadline:
+        reads.clear()
+        try:
+            actual = (read or (lambda f, left: flow_nodes(client, f, left, reads)))(flow, deadline - now())
+            if not isinstance(actual, set): raise ValueError("placement-read-shape")
+            ok = now() <= deadline and len(actual) == 1 and actual <= servers
+        except Exception as exc:
+            from livetest.striim import redact
+            last_error = redact(str(exc))
+            actual = None
+        if ok: break
+        sleep(max(0, min(.2, deadline - now())))
+    detail = "ok" if ok else "deployment-group-initial-placement: no singleton initial worker before deadline"
+    record(build_assertion_result(type="recovery", target=flow, db=None,
+        spec={"initialServers": sorted(servers)}, status="passed" if ok else "failed", detail=detail,
+        expected={"kind": "count", "count": 1}, actual={"kind": "rows", "rows": [{
+            "phase": "initial-placement", "owners": sorted(actual) if actual is not None else None,
+            "allowedOwners": sorted(servers), "deadline": deadline, "observedAt": now(),
+            "lastReadError": last_error[:1024] if last_error is not None else None,
+            "errorTruncated": last_error is not None and len(last_error) > 1024, "reads": reads}]}))
+    if not ok: raise RecoveryError(detail)
+    return actual
+
+
 def assert_placement(specs, *, client, ctx, tokens, timeout, target=None, read=None, now=time.monotonic, sleep=time.sleep):
     from livetest.manifest import _parse_zeroable_duration
     from livetest.substitute import render
@@ -381,19 +409,25 @@ def assert_placement(specs, *, client, ctx, tokens, timeout, target=None, read=N
             node = (target.nodes if target else inventory(client, ctx))[node]["server"]
         if not _NAME.fullmatch(node): raise ValueError("invalid-placement-node")
         deadline = now() + _parse_zeroable_duration(spec.get("timeout", timeout), "placement.timeout")
-        actual, ok, detail = set(), False, "placement-mismatch"
+        actual, ok, detail, last_error = set(), False, "placement-mismatch", None
         while now() < deadline:
             try:
                 actual = (read or (lambda flow, left: flow_nodes(client, flow, left)))(flow, deadline - now())
                 if not isinstance(actual, set): raise ValueError("placement-read-shape")
                 ok = now() <= deadline and actual == {node}
+                detail = "placement-mismatch"
             except Exception as e:
-                detail = f"placement-read-error: {e}"
-                break
+                from livetest.striim import redact
+                actual = set()
+                last_error = redact(str(e))[:1024]
+                detail = "placement-read-error"
             if ok: break
             sleep(max(0, min(.2, deadline - now())))
+        detail = "ok" if ok else detail
+        if last_error is not None:
+            detail += "; last placement read error: " + last_error
         records.append(build_assertion_result(type="placement", target=flow, db=None, spec=spec,
-            status="passed" if ok else "failed", detail="ok" if ok else detail,
+            status="passed" if ok else "failed", detail=detail,
             expected={"kind": "rows", "rows": [{"node": node}]},
             actual={"kind": "rows", "rows": [{"node": n} for n in sorted(actual)]}))
         if not ok: raise AssertionFailed(detail, records)

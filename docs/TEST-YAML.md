@@ -17,6 +17,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `purpose` | string | no* | — | one-line, present-tense description of the single behavior under test (WRITING-TESTS.md, "Rules every test follows"). *Optional at the loader, but every test should have one. |
 | `tql` | string | **yes** | — | the app file, relative to `source_dir` (the test dir, or `example:`'s dir if set) |
 | `topology` | string | no | `single` | `single` \| `agent` \| `cluster` (`agent` is a legacy alias for `cluster`). Matched against what's resolved; mismatch → **skip**. `single` always runs; `cluster` needs ≥2 nodes in `default` + a registered agent in `Agents` |
+| `deployment_groups` | list | no | — | owned initial worker groups and members added after deployment; Docker only |
 | `requires` | list[string] | no | `[]` | service names to provision/reuse (e.g. `postgres`, `oracle`, `mssql`, `kafka`, `spanner`, `gcs`; `teradata` and `servicenow` connect to your own instance, set with `SLT_TERADATA_HOST` / `SLT_SERVICENOW_HOST`) — each resolved once per session |
 | `tokens` | mapping | no | `{}` | manifest-declared `${NAME}` values, rendered wherever the harness renders tokens (TQL, DDL/seed, `server_files`, `assert` targets, `kafka_cleanup_topics`, `op.upload` names). Names match `[A-Z][A-Z0-9_]*`; values are strings (numbers are cast) and may not themselves contain `${...}`. A name the harness sets -- `NS`/`APP`/`APP_BARE`/`TID*`, the placement and `STRIIM_*` tokens, a module's `${<TOKEN>_JAR}`/`_NAME`, any service's `provides:` (e.g. `MSSQL_URL`), and the reserved `SENTINEL_*` / `SENTINEL_RECOVERY_*` prefixes -- is refused at load, so merge order never decides. Lets one shipped app serve several manifests that differ in a value (e.g. `TrailFilePattern: '${SRC_TRAIL}'`, `k10*` vs `t10*`) |
 | `kafka_cleanup_topics` | list[string] | no | `[]` | extra Kafka topics the test's **app** creates that the framework didn't derive itself — e.g. a persisted stream's derived `<ns>_<streamName>` data topic and its `<topic>_CHECKPOINT` companion. Each entry is `${...}`-token-rendered (embed `${NS}`/`${TID}` for per-test uniqueness) and appended to the same best-effort per-test topic delete that already removes the derived `${KAFKA_SRC_TOPIC}`/`${KAFKA_TGT_TOPIC}` at teardown. Requires `kafka` in `requires` (loader fails loud otherwise). Absent/empty (every test that doesn't set it) is a strict no-op |
@@ -32,7 +33,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, regression]`) for `-k`/reporting; not matched against anything in the manifest itself |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
-| `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`, `placement`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
+| `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`, `placement`; default all except `placement`, which requires explicit opt-in; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
 | `expect_halt` | bool | no | `false` | `true` => the app is expected to reach a terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) instead of RUNNING -- a raise-path test. This can be satisfied at any phase: a synchronous failure during DEPLOY/START itself (the TQL-import call raises before the app is even running), the app never reaching RUNNING during startup, or a later terminal transition while the app is running (polled the same way as any other `assert:` tier). Alone, `expect_halt: true` satisfies the manifest's "at least one assertion" requirement -- no `assert:` block is needed. To also pin *why* it halted, add `expect_halt_contains`. |
 | `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
 | `recover` | mapping | no | — | interrupt the app after `post_start` work begins and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
@@ -517,13 +518,15 @@ that survives a `STOP`.
 Named-node recovery requires Docker mode, `topology: cluster`, the framework's
 primary and secondary app-node containers plus its agent, and an unambiguous
 Striim server-name mapping to each running container. A native case is skipped.
-The survivor must publish its REST API port (default 9082); see
-[UPGRADING.md](UPGRADING.md) before reusing a stack started by an older recipe.
+The survivor must publish its REST API port. Sample 17 kills the secondary and
+uses the primary API (default 9080); it does not require the secondary API port.
+[UPGRADING.md](UPGRADING.md) applies only when the secondary must serve fallback reads.
 
 | Key or combination | Meaning and requirements |
 |---|---|
-| `node: primary`, `secondary`, `agent` | Select that exact framework container role |
-| `node: {hosting: '${NS}.${TID}flow'}` | Requires one running Docker owner; deploy the flow `ON ONE IN ${APP_GROUP}` |
+| `node: primary` | Select the primary role; refused when it hosts metadata, as in the bundled recipe |
+| `node: secondary`, `agent` | Select that exact framework container role; this alone makes no claim about flow ownership |
+| `node: {hosting: '${NS}.${TID}flow'}` | Requires one running Docker owner; deploy the flow `ON ONE IN ${TID}workers` with the owned secondary group below |
 | `mode: kill` with `node` | `docker kill -s KILL` only the selected container ID |
 | `mode: stop` with `node` | `docker stop` that container, rather than `STOP APPLICATION` |
 | `mode: restart` | `docker restart` that container; requires `node` |
@@ -569,8 +572,14 @@ tokens, and agents cannot mix with app servers. Malformed declarations fail
 `deployment-group-catalog-unparseable`; existing names fail
 `collision:deployment-group`; changed membership fails
 `deployment-group-membership`; wrong initial owners fail
-`deployment-group-initial-placement`. No foreign group is modified.
+`deployment-group-initial-placement`. The initial owner proof retries read errors
+under the case timeout and records its allowed/observed owners, last read error
+and bounded native replies as a `recovery` record with `phase: initial-placement`,
+on success or failure. Native cases skip before inventory or group creation.
+No foreign group is modified.
 
+Use `{hosting:}` to prove the fault hits the running worker. A named-role fault
+tests that role, and `assert.placement` separately checks resulting flow placement.
 Coordinate all users of these shared nodes before running a node fault. A node
 operation affects every application hosted there, even when it selects one flow's
 owner. Resolve the owner before waiting for the progress window; the final
@@ -608,6 +617,11 @@ node faults, and continues to skip legacy kill.
 ```yaml
 topology: cluster
 disabled_parallel: true
+deployment_groups:
+- name: ${TID}workers
+  flow: ${NS}.${TID}flow
+  servers: ['${STRIIM_SECONDARY_SERVER}']
+  add_after_deploy: ['${STRIIM_PRIMARY_SERVER}']
 recover:
   mode: kill
   node: {hosting: '${NS}.${TID}flow'}
@@ -637,10 +651,15 @@ late. A late survivor read cannot satisfy the deadline. History keeps at most
 `observationsDropped` expose omitted middle reads. Error text is capped at 1024
 characters with `errorTruncated`; `reads` preserves the last native placement
 reply diagnostics under their existing per-response limits. The agent has no app-node
-survivor requirement. Each cycle selects the hosting flow's current owner afresh.
+survivor requirement. Hosting faults require `times: 1`; after one worker
+failover the next owner may be the protected metadata host. Repeated hosting
+faults are refused at load as `invalid-node-fault`. Named-role faults may repeat
+under the existing trigger/cycle rules.
 
 The surviving app node's published API port is discovered by Docker inspection.
-The second node publishes 9082 by default (`SLT_STRIIM_NODE_HTTP_HOST_PORT`).
+For the bundled secondary-worker fault, the primary API remains available at
+its published port (default 9080). The second-node mapping, default 9082
+(`SLT_STRIIM_NODE_HTTP_HOST_PORT`), is needed only when that node is the survivor.
 Missing fallback endpoints fail `fault-fallback-unavailable` before interruption.
 Read-only status, monitor, description and checkpoint reads share a bounded
 budget with authentication to a surviving endpoint after connection, timeout or
@@ -660,6 +679,10 @@ The cluster requirement of a `topology: cluster` case is unchanged.
 `timeout` (default case timeout). Unknown keys fail `invalid-placement-spec`.
 `flow` must name this case's qualified flow. `node` is an exact live Striim server
 name, a Docker role above, or `survivor` (requires an app-node fault).
+Placement failures require explicit `xfail.tiers: [placement]` to be expected;
+string-form or untiered xfail does not absorb them.
+The assertion retries read errors under its existing timeout and records the last
+redacted error in `detail`, including when a later read succeeds.
 The assertion reads running flow status and per-node deployed-flow metadata;
 exactly the requested node must own the flow. Zero, multiple or wrong owners fail
 `placement-mismatch`; unreadable metadata fails `placement-read-error`.
@@ -2028,7 +2051,9 @@ refs) is `${TOKEN}`-substituted before use. Tokens come from these places:
   `${STRIIM_AGENT_SERVER}` resolve to live server names from inspected framework
   containers. They are reserved, cannot be overridden by `tokens:` or environment
   values, and require readable node inventory. Use them in `deployment_groups`
-  instead of hard-coded runtime names.
+  instead of hard-coded runtime names. Tokens are populated when
+  `deployment_groups` is declared or the TQL references a server token; other
+  locations alone do not trigger inventory resolution.
 - **OP/UDF build tokens**: `${OP_JAR}`/`${OP_NAME}` for a single `op:` mapping,
   `${UDF_JAR}`/`${UDF_NAME}` for a single `udf:` mapping, or `${<TOKEN>_JAR}`/
   `${<TOKEN>_NAME}` per entry in either's list form.

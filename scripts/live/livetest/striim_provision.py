@@ -944,8 +944,9 @@ def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=No
     last_topology = None
     while True:
         try:
+            from livetest.striim import POLL_TIMEOUT
             t = parse_deployment_groups(client.list_deployment_groups(
-                timeout=max(0, deadline - time.monotonic())))
+                timeout=min(POLL_TIMEOUT[1], max(0, deadline - time.monotonic()))))
             answered = True
             last_topology = t
             if t.has_cluster and t.has_agent and time.monotonic() <= deadline:
