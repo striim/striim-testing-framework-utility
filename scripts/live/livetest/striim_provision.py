@@ -629,8 +629,6 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
 # clients read it — harmless for non-Spanner tests) and it makes SLT_SPANNER tests
 # self-provisioning like GCS/Kafka. It stays out of the base compose so a plain
 # `docker compose up` still targets real Spanner.
-_COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
-
 def _compose_files():
     files = list(_COMPOSE_FILES)
     if os.environ.get("SLT_ENABLE_NODE_FAULTS") == "1":
@@ -638,11 +636,13 @@ def _compose_files():
     return files
 
 
+_COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
+
 def compose_files(striim_dir: Path) -> list[Path]:
     """The cluster's compose files as paths, for callers that read them rather than run them
     (services.declared_containers). Derived from the same list the compose calls use, so the
     two cannot drift."""
-    return [Path(striim_dir) / f for f in _compose_files() if f != "-f"]
+    return [Path(striim_dir) / f for f in _COMPOSE_FILES if f != "-f"]
 
 def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress=None) -> None:
     if progress: progress("cluster", "starting containers")

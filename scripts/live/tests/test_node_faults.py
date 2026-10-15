@@ -149,9 +149,9 @@ def test_secondary_api_port_is_opt_in_and_allowed(monkeypatch):
     assert mapping not in compose["services"]["slt-node"]["ports"]
     recipe = root / "scripts/live/services/striim"
     monkeypatch.delenv("SLT_ENABLE_NODE_FAULTS", raising=False)
-    assert recipe / "compose.node-fault.yaml" not in sp.compose_files(recipe)
+    assert "compose.node-fault.yaml" not in sp._compose_files()
     monkeypatch.setenv("SLT_ENABLE_NODE_FAULTS", "1")
-    assert recipe / "compose.node-fault.yaml" in sp.compose_files(recipe)
+    assert "compose.node-fault.yaml" in sp._compose_files()
     overlay = yaml.safe_load((recipe / "compose.node-fault.yaml").read_text())
     assert overlay["services"]["slt-node"]["ports"] == [mapping]
     assert "SLT_STRIIM_NODE_HTTP_HOST_PORT" in paths.SERVICE_KEYS
