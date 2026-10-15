@@ -73,7 +73,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "pg-slot", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("oracle-trigger", "namespace", "pg-view", "pg-table", "pg-slot", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -705,7 +705,10 @@ class Ledger:
                               f"never deleted")
         if fault:
             self._fault(entry)
-        if kind == "namespace":
+        if kind == "oracle-trigger":
+            from livetest.oracle_ownership import drop
+            drop(_lifecycle._admin(admins, db), entry)
+        elif kind == "namespace":
             if client is None:
                 raise RuntimeError("no Striim client to drop the namespace")
             client.teardown_namespace(name)
@@ -744,6 +747,9 @@ class Ledger:
         """True (absent), False (still present) or None (no read available: a verification gap). An
         unreadable inventory raises, so it is recorded as a failed read, never as absence."""
         kind, name, db = entry["kind"], entry["name"], entry.get("db")
+        if kind == "oracle-trigger":
+            from livetest.oracle_ownership import absent
+            return absent(_lifecycle._admin(admins, db), entry)
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
@@ -1117,6 +1123,9 @@ def replay(ledger_path, *, admins=None, client=None, ctx=None, env=None, pid_ali
                 full[f"{which}_password"] = (_service_setting(f"SLT_PG_{which.upper()}_PASSWORD", env)
                                              or defaults.get(f"{which}_password"))
             admins[route] = {"admin": PgAdmin(full, role=full.pop("role", "source")), "schema": None}
+        if any(entry["kind"] == "oracle-trigger" for entry in doc["entries"]):
+            from livetest.oracle_ownership import replay_admins
+            admins.update(replay_admins(doc, env))
     striim = _latest_binding(doc, lambda b: b.get("striim")) or {}
     if ctx is None:
         ctx = SimpleNamespace(url=striim.get("url"), user=striim.get("user"), mode=striim.get("mode"))

@@ -258,6 +258,8 @@ def service_settings(services: Path) -> list:
                 rows.append((name, default, what))
         for field, name in (raw.get("live_env") or {}).items():
             what = FIELDS.get(field) or field.replace("_", " ")
+            if file.parent.name == "oracle" and field == "admin_user":
+                what = "the optional observer admin account, owning database logon triggers in the data PDB"
             add(name, code(defaults.get(field)), "Your own instance: " + what + "." if field != "host"
                 else what[0].upper() + what[1:] + ".")
         for field, name in (raw.get("docker_env") or {}).items():

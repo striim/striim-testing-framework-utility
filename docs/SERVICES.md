@@ -38,7 +38,7 @@ the setting when the port is busy.
 | Service (`requires:`) | Runs as | CDC | Host port | Routes | Use your own: set |
 |---|---|---|---|---|---|
 | `postgres` | `postgres:16` + `wal2json` | yes | 5432 | `postgres-source`, `postgres-target` | `SLT_PG_HOST` |
-| `oracle` | Oracle Free 23ai, ARCHIVELOG + LogMiner user | yes | 1521 | `oracle-source`, `oracle-target` | `SLT_ORA_HOST` |
+| `oracle` | Oracle Free 23ai, ARCHIVELOG + LogMiner user | yes | 1521 | `oracle-source`, `oracle-target`, `oracle-admin` | `SLT_ORA_HOST` |
 | `mssql` | SQL Server 2022 Developer, CDC + Agent | yes | 1433 | `mssql-source`, `mssql-target`, `mssql-admin` | `SLT_MSSQL_HOST` |
 | `mysql` | `mysql:8.0`, binlog `ROW` | yes | 3306 | `mysql-source`, `mysql-target` | `SLT_MYSQL_HOST` |
 | `vertica` | Vertica 25.3 Community Edition, one node | no | 5433 | `vertica-source`, `vertica-target`, `vertica-admin` | `SLT_VERTICA_HOST` |
@@ -112,7 +112,7 @@ LogMiner user baked in. It runs natively on Linux x86-64 and Apple Silicon.
 | JDBC, data | `jdbc:oracle:thin:@//HOST:1521/FREEPDB1` (the pluggable database) |
 | JDBC, CDC | `jdbc:oracle:thin:@//HOST:1521/FREE` (the container database root) |
 | Accounts | admin `system`; `qasource`, `qatarget`; CDC user `c##striim`; password `striim` |
-| Tokens | `ORACLE_URL`, `ORACLE_CDC_URL`, `ORACLE_CDC_OCI_URL`, `ORACLE_HOST`, `ORACLE_PORT`, `ORACLE_SERVICE`, `ORACLE_SOURCE_USER`, `ORACLE_SOURCE_PASSWORD`, `ORACLE_SOURCE_SCHEMA`, `ORACLE_TARGET_USER`, `ORACLE_TARGET_PASSWORD`, `ORACLE_TARGET_SCHEMA`, `ORACLE_CDC_USER`, `ORACLE_CDC_PASSWORD` |
+| Tokens | `ORACLE_ADMIN_USER`, `ORACLE_URL`, `ORACLE_CDC_URL`, `ORACLE_CDC_OCI_URL`, `ORACLE_HOST`, `ORACLE_PORT`, `ORACLE_SERVICE`, `ORACLE_SOURCE_USER`, `ORACLE_SOURCE_PASSWORD`, `ORACLE_SOURCE_SCHEMA`, `ORACLE_TARGET_USER`, `ORACLE_TARGET_PASSWORD`, `ORACLE_TARGET_SCHEMA`, `ORACLE_CDC_USER`, `ORACLE_CDC_PASSWORD` |
 | Settings | `SLT_ORA_HOST` and the other `SLT_ORA_*` keys; port `SLT_ORA_HOST_PORT` |
 
 - **CDC:** `OracleReader` connects to the container root (`${ORACLE_CDC_URL}`) as
@@ -124,6 +124,115 @@ LogMiner user baked in. It runs natively on Linux x86-64 and Apple Silicon.
   Oracle's identifier limit.
 - Oracle is slow to start the first time; `SLT_KEEP_SERVICES=1` (the default in `.env.example`)
   keeps it up between runs.
+
+### Oracle observers
+
+The [Oracle observer regression case](../scripts/live/regression/services/oracle/oracle-observer)
+exercises these routes, writer logons and the probe filter.
+
+Cases can create views over their own tables and observe writer sessions without
+counting the framework's probes. The baked data users have `CREATE VIEW` and
+direct `SELECT` grants on `SYS.V_$SESSION` and `SYS.V_$DATABASE` in the data PDB.
+Direct grants allow view/trigger compilation without depending on roles, and
+`V_$DATABASE` also supports writer metadata checks.
+
+Use `db: oracle-admin` for database logon triggers. Name-scope checks apply to
+this observer route; ordinary source/target SQL retains its existing contract.
+Materialized views on `oracle-admin` are explicitly unsupported. Ordinary data-user
+DDL/seeds without case-prefixed views/triggers open no observer catalog connection. Its optional credentials are
+`SLT_ORA_ADMIN_USER` / `SLT_ORA_ADMIN_PASSWORD` (defaults `system` / `striim`),
+connecting to `SLT_ORA_SERVICE`. The baked SYSTEM account has direct
+`CREATE TRIGGER`, `ADMINISTER DATABASE TRIGGER` and `SELECT ON SYS.V_$SESSION`.
+For your own Oracle, grant these to the chosen admin in the data PDB, and grant
+the data-user privileges above directly to each observer/writer user. The trigger
+owner also needs a direct grant on each table its body writes; include that grant
+in the case's data-user DDL, using `${ORACLE_ADMIN_USER}` as the grantee.
+See Oracle's [trigger privilege rules](https://docs.oracle.com/en/database/oracle/oracle-database/26/lnpls/CREATE-TRIGGER-statement.html).
+
+For example, `observer_tables.sql` on `oracle-target`:
+
+```sql
+CREATE TABLE ${TID_ORACLE}LOGONS (SESSION_ID NUMBER, PROGRAM VARCHAR2(128));
+GRANT INSERT ON ${TID_ORACLE}LOGONS TO ${ORACLE_ADMIN_USER};
+CREATE VIEW ${TID_ORACLE}SESSIONS AS
+  SELECT COUNT(*) AS N FROM SYS.V_$SESSION
+  WHERE USERNAME = UPPER('${ORACLE_TARGET_USER}')
+    AND NVL(PROGRAM, '?') <> 'striim-test-observer';
+```
+
+Then `observer_trigger.sql` on `oracle-admin`:
+
+```sql
+CREATE OR REPLACE TRIGGER ${TID_ORACLE}LOGON
+AFTER LOGON ON DATABASE
+DECLARE
+  PRAGMA AUTONOMOUS_TRANSACTION;
+  login_program VARCHAR2(128);
+BEGIN
+  IF ora_login_user = UPPER('${ORACLE_TARGET_USER}') THEN
+    SELECT PROGRAM INTO login_program FROM SYS.V_$SESSION
+      WHERE SID = TO_NUMBER(SYS_CONTEXT('USERENV', 'SID'));
+    IF NVL(login_program, '?') <> 'striim-test-observer' THEN
+      EXECUTE IMMEDIATE
+        'INSERT INTO ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}LOGONS (SESSION_ID, PROGRAM) VALUES (:1, :2)'
+        USING TO_NUMBER(SYS_CONTEXT('USERENV', 'SESSIONID')), login_program;
+      COMMIT;
+    END IF;
+  END IF;
+EXCEPTION WHEN OTHERS THEN
+  ROLLBACK;
+END;
+/
+```
+
+All framework Oracle connections pass the program name during login, through
+[python-oracledb's Thin-mode program parameter](https://python-oracledb.readthedocs.io/en/stable/api_manual/connect_params.html#oracledb.ConnectParams.program).
+The driver minimum is 2.5. Filtering only the writer username would include
+framework target probes; filtering the program above excludes those probes
+without excluding the writer. A module set after connection cannot filter an
+AFTER LOGON trigger.
+
+Observer views and database logon triggers see every session of the data user in
+that PDB, including other cases and runs. Exact session or logon counts are valid
+only in a serial run on an unshared service. Mark such cases `disabled_parallel`
+with that reason; this guard does not isolate separate runs sharing the service.
+The shipped regression uses minimum counts and is also guarded against parallel
+execution. It records all target logons, then checks tagged PROBES and untagged
+WRITERS separately, so losing the framework's program tag fails the case.
+
+Dynamic SQL avoids a static dependency on the log table; the exception handler
+rolls back and swallows logging errors so a missing table cannot invalidate the
+trigger or block logins. Compilation warnings still fail immediately with
+`oracle-ddl-compilation-error`, after an attempt to drop the just-created object.
+
+Created observer triggers have persisted intended/confirmed ledger entries with
+their database identity, PDB, user and endpoint. Cleanup and ownership replay use
+exact names and refuse foreign or changed targets; passwords are read from current
+settings, never recorded. A pre-existing unacquired trigger is preserved.
+
+The framework removes the case's owned observer triggers before views and
+ordinary tables, including failed cases and resource-retained runs. Existing
+case-prefixed observer views are also removed with resource retention enabled;
+unprefixed ordinary data-user views are left to their existing cleanup contract. A failed
+observer cleanup fails the run, preserves Oracle tables and records verification
+gaps for their skipped cleanup; another case's objects are never removed.
+Observer teardown precedes app cleanup so slow undeploy cannot skip it when an
+interrupt teardown deadline expires. Use only ordinary identifier characters in observer
+names and `${TID_ORACLE}` as the prefix. The [YAML reference](TEST-YAML.md#oracle-observer-ddl-and-seeds)
+shows the ordered routes and error codes.
+
+**Rebuild required:** these grants are baked into the Oracle image. On the host
+that runs the cases, build the updated recipe:
+
+```bash
+docker compose -f scripts/live/services/oracle/compose.yaml build slt-oracle
+```
+
+Use a fresh Oracle service created from that image. An existing container or
+an existing database does not gain the grants by updating the framework or
+rebuilding an image alone; its database administrator must apply the listed PDB
+grants before observer cases run. The framework never opens an unused admin
+route or changes an external database's grants automatically.
 
 ## SQL Server (`mssql`)
 

@@ -915,6 +915,38 @@ def _run_admin_sql(entry, sql) -> None:
     # in the dict for shape compatibility but is always None.
     entry["admin"].run_sql(sql)
 
+def _oracle_admins(base, prefix, ledger=None):
+    routes = {}
+    for role in ("source", "target", "admin"):
+        dsn = {**base, "source_user": base.get(role + "_user", "system" if role == "admin" else None),
+               "source_password": base.get(role + "_password", "striim" if role == "admin" else None)}
+        admin = OraAdmin(dsn, prefix=prefix if role == "admin" else None)
+        admin.observer_prefix = prefix
+        admin.observer_ledger, admin.observer_route = ledger, "oracle-" + role
+        routes["oracle-" + role] = {"admin": admin, "schema": None}
+    return routes
+
+
+def teardown_oracle_observers(admins, tokens):
+    result = {"attempted": [], "failed": {}}
+    # The privileged database trigger is removed before data-user views/tables.
+    routes = sorted((db for db in admins if db.startswith("oracle-")),
+                    key=lambda db: (db != "oracle-admin", db))
+    for db in routes:
+        admin = admins[db]["admin"]
+        if not getattr(admin, "touched", False):
+            continue  # do not open a new privileged connection for ordinary cases
+        subject = "oracle-observer " + db
+        result["attempted"].append(subject)
+        try:
+            admin.drop_observer_objects(tokens.get("TID_ORACLE", ""))
+            from livetest.oracle_ownership import settle
+            settle(admin)
+        except Exception as exc:
+            result["failed"][subject] = str(exc)
+    return result
+
+
 def _spanner_ensure(admin, attempts: int = 20, delay: float = 1.5) -> None:
     # The emulator has no healthcheck and needs a moment after the container starts;
     # retry the first instance/database creation until it's reachable.
@@ -1209,7 +1241,7 @@ def teardown_file_outputs(file_spec, tokens: dict, clear) -> None:
             pass
 
 def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: list, kafka_cleanup: list,
-                     file_spec, clear_files, upload_names: list, delete_uploads) -> dict:
+                     file_spec, clear_files, upload_names: list, delete_uploads, *, oracle_observer_failed=False) -> dict:
     """The best-effort teardown of a case without a `lifecycle:` block, after the ledger cleanup.
 
     The ownership ledger deletes Postgres objects, the namespace, slots and exact file claims; the
@@ -1236,6 +1268,11 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
         entry = admins.get(db)
         drop = getattr(entry["admin"], "drop_test_tables", None) if entry else None
         if drop is None:
+            continue
+        if oracle_observer_failed and db.startswith("oracle-"):
+            subject = f"engine-tables {db}"
+            out["attempted"].append(subject)
+            out["failed"][subject] = "tables preserved because Oracle observer teardown failed"
             continue
         token = _DDL_TEARDOWN_PREFIX_TOKENS.get(db.split("-", 1)[0], "TID")
         attempt(f"engine-tables {db}", drop, tokens.get(token, ""))
@@ -2135,14 +2172,7 @@ class LiveItem(pytest.Item):
                                                  "schema": None}
                     pg_admins.append((_pg_src, schema))
                 elif svc == "oracle":
-                    admins["oracle-source"] = {"admin": OraAdmin(resolved.base), "schema": None}
-                    # A second admin as the TARGET data user (qatarget) — for DDL/reads
-                    # in QATARGET.* (the source user has CREATE TABLE only in its own
-                    # schema). Route target ddl/data specs with `target_db: oracle-target`.
-                    _ora_tgt = {**resolved.base,
-                                "source_user": resolved.base["target_user"],
-                                "source_password": resolved.base["target_password"]}
-                    admins["oracle-target"] = {"admin": OraAdmin(_ora_tgt), "schema": None}
+                    admins.update(_oracle_admins(resolved.base, tid_oracle, ledger=ledger))
                 elif svc == "mssql":
                     # Like oracle/postgres: qasource (source) + qatarget (target) accounts &
                     # schemas. ensure_setup (as sa) relaxes the sa password, creates qauser +
@@ -3373,12 +3403,22 @@ class LiveItem(pytest.Item):
                 except Exception:
                     return []
 
+            # Remove database-wide hooks before app cleanup can exhaust the interrupt alarm.
+            _observers = teardown_oracle_observers(admins, tokens)
             cleanup = _slt_ownership.run_cleanup(
                 ledger, client=client, admins=admins, ctx=ctx, tokens=tokens,
                 gcs_cleanup=gcs_cleanup, kafka_cleanup=kafka_cleanup, upload_names=_slt_upload_names(),
                 file_globs=_slt_file_globs(),
                 checkpoint_ns=ident.ns if m.modules else None, keep_reason=_slt_keep_reason,
                 keep_slots=bool(os.environ.get("SLT_KEEP_RESOURCES")))
+            if _observers["failed"]:
+                cleanup.status, cleanup.verified = "failed", False
+                _detail = "oracle-observer-cleanup-failed: " + "; ".join(
+                    subject + ": " + message for subject, message in _observers["failed"].items())
+                cleanup.detail = "; ".join(filter(None, (cleanup.detail, _detail)))
+                cleanup.gaps.extend(_observers["failed"])
+                cleanup.failures.extend({"kind": "oracle-observer", "name": subject, "error": error}
+                                        for subject, error in _observers["failed"].items())
             if _slt_keep_reason:
                 if os.environ.get("SLT_KEEP_RESOURCES"):
                     print("[slt] PostgreSQL replication slots and app state kept for exploration.")
@@ -3401,7 +3441,8 @@ class LiveItem(pytest.Item):
                 try:
                     _unowned = teardown_unowned(admins, m.ddl_files, tokens, gcs_cleanup, kafka_cleanup,
                                                 m.assert_.get("file"), lambda _p: clear_server_files(ctx, _p),
-                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n))
+                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n),
+                                                oracle_observer_failed=bool(_observers["failed"]))
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")
