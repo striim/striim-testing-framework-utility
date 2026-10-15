@@ -1,29 +1,37 @@
 """Reuse manifest service tokens until their discovery inputs change."""
 from contextvars import ContextVar
 from functools import wraps
+import hashlib
 import os
 from pathlib import Path
 import sys
+import stat as stat_module
 from threading import RLock
 
 _dependencies = ContextVar("service_token_dependencies", default=None)
 
 
-def _identity(path):
+def _identity(path, *, content=False):
     resolved = path.resolve()
     try:
         stat = path.stat()
     except (FileNotFoundError, NotADirectoryError):
         return resolved, None
-    return resolved, stat.st_mtime_ns, stat.st_size
+    identity = resolved, stat.st_mtime_ns, stat.st_size
+    # Declarations and Compose inputs are small; hash them even on filesystems
+    # whose timestamps cannot distinguish equal-size edits.
+    if content and stat_module.S_ISREG(stat.st_mode):
+        return (*identity, hashlib.sha256(path.read_bytes()).digest())
+    return identity
 
 
-def watch(path):
+def watch(path, *, content=False):
     """Record files read and directories searched during service discovery."""
     dependencies = _dependencies.get()
     if dependencies is not None:
         path = Path(path).absolute()
-        dependencies[path] = _identity(path)
+        content = content or path.name == "service.yaml" or dependencies.get(path, (False,))[0]
+        dependencies[path] = content, _identity(path, content=content)
     return path
 
 
@@ -40,6 +48,11 @@ def watch_services(root):
 def _context():
     from livetest import layout, paths, registry
     int_paths = sys.modules.get("inttest.paths")
+    # Consumer declarations and project paths may reference arbitrary environment
+    # names. A stock-key allowlist would omit those inputs, so retain the whole
+    # environment rather than trying to predict which names discovery will use.
+    # Function identities deliberately invalidate test-time monkeypatches; equal
+    # settings must not reuse tokens discovered through different implementations.
     return (tuple(sorted(os.environ.items())), Path.cwd(),
             layout._cfg_services, layout._cfg_manifest_services,
             layout._cfg_state, layout._cfg_manifest_state,
@@ -59,8 +72,8 @@ def cached_tokens(load):
             context = _context()
             if entry is not None:
                 previous, dependencies, tokens = entry
-                if (context == previous and all(_identity(path) == identity
-                                                for path, identity in dependencies.items())):
+                if (context == previous and all(_identity(path, content=content) == identity
+                                                for path, (content, identity) in dependencies.items())):
                     return set(tokens)
             dependencies = {}
             marker = _dependencies.set(dependencies)

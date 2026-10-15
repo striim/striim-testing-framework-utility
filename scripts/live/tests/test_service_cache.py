@@ -188,3 +188,78 @@ def test_cached_and_uncached_manifest_results_match(tree, monkeypatch):
     file.write_text(file.read_text().replace("CUSTOM_TOKEN", "SAMPLE_URL"))
     with pytest.raises(manifest.ManifestError, match="harness-provided"):
         manifest.load_manifest(file)
+
+
+def test_unrelated_checkout_directory_changes_keep_cached_tokens(tree):
+    root, calls = tree
+    assert manifest._service_tokens() == {'SAMPLE_URL'}
+    count = len(calls)
+    (root.parent / 'unrelated.log').write_text('run output')
+    assert manifest._service_tokens() == {'SAMPLE_URL'}
+    assert len(calls) == count
+
+
+@pytest.mark.parametrize('layout_name', ['services', 'scripts/live/services'])
+def test_repo_root_churn_does_not_invalidate_real_service_directory(tree, layout_name):
+    root, calls = tree
+    repo = root.parent / 'consumer'
+    definitions = repo / layout_name
+    service(definitions, token='OVERLAY_URL')
+    layout.set_roots(services=[repo])
+    assert manifest._service_tokens() == {'OVERLAY_URL'}
+    count = len(calls)
+    (repo / 'result.log').write_text('run output')
+    assert manifest._service_tokens() == {'OVERLAY_URL'}
+    assert len(calls) == count
+    service(definitions, name='new', token='NEW_URL')
+    assert manifest._service_tokens() == {'OVERLAY_URL', 'NEW_URL'}
+    assert len(calls) > count
+
+
+@pytest.mark.parametrize('kind', ['service', 'compose'])
+def test_same_size_same_mtime_content_edit_invalidates(tree, kind):
+    root, calls = tree
+    file = root / 'sample/service.yaml'
+    if kind == 'compose':
+        file.write_text(file.read_text() + 'compose: definition.conf\n')
+        file = file.parent / 'definition.conf'
+        file.write_text('name: ${BEFORE_SETTING}\n')
+    assert manifest._service_tokens() == {'SAMPLE_URL'}
+    count = len(calls); before = file.stat()
+    file.write_text(file.read_text().replace('SAMPLE_URL', 'EDITED_URL').replace('BEFORE_SETTING', 'EDITED_SETTING'))
+    os.utime(file, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert file.stat().st_size == before.st_size
+    assert manifest._service_tokens() == ({'EDITED_URL'} if kind == 'service' else {'SAMPLE_URL'})
+    assert len(calls) > count
+
+
+@pytest.mark.parametrize('entry', ['include', 'includes'])
+def test_project_contract_rejects_includes_and_reads_one_watched_file(tree, monkeypatch, entry):
+    from livetest import project, service_cache
+    root, _ = tree
+    file = root.parent / 'gold-targets.yaml'
+    file.write_text('schemaVersion: 1\nsuites: {live: cases}\n')
+    original = Path.read_text; reads = []
+    def read(path, *args, **kwargs):
+        reads.append(path.resolve())
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', read)
+    project.load_project(file, env={})
+    assert reads == [file.resolve()], 'project loading must not read an unwatched include'
+    dependencies = {}; marker = service_cache._dependencies.set(dependencies)
+    try: service_env.declarations(dict(os.environ, GOLD_TARGETS=str(file)))
+    finally: service_cache._dependencies.reset(marker)
+    assert file.absolute() in dependencies
+    file.write_text('schemaVersion: 1\n' + entry + ': other.yaml\n')
+    with pytest.raises(project.ProjectError, match='unknown field'):
+        project.load_project(file, env={})
+
+
+def test_environment_and_function_identity_are_explicit_invalidation_inputs(tree, monkeypatch):
+    root, calls = tree
+    manifest._service_tokens(); count = len(calls)
+    monkeypatch.setenv('CUSTOM_DISCOVERY_INPUT', 'new')
+    manifest._service_tokens(); assert len(calls) > count
+    count = len(calls); original = registry.all_services
+    monkeypatch.setattr(registry, 'all_services', lambda *a, **k: original(*a, **k))
+    manifest._service_tokens(); assert len(calls) > count

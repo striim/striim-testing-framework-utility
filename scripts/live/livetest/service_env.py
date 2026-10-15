@@ -67,7 +67,6 @@ def declarations(env=None):
     checkout = paths.dotenv_path(env)
     for file in (clone, checkout):
         watch(file)
-        watch(file.parent)
     basic = {**paths.read_dotenv(clone), **paths.read_dotenv(checkout), **env}
     entries = list(layout._cfg_services)
     if basic.get('GOLD_TARGETS'):
@@ -99,7 +98,7 @@ def declarations(env=None):
                     keys.update((raw.get(key) or {}).values())
                 compose = raw.get('compose')
                 if compose:
-                    watch(file.parent / compose)
+                    watch(file.parent / compose, content=True)
                 if compose and (file.parent / compose).is_file():
                     keys.update(compose_keys((file.parent / compose).read_text()))
                 for key in keys:
