@@ -12,7 +12,7 @@
     "runtime": "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
     "dockerfile_frontend": "docker/dockerfile:1.4@sha256:9ba7531bd80fb0a858632727cf7a112fbfd19b17e94c4e84ced81e24ef1a0dbc",
     "token": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-    "framework_version": "0.8.1-framework.6"
+    "framework_version": "0.8.1-framework.7"
   },
   "patches": [
     {
@@ -52,6 +52,11 @@
       "file": "0011-bound-resumable-upload-sessions.patch",
       "sha256": "30280b820d8eb06e14306b9807eff50547ade9f8440c8c631711aa6708900ffa",
       "description": "Bound in-memory resumable sessions and support status, replay and exactly-once finalization within a live session."
+    },
+    {
+      "file": "0012-decode-bounded-gzip-csv-files.patch",
+      "sha256": "54b0089cbe164ecd3902da5aff0c350d093db83b409b5b274643bfc9895f8cef",
+      "description": "Decode gzip CSV files with encoded/decoded size limits while retaining received-byte accounting."
     }
   ],
   "dependency_patches": [

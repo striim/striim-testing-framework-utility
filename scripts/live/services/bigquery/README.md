@@ -13,7 +13,7 @@ use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
 2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.6 .`.
+   `docker buildx build --load -t slt-bigquery:0.8.1-framework.7 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
    rebuilding it. Without that override, Compose builds the source recipe with a
@@ -176,3 +176,9 @@ native ARM execution remains unqualified. The full feasible upstream Go suite,
 HTTP/TLS client controls, load job persistence and chunk replay controls pass.
 The exact-boundary client regression is an explicit skip, outside this bounded
 qualification. These API controls are separate from the actual writer fixtures.
+
+The CSV loader also recognizes gzip file bytes independently of HTTP headers,
+as required by the default writer upload. Both received and expanded CSV are
+limited to 16 MiB. Truncated files, checksum errors and expansion-limit failures
+are rejected before target mutation. Input byte statistics retain the received
+compressed size; loaded rows and decoded field-byte accounting remain unchanged.
