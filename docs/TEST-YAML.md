@@ -553,7 +553,7 @@ as owned; naming a shared slot does not grant permission to observe it.
 Only target-count recovery has reported live qualification (sample 14);
 checkpoint, slot and Kafka position triggers have hermetic coverage.
 Every cycle writes an assertion of type `recovery` in `evidence.json` and the
-results sidecar. Its actual row contains `cycle`, `trigger`, `baseline`,
+results sidecar. Its `spec.trigger` holds the trigger declaration. The actual row contains `cycle`, `baseline`,
 `windowOpened` (the first in-window value and monotonic/UTC time), the final
 pre-command `value`, `held`, monotonic `observedAt`/`issuedAt`, UTC `observedUtc`,
 `deadline` and `interrupted`. Timed recovery uses `trigger.kind: timed` and checks

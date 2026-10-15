@@ -728,3 +728,21 @@ def test_failed_snapshot_keys_survive_written_evidence(good):
     evidence.validate_case(saved)
     tables = saved['assertions'][-1]['actual']['rows'][-1]['tables']
     assert tables['a']['keys'] == [['2']] and tables['b']['keys'] == []
+
+
+def test_checkpoint_read_error_after_interrupt_is_valid_diagnostic_evidence(good):
+    from livetest import progress
+    interrupted = [False]
+    records = []
+    def read(left):
+        if interrupted[0]: raise ConnectionError('checkpoint API unavailable')
+        return 1
+    progress.at_fault(progress.normalize({'kind': 'checkpoint', 'above': 0}), read,
+        lambda: interrupted.__setitem__(0, True), record=records.append, cycle=1)
+    assert records[0]['status'] == 'passed'
+    good._slt_records.extend(records)
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
+    row = saved['assertions'][-1]['actual']['rows'][0]
+    assert row['interrupted'] is True and row['afterInterrupt']['error']

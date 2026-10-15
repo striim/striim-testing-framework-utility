@@ -237,5 +237,5 @@ drop or replay bypass does not establish ownership.
 
 | Code | Meaning | What to change |
 |---|---|---|
-| `fault-missed` | The final fault precondition failed; no command was sent. | Use the suffix (deadline/window/read/app-status) to correct the trigger; this is never absorbed by xfail. |
+| `fault-missed` | The fault boundary was not proven, either before issuance or after interruption took effect. | Check `interrupted` and `afterInterrupt` before assuming the stack was undisturbed. Suffixes include deadline/window/read/app-status, no unique running Docker owner, and a flow moved before interruption. This is never absorbed by xfail. |
 | `fault-interrupt-error` | The interrupt command failed after its final observation. | Inspect the recorded command boundary and transport error; a failed request is not a completed fault. |
