@@ -100,8 +100,9 @@ the same name is refused. Only one output binding is allowed.
 All database adapters require the locally declared typed input and false upsert
 flags above; Kafka/FileWriter do not require those database-only properties.
 A writer may have an optional `VERSION` clause. Ambiguous declarations, duplicate
-properties, foreign database qualifiers and source-to-target `Tables` mappings
-are refused for an audit writer. Use a CQ to project onto its typed stream.
+properties and source-to-target `Tables` mappings are refused for an audit
+writer. The GoogleSQL qualified alternative accepts only the selected
+`${SPANNER_GSQL_DB}` token; it never strips an arbitrary database qualifier. Use a CQ to project onto its typed stream.
 
 The database audit input is insert-only, so it records a CDC delete as a new
   typed delivery row rather than removing an earlier audit row. For append
