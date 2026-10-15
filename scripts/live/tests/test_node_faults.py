@@ -138,13 +138,22 @@ def test_inventory_maps_live_names_and_published_peer_port(monkeypatch):
     assert result["secondary"]["hostsMetadata"] is False
 
 
-def test_secondary_api_port_is_published_and_allowed():
+def test_secondary_api_port_is_opt_in_and_allowed(monkeypatch):
     import yaml
     from pathlib import Path
     from livetest import paths
     root = Path(__file__).resolve().parents[3]
     compose = yaml.safe_load((root / "scripts/live/services/striim/compose.yaml").read_text())
-    assert "${SLT_STRIIM_NODE_HTTP_HOST_PORT:-9082}:9080" in compose["services"]["slt-node"]["ports"]
+    from livetest import striim_provision as sp
+    mapping = "${SLT_STRIIM_NODE_HTTP_HOST_PORT:-9082}:9080"
+    assert mapping not in compose["services"]["slt-node"]["ports"]
+    recipe = root / "scripts/live/services/striim"
+    monkeypatch.delenv("SLT_ENABLE_NODE_FAULTS", raising=False)
+    assert recipe / "compose.node-fault.yaml" not in sp.compose_files(recipe)
+    monkeypatch.setenv("SLT_ENABLE_NODE_FAULTS", "1")
+    assert recipe / "compose.node-fault.yaml" in sp.compose_files(recipe)
+    overlay = yaml.safe_load((recipe / "compose.node-fault.yaml").read_text())
+    assert overlay["services"]["slt-node"]["ports"] == [mapping]
     assert "SLT_STRIIM_NODE_HTTP_HOST_PORT" in paths.SERVICE_KEYS
 
 
@@ -233,3 +242,58 @@ def test_owner_read_evidence_is_bounded_and_redacted(monkeypatch):
     assert captured['truncated'] and captured['characters'] > 65536
     assert len(captured['json']) == 65536
     assert 'private-test-secret' not in str(records)
+
+
+@pytest.mark.parametrize("opt_in", [None, "0", "true", "1"])
+def test_node_fault_gate_precedes_input_snapshot_and_provision(monkeypatch, opt_in):
+    from livetest import plugin
+    manifest = SimpleNamespace(topology="cluster", requires=[], disabled=False,
+        disabled_parallel=False, recover={"node": "secondary"}, exact=None)
+    monkeypatch.setattr(plugin, "load_manifest", lambda path: manifest)
+    monkeypatch.setenv("SLT_RUN_DISABLED", "1")
+    monkeypatch.delenv("SLT_ENABLE_NODE_FAULTS", raising=False)
+    if opt_in is not None:
+        monkeypatch.setenv("SLT_ENABLE_NODE_FAULTS", opt_in)
+    calls = []
+    def snapshot(*args, **kwargs):
+        calls.append("snapshot")
+        raise RuntimeError("snapshot reached")
+    monkeypatch.setattr(plugin._slt_inputs, "snapshot", snapshot)
+    monkeypatch.setattr(plugin, "_resolve_striim", lambda *a: pytest.fail("provisioning reached"))
+    item = SimpleNamespace(manifest_path="case/test.yaml")
+    if opt_in == "1":
+        with pytest.raises(RuntimeError, match="snapshot reached"):
+            plugin.LiveItem._runtest(item)
+        assert calls == ["snapshot"]
+    else:
+        with pytest.raises(pytest.skip.Exception, match="SLT_ENABLE_NODE_FAULTS"):
+            plugin.LiveItem._runtest(item)
+        assert calls == []
+
+
+@pytest.mark.parametrize("mode", ["kill", "restart"])
+@pytest.mark.parametrize("rejoin_fails", [False, True])
+def test_failure_cleanup_waits_for_rejoin_and_records_outcome(monkeypatch, mode, rejoin_fails):
+    from livetest import node_fault
+    events, records = [], []
+    def run(argv):
+        events.append(argv[1])
+        return SimpleNamespace(returncode=0, stdout="true" if mode == "restart" else "false")
+    def rejoin(client, remaining):
+        events.append("rejoin")
+        assert 0 < remaining <= 1
+        if rejoin_fails:
+            raise RuntimeError("membership deadline")
+    target = node_fault.Target(Client(), SimpleNamespace(mode="docker"), "secondary", app="N.app",
+        nodes=nodes(), run=run, record=records.append, timeout=1, wait_cluster=rejoin)
+    target.interrupt(mode)
+    if rejoin_fails:
+        with pytest.raises(recovery.RecoveryError, match="membership deadline"):
+            target.close()
+    else:
+        target.close()
+        target.close()
+    assert events == [mode, "inspect", "start", "rejoin"]
+    assert records[-1]["spec"]["phase"] == "cleanup-rejoin"
+    assert records[-1]["status"] == ("failed" if rejoin_fails else "passed")
+    assert target.needs_restore is rejoin_fails

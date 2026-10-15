@@ -260,7 +260,6 @@ class Target:
             state = self._command(["docker", "inspect", "--format", "{{.State.Running}}", node["id"]]).stdout.strip()
             if state != ("true" if mode == "restart" else "false"):
                 raise RecoveryError("node-fault-error: requested container state not observed")
-            if mode == "restart": self.needs_restore = False
             ok = True
         except Exception as e:
             detail = str(e)
@@ -328,9 +327,11 @@ class Target:
         if expect_running and self.hosting and self.selected["role"] != "agent" and self.needs_restore:
             survivor = self.nodes["secondary" if self.selected["role"] == "primary" else "primary"]["server"]
             self._wait_failover(survivor, deadline)
-        self.close(remaining=max(.05, deadline - time.monotonic()))
+        if self.needs_restore:
+            self.close(remaining=max(.05, deadline - time.monotonic()))
+        else:
+            self.wait_cluster(self.client, max(.05, deadline - time.monotonic()))
         if self.selected["role"] != "agent": _reset_modules()
-        self.wait_cluster(self.client, max(.05, deadline - time.monotonic()))
         if self.refresh: self.nodes = inventory(self.client, self.ctx, run=self.run, timeout=max(.05, deadline - time.monotonic()))
         if expect_running:
             self.client.await_running(self.app, timeout=max(.05, deadline - time.monotonic()))
@@ -345,8 +346,29 @@ class Target:
 
     def close(self, remaining=None):
         if self.needs_restore:
-            self._command(["docker", "start", self.selected["id"]], remaining=remaining)
-            self.needs_restore = False
+            budget = self.timeout if remaining is None else remaining
+            deadline = time.monotonic() + budget
+            ok, detail = False, "ok"
+            try:
+                self._command(["docker", "start", self.selected["id"]], remaining=budget)
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise RecoveryError("fault-node-rejoin-deadline")
+                self.wait_cluster(self.client, left)
+                if time.monotonic() > deadline:
+                    raise RecoveryError("fault-node-rejoin-deadline")
+                self.needs_restore = False
+                ok = True
+            except Exception as error:
+                detail = "fault-node-rejoin: " + str(error)
+                raise RecoveryError(detail) from error
+            finally:
+                if self.record:
+                    self.record(build_assertion_result(type="recovery", target=self.selected["server"], db=None,
+                        spec={"node": self.selected["role"], "phase": "cleanup-rejoin"},
+                        status="passed" if ok else "failed", detail=detail,
+                        expected={"kind": "count", "count": 1},
+                        actual={"kind": "count", "count": int(ok)}))
 
 
 def normalize_placement(raw, *, has_node_fault=False):

@@ -661,6 +661,11 @@ failover the next owner may be the protected metadata host. Repeated hosting
 faults are refused at load as `invalid-node-fault`. Named-role faults may repeat
 under the existing trigger/cycle rules.
 
+All `recover.node` cases require `SLT_ENABLE_NODE_FAULTS=1`, set only for a
+dedicated disposable stack. Without it they skip before provisioning even when
+selected by a default samples run. `disabled_parallel` does not replace this gate.
+Only opted-in stacks add the secondary API port overlay.
+
 The surviving app node's published API port is discovered by Docker inspection.
 For the bundled secondary-worker fault, the primary API remains available at
 its published port (default 9080). The second-node mapping, default 9082

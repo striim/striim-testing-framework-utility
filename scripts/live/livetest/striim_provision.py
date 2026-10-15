@@ -631,11 +631,18 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
 # `docker compose up` still targets real Spanner.
 _COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
 
+def _compose_files():
+    files = list(_COMPOSE_FILES)
+    if os.environ.get("SLT_ENABLE_NODE_FAULTS") == "1":
+        files += ["-f", "compose.node-fault.yaml"]
+    return files
+
+
 def compose_files(striim_dir: Path) -> list[Path]:
     """The cluster's compose files as paths, for callers that read them rather than run them
     (services.declared_containers). Derived from the same list the compose calls use, so the
     two cannot drift."""
-    return [Path(striim_dir) / f for f in _COMPOSE_FILES if f != "-f"]
+    return [Path(striim_dir) / f for f in _compose_files() if f != "-f"]
 
 def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress=None) -> None:
     if progress: progress("cluster", "starting containers")
@@ -658,7 +665,7 @@ def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress
         # leave the old node up beside the new one: two nodes in the cluster, one of them
         # invisible to compose. Orphans are containers whose SERVICE is gone from the file,
         # so naming a subset of services here does not make the rest orphans.
-        run(["docker", "compose", *_COMPOSE_FILES, "up", "-d", "--remove-orphans",
+        run(["docker", "compose", *_compose_files(), "up", "-d", "--remove-orphans",
              "slt-striim", "slt-node", "slt-agent"],
             cwd=str(striim_dir))
 
@@ -678,7 +685,7 @@ def cluster_has_containers(striim_dir: Path, release: dict | None = None) -> boo
     runner here would silently read as "no containers"."""
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
     with _env_override({"STRIIM_VERSION": version}):
-        r = subprocess.run(["docker", "compose", *_COMPOSE_FILES, "ps", "-aq"],
+        r = subprocess.run(["docker", "compose", *_compose_files(), "ps", "-aq"],
                            cwd=str(striim_dir), capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(f"could not ask Docker what the Striim project owns: "
@@ -698,7 +705,7 @@ def cluster_down(striim_dir: Path, release: dict | None = None, run=None) -> Non
         # to 40 GB each) running while `stop live` reported a clean teardown and exited 0.
         # preflight's orphan check cannot catch these either: it only runs when
         # `cluster_has_containers()` is False, and the still-declared slt-striim keeps it True.
-        run(["docker", "compose", *_COMPOSE_FILES, "down", "-v", "--remove-orphans"],
+        run(["docker", "compose", *_compose_files(), "down", "-v", "--remove-orphans"],
             cwd=str(striim_dir))
 
 # Every spelling seen or plausible: ProductKey=, LicenceKey=, "License Key:", LicenseKey,
@@ -728,7 +735,7 @@ def save_cluster_logs(dest: Path, striim_dir: Path, run=None, tail: int = 300) -
                                                         stderr=subprocess.STDOUT, text=True,
                                                         timeout=60))
     try:
-        ps = run(["docker", "compose", *_COMPOSE_FILES, "ps", "-a", "--format", "{{.Name}}"],
+        ps = run(["docker", "compose", *_compose_files(), "ps", "-a", "--format", "{{.Name}}"],
                  cwd=str(striim_dir))
         names = [n.strip() for n in (getattr(ps, "stdout", "") or "").splitlines() if n.strip()]
         if not names:

@@ -4,7 +4,8 @@ This case kills one app node hosting a single-owner flow, then requires placemen
 on its survivor and complete typed data. It needs Docker mode, `topology: cluster`,
 two app nodes plus an agent, and the primary REST API (default 9080), which stays
 available when this case kills the secondary. It does not require port 9082.
-Coordinate every stack user; `disabled_parallel: true` excludes concurrent
+Set `SLT_ENABLE_NODE_FAULTS=1` only on a dedicated disposable stack;
+without it this case skips before provisioning. Coordinate every stack user; `disabled_parallel: true` excludes concurrent
 selection but does not lock the shared nodes. See
 [the upgrade guide](../../../docs/UPGRADING.md) only if the secondary must serve
 fallback reads; this sample does not require that stack recreation.
@@ -54,4 +55,9 @@ Flow MON need not contain status. The owner check uses the flow deployment and
 the parent application's RUNNING state reported by that same server. A stopped
 or unreadable parent cannot qualify as a running owner.
 
-Owner selection finishes before the seed. Progress polling reads status and count; once the window opens, one bounded check reads flow MON plus the selected server's DESCRIBE and STATUS, then rechecks count before issuance. Evidence retains the window-opening value/time and the post-interruption count. The target table CHECK sleeps 10ms per inserted row without changing its values; the 2400-row window therefore lasts about24seconds with one writer. The check belongs to the owned table and disappears when that table is dropped. If the window still closes, the case fails and retains both observations.
+Owner selection finishes before the seed. Progress polling reads status and count; once the window opens, one bounded check reads flow MON plus the selected server's DESCRIBE and STATUS, then rechecks count before issuance. Evidence retains the window-opening value/time and the post-interruption count. The target table CHECK sleeps 10ms per inserted row without changing its values; the 2400-row window therefore lasts about 24 seconds with one writer. The check belongs to the owned table and disappears when that table is dropped. If the window still closes, the case fails and retains both observations.
+
+The recovery cases share the reviewed CSV in `samples/live/14-progress-recovery/expected/rows.csv`.
+From the framework checkout, run `python3 tools/prepare-recovery-goldens.py` before
+copying or running these cases. Test environment setup also prepares the copies.
+The shared rows follow `(n, row-n)` for every integer from 1 through 5000.

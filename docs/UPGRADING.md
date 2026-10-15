@@ -2,6 +2,20 @@
 
 Review the changes below before reusing services started by an older framework.
 
+## Timed recovery requires RUNNING (breaking)
+
+Before updating a framework pin, check timed `recover.after` cases: COMPLETED or
+halted applications now fail `fault-missed` at that boundary. Keep work in flight
+at the configured time, or use a bounded progress trigger.
+
+## Node faults require explicit opt-in
+
+Set `SLT_ENABLE_NODE_FAULTS=1` only for a dedicated disposable node-fault stack.
+Without it every `recover.node` case skips before provisioning, including sample
+17 in a default samples run. `SLT_RUN_DISABLED` does not bypass this requirement.
+The opt-in adds the secondary API compose overlay; normal stacks publish no
+secondary API port.
+
 ## Publish the secondary API only when it is the survivor
 
 Sample 17 kills the secondary worker and reads the primary API, so it does not
@@ -11,7 +25,7 @@ metadata and is refused as a node-fault target.
 
 A Striim stack started before named-node recovery was added does not publish the
 second app node's REST API port. Shared mode reuses that stack without changing
-its port mappings. Set `SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082; choose another
+its port mappings. With `SLT_ENABLE_NODE_FAULTS=1`, set `SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082; choose another
 available port if needed), coordinate everyone sharing that exact stack, then
 recreate the Striim service with its updated recipe. From the checkout and settings
 that own it, after all shared users have finished:

@@ -822,7 +822,7 @@ def test_node_failover_wait_writes_valid_evidence_on_success_and_failure(good, m
 @pytest.mark.parametrize('succeeded', [True, False])
 def test_initial_placement_records_validate_on_pass_and_failure(good, succeeded):
     from livetest import node_fault
-    from ..test_judge_b4 import Clock
+    from ..test_failover_boundaries import Clock
     clock = Clock(); records = []
     def read(flow, left):
         if succeeded: return {'server_secondary'}

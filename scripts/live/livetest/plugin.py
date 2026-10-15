@@ -1963,6 +1963,8 @@ class LiveItem(pytest.Item):
         if m.disabled_parallel and _parallel(os.environ) and not os.environ.get("SLT_RUN_DISABLED"):
             pytest.skip(f"disabled_parallel: {m.disabled_parallel if isinstance(m.disabled_parallel, str) else 'disabled_parallel'}"
                         " (set SLT_RUN_DISABLED=1 to force-run)")
+        if getattr(m, "recover", None) and m.recover.get("node") and os.environ.get("SLT_ENABLE_NODE_FAULTS") != "1":
+            pytest.skip("node faults require SLT_ENABLE_NODE_FAULTS=1 on a dedicated disposable stack")
         # C8.3: every referenced input is read once, after the disabled skips and
         # before any provisioning; exact assertions parse these bytes and never re-read a golden.
         self._slt_data = []             # slt-canon/1 comparison records
@@ -2966,12 +2968,6 @@ class LiveItem(pytest.Item):
                             from livetest import progress as _fault_progress
                             def _read_at_fault(left):
                                 began = time.monotonic()
-                                if _tx_pool is not None:
-                                    _tx_pool.observe_recovery("pre_interrupt", remaining=min(2.0, left))
-                                    left -= time.monotonic() - began
-                                    began = time.monotonic()
-                                    if left <= 0:
-                                        raise _fault_progress.ProgressError("progress-deadline during source observations")
                                 status = client.current_status(app, timeout=min(5.0, left))
                                 if _progress_read is None:
                                     return status
@@ -2981,6 +2977,15 @@ class LiveItem(pytest.Item):
                                 if left <= 0:
                                     raise _fault_progress.ProgressError("progress-deadline during status read")
                                 return _progress_read(left)
+                            def _before_fault(left):
+                                began = time.monotonic()
+                                if _tx_pool is not None:
+                                    _tx_pool.observe_recovery("pre_interrupt", remaining=min(2.0, left))
+                                left -= time.monotonic() - began
+                                if left <= 0:
+                                    raise _fault_progress.ProgressError("progress-deadline during source observations")
+                                if _fault_target is not None:
+                                    _fault_target.check_owner(left)
                             _progress_observed = _fault_progress.at_fault(
                                 _rc.get("trigger"), _read_at_fault,
                                 lambda: _fault_target.interrupt(_rc["mode"]) if _fault_target is not None else recovery.interrupt(client, ctx, app, _rc["mode"],
@@ -2988,7 +2993,7 @@ class LiveItem(pytest.Item):
                                     report=lambda msg: _report(m.name, msg)),
                                 record=self._slt_records.append, cycle=_i + 1,
                                 baseline=_progress_baseline, after_read=_progress_read,
-                                before_issue=_fault_target.check_owner if _fault_target is not None else None)
+                                before_issue=_before_fault)
                             if _rc.get("trigger", {}).get("kind") == "checkpoint" and "above" not in _rc["trigger"]:
                                 _progress_baseline = _progress_observed["value"]
                             _report(m.name, f"recover: restoring app{_tag}")

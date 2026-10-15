@@ -95,3 +95,33 @@ def test_owner_check_runs_once_after_window_opens_then_progress_is_rechecked():
     assert events == ['read','read','owner','read','interrupt','read']
     actual = records[0]['actual']['rows'][0]
     assert actual['windowOpened']['value'] == 3 and actual['value'] == 4
+
+
+def test_transaction_observation_runs_once_at_boundary_not_during_progress_wait():
+    import ast
+    import inspect
+    import textwrap
+    from types import SimpleNamespace
+    from livetest import plugin
+    tree = ast.parse(textwrap.dedent(inspect.getsource(plugin.LiveItem._runtest)))
+    callbacks = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                 and node.name in {"_read_at_fault", "_before_fault"}]
+    assert len(callbacks) == 2
+    clock = Clock(); events = []; values = iter([0, 0, 3, 4, 5]); records = []
+    def observe(phase, remaining):
+        events.append(phase)
+        clock.t += .05
+        assert 0 < remaining <= 2
+    namespace = dict(time=SimpleNamespace(monotonic=clock.now),
+        _tx_pool=SimpleNamespace(observe_recovery=observe),
+        _fault_target=SimpleNamespace(check_owner=lambda left: events.append("owner")),
+        _fault_progress=progress, app="N.app",
+        client=SimpleNamespace(current_status=lambda *a, **kw: "RUNNING"),
+        _progress_read=lambda left: next(values))
+    exec(compile(ast.Module(body=callbacks, type_ignores=[]), "callbacks", "exec"), namespace)
+    progress.at_fault(progress.normalize(spec()), namespace["_read_at_fault"],
+        lambda: events.append("interrupt"), before_issue=namespace["_before_fault"],
+        after_read=namespace["_progress_read"], record=records.append, cycle=1,
+        now=clock.now, sleep=clock.sleep)
+    assert events == ["pre_interrupt", "owner", "interrupt"]
+    assert records[-1]["status"] == "passed"

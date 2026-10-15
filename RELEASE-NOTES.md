@@ -10,13 +10,17 @@ consistent snapshot histories and append-only audit comparisons add stricter
 checks. Progress-triggered recovery records fault boundaries and can prove a
 fresh marker after restore. Named-node Docker faults also check live placement.
 
-**Upgrade action for named-node faults:** recreate an older shared Striim test
-stack after coordinating its users so the second app node publishes
-`SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082). See [UPGRADING.md](docs/UPGRADING.md).
-Existing port mappings are not changed by shared-mode reuse. Sample 17 kills a
-shared app node; read its prerequisites before running all samples.
+**Node faults are opt-in:** `recover.node` cases skip before provisioning unless
+`SLT_ENABLE_NODE_FAULTS=1` is set for a dedicated disposable stack. Only opted-in
+stacks publish the secondary API (`SLT_STRIIM_NODE_HTTP_HOST_PORT`, default 9082).
+See [UPGRADING.md](docs/UPGRADING.md) before changing an older stack.
 
-Timed recovery now requires the app to be RUNNING at the fault boundary. A completed or halted app fails `fault-missed` instead of counting as an interruption. Progress-triggered recovery checks again after the interruption takes effect, refusing a target count that reached its upper bound.
+**Breaking change — timed recovery:** timed recovery now requires the app to be
+RUNNING at the fault boundary. A completed or halted app fails `fault-missed`
+instead of counting as an interruption. Consumers updating their framework pin
+must ensure work remains in flight at `recover.after`, or use a progress trigger
+with a bounded window. Progress-triggered recovery also checks again after the
+interruption takes effect, refusing a target count that reached its upper bound.
 
 ## v0.1.0 (2026-10-08)
 
