@@ -187,7 +187,8 @@ FRAMEWORK_SET = (
 )
 RETIRED = {"SLT_MODE": "SLT_FRAMEWORK_MODE", "SLT_FRAMEWORK": "SLT_FRAMEWORK_HOME"}
 # Names the code holds that are not settings: tokens it fills in itself.
-NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID"}
+NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID",
+                "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
