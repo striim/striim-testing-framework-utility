@@ -225,6 +225,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | lifecycle zero | `expect: 0`, `lines: 0` refused; a zero source count fails | zero proves nothing; use the sentinel kinds for an empty result |
 | `--parallel` | 3 workers | |
 | `raw.max_bytes` | 64 MiB by default; at most 512 MiB | All files in the exact inventory share this total read budget |
+| `recover.trigger.timeout` / `poll` | 60s / 100ms by default; both positive finite durations | The final pre-command read must finish inside its deadline |
 | `diff_poll` | above 0 | a zero poll would spin against the database |
 | `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
 | Snapshot rows/bytes | 100000 rows and 64 MiB by default; at most 1000000 and 512 MiB | Row budget covers all tables; byte budget applies per table |
