@@ -73,7 +73,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "bigquery-table", "pg-slot", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "bigquery-table", "bigquery-dataset", "pg-slot", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -496,7 +496,7 @@ class Ledger:
             if not was.get("systemIdentifier") or was.get("systemIdentifier") != cur.get("systemIdentifier"):
                 return (f"{entry.get('db')} backend identity changed or unreadable ({was.get('systemIdentifier')!r} "
                         f"-> {cur.get('systemIdentifier')!r})")
-        elif kind == "bigquery-table":
+        elif kind in ("bigquery-table", "bigquery-dataset"):
             was = (rec.get("routes") or {}).get(entry.get("db"))
             cur = (now.get("routes") or {}).get(entry.get("db"))
             if not was or not cur or was != cur:
@@ -566,6 +566,20 @@ class Ledger:
             raise OwnershipError(f"collision:namespace:{ns} already exists and is not an object this run "
                                  f"created; it is left untouched")
         return self.add("namespace", ns, None, "confirmed", "absent before this attempt; created by its TQL")
+
+    def acquire_bigquery_dataset(self, admins) -> dict:
+        admin = _lifecycle._admin(admins, "bigquery-target")
+        if not admin.dataset.endswith("_" + self.ident.per_test):
+            raise OwnershipError("BigQuery CDC requires a per-test dataset; shared bootstrap is never acquired")
+        name = admin.project + "." + admin.dataset
+        if admin.dataset_present():
+            raise OwnershipError(f"collision:bigquery-dataset:{name}; refused, left untouched")
+        entry = self.add("bigquery-dataset", name, "bigquery-target")
+        admin.create_dataset()
+        if not admin.dataset_present():
+            raise OwnershipError(f"BigQuery dataset creation could not be confirmed: {name}")
+        self._set(entry, "confirmed")
+        return entry
 
     def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one, record=None) -> None:
         """DDL one file at a time: refuse unsupported resources, acquire (pre-existence check), run,
@@ -761,6 +775,11 @@ class Ledger:
                                    f"dropped with CASCADE ({str(exc).strip()})") from None
         elif kind == "bigquery-table":
             _lifecycle._admin(admins, db).drop_table(name)
+        elif kind == "bigquery-dataset":
+            admin = _lifecycle._admin(admins, db)
+            if name != admin.project + "." + admin.dataset:
+                raise OwnershipError("BigQuery dataset binding differs from the confirmed entry")
+            admin.drop_dataset()
         elif kind == "pg-slot":
             admin = _lifecycle._admin(admins, db)
             if slot_on_active is None:
@@ -790,6 +809,8 @@ class Ledger:
             return None if present is None else not present
         if kind == "bigquery-table":
             return not _lifecycle._admin(admins, db).table_present(name)
+        if kind == "bigquery-dataset":
+            return not _lifecycle._admin(admins, db).dataset_present()
         if kind == "pg-table":
             return name not in pg_tables_present(make_catalog(_lifecycle._admin(admins, db)), [name])
         if kind == "pg-view":

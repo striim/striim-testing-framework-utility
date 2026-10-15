@@ -34,7 +34,11 @@ MYSQL = {
     "05-mysql-initial-load": COMMON | {"ddl_source.sql", "ddl_target.sql", "seed.sql"},
     "06-mysql-cdc": COMMON | {"ddl_source.sql", "ddl_target.sql", "changes.sql"},
 }
-BIGQUERY = {"bigquery-legacy-append": COMMON | {"ddl_source.sql", "ddl_target.sql", "seed.sql"}}
+BIGQUERY = {name: COMMON | {"ddl_source.sql", "ddl_target.sql", "seed.sql"}
+            for name in ("bigquery-batch-load", "bigquery-legacy-append")}
+BIGQUERY["bigquery-batch-merge"] = COMMON | {"ddl_source.sql", "ddl_target.sql", "slot.sql", "seed.sql",
+    "seed_target.sql", "changes.sql", "sentinel_insert.sql", "sentinel_delete.sql"}
+BIGQUERY = dict(sorted(BIGQUERY.items()))
 MODES = {"01-plain-replication": ("initial-load", "db"), "02-transform": ("initial-load", "db"),
          "03-file-output": ("initial-load", "file"), "04-lifecycle-check": ("cdc", "db")}
 
@@ -225,8 +229,11 @@ def test_readme_shows_how_to_run_it(name):
     assert f"striim-test run samples/live/{name}" in (SAMPLES / name / "README.md").read_text()
 
 
-def test_bigquery_sample_has_exact_finite_legacy_contract():
-    name = "bigquery-legacy-append"
+@pytest.mark.parametrize("name,streaming,expected", [
+    ("bigquery-legacy-append", True, [("1", "alpha"), ("2", "beta")]),
+    ("bigquery-batch-load", False, [("1", "first"), ("2", "second")]),
+])
+def test_bigquery_sample_has_exact_finite_contract(name, streaming, expected):
     raw = _raw(name)
     manifest = load_manifest(SAMPLES / name / "test.yaml")
     assert manifest.requires == ["postgres", "bigquery"]
@@ -238,7 +245,23 @@ def test_bigquery_sample_has_exact_finite_legacy_contract():
     header, rows = _golden(name)
     seed = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
     assert header == ["id", "msg"]
-    assert [(r["id"], r["msg"]) for r in rows] == seed == [("1", "alpha"), ("2", "beta")]
+    assert [(r["id"], r["msg"]) for r in rows] == seed == expected
     tql = (SAMPLES / name / "app.tql").read_text()
-    assert "StreamingUpload: true" in tql and "UseLegacyStreamingAPI=true" in tql
+    assert f"StreamingUpload: {str(streaming).lower()}" in tql
+    assert ("UseLegacyStreamingAPI=true" in tql) is streaming
     assert "CREATE NAMESPACE ${NS};" in tql and "START APPLICATION ${APP};" in tql
+
+
+def test_bigquery_merge_golden_follows_declared_changes_and_sentinel():
+    name = "bigquery-batch-merge"
+    raw = _raw(name)
+    load_manifest(SAMPLES / name / "test.yaml")
+    assert canon.check_manifest(raw, case_dir=SAMPLES / name)
+    spec = lifecycle.parse_spec(raw["lifecycle"], name, timeout=raw["timeout"])
+    assert spec.mode == "cdc" and spec.readiness["kind"] == spec.completion["kind"] == "sentinel"
+    assert spec.sentinel["observe"]["db"] == "bigquery-target"
+    assert [(r["id"], r["msg"]) for r in _golden(name)[1]] == [("1", "new"), ("3", "fresh")]
+    changes = (SAMPLES / name / "changes.sql").read_text()
+    assert "SET msg='new' WHERE id=1" in changes and "WHERE id=2" in changes and "(3, 'fresh')" in changes
+    tql = (SAMPLES / name / "app.tql").read_text()
+    assert "Mode: 'MERGE'" in tql and "OptimizedMerge: false" in tql

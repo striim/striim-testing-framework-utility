@@ -125,6 +125,22 @@ class BigQueryAdmin:
     def ref(self, raw):
         return table_ref(raw, self.project, self.dataset)
 
+    def for_cdc(self, ident):
+        """A fresh per-test dataset contains all writer-generated staging objects."""
+        return BigQueryAdmin(dict(endpoint=self.endpoint, project=self.project,
+                                  dataset=self.dataset + "_" + ident.per_test))
+
+    def dataset_present(self):
+        return self._operation("dataset")["present"]
+
+    def create_dataset(self):
+        # No IF NOT EXISTS: a concurrent creator is a collision, never adopted.
+        self._operation("create-dataset")
+
+    def drop_dataset(self):
+        # Only the ledger's confirmed, exact-name per-test dataset authorizes this.
+        self._operation("drop-dataset")
+
     def _operation(self, op, remaining=10.0, **kwargs):
         if remaining <= 0:
             raise BigQueryError("exact-read-timeout", "no read budget remains")
@@ -201,6 +217,16 @@ class BigQueryAdmin:
 
     def count_rows(self, table, remaining=10):
         doc = self._operation("query", remaining, sql=f"SELECT COUNT(*) AS n FROM `{self.ref(table)}`",
+                              max_rows=1, max_bytes=10000)
+        return int(decode_rows(doc["schema"], doc["rows"])[0]["n"])
+
+    def count_key(self, table, key, value, remaining=10):
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or type(value) is not int:
+            raise ValueError("BigQuery sentinel requires a plain key and integer id")
+        parameters = [{"name": "sentinel", "parameterType": {"type": "INT64"},
+                       "parameterValue": {"value": str(value)}}]
+        doc = self._operation("query", remaining, sql=f"SELECT COUNT(*) AS n FROM `{self.ref(table)}` "
+                              f"WHERE `{key}` = @sentinel", parameters=parameters,
                               max_rows=1, max_bytes=10000)
         return int(decode_rows(doc["schema"], doc["rows"])[0]["n"])
 
@@ -299,6 +325,20 @@ def _worker(req):
             api("POST", root + "/datasets", data={"datasetReference": {
                 "projectId": req["project"], "datasetId": req["dataset"]}})
         req = dict(req, op="query", sql="SELECT 1", max_rows=1)
+    if req["op"] in ("dataset", "create-dataset", "drop-dataset"):
+        try:
+            if req["op"] == "create-dataset":
+                api("POST", root + "/datasets", data={"datasetReference": {
+                    "projectId": req["project"], "datasetId": req["dataset"]}})
+            elif req["op"] == "drop-dataset":
+                api("DELETE", dataset, query_params={"deleteContents": "true"})
+            else:
+                api("GET", dataset)
+            return {"present": req["op"] != "drop-dataset"}
+        except NotFound:
+            if req["op"] == "create-dataset":
+                raise
+            return {"present": False}
     if req["op"] in ("table", "drop"):
         name = table_ref(req["table"], req["project"], req["dataset"])
         path = dataset + "/tables/" + name.split(".")[2]
@@ -310,8 +350,11 @@ def _worker(req):
     if req.get("table"):
         table = api("GET", dataset + "/tables/" + req["table"].split(".")[2])
         decode_rows(table["schema"], [])  # reject unsupported schema even for an empty result
+    query = {"query": req["sql"], "useLegacySql": False}
+    if req.get("parameters"):
+        query.update(parameterMode="NAMED", queryParameters=req["parameters"])
     api("POST", root + "/jobs", data={"jobReference": {"projectId": req["project"], "jobId": req["job"]},
-        "configuration": {"query": {"query": req["sql"], "useLegacySql": False}}})
+        "configuration": {"query": query}})
     rows, schema, token, row_bytes = [], None, None, 0
     for _ in range(128):
         params = {"maxResults": min(1000, req["max_rows"] + 1 - len(rows)), "timeoutMs": 100, "formatOptions.useInt64Timestamp": "true"}

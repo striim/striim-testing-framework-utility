@@ -283,3 +283,63 @@ def test_job_delete_can_finish_within_the_original_budget(peer):
     assert peer.admin.select_rows('slt.t', remaining=6) == [{'id':9007199254740993}]
     assert peer.admin.last_operation['jobDelete'] == 'response'
     assert time.monotonic() - started < 6
+
+
+def test_cdc_dataset_collision_cleanup_and_binding(tmp_path):
+    ident = runident.derive('merge', {'SLT_RUN_EPOCH': 'dataset-control'})
+    original = BigQueryAdmin({'host': '127.0.0.1', 'port': 9050, 'project': 'test-project', 'dataset': 'slt'})
+    admin = original.for_cdc(ident)
+    assert admin.dataset == 'slt_' + ident.per_test and original.dataset == 'slt'
+    admins = {'bigquery-target': {'admin': admin}}
+    ledger = ownership.Ledger.open(ident, state_dir=tmp_path, env={})
+    ledger.bind(admins, None)
+    datasets = {admin.dataset, 'slt', 'foreign'}
+    admin.dataset_present = lambda: admin.dataset in datasets
+    admin.create_dataset = lambda: datasets.add(admin.dataset)
+    admin.drop_dataset = lambda: datasets.remove(admin.dataset)
+    with pytest.raises(ownership.OwnershipError, match='collision:bigquery-dataset'):
+        ledger.acquire_bigquery_dataset(admins)
+    assert not ledger.entries and datasets == {admin.dataset, 'slt', 'foreign'}
+    datasets.remove(admin.dataset)
+    entry = ledger.acquire_bigquery_dataset(admins)
+    assert entry['state'] == 'confirmed'
+    now = ownership.snapshot_targets(admins, None)
+    assert ledger.target_problem(entry, now) is None
+    now['routes']['bigquery-target']['dataset'] = 'slt'
+    assert 'binding changed' in ledger.target_problem(entry, now)
+    ledger._delete(entry, client=None, admins=admins, ctx=None, tokens={}, fault=False)
+    assert ledger._verify(entry, client=None, admins=admins, ctx=None)
+    assert datasets == {'slt', 'foreign'}
+    with pytest.raises(ownership.OwnershipError, match='per-test dataset'):
+        ledger.acquire_bigquery_dataset({'bigquery-target': {'admin': original}})
+
+
+def test_sentinel_key_is_a_typed_parameter(peer, monkeypatch):
+    sent = []
+    monkeypatch.setattr(peer.admin, '_operation', lambda op, remaining, **kw:
+                        sent.append(kw) or {'schema': {'fields': [{'name': 'n', 'type': 'INT64'}]},
+                                           'rows': [{'f': [{'v': '1'}]}]})
+    assert peer.admin.count_key('slt.t', 'id', 9007199254740993, 5) == 1
+    assert '@sentinel' in sent[0]['sql'] and '9007199254740993' not in sent[0]['sql']
+    assert sent[0]['parameters'] == [{'name': 'sentinel', 'parameterType': {'type': 'INT64'},
+                                     'parameterValue': {'value': '9007199254740993'}}]
+    with pytest.raises(ValueError):
+        peer.admin.count_key('slt.t', 'id;DROP', 1, 5)
+
+
+def test_cdc_dataset_failed_create_never_adopts_concurrent_owner(tmp_path):
+    ident = runident.derive('merge-race', {'SLT_RUN_EPOCH': 'dataset-control'})
+    admin = BigQueryAdmin({'host': '127.0.0.1', 'port': 9050, 'project': 'test-project', 'dataset': 'slt'}).for_cdc(ident)
+    present = []
+    admin.dataset_present = lambda: bool(present)
+    def race():
+        present.append('concurrent owner')
+        raise RuntimeError('conflict')
+    admin.create_dataset = race
+    admins = {'bigquery-target': {'admin': admin}}
+    ledger = ownership.Ledger.open(ident, state_dir=tmp_path, env={})
+    ledger.bind(admins, None)
+    with pytest.raises(RuntimeError, match='conflict'):
+        ledger.acquire_bigquery_dataset(admins)
+    assert ledger.entries[0]['state'] == 'intended' and present == ['concurrent owner']
+    assert ledger.entries[0]['state'] not in ownership.DELETABLE_STATES

@@ -243,7 +243,7 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
             _err(path, "completion.path is required for kind file-lines")
         _positive_int(path, completion.get("lines"), "completion.lines")
 
-    # Only finite initial-load target observations are qualified for this engine.
+    # BigQuery sources remain unsupported; CDC completion requires both sentinel steps.
     for section in (readiness, completion):
         source = section.get("source")
         if isinstance(source, dict) and source.get("db") == "bigquery-target":
@@ -255,7 +255,8 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
                       if isinstance(section.get("target"), dict)]
     target_routes += [sentinel_routes.get("db"), observe.get("db")]
     if mode == "cdc" and "bigquery-target" in target_routes:
-        _err(path, "BigQuery CDC sentinel observation is unqualified until MERGE insert/delete is proven")
+        if rk != "sentinel" or ck != "sentinel" or sentinel_routes.get("db") != "postgres-source":
+            _err(path, "BigQuery CDC requires Postgres injection and sentinel readiness/completion")
 
     sentinel = block.get("sentinel")
     needed = rk == "sentinel" or ck == "sentinel"
@@ -928,14 +929,21 @@ class Sentinel:
     def run(self, watch: Watch, terminal=None) -> str:
         s = self.spec.sentinel
         observe_ref = s["observe"]
-        table = _table(_render(observe_ref["table"], self.tokens))
         key = observe_ref["key"]
         writer = make_probe(_admin(self.admins, s["db"]))
-        reader = make_probe(_admin(self.admins, observe_ref["db"]))
-        sql = f"SELECT count(*) FROM {table} WHERE CAST({key} AS text) = %s"
-
-        def count(remaining):
-            return int(reader.query(sql, (str(self.id),), remaining)[0][0])
+        raw_table = _render(observe_ref["table"], self.tokens)
+        if observe_ref["db"] == "bigquery-target":
+            reader = _admin(self.admins, observe_ref["db"])
+            table = reader.ref(raw_table)
+            def count(remaining):
+                return reader.count_key(table, key, self.id, remaining)
+            count.minimum_budget = 3.0
+        else:
+            table = _table(raw_table)
+            reader = make_probe(_admin(self.admins, observe_ref["db"]))
+            sql = f"SELECT count(*) FROM {table} WHERE CAST({key} AS text) = %s"
+            def count(remaining):
+                return int(reader.query(sql, (str(self.id),), remaining)[0][0])
         self.count = count
 
         for step, file_key, want in (("present", "insert", lambda n: n > 0), ("absent", "delete", lambda n: n == 0)):

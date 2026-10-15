@@ -2314,9 +2314,17 @@ class LiveItem(pytest.Item):
             # — a no-op on a clean slate.
             # C7.6: reset only what a prior attempt of this identity recorded,
             # by exact name, then acquire the run-scoped namespace (refused if it already exists).
+            if m.lifecycle is not None and m.lifecycle.mode == "cdc" and "bigquery-target" in admins:
+                # Generated stage names are not predictable. Contain them in a fresh,
+                # ledger-owned dataset, before allowing any writer or fixture DDL.
+                _bq = admins["bigquery-target"]["admin"].for_cdc(ident)
+                admins["bigquery-target"] = {"admin": _bq, "schema": _bq.dataset}
+                tokens["BIGQUERY_DATASET"] = _bq.dataset
             _report(m.name, "resetting this identity's recorded resources")
             ledger.reset(client=client, admins=admins, ctx=ctx, tokens=tokens)
             ledger.acquire_namespace(client)
+            if m.lifecycle is not None and m.lifecycle.mode == "cdc" and "bigquery-target" in admins:
+                ledger.acquire_bigquery_dataset(admins)
             # Also drop any OP resume checkpoint this namespace left on the server. Dropping
             # the app and namespace does NOT remove them -- they are plain files in Striim's
             # working dir -- so without this the next run's same-named app resumes from the

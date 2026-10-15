@@ -47,6 +47,8 @@ step in detail, with the output to expect and what to do when something fails.
 | `05-mysql-initial-load` | an initial load on MySQL |
 | `06-mysql-cdc` | binlog CDC on MySQL: inserts, an update and a delete |
 | `bigquery-legacy-append` | finite legacy REST streaming into the local BigQuery emulator, with exact values and multiplicity |
+| `bigquery-batch-load` | finite direct CSV batch loads with default writer settings and typed exact rows; installed-client exact-boundary exclusion applies |
+| `bigquery-batch-merge` | bounded batch CDC MERGE with same-writer insert/delete witnesses and owned staging dataset |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.
