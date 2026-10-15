@@ -75,7 +75,8 @@ with `invalid-snapshot-spec`. Runtime failures include `snapshot-target-not-owne
 `snapshot-not-committed-prefix`, `snapshot-undeclared-column`,
 `snapshot-table-set-mismatch`, `snapshot-target-ambiguous`, `snapshot-duplicate-column`,
 `snapshot-limit-exceeded`, `snapshot-read-error`, `snapshot-read-timeout` and
-`snapshot-final-prefix-missing`. This is an assertion record of type `data` (`xfail.tiers: [data]` addresses
+`snapshot-final-prefix-missing`, `snapshot-prefix-regressed` and
+`observer-incomplete`. This is an assertion record of type `data` (`xfail.tiers: [data]` addresses
 all observer failures, including read failures; there is no snapshot tier). The record includes every
 observation's prefix index, row count and combined canonical hash. Goldens are
 read from the case's input snapshot; the framework never derives them from output.
