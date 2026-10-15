@@ -220,3 +220,15 @@ drop or replay bypass does not establish ownership.
 | `audit-writer-not-append-only` | The declared writer/typed input/target mapping permits upsert or does not match. | Use the route-specific append writer, identical textual target mapping and required false upsert flags. |
 | `audit-target-not-append-only` | The target schema/guard permits replacing an existing delivery. | Remove upsert/unique conflicts from the audit sink and retain duplicate rows for comparison. |
 | `audit-target-not-owned` | The audit target is not confirmed for this attempt. | Use framework-created ${TID} tables/topics or ${OWNED_DIR} output. |
+
+## Interrupt inside an observed progress window
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-progress-trigger` | The progress declaration or rendered target is invalid. | Use the documented kind, route, identifiers and open-window constraints; trigger cannot coexist with after/every. |
+| `invalid-progress-target` | The progress declaration or rendered target is invalid. | Use the documented kind, route, identifiers and open-window constraints; trigger cannot coexist with after/every. |
+| `progress-target-not-owned` | The slot/topic/table is not confirmed on this attempt and route. | Create the resource through framework DDL/acquisition and use its exact rendered route/name. |
+| `progress-deadline` | The condition was never observed before the deadline. | Check whether input reached the reader and whether the chosen threshold is reachable. |
+| `progress-window-missed` | The count reached/passed the upper bound before the fault. | Choose a window that includes observable in-flight work and slow/provide sufficient input; final equality cannot prove a fault. |
+| `progress-read-error` | The progress transport/query failed. | Read the nested error; check target/slot/topic access and offset/checkpoint fields. |
+| `progress-app-not-running` | The app left RUNNING before the declared fault could land. | Inspect app status and deployment; ensure the work remains in flight until the trigger. |

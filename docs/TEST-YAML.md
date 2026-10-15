@@ -35,7 +35,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
 | `expect_halt` | bool | no | `false` | `true` => the app is expected to reach a terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) instead of RUNNING -- a raise-path test. This can be satisfied at any phase: a synchronous failure during DEPLOY/START itself (the TQL-import call raises before the app is even running), the app never reaching RUNNING during startup, or a later terminal transition while the app is running (polled the same way as any other `assert:` tier). Alone, `expect_halt: true` satisfies the manifest's "at least one assertion" requirement -- no `assert:` block is needed. To also pin *why* it halted, add `expect_halt_contains`. |
 | `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
-| `recover` | mapping | no | — | interrupt the app after every `post_start` step and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
+| `recover` | mapping | no | — | interrupt the app after `post_start` work begins and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
 | `exact` | mapping | no | none | turns on exact comparison for the `data`, `diff` and `file` specs that carry their own `exact:`: every row counted, values compared by declared type. See **`exact:`** below |
 | `audit` | mapping | no | none | `{version: 1}` enables audited exact specs; each names its append writer, and Spanner also names its sink-generated delivery key |
 | `transactions` | list | no | `[]` | ordered Postgres session steps; see `transactions:` below |
@@ -530,6 +530,28 @@ Trigger kinds:
 | `kafka-end` | `topic`, integer `partition`, integer `above`; fresh topic end offset must exceed above. |
 | `kafka-consumer` | same plus `group`; committed consumer offset must exceed above. A group without a committed offset has not passed the barrier. |
 | `postgres-slot` | Postgres `db`, `slot`, `above` as hexadecimal LSN (for example 0/10); confirmed_flush_lsn must exceed it. Full 64-bit positions are compared. |
+
+All triggers require `kind`; `timeout` defaults to 60s and `poll` to 100ms,
+both positive finite durations. Unknown and kind-specific foreign keys are
+refused with `invalid-progress-trigger`. `trigger` cannot coexist with `after`
+or `every`; the loader refuses either combination. Absolute thresholds require
+`times: 1`. A checkpoint trigger without `above` can repeat with an advancing
+per-cycle baseline; repeated recovery requires `expect_running: true`.
+
+| Kind | Required fields and constraints |
+|---|---|
+| `target-count` | `db`, `table`, nonnegative integer `above`, `below`; `below >= above + 2` leaves an integer inside the strict window |
+| `checkpoint` | Optional `field` (default `serialNo`), one ASCII identifier starting with a letter; optional nonnegative integer `above`, otherwise advance beyond the captured baseline |
+| `kafka-end` | `topic`, nonnegative integer `partition`, nonnegative integer `above` |
+| `kafka-consumer` | The Kafka end fields plus nonempty, token-rendered `group`; reads committed group offsets |
+| `postgres-slot` | Postgres `db`, token-rendered `slot` matching `[a-z0-9_]+` at runtime, and `above` as a Postgres LSN |
+
+Table, slot and topic reads require confirmed ownership in this attempt.
+Kafka triggers use framework-derived source/target topics acquired by a declared
+lifecycle, rather than an unclaimed custom topic. A slot must already be recorded
+as owned; naming a shared slot does not grant permission to observe it.
+Only target-count recovery has reported live qualification (sample 14);
+checkpoint, slot and Kafka position triggers have hermetic coverage.
 
 Kafka offsets describe the next record position; the trigger observes the named
 partition, never a sum across partitions. Checkpoint advances are measured anew
@@ -1833,3 +1855,5 @@ Audit writer declarations accept an optional `VERSION` clause. KafkaWriter `Topi
 
 Worked case: [13-append-only-audit](../samples/live/13-append-only-audit/README.md). Framework gallery: [framework-append-only-audit](../scripts/live/regression/framework/framework-append-only-audit/README.md).
 After an interruption takes effect, a fresh progress read has at most five seconds (or the shorter trigger timeout). A target count at or above `below` fails `fault-missed`, even when the pre-command read held. Absolute triggers require `times: 1`; only a checkpoint trigger without `above` supports repeated cycles with an advancing baseline.
+
+Worked case: [14-progress-recovery](../samples/live/14-progress-recovery/README.md). Framework gallery: [framework-progress-recovery](../scripts/live/regression/framework/framework-progress-recovery/README.md).

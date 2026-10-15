@@ -264,3 +264,7 @@ The live engine modules `snapshot_observer` implement this check. Manifest loadi
 ### Reject replay duplicates with an append-only audit
 
 The live engine modules `audit` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [13-append-only-audit fixture](../../samples/live/13-append-only-audit/README.md).
+
+### Interrupt inside an observed progress window
+
+The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [14-progress-recovery fixture](../../samples/live/14-progress-recovery/README.md).

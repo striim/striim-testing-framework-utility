@@ -54,7 +54,7 @@ Runnable regression guides are included under Contributing and internals.
 | [11 Transaction seed sessions](../samples/live/11-transaction-seeds/README.md) | `samples/live/11-transaction-seeds/README.md` | Two source transactions overlap. B inserts id 2 and commits first. |
 | [12 Consistent target snapshots](../samples/live/12-snapshot-observer/README.md) | `samples/live/12-snapshot-observer/README.md` | The transaction-session sample writes each row to two source tables in the same transaction. |
 | [13 Append-only audit target](../samples/live/13-append-only-audit/README.md) | `samples/live/13-append-only-audit/README.md` | DatabaseReader emits two rows. A CQ converts them to a locally declared typed stream, so DatabaseWriter records deliveries as inserts. |
-| [Recovery inside a progress window](../samples/live/14-progress-recovery/README.md) | `samples/live/14-progress-recovery/README.md` | Run striim-test run samples/live/14-progress-recovery on a configured Striim host. |
+| [Recovery inside a progress window](../samples/live/14-progress-recovery/README.md) | `samples/live/14-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services
@@ -114,7 +114,7 @@ Runnable regression guides are included under Contributing and internals.
 | [framework/ — the harness testing itself](../scripts/live/regression/framework/README.md) | `scripts/live/regression/framework/README.md` | Other tests check an app, an Open Processor or a writer. |
 | [Append-only audit target](../scripts/live/regression/framework/framework-append-only-audit/README.md) | `scripts/live/regression/framework/framework-append-only-audit/README.md` | Run striim-test run scripts/live/regression/framework/framework-append-only-audit. |
 | [Bounded absence](../scripts/live/regression/framework/framework-bounded-nothing/README.md) | `scripts/live/regression/framework/framework-bounded-nothing/README.md` | Run striim-test run scripts/live/regression/framework/framework-bounded-nothing in Docker mode. |
-| [Recovery inside a progress window](../scripts/live/regression/framework/framework-progress-recovery/README.md) | `scripts/live/regression/framework/framework-progress-recovery/README.md` | Run striim-test run samples/live/14-progress-recovery on a configured Striim host. |
+| [Recovery inside a progress window](../scripts/live/regression/framework/framework-progress-recovery/README.md) | `scripts/live/regression/framework/framework-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
 | [Raw file inventory](../scripts/live/regression/framework/framework-raw-file/README.md) | `scripts/live/regression/framework/framework-raw-file/README.md` | Run striim-test run scripts/live/regression/framework/framework-raw-file in Docker mode. |
 | [Consistent snapshots](../scripts/live/regression/framework/framework-snapshot-observer/README.md) | `scripts/live/regression/framework/framework-snapshot-observer/README.md` | Run striim-test run scripts/live/regression/framework/framework-snapshot-observer. |
 | [Transaction sessions](../scripts/live/regression/framework/framework-transaction-seeds/README.md) | `scripts/live/regression/framework/framework-transaction-seeds/README.md` | Run striim-test run scripts/live/regression/framework/framework-transaction-seeds. |
