@@ -12,7 +12,7 @@
     "runtime": "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
     "dockerfile_frontend": "docker/dockerfile:1.4@sha256:9ba7531bd80fb0a858632727cf7a112fbfd19b17e94c4e84ced81e24ef1a0dbc",
     "token": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-    "framework_version": "0.8.1-framework.7"
+    "framework_version": "0.8.1-framework.8"
   },
   "patches": [
     {
@@ -57,6 +57,16 @@
       "file": "0012-decode-bounded-gzip-csv-files.patch",
       "sha256": "54b0089cbe164ecd3902da5aff0c350d093db83b409b5b274643bfc9895f8cef",
       "description": "Decode gzip CSV files with encoded/decoded size limits while retaining received-byte accounting."
+    },
+    {
+      "file": "0013-finalize-declared-empty-upload.patch",
+      "sha256": "4b418dbbdacecca1f7803ff8c60cc8304b7e1a5b1f3361f0f3f6714400f78b33",
+      "description": "Finalize empty requests with an explicit received total; reject inconsistent totals."
+    },
+    {
+      "file": "0014-validate-csv-scalar-values.patch",
+      "sha256": "034055c11f22ca4bcfed47f024df01465cdd55d935d6365d29e538478ac115b3",
+      "description": "Validate bounded CSV scalar values, decode base64 bytes and honor the default null marker."
     }
   ],
   "dependency_patches": [

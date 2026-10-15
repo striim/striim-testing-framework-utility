@@ -13,7 +13,7 @@ use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
 2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.7 .`.
+   `docker buildx build --load -t slt-bigquery:0.8.1-framework.8 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
    rebuilding it. Without that override, Compose builds the source recipe with a
@@ -122,6 +122,20 @@ custom NULL markers, empty STRING/BYTES, UTF-8, double quote and quoted newlines
 Malformed numeric/jagged rows and unsupported quote/encoding settings fail while
 preserving existing target rows, including failed WRITE_TRUNCATE loads.
 
+Qualified CSV scalar columns are STRING, INTEGER/INT64, NUMERIC, FLOAT/FLOAT64,
+BOOLEAN/BOOL, base64-encoded BYTES, DATE, DATETIME, TIME and TIMESTAMP. Boolean
+spellings follow the case-insensitive pairs 1/0, true/false, t/f, yes/no and y/n.
+DATE uses YYYY-MM-DD; DATETIME uses YYYY-MM-DD HH:MM:SS with optional one-to-six
+fraction digits; TIME uses HH:MM:SS with the same fractional precision. TIMESTAMP
+accepts that DATETIME form in UTC, also with T, trailing Z or trailing ` UTC`.
+Other valid cloud timestamp forms (offsets, slash dates and epoch numbers) remain
+unqualified here. Malformed scalars fail before target mutation. The default empty
+null marker produces NULL for every type; with a custom marker, empty STRING/BYTES
+remain empty. These rules follow the [BigQuery CSV contract](https://cloud.google.com/bigquery/docs/loading-data-cloud-storage-csv#data_types)
+within the stated temporal subset. Carriage returns inside quoted fields and blank
+records are unqualified: Go's CSV reader normalizes CRLF and skips blank lines.
+Additional types, nested fields and repeated fields remain unqualified.
+
 Terminal success/failure and millisecond creation/start/end times persist;
 upload responses and jobs.get agree, including zero counters after metadata reload.
 `inputFileBytes` counts received file bytes. `outputRows` counts inserted records.
@@ -135,7 +149,9 @@ Resumable buffers are limited to 16 MiB per upload, 32 MiB in aggregate, 32 acti
 sessions and 256 retained session entries. A later initiation sweeps entries idle
 for ten minutes. Partial/status requests, byte-identical replay, out-of-order
 rejection and final replay have native HTTP controls. Finalization applies one
-load within the live session; replay tracking is bounded and in memory.
+load within the live session; replay tracking is bounded and in memory. An empty
+`bytes */N` request completes only when N matches the buffered bytes; larger totals
+remain incomplete and smaller totals are rejected. `bytes */*` never finalizes.
 Restart/recovery and larger uploads are outside this candidate's contract.
 
 Location follows the request origin, including remapped ports. Forwarded origin
@@ -168,7 +184,7 @@ and run the test against an isolated local stack with `BIGQUERY_TEST_ENDPOINT`,
 `BIGQUERY_JAVA_CLASSPATH` pointing at the public client dependencies. The corrected
 client must pass the unchanged one-row oracle before this exclusion is removed.
 
-The bounded native API qualification uses image `0.8.1-framework.7`, Linux amd64
+The preceding bounded native API qualification used image `0.8.1-framework.7`, Linux amd64
 config SHA256 `721406bd82f405efefcd5e945831e771b614d4a2b3aa928a4c24d597bb87dd26`.
 The arm64 cross-build config is
 `a7e788395af8d7bb2f24ba7b973d9a589f16f0ffedbfaa985af279bfdffea421`;

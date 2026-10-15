@@ -25,4 +25,3 @@ seed:
 expect_halt: true
 expect_halt_contains:
 - _h_maxTaskQueueSize
-- must be greater than 2

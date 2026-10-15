@@ -6,3 +6,5 @@
 0010-persist-truthful-load-job-results.patch
 0011-bound-resumable-upload-sessions.patch
 0012-decode-bounded-gzip-csv-files.patch
+0013-finalize-declared-empty-upload.patch
+0014-validate-csv-scalar-values.patch

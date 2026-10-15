@@ -1,0 +1,66 @@
+--- a/server/upload_session.go
++++ b/server/upload_session.go
+@@ -66,7 +66,7 @@
+ 		return
+ 	}
+ 	rangeHeader := r.Header.Get("Content-Range")
+-	status := rangeHeader == "bytes */*" || (strings.HasPrefix(rangeHeader, "bytes */") && rangeHeader != "bytes */0")
++	status := strings.HasPrefix(rangeHeader, "bytes */")
+ 	if s.done {
+ 		if !status && (s.finalRange != rangeHeader || s.finalDigest != sha256.Sum256(raw)) {
+ 			errorResponse(r.Context(), w, errInvalid("finalized upload content differs from original"))
+@@ -76,7 +76,15 @@
+ 		return
+ 	}
+ 	start, total := int64(len(s.data)), int64(-1)
+-	if rangeHeader != "" && !status && rangeHeader != "bytes */0" {
++	if status && rangeHeader != "bytes */*" {
++		total, err = strconv.ParseInt(strings.TrimPrefix(rangeHeader, "bytes */"), 10, 64)
++		if err != nil || total < start || total > uploadLimit || len(raw) != 0 {
++			errorResponse(r.Context(), w, errInvalid("invalid upload total"))
++			return
++		}
++		status = false
++	}
++	if rangeHeader != "" && !strings.HasPrefix(rangeHeader, "bytes */") {
+ 		var end int64
+ 		var totalText string
+ 		if n, _ := fmt.Sscanf(rangeHeader, "bytes %d-%d/%s", &start, &end, &totalText); n != 3 || start < 0 || end-start+1 != int64(len(raw)) {
+@@ -90,7 +98,7 @@
+ 				return
+ 			}
+ 		}
+-	} else if rangeHeader == "" || rangeHeader == "bytes */0" {
++	} else if rangeHeader == "" {
+ 		total = start + int64(len(raw))
+ 	}
+ 	if !status {
+--- /dev/null
++++ b/server/review_s1_test.go
+@@ -0,0 +1,26 @@
++package server
++
++import (
++	"fmt"
++	"reflect"
++	"testing"
++)
++
++func TestUploadStandardEmptyFinal(t *testing.T) {
++	f := newUploadFixture(t)
++	location := f.begin("empty_final", "|", "WRITE_APPEND")
++	payload := []byte("1|first\n")
++	f.call("PUT", location, payload, map[string]string{"Content-Range": fmt.Sprintf("bytes 0-%d/*", len(payload)-1)}, 308)
++	f.call("PUT", location, nil, map[string]string{"Content-Range": "bytes */*"}, 308)
++	f.call("PUT", location, nil, map[string]string{"Content-Range": "bytes */0"}, 400)
++	f.call("PUT", location, nil, map[string]string{"Content-Range": "bytes */9"}, 308)
++	if len(f.rows()) != 0 {
++		t.Fatal("unknown total or incomplete declaration committed rows")
++	}
++	headers := map[string]string{"Content-Range": "bytes */8"}
++	done, _ := f.call("PUT", location, nil, headers, 200)
++	replay, _ := f.call("PUT", location, nil, headers, 200)
++	if done["status"].(map[string]interface{})["state"] != "DONE" || !reflect.DeepEqual(done, replay) || !reflect.DeepEqual(f.rows(), map[string]string{"1": "first"}) {
++		t.Fatalf("final/replay mismatch %v %v", done, replay)
++	}
++}
