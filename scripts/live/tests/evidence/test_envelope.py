@@ -796,3 +796,24 @@ def test_owner_selection_refusal_writes_placement_reads(good):
     assert diagnostic['interrupted'] is False and not saved['run']['qualifies']
     assert diagnostic['owners'] == ['server_primary', 'server_secondary']
     assert set(diagnostic['reads']['statuses']) == {'server_primary', 'server_secondary'}
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_node_failover_wait_writes_valid_evidence_on_success_and_failure(good, monkeypatch, succeeded):
+    from ..test_node_failover_evidence import target_for
+    from livetest.recovery import RecoveryError
+    target, clock, records, commands = target_for(monkeypatch,
+        lambda clock, index: {'server_secondary'} if succeeded else set())
+    if succeeded:
+        target.restore()
+    else:
+        with pytest.raises(RecoveryError, match='fault-node-no-failover'):
+            target.restore()
+    good._slt_records.extend(records)
+    doc = doc_of(good, status='passed' if succeeded else 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    event = saved['assertions'][-1]['actual']['rows'][0]
+    assert event['phase'] == 'failover-wait' and event['failedOver'] is succeeded
+    assert event['observations'] and saved['assertions'][-1]['status'] == ('passed' if succeeded else 'failed')

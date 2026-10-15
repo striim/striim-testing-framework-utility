@@ -6,6 +6,7 @@ import re
 import shlex
 import subprocess
 import time
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from livetest import stack
@@ -17,6 +18,8 @@ ROLES = {"primary", "secondary", "agent"}
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _FLOW = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\Z")
 MAX_READ_CHARS = 65536
+MAX_FAILOVER_OBSERVATIONS = 128
+MAX_FAILOVER_ERROR_CHARS = 1024
 
 
 def _capture(reads, key, value):
@@ -265,19 +268,61 @@ class Target:
                         {"node": node["server"], "role": node["role"], "containerId": node["id"],
                          "observedAt": time.monotonic(), "interrupted": ok}]}))
 
+    def _wait_failover(self, survivor, deadline):
+        from livetest.striim import redact
+        observations, count, ok = [], 0, False
+        try:
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise RecoveryError("fault-node-no-failover")
+                self._placement_reads.clear()
+                owners, error, clipped = None, None, False
+                started = time.monotonic()
+                try:
+                    owners = self.placement(self.hosting, left)
+                    if not isinstance(owners, set):
+                        owners = None
+                        raise ValueError("placement-read-shape")
+                except Exception as exc:
+                    error = redact(str(exc))
+                    clipped = len(error) > MAX_FAILOVER_ERROR_CHARS
+                    error = error[:MAX_FAILOVER_ERROR_CHARS]
+                observed = time.monotonic()
+                count += 1
+                row = {"index": count, "startedAt": started, "observedAt": observed,
+                       "observedUtc": datetime.now(timezone.utc).isoformat(),
+                       "remaining": left, "late": observed > deadline,
+                       "owners": sorted(owners) if owners is not None else None,
+                       "error": error, "errorTruncated": clipped}
+                if len(observations) < MAX_FAILOVER_OBSERVATIONS:
+                    observations.append(row)
+                else:
+                    observations[-1] = row  # retain the first entries and the latest read
+                if error is None and not row["late"] and owners == {survivor}:
+                    ok = True
+                    return
+                time.sleep(min(.2, max(0, deadline - time.monotonic())))
+        finally:
+            if self.record:
+                self.record(build_assertion_result(type="recovery", target=self.hosting, db=None,
+                    spec={"node": {"hosting": self.hosting}},
+                    status="passed" if ok else "failed", detail="ok" if ok else "fault-node-no-failover",
+                    expected={"kind": "rows", "rows": [{"failedOver": True}]},
+                    actual={"kind": "rows", "rows": [{
+                        "phase": "failover-wait", "node": self.selected["server"],
+                        "survivor": survivor, "containerId": self.selected["id"],
+                        "interrupted": True, "failedOver": ok, "deadline": deadline,
+                        "observations": observations, "observationCount": count,
+                        "observationsDropped": count - len(observations),
+                        "reads": dict(self._placement_reads)}]}))
+
     def restore(self, expect_running=True, settle=0):
         deadline = time.monotonic() + self.timeout
         # A hosted server flow must demonstrably move while its owner is down.
         if expect_running and self.hosting and self.selected["role"] != "agent" and self.needs_restore:
             survivor = self.nodes["secondary" if self.selected["role"] == "primary" else "primary"]["server"]
-            while True:
-                left = deadline - time.monotonic()
-                if left <= 0: raise RecoveryError("fault-node-no-failover")
-                try:
-                    if self.placement(self.hosting, left) == {survivor}: break
-                except Exception:
-                    pass
-                time.sleep(min(.2, max(0, deadline - time.monotonic())))
+            self._wait_failover(survivor, deadline)
         self.close(remaining=max(.05, deadline - time.monotonic()))
         if self.selected["role"] != "agent": _reset_modules()
         self.wait_cluster(self.client, max(.05, deadline - time.monotonic()))

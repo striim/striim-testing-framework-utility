@@ -587,7 +587,15 @@ Docker commands use the captured container ID and verify its resulting running
 state. A failed command fails `node-fault-error`. Only that container is started
 again, including after a failed case. A hosted app-node flow must move to the
 other app node while its owner is stopped; missing failover fails
-`fault-node-no-failover` under the restore deadline. The agent has no app-node
+`fault-node-no-failover` under the restore deadline. A separate `recovery` assertion
+with `phase: failover-wait` records success or failure before restarting the
+original owner. Each placement read records its index, start/observation times,
+UTC time, remaining budget, owners or a redacted error, and whether it finished
+late. A late survivor read cannot satisfy the deadline. History keeps at most
+128 entries (the first 127 plus the latest); `observationCount` and
+`observationsDropped` expose omitted middle reads. Error text is capped at 1024
+characters with `errorTruncated`; `reads` preserves the last native placement
+reply diagnostics under their existing per-response limits. The agent has no app-node
 survivor requirement. Each cycle selects the hosting flow's current owner afresh.
 
 The surviving app node's published API port is discovered by Docker inspection.
