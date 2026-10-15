@@ -232,6 +232,8 @@ def test_snapshot_sample_preserves_source_transactions(case):
     tql = (root / case / 'app.tql').read_text()
     assert 'PreserveSourceTransactionBoundary: true' in tql
     assert 'FilterTransactionBoundaries: false' in tql
+    assert "BatchPolicy: 'EventCount:100,Interval:1'" in tql
+    assert "CommitPolicy: '-1'" in tql
 
 
 def test_a_declared_prefix_cannot_regress_after_a_newer_commit():

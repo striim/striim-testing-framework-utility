@@ -19,7 +19,7 @@ CREATE OR REPLACE TARGET ${TID}writer USING Global.DatabaseWriter (
   Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt;${PG_SOURCE_SCHEMA}.${TID}src_aux,${PG_TARGET_SCHEMA}.${TID}tgt_aux',
   PreserveSourceTransactionBoundary: true,
   BatchPolicy: 'EventCount:100,Interval:1',
-  CommitPolicy: 'EventCount:100,Interval:1'
+  CommitPolicy: '-1'
 ) INPUT FROM ${TID}stream;
 
 END APPLICATION ${APP};
