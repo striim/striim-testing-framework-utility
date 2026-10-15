@@ -34,7 +34,7 @@ from livetest.assertions.checkpoint_history import (
     assert_checkpoint_history, parse_checkpoint_history_spec,
 )
 from livetest.assertions.jmx import JmxSpecError, assert_jmx, parse_jmx_specs, render_row_keys
-from livetest.assertions.halt import assert_halt, accept_expected_halt
+from livetest.assertions.halt import assert_halt, accept_expected_halt, skipped_by_startup_halt
 from livetest import recovery
 from livetest import outage
 from livetest import appactions
@@ -2618,7 +2618,8 @@ class LiveItem(pytest.Item):
                 # and .slt.json still shows why.
                 try:
                     return accept_expected_halt(m.expect_halt, exc,
-                                                contains=m.expect_halt_contains)
+                                                contains=m.expect_halt_contains,
+                                                skipped=tuple(skipped_by_startup_halt(m)))
                 except AssertionFailed as af:
                     self._slt_records.extend(af.records)
                     raise
@@ -2711,6 +2712,9 @@ class LiveItem(pytest.Item):
 
             if expect_halt_early is not None:
                 self._slt_records += expect_halt_early
+                _report(m.name, "expect_halt: refused at deploy/startup as expected")
+                for _sk in skipped_by_startup_halt(m):
+                    _report(m.name, f"  skipped: {_sk}")
                 ran = True
             else:
                 # `assert.smoke` is either `true` (this test deploys one app named exactly
