@@ -18,7 +18,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `tql` | string | **yes** | — | the app file, relative to `source_dir` (the test dir, or `example:`'s dir if set) |
 | `topology` | string | no | `single` | `single` \| `agent` \| `cluster` (`agent` is a legacy alias for `cluster`). Matched against what's resolved; mismatch → **skip**. `single` always runs; `cluster` needs ≥2 nodes in `default` + a registered agent in `Agents` |
 | `requires` | list[string] | no | `[]` | service names to provision/reuse (e.g. `postgres`, `oracle`, `mssql`, `kafka`, `spanner`, `gcs`; `teradata` and `servicenow` connect to your own instance, set with `SLT_TERADATA_HOST` / `SLT_SERVICENOW_HOST`) — each resolved once per session |
-| `tokens` | mapping | no | `{}` | manifest-declared `${NAME}` values, rendered wherever the harness renders tokens (TQL, DDL/seed, `server_files`, `assert` targets, `kafka_cleanup_topics`, `op.upload` names). Names match `[A-Z][A-Z0-9_]*`; values are strings (numbers are cast) and may not themselves contain `${...}`. A name the harness sets -- `NS`/`APP`/`APP_BARE`/`TID*`, the placement and `STRIIM_*` tokens, a module's `${<TOKEN>_JAR}`/`_NAME`, any service's `provides:` (e.g. `MSSQL_URL`) -- is refused at load, so merge order never decides. Lets one shipped app serve several manifests that differ in a value (e.g. `TrailFilePattern: '${SRC_TRAIL}'`, `k10*` vs `t10*`) |
+| `tokens` | mapping | no | `{}` | manifest-declared `${NAME}` values, rendered wherever the harness renders tokens (TQL, DDL/seed, `server_files`, `assert` targets, `kafka_cleanup_topics`, `op.upload` names). Names match `[A-Z][A-Z0-9_]*`; values are strings (numbers are cast) and may not themselves contain `${...}`. A name the harness sets -- `NS`/`APP`/`APP_BARE`/`TID*`, the placement and `STRIIM_*` tokens, a module's `${<TOKEN>_JAR}`/`_NAME`, any service's `provides:` (e.g. `MSSQL_URL`), and the reserved `SENTINEL_*` / `SENTINEL_RECOVERY_*` prefixes -- is refused at load, so merge order never decides. Lets one shipped app serve several manifests that differ in a value (e.g. `TrailFilePattern: '${SRC_TRAIL}'`, `k10*` vs `t10*`) |
 | `kafka_cleanup_topics` | list[string] | no | `[]` | extra Kafka topics the test's **app** creates that the framework didn't derive itself — e.g. a persisted stream's derived `<ns>_<streamName>` data topic and its `<topic>_CHECKPOINT` companion. Each entry is `${...}`-token-rendered (embed `${NS}`/`${TID}` for per-test uniqueness) and appended to the same best-effort per-test topic delete that already removes the derived `${KAFKA_SRC_TOPIC}`/`${KAFKA_TGT_TOPIC}` at teardown. Requires `kafka` in `requires` (loader fails loud otherwise). Absent/empty (every test that doesn't set it) is a strict no-op |
 | `ddl` | string \| list | no | none | schema setup, run once before seed/deploy. Plain string (or a bare list item) → the default `postgres-source` route. List form — entries in the same style `upload:`/`server_files:` use: `- file: <name>` plus an optional `db: <route>` (default `postgres-source`), applied in order. Routes are `<svc>-source`/`<svc>-target` (fixed `qasource`/`qatarget` schemas) plus the emulator routes (`spanner-*`, `gcs`, `kafka`) — see `SERVICES.md`. **Deprecated** (still parses, warns naming the file): the route-keyed entry `{source_db\|target_db: <route>, file: <name>}` — the route value already carries the direction; write `db:` |
 | `seed` | string \| list | no | none | data setup, same shape/back-compat as `ddl`, plus two per-entry keys `ddl` does not take: **`when`** (`pre_deploy` (default) \| `post_start` \| `post_recover`) and **`after`** — see below |
@@ -501,6 +501,13 @@ Example: `scripts/live/regression/framework/framework-recover`, a writer on a ti
 that survives a `STOP`.
 
 ### Post-recovery route proof
+
+| Recovery marker key | Contract |
+|---|---|
+| `sentinel` | Optional, absent by default; the only accepted value is `true` |
+| `expect_running` | Must be `true` (the default) |
+| `lifecycle.sentinel` | Must be declared, with source insert/delete SQL and an owned observable sink |
+| Per-cycle marker | Fresh ID/tag after every restore, present then absent before subsequent work |
 
 Set `recover.sentinel: true` to insert a fresh lifecycle marker after **every**
 restore reaches RUNNING, before post-recovery transaction steps, ordinary seeds,
@@ -1909,3 +1916,5 @@ Worked case: [14-progress-recovery](../samples/live/14-progress-recovery/README.
 Fault evidence retains `windowOpened` (the first in-window value and time), the pre-command value, `issuedAt`, and the bounded `afterInterrupt` observation. When work finishes during STOP, the record is failed with `interrupted: true`; no command is retried. Timed recovery also requires RUNNING at issuance.
 
 Worked case: [15-fault-evidence](../samples/live/15-fault-evidence/README.md). Framework gallery: [framework-fault-evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md).
+
+Worked case: [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.md). Framework gallery: [framework-recovery-sentinel](../scripts/live/regression/framework/framework-recovery-sentinel/README.md).

@@ -239,3 +239,10 @@ drop or replay bypass does not establish ownership.
 |---|---|---|
 | `fault-missed` | The fault boundary was not proven, either before issuance or after interruption took effect. | Check `interrupted` and `afterInterrupt` before assuming the stack was undisturbed. Suffixes include deadline/window/read/app-status, no unique running Docker owner, and a flow moved before interruption. This is never absorbed by xfail. |
 | `fault-interrupt-error` | The interrupt command failed after its final observation. | Inspect the recorded command boundary and transport error; a failed request is not a completed fault. |
+
+## Prove the route transports a fresh marker after recovery
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-post-recovery-sentinel` | Recovery sentinel lacks running/lifecycle prerequisites. | Set expect_running: true and declare a supported lifecycle sentinel; use reserved recovery tokens only in sentinel files. |
+| `post-recovery-sentinel-missed` | The fresh post-restore marker did not arrive and disappear. | Inspect insert/delete witness evidence and resumed reader/writer capture before post_recover seeds. |

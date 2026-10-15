@@ -185,6 +185,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Append-only delivery audit | **supported, not exercised here**: hermetic duplicate checks on every exact route; sample 13 has no reported live qualification |
 | Progress-triggered recovery | **tested**: sample 14 target-count STOP reported passing on Striim 5.4.2; checkpoint, slot and Kafka position triggers have hermetic coverage only |
 | Fault-boundary recovery evidence | **tested**: sample 15 reported passing on Striim 5.4.2; hermetic pre-command and post-interruption missed-window checks |
+| Fresh post-recovery sentinel | **tested**: sample 16 reported passing on Striim 5.4.2, including evidence validation |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
@@ -251,3 +252,4 @@ row above for recorded runs; a skip is never a pass.
 | Append-only audit | yes | both dialects | kafka_record | yes | Native or Docker database/Kafka; Docker file; append writer and fresh owned target |
 | Progress trigger | target-count or slot | target-count | end or consumer offset | — | Native or Docker with confirmed current-attempt ownership; checkpoint reads Striim |
 | Fault-boundary evidence | any supported case | any supported case | any supported case | any supported case | Timed or progress recovery; no issued fault is a failure |
+| Fresh recovery sentinel | yes | both dialects | yes | yes | Same lifecycle sentinel route, fresh per-cycle marker; file requires Docker |

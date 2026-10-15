@@ -353,6 +353,7 @@ In it, under `live/`:
 - **Append-only audit**: Audit uses the normal exact multiset comparison, so repeated deliveries appear as extra counted rows. The declaration records ignored sink-generated delivery keys; it must still retain every payload delivery.
 - **Progress trigger**: `recover.trigger` declares the reader, thresholds and polling budget. A missed window or unreadable position fails before interruption; inspect the progress error and source/target state.
 - **Fault boundary**: Each cycle writes a `recovery` assertion with trigger, first in-window `windowOpened`, pre-command value, UTC/monotonic times, held and interrupted booleans, issue time and bounded `afterInterrupt`. Timed recovery uses trigger kind `timed`. A failure before issuance has interrupted false; work completed during STOP fails with interrupted true and retained post-interruption value. Neither missed boundary is absorbed by `xfail`.
+- **Recovery marker**: Each cycle adds a `recovery` assertion whose expected booleans are `insertPresent: true` and `deleteAbsent: true`; actual rows retain the full marker witness, its phase and observations. This is additional to the fault-boundary record.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -546,3 +547,7 @@ Start with [14-progress-recovery](../samples/live/14-progress-recovery/README.md
 ### Prove the fault was issued while its precondition held
 
 Start with [15-fault-evidence](../samples/live/15-fault-evidence/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-fault-evidence/README.md) exercises the same framework contract.
+
+### Prove the route transports a fresh marker after recovery
+
+Start with [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-recovery-sentinel/README.md) exercises the same framework contract.
