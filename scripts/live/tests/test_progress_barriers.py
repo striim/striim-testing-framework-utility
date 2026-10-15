@@ -211,3 +211,24 @@ def test_post_interrupt_read_has_its_own_bounded_deadline():
 def test_repeated_absolute_trigger_is_refused():
     with pytest.raises(ManifestError, match='invalid-progress-trigger'):
         _normalize_recover({'mode':'stop','times':2,'trigger':spec()}, 'test.yaml')
+
+
+def test_checkpoint_after_legacy_kill_records_dead_api_without_missing_the_fault():
+    from types import SimpleNamespace
+    from livetest import progress
+    s = progress.normalize({'kind': 'checkpoint', 'above': 0, 'timeout': '1s'})
+    def unavailable(*args, **kwargs):
+        raise ConnectionError('checkpoint API unavailable after all app nodes were killed')
+    read = progress.reader(s, admins={}, tokens={}, client=SimpleNamespace(checkpoint_history=unavailable),
+                           app='N.app', owned=lambda *args: False)
+    observation = progress.after_interrupt(s, read)
+    assert observation['value'] is None
+    assert 'checkpoint API unavailable' in observation['error']
+    assert observation['observedAt'] is not None and observation['observedUtc']
+
+
+def test_unreadable_target_count_still_refuses_an_unproven_fault_boundary():
+    from livetest import progress
+    def unavailable(left): raise ConnectionError('target count unavailable')
+    with pytest.raises(progress.ProgressError, match='fault-missed'):
+        progress.after_interrupt(progress.normalize(spec()), unavailable)

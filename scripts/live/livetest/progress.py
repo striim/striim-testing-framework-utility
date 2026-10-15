@@ -177,6 +177,14 @@ def after_interrupt(s, read, *, now=time.monotonic):
         if s['kind'] == 'target-count' and observation['value'] >= s['below']:
             raise ValueError('work finished before interruption took effect')
     except Exception as e:
+        if s['kind'] != 'target-count':
+            # A whole-cluster kill removes the checkpoint API. Only the count
+            # window uses this read as proof that work was still in flight.
+            from livetest.striim import redact
+            text = redact(str(e))
+            observation.update(error=text[:1024], errorTruncated=len(text) > 1024,
+                observedAt=now(), observedUtc=datetime.now(timezone.utc).isoformat())
+            return observation
         error = ProgressError(f'fault-missed: {e}')
         error.after_interrupt = observation
         raise error from e
