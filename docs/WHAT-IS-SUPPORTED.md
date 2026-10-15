@@ -224,7 +224,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `raw.max_bytes` | 64 MiB by default; at most 512 MiB | All files in the exact inventory share this total read budget |
 | `diff_poll` | above 0 | a zero poll would spin against the database |
 | `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
 
 ## Check routes
 
