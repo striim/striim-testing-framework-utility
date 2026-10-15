@@ -212,6 +212,7 @@ class Target:
         if not peers: raise RecoveryError("fault-fallback-unavailable: publish the surviving node API port")
         client.configure_failover(peers, app=app)
         self.needs_restore = False
+        self.needs_rejoin = False
 
     def _refusal(self, detail, phase, owners):
         if self.record:
@@ -253,6 +254,7 @@ class Target:
         if mode not in ("kill", "stop", "restart"): raise RecoveryError("invalid-node-fault")
         node = self.selected
         self.needs_restore = True
+        self.needs_rejoin = True
         ok, detail = False, "ok"
         try:
             argv = ["docker", "kill", "-s", "KILL", node["id"]] if mode == "kill" else ["docker", mode, node["id"]]
@@ -260,6 +262,7 @@ class Target:
             state = self._command(["docker", "inspect", "--format", "{{.State.Running}}", node["id"]]).stdout.strip()
             if state != ("true" if mode == "restart" else "false"):
                 raise RecoveryError("node-fault-error: requested container state not observed")
+            if mode == "restart": self.needs_restore = False
             ok = True
         except Exception as e:
             detail = str(e)
@@ -327,7 +330,7 @@ class Target:
         if expect_running and self.hosting and self.selected["role"] != "agent" and self.needs_restore:
             survivor = self.nodes["secondary" if self.selected["role"] == "primary" else "primary"]["server"]
             self._wait_failover(survivor, deadline)
-        if self.needs_restore:
+        if self.needs_restore or self.needs_rejoin:
             self.close(remaining=max(.05, deadline - time.monotonic()))
         else:
             self.wait_cluster(self.client, max(.05, deadline - time.monotonic()))
@@ -345,12 +348,13 @@ class Target:
         return status
 
     def close(self, remaining=None):
-        if self.needs_restore:
+        if self.needs_restore or self.needs_rejoin:
             budget = self.timeout if remaining is None else remaining
             deadline = time.monotonic() + budget
             ok, detail = False, "ok"
             try:
-                self._command(["docker", "start", self.selected["id"]], remaining=budget)
+                if self.needs_restore:
+                    self._command(["docker", "start", self.selected["id"]], remaining=budget)
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise RecoveryError("fault-node-rejoin-deadline")
@@ -358,6 +362,7 @@ class Target:
                 if time.monotonic() > deadline:
                     raise RecoveryError("fault-node-rejoin-deadline")
                 self.needs_restore = False
+                self.needs_rejoin = False
                 ok = True
             except Exception as error:
                 detail = "fault-node-rejoin: " + str(error)

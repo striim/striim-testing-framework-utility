@@ -293,7 +293,7 @@ def test_failure_cleanup_waits_for_rejoin_and_records_outcome(monkeypatch, mode,
     else:
         target.close()
         target.close()
-    assert events == [mode, "inspect", "start", "rejoin"]
+    assert events == [mode, "inspect"] + (["start"] if mode == "kill" else []) + ["rejoin"]
     assert records[-1]["spec"]["phase"] == "cleanup-rejoin"
     assert records[-1]["status"] == ("failed" if rejoin_fails else "passed")
-    assert target.needs_restore is rejoin_fails
+    assert target.needs_rejoin is rejoin_fails
