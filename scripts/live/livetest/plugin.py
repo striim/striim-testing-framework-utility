@@ -915,12 +915,15 @@ def _run_admin_sql(entry, sql) -> None:
     # in the dict for shape compatibility but is always None.
     entry["admin"].run_sql(sql)
 
-def _oracle_admins(base, prefix):
+def _oracle_admins(base, prefix, ledger=None):
     routes = {}
     for role in ("source", "target", "admin"):
         dsn = {**base, "source_user": base.get(role + "_user", "system" if role == "admin" else None),
                "source_password": base.get(role + "_password", "striim" if role == "admin" else None)}
-        routes["oracle-" + role] = {"admin": OraAdmin(dsn, prefix=prefix), "schema": None}
+        admin = OraAdmin(dsn, prefix=prefix if role == "admin" else None)
+        admin.observer_prefix = prefix
+        admin.observer_ledger, admin.observer_route = ledger, "oracle-" + role
+        routes["oracle-" + role] = {"admin": admin, "schema": None}
     return routes
 
 
@@ -937,6 +940,8 @@ def teardown_oracle_observers(admins, tokens):
         result["attempted"].append(subject)
         try:
             admin.drop_observer_objects(tokens.get("TID_ORACLE", ""))
+            from livetest.oracle_ownership import settle
+            settle(admin)
         except Exception as exc:
             result["failed"][subject] = str(exc)
     return result
@@ -2167,7 +2172,7 @@ class LiveItem(pytest.Item):
                                                  "schema": None}
                     pg_admins.append((_pg_src, schema))
                 elif svc == "oracle":
-                    admins.update(_oracle_admins(resolved.base, tid_oracle))
+                    admins.update(_oracle_admins(resolved.base, tid_oracle, ledger=ledger))
                 elif svc == "mssql":
                     # Like oracle/postgres: qasource (source) + qatarget (target) accounts &
                     # schemas. ensure_setup (as sa) relaxes the sa password, creates qauser +

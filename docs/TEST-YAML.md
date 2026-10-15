@@ -61,20 +61,37 @@ ddl:
 ```
 
 The same routes are accepted in `seed` entries with the normal `when` and `after`
-keys. Put tables, views and grants before the trigger that uses them. Every view
-and trigger name starts with `${TID_ORACLE}`. Qualified observer objects must
-belong to the connected route user; foreign names fail
-`oracle-observer-ddl-scope` before execution. Trigger bodies keep their internal
+keys. Put tables, views and grants before the trigger that uses them. Use `${TID_ORACLE}` for
+observer view and trigger names. On `oracle-admin`, observer objects
+must belong to that route user and carry this case's prefix; foreign names fail
+`oracle-observer-ddl-scope` before execution. `DROP VIEW IF EXISTS` checks the
+actual object name. Materialized views on this observer route are refused with
+`oracle-observer-ddl-unsupported`. Ordinary `oracle-source`/`oracle-target` SQL,
+including existing unprefixed views, keeps its existing naming contract. Trigger bodies keep their internal
 semicolons and end with a slash on a line by itself, as in SQL*Plus; a missing
 slash fails `oracle-plsql-terminator`. Plain SQL keeps its existing semicolon
 format. Alternative `q'...'` quoting is refused with `oracle-sql-quoting`; use
 doubled single quotes instead. This extension supports trigger definitions,
 not general anonymous PL/SQL scripts.
 
-After a case, the framework always removes its prefixed database triggers first,
+Ordinary data-user DDL and seeds create no observer cleanup obligation. Observer
+cleanup runs only after case-prefixed views/triggers or use of `oracle-admin`.
+A case without observers does not read their catalogs or fail on such a read.
+
+Created observer triggers are persisted in the ownership ledger: an absence check
+and intended entry precede CREATE, and successful CREATE confirms the entry.
+Cleanup and `python -m livetest.ownership replay <ledger.json>` delete confirmed
+triggers by exact name on the recorded user, endpoint, database identity and PDB.
+An existing trigger without confirmed ownership is preserved and refused with
+`oracle-observer-not-owned`; an unreadable or changed target is not deletion
+authority. Passwords come from current settings and are never stored in the ledger.
+
+After a case, the framework removes its owned database triggers first,
 then its prefixed views, before ordinary Oracle table cleanup. This also runs
 after DDL, deploy or assertion failure, for seed-only routes, and with either
 resource-retention flag: retained apps/tables do not retain observer hooks.
+This also removes existing case-prefixed observer views when resources are kept;
+unprefixed ordinary data-user views are outside this observer cleanup.
 Catalog readback verifies absence. A failed drop or unreadable catalog fails
 cleanup as `oracle-observer-cleanup-failed`, preserves Oracle tables and records
 verification gaps for their skipped cleanup, keeping any original case failure

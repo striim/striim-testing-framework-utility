@@ -18,7 +18,10 @@ including other cases and runs. Run serially on an unshared service; the case is
 Observer hooks are removed even after a failure or with resources retained. The
 trigger uses dynamic SQL and swallows runtime errors so a missing log table cannot
 invalidate it or block another login. If any observer fails teardown, Oracle
-tables are preserved and recorded as verification gaps.
+tables are preserved and recorded as verification gaps. Created triggers have
+confirmed ledger entries for exact-name ownership replay after an interrupted run.
+Pre-existing triggers are not acquired or replaced. Resource retention still
+removes the case's prefixed observer views as well as its trigger.
 
 Broken-input check: in an isolated framework copy, remove only the `program=`
 argument from `livetest.oraadmin._default_connect`, leaving this case unchanged.

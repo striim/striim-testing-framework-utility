@@ -136,7 +136,10 @@ direct `SELECT` grants on `SYS.V_$SESSION` and `SYS.V_$DATABASE` in the data PDB
 Direct grants allow view/trigger compilation without depending on roles, and
 `V_$DATABASE` also supports writer metadata checks.
 
-Use `db: oracle-admin` for database logon triggers. Its optional credentials are
+Use `db: oracle-admin` for database logon triggers. Name-scope checks apply to
+this observer route; ordinary source/target SQL retains its existing contract.
+Materialized views on `oracle-admin` are explicitly unsupported. Ordinary data-user
+DDL/seeds without case-prefixed views/triggers open no observer catalog connection. Its optional credentials are
 `SLT_ORA_ADMIN_USER` / `SLT_ORA_ADMIN_PASSWORD` (defaults `system` / `striim`),
 connecting to `SLT_ORA_SERVICE`. The baked SYSTEM account has direct
 `CREATE TRIGGER`, `ADMINISTER DATABASE TRIGGER` and `SELECT ON SYS.V_$SESSION`.
@@ -202,8 +205,15 @@ rolls back and swallows logging errors so a missing table cannot invalidate the
 trigger or block logins. Compilation warnings still fail immediately with
 `oracle-ddl-compilation-error`, after an attempt to drop the just-created object.
 
-The framework removes the case's prefixed observer triggers before views and
-ordinary tables, including failed cases and resource-retained runs. A failed
+Created observer triggers have persisted intended/confirmed ledger entries with
+their database identity, PDB, user and endpoint. Cleanup and ownership replay use
+exact names and refuse foreign or changed targets; passwords are read from current
+settings, never recorded. A pre-existing unacquired trigger is preserved.
+
+The framework removes the case's owned observer triggers before views and
+ordinary tables, including failed cases and resource-retained runs. Existing
+case-prefixed observer views are also removed with resource retention enabled;
+unprefixed ordinary data-user views are left to their existing cleanup contract. A failed
 observer cleanup fails the run, preserves Oracle tables and records verification
 gaps for their skipped cleanup; another case's objects are never removed.
 Observer teardown precedes app cleanup so slow undeploy cannot skip it when an

@@ -24,7 +24,7 @@ _SQL_IDENT = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$#]*)'
 _OBSERVER_DDL = re.compile(
     r'\s*(?P<operation>CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NO)?FORCE\s+)?'
     r'(?:(?:EDITIONABLE\s+(?:EDITIONING\s+)?|NONEDITIONABLE\s+|EDITIONING\s+))?'
-    r'|DROP\s+|ALTER\s+)(?P<kind>VIEW|TRIGGER)\s+'
+    r'|DROP\s+|ALTER\s+)(?P<kind>VIEW|TRIGGER)\s+(?:IF\s+EXISTS\s+)?'
     rf'(?P<name>{_SQL_IDENT}(?:\s*\.\s*{_SQL_IDENT})?)', re.I | re.S)
 
 
@@ -104,6 +104,7 @@ class OraAdmin:
         self.dsn = dsn
         self._connect = connect or _default_connect
         self.prefix, self.touched = prefix, False
+        self.observer_prefix = prefix
 
     def _open(self, connect_timeout: float = 90.0, poll: float = 3.0):
         kw = dict(host=self.dsn["host"], port=int(self.dsn["port"]),
@@ -140,6 +141,9 @@ class OraAdmin:
         # its existing route contract. Qualified observer objects must be owned
         # by the connected user, so cleanup can find them in USER_OBJECTS.
         for stmt in statements:
+            if self.prefix is not None and re.match(
+                    r'\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?|ALTER\s+|DROP\s+)MATERIALIZED\s+VIEW\b', stmt, re.I):
+                raise ValueError("oracle-observer-ddl-unsupported: materialized views are unsupported on oracle-admin")
             match = _OBSERVER_DDL.match(stmt)
             if match and self.prefix is not None:
                 parts = [p[1:-1].replace('""', '"') if p.startswith('"') else p
@@ -149,14 +153,26 @@ class OraAdmin:
                         or not parts[-1].upper().startswith(self.prefix.upper())
                         or (len(parts) == 2 and parts[0].upper() != self.dsn["source_user"].upper())):
                     raise ValueError("oracle-observer-ddl-scope: view/trigger must belong to this case and connected user")
-        self.touched = True  # including DDL that creates an invalid object then raises
+        # Ordinary data-user tables/seeds and unprefixed views do not acquire
+        # observer teardown obligations. The privileged route is observer-only.
+        self.touched = self.touched or self.prefix is not None or any(
+            match and self.observer_prefix and
+            re.findall(_SQL_IDENT, match["name"])[-1].strip('"').upper().startswith(self.observer_prefix.upper())
+            for match in (_OBSERVER_DDL.match(stmt) for stmt in statements))
         conn = self._open()
         try:
             conn.autocommit = True
             cur = conn.cursor()
             try:
                 for stmt in statements:
+                    match = _OBSERVER_DDL.match(stmt)
+                    trigger_entry = None
+                    if match and match["kind"].upper() == "TRIGGER" and match["operation"].upper().startswith("CREATE"):
+                        from livetest.oracle_ownership import before_create
+                        trigger_entry = before_create(self, match["name"])
                     cur.execute(stmt)
+                    if trigger_entry is not None:
+                        self.observer_ledger._set(trigger_entry, "confirmed")
                     warning = getattr(cur, "warning", None)
                     if warning is not None:
                         # Compilation warnings leave an INVALID object behind. Remove it
@@ -188,6 +204,8 @@ class OraAdmin:
                     and isinstance(name, str) and name.upper().startswith(prefix.upper())
                     and _IDENT.fullmatch(name)}
         objects = owned()
+        from livetest.oracle_ownership import authorise_catalog_drop
+        authorise_catalog_drop(self, objects)
         errors = []
         if objects:
             conn = self._open()
