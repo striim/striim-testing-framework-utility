@@ -28,7 +28,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `op` | mapping \| list | no | none | build + upload OpenProcessor jar(s), registered via `LOAD OPEN PROCESSOR` — single mapping or a list, see below |
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
 | `server_files` | list | no | `[]` | place test-dir files onto the Striim server before deploy or after RUNNING, or upload and register a prebuilt jar (`load:`, from the test dir or outside it) — see below |
-| `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing |
+| `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing; also the Postgres seed SQL statement deadline |
 | `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, regression]`) for `-k`/reporting; not matched against anything in the manifest itself |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
@@ -84,6 +84,26 @@ when the source's reader cannot report that it is reading and no `lifecycle:` pr
 RUNNING is not reading, and an Oracle seed committed 1 s after RUNNING was measured missed. A
 source whose driver waits for its reader, or a `lifecycle:` case, seeds without the floor; an
 explicit `after` replaces it.
+
+### Postgres fixture SQL deadlines
+
+Postgres fixture connections set `connect_timeout` to five seconds. `ddl:` SQL, including
+replication-slot setup, uses a 15-second `lock_timeout` and a 60-second `statement_timeout`.
+Seed SQL, including action seeds, uses the case's `timeout` for statements and a lock deadline
+of at most 15 seconds (half the statement deadline when that is shorter).
+
+`postgres-fixture-timeout` reports the phase, route, and observed blockers: backend PID,
+application name, transaction age, and the owning run when its namespace is recorded in a
+ledger, with the observation time. Diagnostics use a two-second connection limit and a
+one-second statement deadline. The fixture
+disconnects its own SQL session; the blocker remains running. Run correlation is diagnostic
+information, not cleanup authority.
+
+The [PostgreSQL 16 statement deadline](https://www.postgresql.org/docs/16/runtime-config-client.html#GUC-STATEMENT-TIMEOUT)
+applies separately to each statement in a multi-statement SQL file. It does not replace the
+whole-case watchdog. Explicit transaction statements are sent as written.
+Connection limits apply per address, as specified by
+[libpq](https://www.postgresql.org/docs/16/libpq-connect.html#LIBPQ-CONNECT-CONNECT-TIMEOUT).
 
 ## `local: true` — test-only files beside an `example:`
 

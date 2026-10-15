@@ -908,12 +908,36 @@ def substitute_targets(specs, tokens) -> list:
         out.append(c)
     return out
 
-def _run_admin_sql(entry, sql) -> None:
+def _pg_fixture_owners(ledger):
+    """Correlate recorded namespaces with run IDs for diagnostics, never deletion authority."""
+    import json
+    owners, ambiguous = {}, set()
+    for path in ledger.path.parent.glob("*.json"):
+        try:
+            identity = json.loads(path.read_text()).get("identity", {})
+            namespace, run_id = identity.get("namespace"), identity.get("runId")
+            if not isinstance(namespace, str) or not namespace or not isinstance(run_id, str) or not run_id:
+                continue
+            if namespace in owners and owners[namespace] != run_id:
+                ambiguous.add(namespace)
+            owners[namespace] = run_id
+        except (OSError, ValueError, AttributeError):
+            continue
+    return {ns: run_id for ns, run_id in owners.items() if ns not in ambiguous}
+
+
+def _run_admin_sql(entry, sql, *, phase="ddl", timeout=None, run_id=None, owners=None, ledger=None) -> None:
     # Every admin now runs DDL/seed in its own FIXED schema — Oracle QASOURCE/QATARGET,
     # Postgres/MSSQL qasource/qatarget via the source/target role's connection — so
     # run_sql takes just the SQL (no per-test schema argument). entry["schema"] is kept
     # in the dict for shape compatibility but is always None.
-    entry["admin"].run_sql(sql)
+    from livetest.pgclient import PgAdmin
+    if isinstance(entry["admin"], PgAdmin):
+        if owners is None and ledger is not None:
+            owners = _pg_fixture_owners(ledger)
+        entry["admin"].run_sql(sql, phase=phase, timeout=timeout, run_id=run_id, owners=owners)
+    else:
+        entry["admin"].run_sql(sql)
 
 def _spanner_ensure(admin, attempts: int = 20, delay: float = 1.5) -> None:
     # The emulator has no healthcheck and needs a moment after the container starts;
@@ -2266,11 +2290,13 @@ class LiveItem(pytest.Item):
                     # rejects host.docker.internal); GcsAdmin still uses base host:port.
                     tokens["GCS_ENDPOINT"] = f"http://{gcs_ip}:{resolved.base['port']}"
 
-            def _run_files(items):
+            def _run_files(items, phase="seed"):
                 for db, fname in items:
                     entry = require_service_admin(admins, db, m.name, f"file {fname!r}")
                     _slt_sql = render(m.file_path(fname).read_text(), tokens)
-                    _run_admin_sql(entry, _slt_sql)
+                    _run_admin_sql(entry, _slt_sql, phase=phase,
+                                   timeout=m.timeout if phase == "seed" else None,
+                                   run_id=ident.run_id, ledger=ledger)
                     # C4: the SQL exactly as sent
                     self._slt_inputs.record("ddl" if any(_f == fname for _d, _f in m.ddl_files) else "seed", fname,
                                             _slt_sql, path=m.file_path(fname))
@@ -2317,7 +2343,7 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)]))
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)], phase="ddl"))
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
                 _report(m.name, "seeding data")

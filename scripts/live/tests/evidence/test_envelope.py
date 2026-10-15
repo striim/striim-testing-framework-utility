@@ -143,7 +143,7 @@ def test_rendered_inputs_recorded_at_send_sites_only(good):
     assert entry["renderedSha256"] == "sha256:" + hashlib.sha256(b"CREATE TABLE t1_tgt (id int);\n").hexdigest()
     assert not any(e["role"] == "tql" for e in snap.rendered_inputs())    # the TQL was snapshotted, never sent
     plugin = (REPO / "scripts/live/livetest/plugin.py").read_text()
-    for send, rec in (("_run_admin_sql(entry, _slt_sql)", 'self._slt_inputs.record("ddl" if'),
+    for send, rec in (("_run_admin_sql(entry, _slt_sql,", 'self._slt_inputs.record("ddl" if'),
                       ("_slt_out = render(text, tokens)", '_slt_inputs.record_on(m, "tql"'),
                       ("dest.write_bytes(data)", '_slt_inputs.record_on(m, "upload"')):
         assert plugin.index(send) < plugin.index(rec, plugin.index(send)) < plugin.index(send) + 400, send
