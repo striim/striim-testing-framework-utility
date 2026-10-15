@@ -11,7 +11,7 @@ use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
 2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.1 .`.
+   `docker buildx build --load -t slt-bigquery:0.8.1-framework.2 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
    rebuilding it. Without that override, Compose builds the source recipe with a
@@ -44,7 +44,10 @@ extraction. Patch checksums and strict context checks reject source drift. The a
 lifetime patch reclaims the result table and its dataset/catalog
 when its query job is deleted. Explicit destinations, replaced results and caller-modified
 anonymous datasets are preserved; cleanup authority covers results created in the current
-server instance. This series does not claim repaired CSV load semantics. Architecture and lane
+server instance. The pinned googlesqlite 0.3.1 backport from upstream PR 80 creates path catalogs without
+reloading the root builtin-function set. The upstream change is open and unmerged;
+its exact commit and patch digest are recorded in `upstream.lock`. This series does
+not claim repaired CSV load semantics. Architecture and lane
 qualification remain recorded separately in run evidence.
 
 The source recipe builds Linux amd64 and arm64 images. Native amd64 API/query

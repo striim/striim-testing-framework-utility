@@ -117,8 +117,12 @@ def test_lock_and_recipe_pin_the_same_source():
     assert lock["build"]["framework_version"] in recipe
     series = (ROOT / "patches/series").read_text().splitlines()
     assert series == [item["file"] for item in lock["patches"]]
+    dependencies = lock["dependency_patches"]
+    assert (ROOT / "patches/googlesqlite.series").read_text().splitlines() == [item["file"] for item in dependencies]
+    for item in dependencies:
+        assert item["module"] + "@" + item["version"] in recipe
     expected = []
-    for item in lock["patches"]:
+    for item in lock["patches"] + dependencies:
         assert hashlib.sha256((ROOT / "patches" / item["file"]).read_bytes()).hexdigest() == item["sha256"]
         expected.append(item["sha256"] + "  " + item["file"])
     assert (ROOT / "patches/SHA256SUMS").read_text().splitlines() == expected

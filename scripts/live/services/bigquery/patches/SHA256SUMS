@@ -1,1 +1,2 @@
 3eeca27e7e8d78930b8286e5a886ce81f005cb8d4889165b4de8b226eae640cb  0001-release-anonymous-query-results.patch
+bfd2740e85a7dfa639b896589ad3e584bad41ee8ea0458ce9537ca1816ad014d  0002-avoid-builtins-in-path-catalogs.patch
