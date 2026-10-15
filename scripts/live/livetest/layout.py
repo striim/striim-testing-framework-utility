@@ -126,16 +126,19 @@ def _services_dir_for(root: Path) -> Path:
     """A configured services entry is a ROOT under which the services tree lives:
     ``<root>/services`` or ``<root>/scripts/live/services`` (whichever exists), else the
     entry itself is taken to BE a services dir."""
+    from livetest.service_cache import watch
     for cand in (root / "services", root / "scripts" / "live" / "services"):
+        watch(cand)
         if cand.is_dir():
             return cand
+    watch(root)
     return root
 
 
 def services_roots(env=None, dotenv=None) -> tuple[Path, ...]:
     """ORDERED overlay, computed now: explicit, then manifest, then the base services dir."""
     base = builtin_services(env, dotenv).resolve()
-    entries = [_services_dir_for(Path(p).resolve())
+    entries = [_services_dir_for(Path(p)).resolve()
                for p in list(_cfg_services) + list(_cfg_manifest_services)]
     return tuple(_canon(entries, base=base) + [base])
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 import re
 import warnings
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 import yaml
 
 from livetest import paths
+from livetest.service_cache import cached_tokens
 from livetest.enforcement import WALKER_EXEMPT_DIR_PARTS
 from livetest.releases import ReleaseError, check_release_entry, release_matches
 
@@ -642,6 +644,7 @@ def _extract_persistent_streams(tql_content: str) -> list[str]:
     return matches
 
 
+@cached_tokens
 def _service_tokens() -> set:
     from livetest import registry
     names = set()
@@ -651,10 +654,16 @@ def _service_tokens() -> set:
 
 def _reserved_tokens(modules: list) -> set:
     """Every token name the harness sets itself: fixed names, module and service tokens."""
-    reserved = set(_HARNESS_TOKENS)
-    for mod in modules:
-        reserved.update({f"{mod['token']}_JAR", f"{mod['token']}_NAME"})
-    return reserved | _service_tokens()
+    return set(_reserved_token_names(tuple(mod['token'] for mod in modules),
+                                    frozenset(_service_tokens()), frozenset(_HARNESS_TOKENS)))
+
+
+@lru_cache(maxsize=32)
+def _reserved_token_names(module_tokens, service_tokens, harness_tokens):
+    reserved = set(harness_tokens) | set(service_tokens)
+    for token in module_tokens:
+        reserved.update({f"{token}_JAR", f"{token}_NAME"})
+    return frozenset(reserved)
 
 
 def _normalize_capture(item, label: str, path, standalone: bool = False) -> dict:
