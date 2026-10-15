@@ -167,3 +167,12 @@ and run the test against an isolated local stack with `BIGQUERY_TEST_ENDPOINT`,
 `BIGQUERY_TEST_TOKEN_ENDPOINT` (origin without `/token`) and
 `BIGQUERY_JAVA_CLASSPATH` pointing at the public client dependencies. The corrected
 client must pass the unchanged one-row oracle before this exclusion is removed.
+
+The bounded native API qualification uses image `0.8.1-framework.6`, Linux amd64
+config SHA256 `287e309c1fd2adb5dc77afffc5da1fa25800f35b8eb2c017799e0147b4ae4716`.
+The arm64 cross-build config is
+`762aaaca42c916ac34079a8705153cbbbb342317709022458e8501e145e6e658`;
+native ARM execution remains unqualified. The full feasible upstream Go suite,
+HTTP/TLS client controls, load job persistence and chunk replay controls pass.
+The exact-boundary client regression is an explicit skip, outside this bounded
+qualification. These API controls are separate from the actual writer fixtures.

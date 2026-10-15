@@ -23,6 +23,7 @@ public final class ExactChunkBoundary {
     String expected = "x".repeat(512 * 1024 - 3);
     Path input = Files.createTempFile("bigquery-boundary-", ".csv");
     boolean created = false;
+    boolean queried = false;
     try {
       Files.writeString(input, "1|" + expected + "\n", java.nio.charset.StandardCharsets.UTF_8);
       if (Files.size(input) != 512 * 1024) throw new AssertionError("input byte count");
@@ -45,6 +46,7 @@ public final class ExactChunkBoundary {
       if (!Long.valueOf(1).equals(stats.getOutputRows())) {
         throw new AssertionError("expected exactly one loaded row");
       }
+      queried = true;
       var result = bq.query(QueryJobConfiguration.newBuilder(
           "SELECT id,msg FROM `test-project.slt." + args[2] + "`")
           .setUseLegacySql(false).build(), queryId);
@@ -56,7 +58,7 @@ public final class ExactChunkBoundary {
     } finally {
       Files.deleteIfExists(input);
       if (created) {
-        bq.delete(queryId);
+        if (queried) bq.delete(queryId);
         bq.delete(jobId);
         bq.delete(table);
       }
