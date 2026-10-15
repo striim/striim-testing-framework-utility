@@ -30,6 +30,7 @@ What differs in native mode:
 |---|---|---|
 | file assertions with `exact:`, and `lifecycle:` with `sink: file` | yes | **not supported**: the framework reads output files on the cluster's nodes. `samples/live/03-file-output` is Docker-only for this reason |
 | `assert.file` with `raw:` | yes | skipped: raw inventory requires Docker access to the owned output directory |
+| File `nothing:` / file sentinel | yes | skipped: requires Docker access to owned output; Kafka sentinel/absence can use native services |
 | plain `assert.file` (without `exact:`) | yes | yes, when Striim runs on the same machine as `striim-test`: the file is read from the local disk. The two code samples do this |
 | `op:` / `udf:` jars | copied into the cluster | `STRIIM_HOME` must be the running server's own install, on this machine: the jars are copied into `$STRIIM_HOME/UploadedFiles`. `striim-test doctor --case` checks it |
 | `recover: {mode: kill}` | yes | **not supported**: there is no container to kill. The test is skipped, never downgraded to `stop` |
@@ -221,7 +222,8 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `--parallel` | 3 workers | |
 | `raw.max_bytes` | 64 MiB by default; at most 512 MiB | All files in the exact inventory share this total read budget |
 | `diff_poll` | above 0 | a zero poll would spin against the database |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:`/`udf:`, `exact:`, `lifecycle:`, `recover:`, `xfail:`, `raw:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
+| `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
 
 ## Check routes
 
