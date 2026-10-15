@@ -814,9 +814,11 @@ def test_node_failover_wait_writes_valid_evidence_on_success_and_failure(good, m
     path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
     saved = json.loads(path.read_text())
     evidence.validate_case(saved, secrets=())
-    event = saved['assertions'][-1]['actual']['rows'][0]
+    wait_record = next(r for r in saved['assertions']
+        if ((r.get('actual') or {}).get('rows') or [{}])[0].get('phase') == 'failover-wait')
+    event = wait_record['actual']['rows'][0]
     assert event['phase'] == 'failover-wait' and event['failedOver'] is succeeded
-    assert event['observations'] and saved['assertions'][-1]['status'] == ('passed' if succeeded else 'failed')
+    assert event['observations'] and wait_record['status'] == ('passed' if succeeded else 'failed')
 
 
 @pytest.mark.parametrize('succeeded', [True, False])

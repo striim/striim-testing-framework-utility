@@ -43,8 +43,9 @@ def test_success_retains_errors_and_empty_placement_before_the_survivor(monkeypa
         return set() if index == 2 else {'server_secondary'}
     target, clock, records, commands = target_for(monkeypatch, read)
     target.restore()
-    row = records[-1]['actual']['rows'][0]
-    assert row['phase'] == 'failover-wait' and records[-1]['status'] == 'passed'
+    wait_record = next(r for r in records if ((r.get('actual') or {}).get('rows') or [{}])[0].get('phase') == 'failover-wait')
+    row = wait_record['actual']['rows'][0]
+    assert row['phase'] == 'failover-wait' and wait_record['status'] == 'passed'
     assert [r['owners'] for r in row['observations']] == [None, [], ['server_secondary']]
     assert row['observations'][0]['error'] == 'placement-node-status-unavailable'
     assert row['observationCount'] == 3 and row['observationsDropped'] == 0
