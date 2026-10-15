@@ -133,32 +133,46 @@ class BigQueryAdmin:
         job = "slt_" + uuid.uuid4().hex
         request = dict(op=op, endpoint=self.endpoint, project=self.project, dataset=self.dataset,
                        job=job, **kwargs)
-        operation = dict(jobId=job, endpoint=self.endpoint, cancellation="not-needed")
+        operation = dict(jobId=job, endpoint=self.endpoint, cancellation="not-needed", jobDelete="not-needed")
         self.last_operation = operation
         argv = [sys.executable, "-m", "livetest.bigqueryadmin"]
         reserve = min(0.5, remaining / 5)
+        timed_out = False
         try:
-            result = subprocess.run(argv, input=json.dumps(request), text=True, capture_output=True,
-                                    timeout=max(0.01, remaining - reserve))
-        except subprocess.TimeoutExpired:
-            # subprocess.run kills and reaps its worker before raising. No worker thread survives.
-            operation["cancellation"] = "attempted"
             try:
-                budget = max(0.01, remaining - (time.monotonic() - started))
-                cancelled = subprocess.run(argv, input=json.dumps(dict(request, op="cancel")), text=True,
-                                           capture_output=True, timeout=budget)
-                operation["cancellation"] = "response" if cancelled.returncode == 0 else "failed"
+                result = subprocess.run(argv, input=json.dumps(request), text=True, capture_output=True,
+                                        timeout=max(0.01, remaining - reserve))
             except subprocess.TimeoutExpired:
-                operation["cancellation"] = "timed-out"
-            raise BigQueryError("exact-read-timeout", f"job {job}; reader killed; cancellation is not rollback") from None
+                # The worker is killed and reaped before cleanup. Cancellation is never rollback.
+                timed_out = True
+                raise BigQueryError("exact-read-timeout", f"job {job}; reader killed; cancellation is not rollback") from None
+            if result.returncode:
+                raise BigQueryError("exact-read-error", f"job {job}: worker exited {result.returncode}: {result.stderr[:300]}")
+            doc = json.loads(result.stdout)
+            if "error" in doc:
+                raise BigQueryError(doc["error"], f"job {job}: {doc.get('detail', '')[:500]}")
+            return doc
         finally:
+            if op in ("query", "setup"):
+                # The emulator retains complete query results until this exact job is deleted.
+                # Keep cleanup within the original deadline on success, error and killed reads.
+                budget = remaining - (time.monotonic() - started)
+                operation["jobDelete"] = "timed-out"
+                if timed_out:
+                    operation["cancellation"] = "timed-out"
+                if budget > 0:
+                    try:
+                        cleaned = subprocess.run(argv, input=json.dumps(dict(request, op="cleanup", cancel=timed_out,
+                                                                             budget=budget)), text=True,
+                                                 capture_output=True, timeout=budget)
+                        if cleaned.returncode == 0:
+                            report = json.loads(cleaned.stdout)
+                            operation.update({k: report[k] for k in ("cancellation", "jobDelete") if k in report})
+                        else:
+                            operation["jobDelete"] = "failed"
+                    except (subprocess.TimeoutExpired, ValueError, OSError):
+                        pass  # best effort; the status remains visible in read diagnostics
             operation["elapsed_s"] = time.monotonic() - started
-        if result.returncode:
-            raise BigQueryError("exact-read-error", f"job {job}: worker exited {result.returncode}: {result.stderr[:300]}")
-        doc = json.loads(result.stdout)
-        if "error" in doc:
-            raise BigQueryError(doc["error"], f"job {job}: {doc.get('detail', '')[:500]}")
-        return doc
 
     def ensure_setup(self):
         doc = self._operation("setup", remaining=20)
@@ -207,23 +221,32 @@ class BigQueryAdmin:
 
 
 def _worker(req):
-    if req["op"] == "cancel":
-        # Keep cancellation startup cheap enough to fit its reserved fraction of the deadline.
-        # This endpoint is explicit and has no credentials, proxy discovery or redirects.
+    if req["op"] == "cleanup":
+        # No SDK import, proxy discovery or redirects in the reserved cleanup budget.
         import http.client
         endpoint = urlsplit(local_http(req["endpoint"]))
         identifiers(req["project"], req["dataset"])
-        conn = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=0.2)
-        try:
-            conn.request("POST", f"/bigquery/v2/projects/{req['project']}/jobs/{req['job']}/cancel", body=b"{}",
-                         headers={"Content-Type": "application/json"})
-            response = conn.getresponse()
-            response.read(4097)
-            if response.status != 200:
-                raise BigQueryError("exact-read-error", f"cancel HTTP {response.status}")
-            return {"cancelled": True}
-        finally:
-            conn.close()
+        deadline = time.monotonic() + req["budget"]
+        report = {"cancellation": "not-needed", "jobDelete": "timed-out"}
+        root = f"/bigquery/v2/projects/{req['project']}/jobs/{req['job']}"
+        actions = ([("POST", "/cancel", "cancellation")] if req.get("cancel") else [])
+        actions.append(("DELETE", "/delete", "jobDelete"))
+        for method, suffix, field in actions:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            conn = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=min(0.2, left))
+            try:
+                conn.request(method, root + suffix, body=b"{}" if method == "POST" else None,
+                             headers={"Content-Type": "application/json"})
+                response = conn.getresponse()
+                response.read(4097)
+                report[field] = "response" if response.status in (200, 204, 404) else "failed"
+            except OSError:
+                report[field] = "failed"
+            finally:
+                conn.close()
+        return report
     import requests
     from google.api_core.client_options import ClientOptions
     from google.api_core.exceptions import NotFound

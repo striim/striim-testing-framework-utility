@@ -54,6 +54,9 @@ def peer():
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
             self.reply({})
 
+        def do_DELETE(self):
+            self.reply({})
+
         def do_GET(self):
             if "/tables/" in self.path:
                 self.reply({"schema": {"fields": state.fields}})
@@ -204,3 +207,17 @@ def test_bigquery_diff_source_witness_preserves_case_and_requires_owned_identity
     owned[0]['name'] = source.lower()
     assert not evidence._diff_source_bound(comp, record, {}, owned)
     assert not evidence._diff_source().fullmatch('bigquery-target:slt.Mixed')
+
+
+def test_reader_deletes_its_job_on_success_and_limit_error(peer):
+    peer.admin.select_rows('slt.t', remaining=6)
+    first = peer.admin.last_operation['jobId']
+    assert any('/jobs/' + first + '/delete' in p for p in peer.requests)
+    assert peer.admin.last_operation['jobDelete'] == 'response'
+    peer.rows *= 2
+    with pytest.raises(Exception, match='canonical-limit-exceeded'):
+        peer.admin.select_rows('slt.t', max_rows=1, remaining=6)
+    second = peer.admin.last_operation['jobId']
+    assert second != first
+    assert any('/jobs/' + second + '/delete' in p for p in peer.requests)
+    assert peer.admin.last_operation['jobDelete'] == 'response'

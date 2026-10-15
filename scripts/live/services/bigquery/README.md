@@ -52,7 +52,9 @@ ARM runtime behavior and native-Striim mode remain unqualified.
 `bigquery-target` supports bounded basic row assertions and typed exact comparisons through
 anonymous REST clients. Only qualified scalar schemas are accepted; unsupported types fail
 even on an empty table. See `docs/TEST-YAML.md` for the page/row/byte/deadline contract.
-Query identifiers are retained in assertion details; server cancellation is not rollback.
+Query identifiers and job deletion status are retained in assertion details. Reader jobs and
+results are deleted after each operation within its deadline; cleanup is best effort. Server
+cancellation is not rollback.
 
 Fixture DDL accepts plain `CREATE TABLE` statements with a `${TID}` table prefix in the
 configured project/dataset. A pre-existing table is a collision, never adopted or replaced.

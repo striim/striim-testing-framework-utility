@@ -355,7 +355,8 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                 comp = canon.compare(golden, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens))
                 if route == "bigquery-target":
-                    comp["_read_detail"] = f"BigQuery job {admin.last_operation['jobId']} at {admin.endpoint}"
+                    comp["_read_detail"] = f"BigQuery job {admin.last_operation['jobId']} at {admin.endpoint}; " \
+                                           f"job deletion {admin.last_operation.get('jobDelete', 'unobserved')}"
                 return comp
             return evaluate
         prepared.append(_prepare("data", index, spec, decl, target, route, bool(lifecycle), build))
