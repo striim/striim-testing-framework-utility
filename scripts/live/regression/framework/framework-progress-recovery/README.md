@@ -14,3 +14,8 @@ never be more than 5000 data rows, so the barrier must fail without issuing STOP
 The target delays each insert by 10 ms. This keeps the declared 100-to-2500-row
 window open for at least 24 seconds while the asynchronous STOP takes effect.
 The fault bounds, deadlines and all 5000 expected rows remain unchanged.
+
+The recovery cases share the reviewed CSV in `samples/live/14-progress-recovery/expected/rows.csv`.
+From the framework checkout, run `python3 tools/prepare-recovery-goldens.py` before
+copying or running these cases. Test environment setup also prepares the copies.
+The shared rows follow `(n, row-n)` for every integer from 1 through 5000.
