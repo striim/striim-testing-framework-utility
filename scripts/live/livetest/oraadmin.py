@@ -21,6 +21,12 @@ _TRANSIENT = ("DPY-6001", "DPY-6005", "ORA-12514", "ORA-12541", "ORA-01033", "OR
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
 _SQL_IDENT = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$#]*)'
+_OBSERVER_DDL = re.compile(
+    r'\s*(?P<operation>CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NO)?FORCE\s+)?'
+    r'(?:(?:EDITIONABLE\s+(?:EDITIONING\s+)?|NONEDITIONABLE\s+|EDITIONING\s+))?'
+    r'|DROP\s+|ALTER\s+)(?P<kind>VIEW|TRIGGER)\s+'
+    rf'(?P<name>{_SQL_IDENT}(?:\s*\.\s*{_SQL_IDENT})?)', re.I | re.S)
+
 
 def _default_connect(**kw):
     import oracledb
@@ -134,11 +140,10 @@ class OraAdmin:
         # its existing route contract. Qualified observer objects must be owned
         # by the connected user, so cleanup can find them in USER_OBJECTS.
         for stmt in statements:
-            match = re.match(r'(?is)\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:EDITIONABLE\s+|NONEDITIONABLE\s+)?|DROP\s+|ALTER\s+)'
-                             rf'(?:(?:NO)?FORCE\s+)?(?:VIEW|TRIGGER)\s+({_SQL_IDENT}(?:\s*\.\s*{_SQL_IDENT})?)', stmt)
+            match = _OBSERVER_DDL.match(stmt)
             if match and self.prefix is not None:
                 parts = [p[1:-1].replace('""', '"') if p.startswith('"') else p
-                         for p in re.findall(_SQL_IDENT, match[1])]
+                         for p in re.findall(_SQL_IDENT, match["name"])]
                 if (not self.prefix or not _IDENT.fullmatch(self.prefix)
                         or any(not _IDENT.fullmatch(part) for part in parts)
                         or not parts[-1].upper().startswith(self.prefix.upper())
@@ -152,6 +157,22 @@ class OraAdmin:
             try:
                 for stmt in statements:
                     cur.execute(stmt)
+                    warning = getattr(cur, "warning", None)
+                    if warning is not None:
+                        # Compilation warnings leave an INVALID object behind. Remove it
+                        # before a database logon trigger can affect another session.
+                        match = _OBSERVER_DDL.match(stmt)
+                        drop_error = None
+                        if match and match["operation"].upper().startswith("CREATE"):
+                            parts = re.findall(_SQL_IDENT, match["name"])
+                            name = ".".join(part if part.startswith('"') else '"' + part.upper() + '"'
+                                            for part in parts)
+                            try:
+                                cur.execute(f'DROP {match["kind"].upper()} {name}')
+                            except Exception as exc:
+                                drop_error = str(exc)
+                        raise RuntimeError("oracle-ddl-compilation-error: " + str(warning)
+                                           + (f"; immediate drop failed: {drop_error}" if drop_error else ""))
             finally:
                 cur.close()
         finally:

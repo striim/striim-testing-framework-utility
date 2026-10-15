@@ -1236,7 +1236,7 @@ def teardown_file_outputs(file_spec, tokens: dict, clear) -> None:
             pass
 
 def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: list, kafka_cleanup: list,
-                     file_spec, clear_files, upload_names: list, delete_uploads) -> dict:
+                     file_spec, clear_files, upload_names: list, delete_uploads, *, oracle_observer_failed=False) -> dict:
     """The best-effort teardown of a case without a `lifecycle:` block, after the ledger cleanup.
 
     The ownership ledger deletes Postgres objects, the namespace, slots and exact file claims; the
@@ -1263,6 +1263,11 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
         entry = admins.get(db)
         drop = getattr(entry["admin"], "drop_test_tables", None) if entry else None
         if drop is None:
+            continue
+        if oracle_observer_failed and db.startswith("oracle-"):
+            subject = f"engine-tables {db}"
+            out["attempted"].append(subject)
+            out["failed"][subject] = "tables preserved because Oracle observer teardown failed"
             continue
         token = _DDL_TEARDOWN_PREFIX_TOKENS.get(db.split("-", 1)[0], "TID")
         attempt(f"engine-tables {db}", drop, tokens.get(token, ""))
@@ -3389,13 +3394,14 @@ class LiveItem(pytest.Item):
                 except Exception:
                     return []
 
+            # Remove database-wide hooks before app cleanup can exhaust the interrupt alarm.
+            _observers = teardown_oracle_observers(admins, tokens)
             cleanup = _slt_ownership.run_cleanup(
                 ledger, client=client, admins=admins, ctx=ctx, tokens=tokens,
                 gcs_cleanup=gcs_cleanup, kafka_cleanup=kafka_cleanup, upload_names=_slt_upload_names(),
                 file_globs=_slt_file_globs(),
                 checkpoint_ns=ident.ns if m.modules else None, keep_reason=_slt_keep_reason,
                 keep_slots=bool(os.environ.get("SLT_KEEP_RESOURCES")))
-            _observers = teardown_oracle_observers(admins, tokens)
             if _observers["failed"]:
                 cleanup.status, cleanup.verified = "failed", False
                 _detail = "oracle-observer-cleanup-failed: " + "; ".join(
@@ -3426,7 +3432,8 @@ class LiveItem(pytest.Item):
                 try:
                     _unowned = teardown_unowned(admins, m.ddl_files, tokens, gcs_cleanup, kafka_cleanup,
                                                 m.assert_.get("file"), lambda _p: clear_server_files(ctx, _p),
-                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n))
+                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n),
+                                                oracle_observer_failed=bool(_observers["failed"]))
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")

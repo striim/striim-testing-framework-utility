@@ -33,6 +33,11 @@ class FakeOracle:
     def drop_test_tables(self, prefix):
         log('oracle_tables_drop', user=self.dsn['source_user'], prefix=prefix)
 P.OraAdmin = FakeOracle
+_original_run_cleanup = P._slt_ownership.run_cleanup
+def observed_run_cleanup(*args, **kwargs):
+    log('run_cleanup')
+    return _original_run_cleanup(*args, **kwargs)
+P._slt_ownership.run_cleanup = observed_run_cleanup
 if SC.get('observer_assert_fail'):
     def smoke(*a, **k): raise AssertionError('primary assertion failed')
     P.assert_smoke = smoke
@@ -52,8 +57,11 @@ seed:
     drops = [e for e in events if e['event'] == 'oracle_observer_drop']
     assert [e['user'] for e in drops] == ['system', 'qatarget'], run.text
     assert all(e['prefix'] and e['prefix'].endswith('_') for e in drops)
-    if not keep:
+    if not keep and not cleanup_fail:
         assert run.names().index('oracle_observer_drop') < run.names().index('oracle_tables_drop')
+    if cleanup_fail:
+        assert 'oracle_tables_drop' not in run.names(), 'unsafe table drop after observer failure'
+    assert run.names().index('oracle_observer_drop') < run.names().index('run_cleanup')
     if assert_fail:
         assert 'primary assertion failed' in run.junit()[2]
     from livetest import evidence
@@ -62,3 +70,6 @@ seed:
         assert env['lifecycle']['cleanup']['status'] == 'failed'
         assert env['resources']['cleanupVerified'] is False
         assert any('oracle-observer' in str(g) for g in env['resources']['verificationGaps'])
+        if not keep:
+            assert any('engine-tables oracle-admin' in g and 'observer' in g
+                       for g in env['resources']['verificationGaps'])

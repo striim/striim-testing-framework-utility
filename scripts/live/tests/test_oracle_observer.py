@@ -181,3 +181,35 @@ def test_observer_regression_exercises_routes_and_filtered_writer_logons():
     assert 'SYS.V_$SESSION' in target
     assert 'GRANT INSERT' in target and '${ORACLE_ADMIN_USER}' in target
     assert "<> 'striim-test-observer'" in trigger and trigger.rstrip().endswith('/')
+
+
+@pytest.mark.parametrize("modifiers", [
+    "OR REPLACE FORCE EDITIONABLE", "EDITIONING", "FORCE EDITIONING",
+    "NOFORCE EDITIONABLE EDITIONING", "NONEDITIONABLE", "FORCE NONEDITIONABLE",
+])
+@pytest.mark.parametrize("name", ["OTHER_V", "foreign.TCASE_V"])
+def test_all_view_grammar_is_scoped_before_connection(modifiers, name):
+    admin = oraadmin.OraAdmin(BASE, prefix="TCASE_")
+    admin._open = lambda: pytest.fail("foreign view must not connect")
+    with pytest.raises(ValueError, match="oracle-observer-ddl-scope"):
+        admin.run_sql(f"CREATE {modifiers} VIEW {name} AS SELECT 1 id FROM dual;")
+
+
+@pytest.mark.parametrize("kind,body", [
+    ("TRIGGER", "AFTER LOGON ON DATABASE BEGIN NULL; END;\n/"),
+    ("VIEW", "AS SELECT missing_column FROM dual;"),
+])
+def test_compilation_warning_drops_just_created_object_and_raises(kind, body):
+    calls, closed = [], []
+    class Cursor:
+        warning = None
+        def execute(self, sql):
+            calls.append(sql)
+            self.warning = SimpleNamespace(full_code="DPY-7000", message="compilation errors") if sql.startswith("CREATE") else None
+        def close(self): closed.append("cursor")
+    admin = oraadmin.OraAdmin(BASE, prefix="TCASE_")
+    admin._open = lambda: SimpleNamespace(cursor=Cursor, close=lambda: closed.append("connection"))
+    with pytest.raises(RuntimeError, match="oracle-ddl-compilation-error"):
+        admin.run_sql(f"CREATE {kind} TCASE_INVALID {body}")
+    assert calls[-1] == f'DROP {kind} "TCASE_INVALID"'
+    assert admin.touched and closed == ["cursor", "connection"]
