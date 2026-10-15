@@ -61,6 +61,8 @@ def peer():
             if "/tables/" in self.path:
                 self.reply({"schema": {"fields": state.fields}})
             else:
+                if state.mode == "slow-query":
+                    time.sleep(2.2)
                 self.reply({"jobComplete": True, "schema": {"fields": state.fields}, "rows": state.rows,
                             **({"pageToken": "again"} if state.mode == "pages" else {})})
 
@@ -252,3 +254,22 @@ def test_bigquery_ddl_records_rendered_input_without_running_twice(tmp_path):
     assert len(sent) == 1
     assert recorded == [('bigquery-target','ddl.sql',sql)]
     assert ledger.owns('bigquery-table','bigquery-target',name)
+
+
+def test_page_read_can_use_the_callers_budget_beyond_two_seconds(peer):
+    peer.mode = 'slow-query'
+    assert peer.admin.select_rows('slt.t', remaining=6) == [{'id':9007199254740993}]
+
+
+def test_short_bigquery_stability_read_has_worker_startup_budget():
+    admin = BigQueryAdmin({'host':'127.0.0.1','port':9050,'project':'test-project','dataset':'slt'})
+    budgets = []
+    def count(table, remaining):
+        budgets.append(remaining)
+        assert remaining >= 3
+        return 1
+    admin.count_rows = count
+    observe, _ = lifecycle._count_observer({'bigquery-target':{'admin':admin}},
+                                          {'db':'bigquery-target','table':'slt.t'}, {})
+    record, held = lifecycle._hold(SimpleNamespace(stability_s=0.001), lifecycle.Clock, observe, lambda n:n==1)
+    assert held and record['value']==1 and budgets

@@ -69,7 +69,9 @@ def test_missing_prebuilt_image_is_an_actionable_prerequisite_failure(monkeypatc
     assert driver.unavailable({}, "docker") is None
     assert driver.build_required({})
     assert not driver.build_required({"SLT_BIGQUERY_IMAGE": "example:qualified"})
-    assert driver.unavailable({"SLT_BIGQUERY_HOST": "127.0.0.1"}, "docker") is None
+    assert driver.unavailable({"SLT_BIGQUERY_HOST": "127.0.0.1",
+                               "SLT_BIGQUERY_WRITER_ENDPOINT": "http://127.0.0.1:19050",
+                               "SLT_BIGQUERY_TOKEN_URI": "http://127.0.0.1:19051/token"}, "docker") is None
 
 
 @pytest.mark.parametrize("override", [False, True])
@@ -113,3 +115,25 @@ def test_lock_and_recipe_pin_the_same_source():
         assert value in recipe
     assert lock["patches"] == []
     assert not (ROOT / "patches/series").read_text().strip()
+
+
+def test_existing_docker_emulator_requires_writer_and_token_overrides(monkeypatch):
+    monkeypatch.setenv("SLT_BIGQUERY_HOST", "127.0.0.1")
+    monkeypatch.delenv("SLT_BIGQUERY_WRITER_ENDPOINT", raising=False)
+    monkeypatch.delenv("SLT_BIGQUERY_TOKEN_URI", raising=False)
+    assert "SLT_BIGQUERY_WRITER_ENDPOINT" in driver.unsupported_mode("docker")
+    monkeypatch.setenv("SLT_BIGQUERY_WRITER_ENDPOINT", "http://127.0.0.1:19050")
+    monkeypatch.setenv("SLT_BIGQUERY_TOKEN_URI", "http://127.0.0.1:19051/token")
+    assert driver.unsupported_mode("docker") is None
+
+
+def test_provision_retries_transient_bootstrap_failure():
+    from livetest.bigqueryadmin import BigQueryError
+    calls = []
+    def setup(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            raise BigQueryError("exact-read-error", "connection refused during startup")
+    driver.provision({"bigquery-target":{"admin":SimpleNamespace(ensure_setup=setup)}}, None, None)
+    assert len(calls) == 3
+    assert all(0 < c["remaining"] <= 5 for c in calls)

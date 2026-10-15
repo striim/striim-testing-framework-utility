@@ -813,7 +813,7 @@ def _hold(spec: LifecycleSpec, clock, observe, satisfied) -> tuple[dict, bool]:
     if spec.stability_s > 0:
         clock.sleep(spec.stability_s)
     try:
-        value = observe(max(1.0, spec.stability_s))
+        value = observe(max(1.0, spec.stability_s, getattr(observe, "minimum_budget", 0)))
     except Exception as e:              # noqa: BLE001
         value = {"error": str(e)}
     ok = not (isinstance(value, dict) and "error" in value) and satisfied(value)
@@ -859,7 +859,10 @@ def _count_observer(admins, ref, tokens):
     if ref["db"] == "bigquery-target":
         admin = _admin(admins, ref["db"])
         table = admin.ref(_render(ref["table"], tokens))
-        return lambda remaining: admin.count_rows(table, remaining), table
+        def observe(remaining):
+            return admin.count_rows(table, remaining)
+        observe.minimum_budget = 3.0  # SDK startup belongs to this stability re-read's probe budget
+        return observe, table
     table = _table(_render(ref["table"], tokens))
     probe = make_probe(_admin(admins, ref["db"]))
 
@@ -1062,6 +1065,8 @@ def complete(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens,
             began = clock.monotonic()
             source = src_obs(remaining)
             return {"source": source, "target": tgt_obs(max(0.0, remaining - (clock.monotonic() - began)))}
+
+        observe.minimum_budget = getattr(tgt_obs, "minimum_budget", 0)
 
         def satisfied(v):
             return v["source"] > 0 and v["source"] == v["target"]

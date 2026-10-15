@@ -131,7 +131,7 @@ class BigQueryAdmin:
         started = time.monotonic()
         job = "slt_" + uuid.uuid4().hex
         request = dict(op=op, endpoint=self.endpoint, project=self.project, dataset=self.dataset,
-                       job=job, **kwargs)
+                       job=job, deadline=started + remaining - min(0.5, remaining / 5), **kwargs)
         operation = dict(jobId=job, endpoint=self.endpoint, cancellation="not-needed", jobDelete="not-needed")
         self.last_operation = operation
         argv = [sys.executable, "-m", "livetest.bigqueryadmin"]
@@ -173,8 +173,8 @@ class BigQueryAdmin:
                         pass  # best effort; the status remains visible in read diagnostics
             operation["elapsed_s"] = time.monotonic() - started
 
-    def ensure_setup(self):
-        doc = self._operation("setup", remaining=20)
+    def ensure_setup(self, remaining=20):
+        doc = self._operation("setup", remaining=remaining)
         rows = decode_rows(doc["schema"], doc["rows"])
         if len(rows) != 1 or list(rows[0].values()) != [1]:
             raise BigQueryError("exact-read-error", "query healthcheck returned unexpected rows")
@@ -287,7 +287,10 @@ def _worker(req):
     dataset = root + f"/datasets/{req['dataset']}"
 
     def api(method, path, **kwargs):
-        return client._connection.api_request(method=method, path=path, timeout=(2, 2), **kwargs)
+        left = req.get("deadline", time.monotonic() + 10) - time.monotonic()
+        if left <= 0:
+            raise BigQueryError("exact-read-timeout", "REST operation budget exhausted")
+        return client._connection.api_request(method=method, path=path, timeout=(min(2, left), left), **kwargs)
 
     if req["op"] == "setup":
         try:

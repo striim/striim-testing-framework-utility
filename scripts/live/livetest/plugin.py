@@ -2272,7 +2272,9 @@ class LiveItem(pytest.Item):
                     tokens["GCS_ENDPOINT"] = f"http://{gcs_ip}:{resolved.base['port']}"
 
                 if svc == "bigquery":
-                    endpoint_ip = _gcs_endpoint_ip(ctx)
+                    endpoints_explicit = all(os.environ.get(k) for k in (
+                        "SLT_BIGQUERY_WRITER_ENDPOINT", "SLT_BIGQUERY_TOKEN_URI"))
+                    endpoint_ip = None if endpoints_explicit else _gcs_endpoint_ip(ctx)
                     tokens["BIGQUERY_ENDPOINT"] = os.environ.get("SLT_BIGQUERY_WRITER_ENDPOINT") or f"http://{endpoint_ip}:{resolved.base['port']}"
                     from urllib.parse import urlsplit
                     from bigquery_driver import local_http
