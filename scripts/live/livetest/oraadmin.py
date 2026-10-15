@@ -20,7 +20,7 @@ _TRANSIENT = ("DPY-6001", "DPY-6005", "ORA-12514", "ORA-12541", "ORA-01033", "OR
 # run serially and each example's DDL drops+recreates its own tables.
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
-_SQL_IDENT = r'(?:"(?:[^"\n]|"")*"|[A-Za-z_][A-Za-z0-9_$#]*)'
+_SQL_IDENT = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$#]*)'
 
 def _default_connect(**kw):
     import oracledb

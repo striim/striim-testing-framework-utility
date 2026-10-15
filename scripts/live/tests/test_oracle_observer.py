@@ -109,6 +109,7 @@ def test_unused_admin_observer_cleanup_never_opens_admin_connection():
     'CREATE VIEW "SYSTEM.TCASE_V" AS SELECT 1 id FROM dual;',
     "CREATE FORCE VIEW OTHER_V AS SELECT 1 id FROM dual;",
     "CREATE NOFORCE VIEW OTHER_V AS SELECT 1 id FROM dual;",
+    'CREATE VIEW "TCASE_bad\nname" AS SELECT 1 id FROM dual;',
 ])
 def test_foreign_observer_ddl_is_refused_before_connect(sql):
     admin = oraadmin.OraAdmin(BASE, prefix="TCASE_")
