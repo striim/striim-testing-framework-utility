@@ -231,3 +231,24 @@ def test_timestamp_uses_integer_microseconds_for_negative_fraction(peer):
     from urllib.parse import parse_qs, urlsplit
     query = next(p for p in peer.requests if '/queries/' in p)
     assert parse_qs(urlsplit(query).query)['formatOptions.useInt64Timestamp'] == ['true']
+
+
+def test_bigquery_ddl_records_rendered_input_without_running_twice(tmp_path):
+    ident = runident.derive('ddl-evidence', {'SLT_RUN_EPOCH': 'judge-ddl'})
+    ledger = ownership.Ledger.open(ident, state_dir=tmp_path, env={})
+    admin = BigQueryAdmin({'host':'127.0.0.1','port':9050,'project':'test-project','dataset':'slt'})
+    tables, sent, recorded = set(), [], []
+    name = admin.ref(ident.tid+'target')
+    admin.table_present = lambda n: n in tables
+    def execute(sql):
+        sent.append(sql)
+        tables.add(name)
+    admin.run_sql = execute
+    sql = f'CREATE TABLE `{name}` (id INT64);\n'
+    ledger.run_ddl_files([('bigquery-target','ddl.sql')], admins={'bigquery-target':{'admin':admin}},
+        tokens={'TID':ident.tid}, render_file=lambda _:sql,
+        run_one=lambda *_: pytest.fail('recording must not re-execute the DDL'),
+        record=lambda db, filename, rendered: recorded.append((db, filename, rendered)))
+    assert len(sent) == 1
+    assert recorded == [('bigquery-target','ddl.sql',sql)]
+    assert ledger.owns('bigquery-table','bigquery-target',name)

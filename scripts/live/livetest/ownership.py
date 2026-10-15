@@ -567,7 +567,7 @@ class Ledger:
                                  f"created; it is left untouched")
         return self.add("namespace", ns, None, "confirmed", "absent before this attempt; created by its TQL")
 
-    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one) -> None:
+    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one, record=None) -> None:
         """DDL one file at a time: refuse unsupported resources, acquire (pre-existence check), run,
         confirm from the catalog. The original exception of a failed file always propagates."""
         for db, fname in files:
@@ -578,7 +578,7 @@ class Ledger:
                                      f"ownership ledger does not support; refused before "
                                      f"execution")
             if db == "bigquery-target":
-                self._bigquery_ddl(sql, db, fname, admins, tokens)
+                self._bigquery_ddl(sql, db, fname, admins, tokens, record)
                 continue
             if db not in PG_ROUTES:
                 self.gaps.append(f"engine-tables {db}: the tables of {fname} are not acquired and never deleted "
@@ -626,7 +626,7 @@ class Ledger:
                 except Exception as exc:    # noqa: BLE001 - never mask the file's own exception
                     self.gaps.append(f"{db}: could not confirm objects of {fname} from the catalog: {exc}")
 
-    def _bigquery_ddl(self, sql, db, fname, admins, tokens):
+    def _bigquery_ddl(self, sql, db, fname, admins, tokens, record=None):
         from livetest.sqlutil import split_sql_statements
         admin = _lifecycle._admin(admins, db)
         statements = split_sql_statements(sql)
@@ -645,6 +645,8 @@ class Ledger:
                 self._foreign("bigquery-table", name, "pre-existing table; never acquired or deleted")
                 raise OwnershipError(f"collision:bigquery-table:{name} already exists; refused, left untouched")
             parsed.append((stmt, name))
+        if parsed and record is not None:
+            record(db, fname, sql)
         for stmt, name in parsed:
             intent = self.add("bigquery-table", name, db)
             # An ambiguous failure retains an unconfirmed intent; never acquire an unknown table.

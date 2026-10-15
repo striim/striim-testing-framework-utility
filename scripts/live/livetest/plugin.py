@@ -2336,7 +2336,9 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)]))
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)]),
+                                 record=lambda _db, _f, _sql: self._slt_inputs.record(
+                                     "ddl", _f, _sql, path=m.file_path(_f)))
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
                 _report(m.name, "seeding data")
