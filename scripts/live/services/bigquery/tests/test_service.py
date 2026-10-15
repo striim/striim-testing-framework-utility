@@ -118,7 +118,9 @@ def test_lock_and_recipe_pin_the_same_source():
     series = (ROOT / "patches/series").read_text().splitlines()
     assert series == [item["file"] for item in lock["patches"]]
     dependencies = lock["dependency_patches"]
-    assert (ROOT / "patches/googlesqlite.series").read_text().splitlines() == [item["file"] for item in dependencies]
+    for module in ("googlesqlite", "go-googlesql"):
+        assert (ROOT / "patches" / (module + ".series")).read_text().splitlines() == [
+            item["file"] for item in dependencies if item["module"].endswith("/" + module)]
     for item in dependencies:
         assert item["module"] + "@" + item["version"] in recipe
     expected = []
