@@ -18,3 +18,7 @@ WHERE '${SENTINEL_TAG}' NOT LIKE '%-recovery_%';
 
 Readiness still works and all data can arrive, but the post-recovery marker is
 suppressed. The case must fail post-recovery-sentinel-missed before assertions.
+
+The target delays each insert by 10 ms. This keeps the declared 100-to-2500-row
+window open for at least 24 seconds while the asynchronous STOP takes effect.
+The fault bounds, deadlines and all 5000 expected rows remain unchanged.

@@ -358,3 +358,17 @@ def test_transaction_recovery_samples_prove_b_landed_and_reader_resumed(name):
     assert _golden(name)[1] == [{'id':'1','msg':'first'},{'id':'2','msg':'second'}]
     if name == '12-snapshot-observer':
         assert m.lifecycle.sentinel['observe']['table'] not in {t['target'] for t in m.snapshot_spec['tables'].values()}
+
+
+def test_recovery_sentinel_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '16-recovery-sentinel'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('16-recovery-sentinel')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
