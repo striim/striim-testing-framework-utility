@@ -1,3 +1,5 @@
 3eeca27e7e8d78930b8286e5a886ce81f005cb8d4889165b4de8b226eae640cb  0001-release-anonymous-query-results.patch
 bfd2740e85a7dfa639b896589ad3e584bad41ee8ea0458ce9537ca1816ad014d  0002-avoid-builtins-in-path-catalogs.patch
 6233655b7c70d7ec2ac0896ceaa37bb984515ec32c4507cabd1e89bee784000e  0003-own-returned-parser-options.patch
+e17d639beee858f48c71433c29b3379e48ccc1dd027cc67de82c16fd85c0e077  0004-release-cleared-query-parameter-types.patch
+5a6baef6673ae15c37946d29b37ca289d90e545964962afc3318e7261a4961ec  0005-reuse-immutable-builtin-definitions.patch

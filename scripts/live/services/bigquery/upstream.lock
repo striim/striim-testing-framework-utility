@@ -12,7 +12,7 @@
     "runtime": "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
     "dockerfile_frontend": "docker/dockerfile:1.4@sha256:9ba7531bd80fb0a858632727cf7a112fbfd19b17e94c4e84ced81e24ef1a0dbc",
     "token": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-    "framework_version": "0.8.1-framework.3"
+    "framework_version": "0.8.1-framework.4"
   },
   "patches": [
     {
@@ -41,6 +41,22 @@
       "file": "0003-own-returned-parser-options.patch",
       "sha256": "6233655b7c70d7ec2ac0896ceaa37bb984515ec32c4507cabd1e89bee784000e",
       "description": "Own the ParserOptions value returned by AnalyzerOptions.GetParserOptions; retain its parent lifetime."
+    },
+    {
+      "module": "github.com/goccy/go-googlesql",
+      "version": "v0.3.0",
+      "module_sum": "h1:S6tOuDeBtyoIeNaGTliYGleZebuVE2/KwXc+zw5mHfQ=",
+      "file": "0004-release-cleared-query-parameter-types.patch",
+      "sha256": "e17d639beee858f48c71433c29b3379e48ccc1dd027cc67de82c16fd85c0e077",
+      "description": "Release named query parameter type references after successfully clearing their C++ map."
+    },
+    {
+      "module": "github.com/goccy/googlesqlite",
+      "version": "v0.3.1",
+      "module_sum": "h1:h0wLuefxzPZi+Q/F6npeDEKxXm/ca4LKlCH5+9m86YI=",
+      "file": "0005-reuse-immutable-builtin-definitions.patch",
+      "sha256": "5a6baef6673ae15c37946d29b37ca289d90e545964962afc3318e7261a4961ec",
+      "description": "Reuse immutable builtin definitions through non-owning registrations when recreating data catalogs."
     }
   ]
 }

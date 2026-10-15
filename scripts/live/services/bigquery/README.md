@@ -11,7 +11,7 @@ use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
 2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.3 .`.
+   `docker buildx build --load -t slt-bigquery:0.8.1-framework.4 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
    rebuilding it. Without that override, Compose builds the source recipe with a
@@ -49,7 +49,11 @@ reloading the root builtin-function set. The upstream change is open and unmerge
 its exact commit and patch digest are recorded in `upstream.lock`. A separate
 go-googlesql 0.3.0 patch gives the value returned by `GetParserOptions` an owning
 wrapper, so its C++ allocation is freed when the Go wrapper is collected. Its
-existing parent lifetime is preserved. This series does
+existing parent lifetime is preserved. Cleared named parameters release their Go
+type references while other analyzer dependencies stay pinned. Recreated catalogs
+reuse one immutable builtin definition set, including its aliases, namespaces and
+table-valued functions, through the existing non-owning catalog APIs.
+The analyzer configuration and query behavior are unchanged. This series does
 not claim repaired CSV load semantics. Architecture and lane
 qualification remain recorded separately in run evidence.
 

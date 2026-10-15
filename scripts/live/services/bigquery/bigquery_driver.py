@@ -41,7 +41,7 @@ def unavailable(env, mode):
         return "cannot inspect the local BigQuery emulator image; verify Docker and build the pinned recipe"
     if result.returncode:
         return ("BigQuery emulator image is missing; build services/bigquery/Dockerfile with "
-                "docker buildx build --load -t slt-bigquery:0.8.1-framework.3 . "
+                "docker buildx build --load -t slt-bigquery:0.8.1-framework.4 . "
                 "or set SLT_BIGQUERY_IMAGE to your qualified local image")
     return None
 

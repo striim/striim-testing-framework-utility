@@ -1,0 +1,172 @@
+--- a/internal/catalog.go
++++ b/internal/catalog.go
+@@ -115,7 +115,62 @@
+ 	EdgeTables []string
+ }
+ 
++// Builtin definitions are immutable. Keep their owning catalog alive and use
++// the existing non-owning registration APIs for each fresh data catalog.
++var sharedBuiltinCatalog = sync.OnceValue(func() *googlesql.SimpleCatalog {
++	return buildBuiltinCatalog(catalogName)
++})
++
+ func newSimpleCatalog(name string) *googlesql.SimpleCatalog {
++	builtins := sharedBuiltinCatalog()
++	if builtins == nil {
++		return nil
++	}
++	catalog, err := googlesql.NewSimpleCatalog(name, tf())
++	if err != nil || catalog == nil {
++		return nil
++	}
++	functions, err := builtins.Functions()
++	if err != nil {
++		return nil
++	}
++	seen := map[string]bool{}
++	for _, function := range functions {
++		name, err := function.Name()
++		if err != nil {
++			return nil
++		}
++		name = strings.ToLower(name)
++		if seen[name] {
++			continue // Functions includes a second entry for an alias.
++		}
++		seen[name] = true
++		if err := catalog.AddFunction(function); err != nil {
++			return nil
++		}
++	}
++	catalogs, err := builtins.Catalogs()
++	if err != nil {
++		return nil
++	}
++	for _, child := range catalogs {
++		if err := catalog.AddCatalog(child); err != nil {
++			return nil
++		}
++	}
++	tvfs, err := builtins.TableValuedFunctions()
++	if err != nil {
++		return nil
++	}
++	for _, tvf := range tvfs {
++		if err := catalog.AddTableValuedFunction(tvf); err != nil {
++			return nil
++		}
++	}
++	return catalog
++}
++
++func buildBuiltinCatalog(name string) *googlesql.SimpleCatalog {
+ 	catalog, err := googlesql.NewSimpleCatalog(name, tf())
+ 	if err != nil {
+ 		return nil
+diff --git a/internal/typepool_lifetime_test.go b/internal/typepool_lifetime_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/typepool_lifetime_test.go
+@@ -0,0 +1,102 @@
++package internal
++
++import (
++	"reflect"
++	"runtime"
++	"sort"
++	"testing"
++
++	googlesql "github.com/goccy/go-googlesql"
++)
++
++func TestBuiltinCatalogTypeStorageIsBounded(t *testing.T) {
++	if err := googlesql.Init(); err != nil {
++		t.Fatal(err)
++	}
++	warm := newSimpleCatalog("warm")
++	if warm == nil {
++		t.Fatal("catalog initialization failed")
++	}
++	reference := buildBuiltinCatalog("reference")
++	if reference == nil {
++		t.Fatal("reference builtin registration failed")
++	}
++	for _, names := range []func(*googlesql.SimpleCatalog) ([]string, error){
++		(*googlesql.SimpleCatalog).FunctionNames,
++		(*googlesql.SimpleCatalog).CatalogNames,
++		(*googlesql.SimpleCatalog).TableValuedFunctionNames,
++	} {
++		want, err := names(reference)
++		if err != nil {
++			t.Fatal(err)
++		}
++		got, err := names(warm)
++		if err != nil {
++			t.Fatal(err)
++		}
++		sort.Strings(want)
++		sort.Strings(got)
++		if !reflect.DeepEqual(got, want) {
++			t.Fatalf("builtin names changed: got %v want %v", got, want)
++		}
++	}
++	checkSchemas := func() {
++		t.Helper()
++		for _, spec := range []struct {
++			name string
++			kind googlesql.TypeKind
++			want string
++		}{
++			{"count", googlesql.TypeKindTypeInt64, "ARRAY<STRUCT<term STRING, count INT64>>"},
++			{"score", googlesql.TypeKindTypeDouble, "ARRAY<STRUCT<term STRING, score DOUBLE>>"},
++		} {
++			text, err := tf().MakeSimpleType(googlesql.TypeKindTypeString)
++			if err != nil {
++				t.Fatal(err)
++			}
++			value, err := tf().MakeSimpleType(spec.kind)
++			if err != nil {
++				t.Fatal(err)
++			}
++			arg := newBQArgBuilders(warm, tf()).mkArrayStructArg([]*googlesql.StructField{
++				{Name: "term", Type_: text}, {Name: spec.name, Type_: value},
++			})
++			if arg == nil {
++				t.Fatal("builtin return type unavailable")
++			}
++			typ, err := arg.Type()
++			if err != nil {
++				t.Fatal(err)
++			}
++			got, err := typ.DebugString(false)
++			if err != nil || got != spec.want {
++				t.Fatalf("builtin schema got %q, want %q: %v", got, spec.want, err)
++			}
++		}
++	}
++	checkSchemas()
++	before, err := tf().GetEstimatedOwnedMemoryBytesSize()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for i := 0; i < 30; i++ {
++		catalog := newSimpleCatalog("recreated")
++		if catalog == nil {
++			t.Fatal("catalog recreation failed")
++		}
++		runtime.KeepAlive(catalog)
++	}
++	runtime.GC()
++	runtime.GC()
++	after, err := tf().GetEstimatedOwnedMemoryBytesSize()
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Logf("owned type bytes before=%d after=%d", before, after)
++	if after > before+1024 {
++		t.Fatalf("identical builtin schemas retain type storage per catalog: %d bytes", after-before)
++	}
++	checkSchemas()
++	runtime.KeepAlive(warm)
++	runtime.KeepAlive(reference)
++}
