@@ -1,0 +1,231 @@
+--- a/server/server.go
++++ b/server/server.go
+@@ -19,6 +19,8 @@
+ 	"github.com/goccy/bigquery-emulator/internal/metadata"
+ 	"github.com/gorilla/mux"
+ )
++
++type anonymousQueryKey struct{ project, job string }
+ 
+ type Server struct {
+ 	Handler        http.Handler
+@@ -33,6 +35,8 @@
+ 	httpServer     *http.Server
+ 	grpcServer     *grpc.Server
+ 	listenCallback func(httpAddr, grpcAddr string)
++	// Guarded by sequentialAccessMiddleware; only committed results created here.
++	anonymousResultOwners map[anonymousQueryKey]string
+ }
+ 
+ // SetListenCallback registers a function invoked once the HTTP and gRPC
+--- a/server/handler.go
++++ b/server/handler.go
+@@ -1097,12 +1097,16 @@
+ 		return fmt.Errorf("failed to start transaction: %w", err)
+ 	}
+ 	defer tx.RollbackIfNotCommitted()
++	if err := r.server.deleteAnonymousQueryResult(ctx, tx, r.project, r.job); err != nil {
++		return err
++	}
+ 	if err := r.project.DeleteJob(ctx, tx.Tx(), r.job.ID); err != nil {
+ 		return fmt.Errorf("failed to delete job: %w", err)
+ 	}
+ 	if err := tx.Commit(); err != nil {
+ 		return err
+ 	}
++	delete(r.server.anonymousResultOwners, anonymousQueryKey{r.project.ID, r.job.ID})
+ 	return nil
+ }
+ 
+@@ -1262,9 +1266,10 @@
+ }
+ 
+ type jobsInsertRequest struct {
+-	server  *Server
+-	project *metadata.Project
+-	job     *bigqueryv2.Job
++	server         *Server
++	project        *metadata.Project
++	job            *bigqueryv2.Job
++	anonymousOwner string
+ }
+ 
+ func (h *jobsInsertHandler) tableDefFromQueryResponse(tableID string, response *internaltypes.QueryResponse) (*types.Table, error) {
+@@ -1710,7 +1715,7 @@
+ 			if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
+ 				return nil, fmt.Errorf("failed to add table data: %w", err)
+ 			}
+-		} else if response != nil && response.Schema != nil && len(response.Schema.Fields) > 0 {
++		} else if !job.Configuration.DryRun && response != nil && response.Schema != nil && len(response.Schema.Fields) > 0 {
+ 			// A query that produces a result set (a SELECT, as opposed to a
+ 			// DDL/DML statement that has no result schema) still gets an
+ 			// anonymous results table. The job must advertise it through
+@@ -1773,6 +1778,12 @@
+ 		if err := tx.Commit(); err != nil {
+ 			return nil, fmt.Errorf("failed to commit job: %w", err)
+ 		}
++		if r.anonymousOwner != "" {
++			if r.server.anonymousResultOwners == nil {
++				r.server.anonymousResultOwners = make(map[anonymousQueryKey]string)
++			}
++			r.server.anonymousResultOwners[anonymousQueryKey{r.project.ID, job.JobReference.JobId}] = r.anonymousOwner
++		}
+ 		if response != nil && response.ChangedCatalog.Changed() {
+ 			if err := syncCatalog(ctx, r.server, response.ChangedCatalog); err != nil {
+ 				return nil, err
+@@ -1895,6 +1906,8 @@
+ 		return nil, err
+ 	}
+ 	tableDef.SetupMetadata(projectID, datasetID)
++	r.anonymousOwner = strings.ToLower(randomID())
++	tableDef.Metadata["labels"] = map[string]string{"emulator_result_owner": r.anonymousOwner}
+ 	table := metadata.NewTable(r.server.metaRepo, projectID, datasetID, tableID, tableDef.Metadata)
+ 	dataset := metadata.NewDataset(
+ 		r.server.metaRepo,
+--- /dev/null
++++ b/server/query_result_lifetime.go
+@@ -0,0 +1,52 @@
++package server
++
++import (
++	"context"
++
++	"github.com/goccy/bigquery-emulator/internal/connection"
++	"github.com/goccy/bigquery-emulator/internal/contentdata"
++	"github.com/goccy/bigquery-emulator/internal/metadata"
++)
++
++// Anonymous SELECT destinations have the job's lifetime. Deleting just the
++// job leaves its table and dataset live, including a SQL catalog containing
++// builtin functions for every dataset. DROP TABLE releases that catalog.
++// Only results committed by this server instance are eligible. Explicit
++// destinations and anonymous namespaces subsequently changed by callers
++// are never adopted as cleanup targets.
++func (s *Server) deleteAnonymousQueryResult(ctx context.Context, tx *connection.Tx, project *metadata.Project, job *metadata.Job) error {
++	owner := s.anonymousResultOwners[anonymousQueryKey{project.ID, job.ID}]
++	if owner == "" {
++		return nil
++	}
++	cfg := job.Content().Configuration
++	if cfg == nil || cfg.Query == nil || cfg.Query.DestinationTable == nil {
++		return nil
++	}
++	ref := cfg.Query.DestinationTable
++	if ref.ProjectId != project.ID || ref.DatasetId != job.ID || ref.TableId != job.ID {
++		return nil
++	}
++	dataset := project.Dataset(ref.DatasetId)
++	if dataset == nil || len(dataset.Tables()) != 1 || len(dataset.Models()) != 0 || len(dataset.Routines()) != 0 {
++		return nil
++	}
++	table := dataset.Table(ref.TableId)
++	if table == nil {
++		return nil
++	}
++	content, err := table.Content()
++	if err != nil {
++		return err
++	}
++	if content.Labels["emulator_result_owner"] != owner {
++		return nil
++	}
++	if err := s.contentRepo.DeleteTables(ctx, tx, project.ID, dataset.ID, []contentdata.TableDeletion{{ID: table.ID}}); err != nil {
++		return err
++	}
++	if err := table.Delete(ctx, tx.Tx()); err != nil {
++		return err
++	}
++	return project.DeleteDataset(ctx, tx.Tx(), dataset.ID)
++}
+--- /dev/null
++++ b/server/query_result_lifetime_test.go
+@@ -0,0 +1,89 @@
++package server_test
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/goccy/bigquery-emulator/server"
++	"github.com/goccy/bigquery-emulator/types"
++)
++
++func TestQueryResultLifetime(t *testing.T) {
++	for _, mode := range []string{"anonymous", "explicit", "modified", "replaced"} {
++		t.Run(mode, func(t *testing.T) {
++			s, err := server.New(server.TempStorage)
++			if err != nil {
++				t.Fatal(err)
++			}
++			if err = s.Load(server.StructSource(types.NewProject("test"))); err != nil {
++				t.Fatal(err)
++			}
++			ts := s.TestServer()
++			defer ts.Close()
++			defer s.Stop(context.Background())
++			client := &http.Client{Timeout: 10 * time.Second}
++			root := ts.URL + "/bigquery/v2/projects/test"
++			call := func(method, path, body string, status int) map[string]any {
++				t.Helper()
++				req, err := http.NewRequest(method, root+path, bytes.NewBufferString(body))
++				if err != nil {
++					t.Fatal(err)
++				}
++				req.Header.Set("Content-Type", "application/json")
++				resp, err := client.Do(req)
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer resp.Body.Close()
++				var doc map[string]any
++				json.NewDecoder(resp.Body).Decode(&doc)
++				if resp.StatusCode != status {
++					t.Fatalf("%s %s: want%d got%d: %v", method, path, status, resp.StatusCode, doc)
++				}
++				return doc
++			}
++			destination := ""
++			if mode == "explicit" {
++				call("POST", "/datasets", `{"datasetReference":{"projectId":"test","datasetId":"caller"}}`, 200)
++				destination = `,"destinationTable":{"projectId":"test","datasetId":"caller","tableId":"result"}`
++			}
++			for i := 0; i < 3; i++ {
++				job := fmt.Sprintf("query_%d", i)
++				doc := call("POST", "/jobs", fmt.Sprintf(`{"jobReference":{"projectId":"test","jobId":%q},"configuration":{"query":{"query":"SELECT 1 AS n","useLegacySql":false%s}}}`, job, destination), 200)
++				ref := doc["configuration"].(map[string]any)["query"].(map[string]any)["destinationTable"].(map[string]any)
++				dataset := ref["datasetId"].(string)
++				table := ref["tableId"].(string)
++				path := "/datasets/" + dataset + "/tables/" + table
++				rows := call("GET", path+"/data", "", 200)["rows"].([]any)
++				if len(rows) != 1 {
++					t.Fatal(rows)
++				}
++				if mode == "modified" {
++					call("POST", "/datasets/"+dataset+"/tables", `{"tableReference":{"projectId":"test","datasetId":"`+dataset+`","tableId":"caller_table"},"schema":{"fields":[{"name":"n","type":"INTEGER"}]}}`, 200)
++				}
++				if mode == "replaced" {
++					call("DELETE", path, "", 200)
++					call("POST", "/datasets/"+dataset+"/tables", `{"tableReference":{"projectId":"test","datasetId":"`+dataset+`","tableId":"`+table+`"},"schema":{"fields":[{"name":"n","type":"INTEGER"}]}}`, 200)
++				}
++				call("DELETE", "/jobs/"+job+"/delete", "", 200)
++				want := 200
++				if mode == "anonymous" {
++					want = 404
++				}
++				call("GET", path+"/data", "", want)
++				call("GET", "/datasets/"+dataset, "", want)
++				if mode == "modified" {
++					call("GET", "/datasets/"+dataset+"/tables/caller_table", "", 200)
++				}
++				if mode != "anonymous" {
++					break
++				}
++			}
++		})
++	}
++}

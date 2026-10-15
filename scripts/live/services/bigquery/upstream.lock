@@ -11,7 +11,14 @@
     "go": "golang:1.25.3-bookworm@sha256:4f43b271f9673eb7bd0cb3a49cc17b08d8d6ee110277e26dbacc93c43a5a7793",
     "runtime": "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
     "dockerfile_frontend": "docker/dockerfile:1.4@sha256:9ba7531bd80fb0a858632727cf7a112fbfd19b17e94c4e84ced81e24ef1a0dbc",
-    "token": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+    "token": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
+    "framework_version": "0.8.1-framework.1"
   },
-  "patches": []
+  "patches": [
+    {
+      "file": "0001-release-anonymous-query-results.patch",
+      "sha256": "3eeca27e7e8d78930b8286e5a886ce81f005cb8d4889165b4de8b226eae640cb",
+      "description": "Release owned anonymous query result tables and catalogs when deleting their jobs."
+    }
+  ]
 }

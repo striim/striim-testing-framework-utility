@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -113,8 +114,14 @@ def test_lock_and_recipe_pin_the_same_source():
     recipe = (ROOT / "Dockerfile").read_text()
     for value in (lock["upstream"]["commit"], lock["upstream"]["archive_sha256"], lock["build"]["go"], lock["build"]["runtime"]):
         assert value in recipe
-    assert lock["patches"] == []
-    assert not (ROOT / "patches/series").read_text().strip()
+    assert lock["build"]["framework_version"] in recipe
+    series = (ROOT / "patches/series").read_text().splitlines()
+    assert series == [item["file"] for item in lock["patches"]]
+    expected = []
+    for item in lock["patches"]:
+        assert hashlib.sha256((ROOT / "patches" / item["file"]).read_bytes()).hexdigest() == item["sha256"]
+        expected.append(item["sha256"] + "  " + item["file"])
+    assert (ROOT / "patches/SHA256SUMS").read_text().splitlines() == expected
 
 
 def test_existing_docker_emulator_requires_writer_and_token_overrides(monkeypatch):

@@ -113,7 +113,7 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_BIGQUERY_DATASET` | shell, `.env`, machine | `slt` | Your own instance: dataset. |
 | `SLT_BIGQUERY_REST_HOST_PORT` | shell, `.env` | `9050` | Host port the container publishes; change it when the port is in use. |
 | `SLT_BIGQUERY_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
-| `SLT_BIGQUERY_IMAGE` | shell, `.env`, machine | `${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery:0.8.1-framework.0` | Override the framework emulator image; retain its digest in qualification evidence. |
+| `SLT_BIGQUERY_IMAGE` | shell, `.env`, machine | `${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery:0.8.1-framework.1` | Override the framework emulator image; retain its digest in qualification evidence. |
 | `SLT_BIGQUERY_MEM_LIMIT` | shell, `.env`, machine | `1g` | Memory limit of the container. |
 | `SLT_BIGQUERY_TOKEN_IMAGE` | shell, `.env`, machine | `python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1` | Override the dedicated fake token server image; use a pinned digest. |
 | `SLT_BIGQUERY_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |

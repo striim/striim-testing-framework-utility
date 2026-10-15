@@ -11,7 +11,7 @@ use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
 2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.0 .`.
+   `docker buildx build --load -t slt-bigquery:0.8.1-framework.1 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
    rebuilding it. Without that override, Compose builds the source recipe with a
@@ -40,8 +40,11 @@ setup. `SLT_BIGQUERY_IMAGE` and `SLT_BIGQUERY_TOKEN_IMAGE` override images; reta
 their exact digests when collecting qualification evidence.
 
 Preserve `UPSTREAM-LICENSE` when redistributing. The pinned archive is checked before
-extraction. Patch checksums and zero-fuzz application reject source drift. The empty
-initial series does not claim repaired CSV load semantics. Architecture and lane
+extraction. Patch checksums and strict context checks reject source drift. The anonymous-result
+lifetime patch reclaims the result table and its dataset/catalog
+when its query job is deleted. Explicit destinations, replaced results and caller-modified
+anonymous datasets are preserved; cleanup authority covers results created in the current
+server instance. This series does not claim repaired CSV load semantics. Architecture and lane
 qualification remain recorded separately in run evidence.
 
 The source recipe builds Linux amd64 and arm64 images. Native amd64 API/query

@@ -9,7 +9,10 @@ RUN echo 'af6584f6fe47066c150b096093a60e1d9ae6d1f9f261c654206574aaef219fe7  /tmp
 COPY patches/ /patches/
 RUN if [ -s /patches/SHA256SUMS ]; then (cd /patches && sha256sum -c SHA256SUMS); fi \
     && while IFS= read -r name; do \
-         [ -z "$name" ] || patch --batch --fuzz=0 -p1 < "/patches/$name" || exit 1; \
+         if [ -n "$name" ]; then \
+           git apply --check --whitespace=error-all "/patches/$name" \
+             && git apply --whitespace=error-all "/patches/$name" || exit 1; \
+         fi; \
        done < /patches/series
 COPY healthcheck.go /healthcheck.go
 # Keep downloaded modules and compiler intermediates out of persistent image layers.
@@ -17,7 +20,7 @@ COPY healthcheck.go /healthcheck.go
 RUN --mount=type=tmpfs,target=/go/pkg/mod --mount=type=tmpfs,target=/root/.cache/go-build \
     go mod download \
     && GOOS=linux GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
-       -ldflags '-s -w -X main.version=0.8.1-framework.0 -X main.revision=a531d3deb716eaba4972f9afa88e03e2c0f1a1af' \
+       -ldflags '-s -w -X main.version=0.8.1-framework.1 -X main.revision=a531d3deb716eaba4972f9afa88e03e2c0f1a1af' \
        -o /out/bigquery-emulator ./cmd/bigquery-emulator \
     && GOOS=linux GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
        -ldflags '-s -w' -o /out/bigquery-healthcheck /healthcheck.go
@@ -28,7 +31,7 @@ COPY --from=builder /build/LICENSE /licenses/bigquery-emulator.LICENSE
 COPY upstream.lock /work/upstream.lock
 LABEL org.opencontainers.image.source="https://github.com/goccy/bigquery-emulator" \
       org.opencontainers.image.revision="a531d3deb716eaba4972f9afa88e03e2c0f1a1af" \
-      org.opencontainers.image.version="0.8.1-framework.0"
+      org.opencontainers.image.version="0.8.1-framework.1"
 WORKDIR /work
 HEALTHCHECK --interval=2s --timeout=5s --start-period=2s --retries=30 CMD ["/bin/bigquery-healthcheck"]
 ENTRYPOINT ["/bin/bigquery-emulator"]
