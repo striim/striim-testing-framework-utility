@@ -389,14 +389,18 @@ def assert_exact_diff(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                                                  f"attempt; nothing was read")
                 started = clock_.monotonic()
                 source = _read_db(src_admin, src_route, src_sql, decl.order_by, max_rows, max_bytes, remaining)
+                source_operation = dict(src_admin.last_operation) if src_route == "bigquery-target" else {}
                 if not source:
                     raise ExactReadError("exact-source-empty", f"source {src_render} is empty; nothing to propagate")
                 actual = _read_db(tgt_admin, tgt_route, tgt_sql, decl.order_by, max_rows, max_bytes,
                                  max(0.05, remaining - (clock_.monotonic() - started)))
                 comp = canon.compare(source, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens), expected_observed=True)
-                jobs = [f"{route} job {admin.last_operation['jobId']} at {admin.endpoint}"
-                        for route, admin in ((src_route, src_admin), (tgt_route, tgt_admin))
+                jobs = [f"{side} {route} job {operation['jobId']} at {admin.endpoint}"
+                        for side, route, admin, operation in (
+                            ("source", src_route, src_admin, source_operation),
+                            ("target", tgt_route, tgt_admin,
+                             tgt_admin.last_operation if tgt_route == "bigquery-target" else {}))
                         if route == "bigquery-target"]
                 if jobs:
                     comp["_read_detail"] = "; ".join(jobs)

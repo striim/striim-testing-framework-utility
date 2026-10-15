@@ -136,3 +136,53 @@ def _is_space_or_control(ch: str) -> bool:
     # MySQL's rule for "-- ": the next byte is whitespace or a control character; at end of
     # input the lexer sees NUL, which counts as one.
     return ch == "" or ch.isspace() or ord(ch) < 32 or ord(ch) == 127
+
+
+def split_bigquery_statements(sql: str) -> list[str]:
+    """Split GoogleSQL outside quoted identifiers, strings/bytes and comments.
+
+    Single, double and triple quotes (including raw/bytes prefixes) share delimiter
+    recognition: an odd backslash run prevents a closing delimiter, even for raw
+    literals. Prefixes and literal bytes are preserved for the server to validate.
+    This splits plain DDL/seed scripts, not procedural BEGIN/END blocks.
+    """
+    out, buf = [], []
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in "'\"`":
+            delimiter = ch * 3 if ch != "`" and sql.startswith(ch * 3, i) else ch
+            start = i
+            i += len(delimiter)
+            while i < n:
+                if sql[i] == "\\":
+                    i += 2
+                elif sql.startswith(delimiter, i):
+                    i += len(delimiter)
+                    break
+                else:
+                    i += 1
+            else:
+                raise ValueError(f"unterminated GoogleSQL quoted text at offset {start}")
+            buf.append(sql[start:i])
+        elif sql.startswith("--", i) or ch == "#":
+            end = sql.find("\n", i)
+            i = n if end < 0 else end
+            buf.append(" ")
+        elif sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end < 0:
+                raise ValueError(f"unterminated GoogleSQL comment at offset {i}")
+            buf.append(" ")
+            i = end + 2
+        elif ch == ";":
+            if statement := "".join(buf).strip():
+                out.append(statement)
+            buf = []
+            i += 1
+        else:
+            buf.append(ch)
+            i += 1
+    if statement := "".join(buf).strip():
+        out.append(statement)
+    return out

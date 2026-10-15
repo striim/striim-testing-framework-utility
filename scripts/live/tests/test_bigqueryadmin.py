@@ -65,7 +65,7 @@ def peer():
             else:
                 if state.mode == "slow-query":
                     time.sleep(2.2)
-                self.reply({"jobComplete": True, "schema": {"fields": state.fields}, "rows": state.rows,
+                self.reply({"jobComplete": state.mode != "incomplete", "schema": {"fields": state.fields}, "rows": state.rows,
                             **({"pageToken": "again"} if state.mode == "pages" else {})})
 
         def reply(self, doc):
@@ -249,7 +249,7 @@ def test_bigquery_ddl_records_rendered_input_without_running_twice(tmp_path):
         sent.append(sql)
         tables.add(name)
     admin.run_sql = execute
-    sql = f'CREATE TABLE `{name}` (id INT64);\n'
+    sql = f'CREATE TABLE `{name}` (id INT64) OPTIONS(description="a;b");\n'
     ledger.run_ddl_files([('bigquery-target','ddl.sql')], admins={'bigquery-target':{'admin':admin}},
         tokens={'TID':ident.tid}, render_file=lambda _:sql,
         run_one=lambda *_: pytest.fail('recording must not re-execute the DDL'),
@@ -344,3 +344,18 @@ def test_cdc_dataset_failed_create_never_adopts_concurrent_owner(tmp_path):
         ledger.acquire_bigquery_dataset(admins)
     assert ledger.entries[0]['state'] == 'intended' and present == ['concurrent owner']
     assert ledger.entries[0]['state'] not in ownership.DELETABLE_STATES
+
+
+def test_run_sql_preserves_googlesql_quoted_semicolons(monkeypatch):
+    admin = BigQueryAdmin({'host':'127.0.0.1','port':9050,'project':'test-project','dataset':'slt'})
+    sent = []
+    monkeypatch.setattr(admin, '_operation', lambda *a, **kw: sent.append(kw['sql']))
+    statements = [r"SELECT 'x\'; y'", 'SELECT "a;b"', 'SELECT `a;b`']
+    admin.run_sql('; '.join(statements)+';')
+    assert sent == statements
+
+
+def test_incomplete_job_poll_cap_is_a_timeout(peer):
+    peer.mode = 'incomplete'
+    with pytest.raises(BigQueryError, match='exact-read-timeout: .*job remained incomplete'):
+        peer.admin.select_rows('slt.t', remaining=12)

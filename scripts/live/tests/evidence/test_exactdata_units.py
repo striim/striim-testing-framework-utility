@@ -133,3 +133,24 @@ def test_data_section_renumbers_and_aggregates_hashed_comparisons():
     assert data["expectedSha256"] == canon.aggregate([e["sha256"]])
     assert data["normalization"] == [{"index": 0, "declarationSha256": "sha256:" + "d" * 64}]
     assert data["sampleTruncated"] is False
+
+
+def test_bigquery_diff_retains_each_read_job_when_admin_is_shared(monkeypatch):
+    from livetest.bigqueryadmin import BigQueryAdmin
+    admin = BigQueryAdmin({'host':'127.0.0.1','port':9050,'project':'test-project','dataset':'slt'})
+    def read(*args, **kwargs):
+        admin.last_operation = {'jobId': 'target-job' if admin.last_operation else 'source-job'}
+        return [{'id':1}]
+    admin.last_operation = {}
+    monkeypatch.setattr(exactdata, '_read_db', read)
+    decl = SimpleNamespace(order_by=[])
+    manifest = SimpleNamespace(exact={'block':{'version':1}})
+    def drive(kind, prepared, *args, **kwargs):
+        return prepared[0].evaluate(10)
+    monkeypatch.setattr(exactdata, '_drive', drive)
+    monkeypatch.setattr(canon, 'compare', lambda *a, **kw: {})
+    result = exactdata.assert_exact_diff({'bigquery-target':{'admin':admin}},
+        [(0, {'source':'slt.src','target':'slt.tgt','db':'bigquery-target'}, decl)],
+        manifest, tokens={}, owned=lambda *a: True, lifecycle=False)
+    assert 'source bigquery-target job source-job' in result['_read_detail']
+    assert 'target bigquery-target job target-job' in result['_read_detail']

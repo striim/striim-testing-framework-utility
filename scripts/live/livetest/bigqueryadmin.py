@@ -28,13 +28,13 @@ class BigQueryError(Exception):
 def local_http(value):
     p = urlsplit(value)
     if p.scheme != "http" or p.username or p.password or p.query or p.fragment:
-        raise ValueError("BigQuery emulator endpoints must be plain local HTTP URLs without credentials")
+        raise ValueError("BigQuery emulator endpoints must be plain HTTP URLs without credentials")
     if not p.hostname or p.path not in ("", "/"):
         raise ValueError("BigQuery emulator endpoint must name a host, without an API path")
     if p.hostname not in ("localhost", "host.docker.internal"):
         address = ipaddress.ip_address(p.hostname)
         if address.version != 4 or not (address.is_private or address.is_loopback) or address.is_unspecified or address.is_link_local or address.is_multicast or address.is_reserved:
-            raise ValueError("BigQuery emulator endpoint must resolve inside the local test stack")
+            raise ValueError("BigQuery emulator endpoint must use loopback or private IPv4 (or a supported Docker host name)")
     if p.port is None:
         raise ValueError("BigQuery emulator endpoint must include its test port")
     return value.rstrip("/")
@@ -209,9 +209,9 @@ class BigQueryAdmin:
         self._operation("drop", remaining, table=self.ref(table))
 
     def run_sql(self, sql, remaining=30):
-        from livetest.sqlutil import split_sql_statements
+        from livetest.sqlutil import split_bigquery_statements
         deadline = time.monotonic() + remaining
-        for statement in split_sql_statements(sql):
+        for statement in split_bigquery_statements(sql):
             self._operation("query", deadline - time.monotonic(), sql=statement,
                             max_rows=1000, max_bytes=1_000_000)
 
@@ -379,6 +379,8 @@ def _worker(req):
             return {"schema": schema, "rows": rows}
         if not isinstance(token, str) or len(token) > 4096:
             raise BigQueryError("exact-read-error", "invalid page token")
+    if not page.get("jobComplete", False):
+        raise BigQueryError("exact-read-timeout", "job remained incomplete after 128 REST polls")
     raise BigQueryError("canonical-limit-exceeded", "REST page cap exceeded")
 
 

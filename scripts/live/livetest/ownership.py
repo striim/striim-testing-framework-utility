@@ -645,9 +645,9 @@ class Ledger:
                     self.gaps.append(f"{db}: could not confirm objects of {fname} from the catalog: {exc}")
 
     def _bigquery_ddl(self, sql, db, fname, admins, tokens, record=None):
-        from livetest.sqlutil import split_sql_statements
+        from livetest.sqlutil import split_bigquery_statements
         admin = _lifecycle._admin(admins, db)
-        statements = split_sql_statements(sql)
+        statements = split_bigquery_statements(sql)
         parsed = []
         for stmt in statements:
             # No IF NOT EXISTS / OR REPLACE: concurrent CREATE must fail rather than adopt a table.
