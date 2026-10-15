@@ -45,6 +45,7 @@ the setting when the port is busy.
 | `kafka` | Confluent 7.6.1: Kafka, ZooKeeper, Schema Registry | n/a | 9092, 19092, 8081 | `kafka` | `SLT_KAFKA_HOST` |
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
+| `bigquery` | pinned community BigQuery emulator + a dedicated token server | experimental append-only baseline | 9050, 9051 | bootstrap only; row assertions not yet qualified | `SLT_BIGQUERY_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -354,3 +355,19 @@ With the hosts and ports above, from this machine:
    with "Cannot generate database URL with empty sample URL template".
 4. Use port 9010 (gRPC), not 9020, and keep `autoConfigEmulator=true`: it points the driver at the
    emulator and turns off TLS and credentials.
+
+## BigQuery emulator (`bigquery`)
+
+Build the pinned community emulator described in
+[the service README](../scripts/live/services/bigquery/README.md). This experimental
+service uses anonymous REST administration and generated local-only writer credentials.
+Set `SLT_BIGQUERY_REST_HOST_PORT` and `SLT_BIGQUERY_TOKEN_HOST_PORT` to remap ports;
+`SLT_BIGQUERY_PROJECT` and `SLT_BIGQUERY_DATASET` configure bootstrap and clients together.
+The app uses `BIGQUERY_PROJECT`, `BIGQUERY_DATASET`, `BIGQUERY_ENDPOINT` and
+`BIGQUERY_SERVICE_ACCOUNT_KEY`. The writer's documented PSC property accepts the local
+IPv4 HTTP endpoint, so no machine DNS or trust changes are needed.
+
+This baseline does not qualify row assertions, CSV batch uploads, Storage Write,
+recovery, IAM, billing or cloud equivalence. BigQueryWriter batch uploads are direct
+resumable uploads; GCS is not a dependency. A selected lane with missing prerequisites
+exits nonzero (a skip is exit 3), never a passing empty run.

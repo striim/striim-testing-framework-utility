@@ -242,7 +242,7 @@ def _striim_dir():
 # bare fake config in seven hermetic tests, and marker registration is static configuration
 # anyway -- it does not belong in a hook.
 _SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "gcs", "kafka", "mysql", "teradata",
-                    "vertica", "servicenow")
+                    "vertica", "servicenow", "bigquery")
 
 
 def _registered_markers(config) -> set:
@@ -943,7 +943,7 @@ def _spanner_admins(base) -> list:
 
 _FAKE_KEY_NAME = "fake-gcp-key.json"
 
-def _make_fake_gcp_key(token_uri: str) -> str:
+def _make_fake_gcp_key(token_uri: str, project_id: str = "test-project") -> str:
     # A throwaway service-account JSON with a locally-generated, structurally-valid
     # RSA key that authenticates to nothing. Spanner needs only a *parseable* key
     # (SPANNER_EMULATOR_HOST skips auth). GCS always fetches a token from `token_uri`,
@@ -961,10 +961,10 @@ def _make_fake_gcp_key(token_uri: str) -> str:
             f"openssl genpkey failed (rc={r.returncode}, stderr={r.stderr.strip()!r}); "
             "cannot build the throwaway GCP service-account key. Ensure 'openssl' is on PATH.")
     return json.dumps({
-        "type": "service_account", "project_id": "test-project",
+        "type": "service_account", "project_id": project_id,
         "private_key_id": "0000000000000000000000000000000000000000",
         "private_key": pem,
-        "client_email": "fake-sa@test-project.iam.gserviceaccount.com",
+        "client_email": f"fake-sa@{project_id}.iam.gserviceaccount.com",
         "client_id": "000000000000000000000",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": token_uri,
@@ -972,12 +972,16 @@ def _make_fake_gcp_key(token_uri: str) -> str:
         "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/fake-sa%40test-project.iam.gserviceaccount.com",
         "universe_domain": "googleapis.com"}, indent=2)
 
-def ensure_fake_gcp_key(config, ctx) -> None:
+def ensure_fake_gcp_key(config, ctx, *, key_name: str = _FAKE_KEY_NAME,
+                        token_uri: str | None = None, project_id: str = "test-project") -> None:
     # Upload the throwaway GCP key into the Striim server's UploadedFiles so the
     # spanner/gcs tests' `ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json'`
     # resolves — no manual make-fake-key.sh step. Once per session.
-    if getattr(config, "_slt_gcp_key_done", False):
+    done_flag = "_slt_gcp_key_done" if key_name == _FAKE_KEY_NAME else "_slt_bigquery_key_done"
+    if getattr(config, done_flag, False):
         return
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.json", key_name):
+        raise ValueError("fake service-account key must be a JSON basename")
     import tempfile, subprocess, os as _os
     # token_uri -> the services/gcs fake token server, reachable from the Striim
     # server (host.docker.internal for the Docker cluster, localhost for native).
@@ -986,7 +990,7 @@ def ensure_fake_gcp_key(config, ctx) -> None:
     # remapping a busy 4444 moved the token server and left this key pointing at the old port --
     # the same "container moves, client does not" bug docker_env fixes elsewhere.
     token_port = _os.environ.get("SLT_GCS_TOKEN_HOST_PORT", "").strip() or "4444"
-    content = _make_fake_gcp_key(f"http://{token_host}:{token_port}/token")
+    content = _make_fake_gcp_key(token_uri or f"http://{token_host}:{token_port}/token", project_id)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         f.write(content)
         path = f.name
@@ -995,16 +999,16 @@ def ensure_fake_gcp_key(config, ctx) -> None:
         if ctx.mode == "docker":
             # The single-topology apps deploy on the `default` group (primary + node).
             for node in stack.app_nodes():
-                subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{_FAKE_KEY_NAME}"],
-                               capture_output=True, text=True)
+                subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{key_name}"],
+                               capture_output=True, text=True, check=True)
         else:  # native Striim
             home = _os.environ.get("STRIIM_HOME")
             if home:
                 import shutil
-                shutil.copy(path, _os.path.join(home, "UploadedFiles", _FAKE_KEY_NAME))
+                shutil.copy(path, _os.path.join(home, "UploadedFiles", key_name))
     finally:
         _os.unlink(path)
-    config._slt_gcp_key_done = True
+    setattr(config, done_flag, True)
 
 def _gcs_ensure(admin, bucket, attempts: int = 20, delay: float = 1.5) -> None:
     # fake-gcs-server has no healthcheck and needs a moment after the container starts;
@@ -2259,12 +2263,27 @@ class LiveItem(pytest.Item):
                         else:
                             _drv_prepare()
                     for _key, _admin in _drv_admins.items():
-                        admins[_key] = {"admin": _admin, "schema": None}
+                        admins[_key] = (_admin if isinstance(_admin, dict) and "admin" in _admin
+                                        else {"admin": _admin, "schema": None})
                 tokens.update(build_service_tokens(defn, resolved, schema))
                 if svc == "gcs" and gcs_ip:
                     # Override the host in the setHost() endpoint with the IP (UrlValidator
                     # rejects host.docker.internal); GcsAdmin still uses base host:port.
                     tokens["GCS_ENDPOINT"] = f"http://{gcs_ip}:{resolved.base['port']}"
+
+                if svc == "bigquery":
+                    endpoint_ip = _gcs_endpoint_ip(ctx)
+                    tokens["BIGQUERY_ENDPOINT"] = os.environ.get("SLT_BIGQUERY_WRITER_ENDPOINT") or f"http://{endpoint_ip}:{resolved.base['port']}"
+                    from urllib.parse import urlsplit
+                    from bigquery_driver import local_http
+                    local_http(tokens["BIGQUERY_ENDPOINT"])
+                    token_uri = os.environ.get("SLT_BIGQUERY_TOKEN_URI") or f"http://{endpoint_ip}:{resolved.base['token_port']}/token"
+                    token_url = urlsplit(token_uri)
+                    if token_url.path != "/token":
+                        raise ValueError("SLT_BIGQUERY_TOKEN_URI must use the dedicated /token path")
+                    local_http(token_url._replace(path="").geturl())
+                    ensure_fake_gcp_key(self.config, ctx, key_name="fake-bigquery-key.json",
+                                        token_uri=token_uri, project_id=resolved.base["project"])
 
             def _run_files(items):
                 for db, fname in items:

@@ -57,6 +57,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Services](SERVICES.md) | `docs/SERVICES.md` | A service is a database, broker or emulator a test lists under requires:. |
 | [Your own services](YOUR-OWN-SERVICES.md) | `docs/YOUR-OWN-SERVICES.md` | A service is a container a test can requires:: a database, a message broker, an emulator. |
 | [Integration-tier GCS emulator recipe](../scripts/integration/services/gcs/README.md) | `scripts/integration/services/gcs/README.md` | The integration tier's fake-gcs-server, on port 14443, with one fixed bucket and per-test isolation by ${TID}-prefixed object paths. |
+| [Local BigQuery emulator](../scripts/live/services/bigquery/README.md) | `scripts/live/services/bigquery/README.md` | Build a local BigQuery REST emulator with a dedicated fake OAuth endpoint. |
 | [GCS emulator service recipe](../scripts/live/services/gcs/README.md) | `scripts/live/services/gcs/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 | [Kafka service recipe](../scripts/live/services/kafka/README.md) | `scripts/live/services/kafka/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 | [SQL Server service recipe](../scripts/live/services/mssql/README.md) | `scripts/live/services/mssql/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |

@@ -28,6 +28,9 @@ COMPOSE_FILES = sorted(p for p in (REPO / "scripts").glob("*/services/**/compose
 # Pulled from public registries as they are; also the only bases a shipped Dockerfile may use.
 PUBLIC_IMAGES = {
     "postgres:16", "mysql:8.0", "python:3.12-slim",
+    "golang:1.25.3-bookworm@sha256:4f43b271f9673eb7bd0cb3a49cc17b08d8d6ee110277e26dbacc93c43a5a7793",
+    "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+    "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
     "fsouza/fake-gcs-server:1.54.0",
     "gvenzl/oracle-free:23.26.2-slim-faststart",
     "gcr.io/cloud-spanner-emulator/emulator:1.5.55",
@@ -119,7 +122,7 @@ def test_the_catalog_ships_only_the_public_services():
     # Teradata's VM image and disks are private too. Both tiers keep a
     # connection-only teradata definition (service.yaml, no compose) for your own instance.
     assert not [k for k in keys if k.split("/")[1] == "teradata"], keys
-    assert len(keys) == 17, sorted(keys)
+    assert len(keys) == 18, sorted(keys)
 
 
 @pytest.mark.parametrize("path", COMPOSE_FILES, ids=_key)
