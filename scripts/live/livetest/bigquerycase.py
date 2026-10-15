@@ -22,6 +22,11 @@ def validate_writer(manifest, text):
     def refuse(reason):
         raise ValueError(f"BigQuery emulator lane: {reason}")
 
+    if (any(a.get("type") == "alter_recompile" for a in getattr(manifest, "action_specs", ()))
+            or any(a.lower() == "alter" and b.lower() == "target"
+                   for a, b in zip(tokens, tokens[1:]))):
+        refuse("writer property changes are unqualified (ALTER TARGET / alter_recompile)")
+
     for index, token in enumerate(tokens):
         if token.lower() != "bigquerywriter":
             continue

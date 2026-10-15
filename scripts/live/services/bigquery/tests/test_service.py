@@ -233,3 +233,14 @@ def test_writer_checks_each_block_and_ignores_comment_or_string_decoys():
     CREATE TARGET b USING Global.BigQueryWriter (StreamingUpload:true);"""
     with pytest.raises(ValueError, match='UseLegacyStreamingAPI=true'):
         validate_writer(manifest, text)
+
+
+@pytest.mark.parametrize('action,text', [
+    ([], "CREATE TARGET t USING Global.BigQueryWriter (StreamingUpload:false); ALTER TARGET t SET StreamingUpload=true;"),
+    ([{'type':'alter_recompile','file':'alter.tql'}], "CREATE TARGET t USING Global.BigQueryWriter (StreamingUpload:false);"),
+])
+def test_writer_property_changes_cannot_bypass_preflight(action, text):
+    from livetest.bigquerycase import validate_writer
+    manifest = SimpleNamespace(requires=['bigquery'], lifecycle=None, action_specs=action)
+    with pytest.raises(ValueError, match='writer property changes are unqualified'):
+        validate_writer(manifest, text)

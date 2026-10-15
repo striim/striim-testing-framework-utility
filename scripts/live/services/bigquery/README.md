@@ -250,6 +250,8 @@ APPENDONLY mode. Storage Write, streaming MERGE, connection profiles and GCS sta
 are refused. Properties outside the understood writer property list also fail
 closed; adding a property requires reviewing its route first. These guards do not
 claim that PSC routes an unqualified client through the REST emulator.
+`ALTER TARGET` and `alter_recompile` actions are also refused in BigQuery cases:
+post-creation writer property changes are outside the qualified scope.
 
 The emulator has no streaming buffer. Real BigQuery restricts DML over recent
 legacy REST streaming inserts; a local DML success does not qualify that cloud
