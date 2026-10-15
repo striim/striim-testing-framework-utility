@@ -176,6 +176,7 @@ def test_insert_failure_is_recorded_not_masked(pipe):
 def test_bigquery_same_writer_sentinel_requires_both_steps(pipe, fault):
     spec = _spec(sentinel={'db': 'postgres-source', 'insert': 'i.sql', 'delete': 'd.sql',
                           'observe': {'db': 'bigquery-target', 'table': '${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt', 'key': 'id'}})
+    assert spec.uses_bigquery_cdc() and not _spec().uses_bigquery_cdc()
     writer = pipe.writer()
     def run(sql, remaining):
         if fault == 'drop-delete' and sql.startswith('DELETE'): return

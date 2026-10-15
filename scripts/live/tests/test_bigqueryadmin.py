@@ -139,6 +139,7 @@ def test_bigquery_initial_load_owns_exact_target_and_refuses_cdc():
              "readiness": {"kind": "baseline-landed", "source": source, "target": target},
              "completion": {"kind": "source-count", "source": source, "target": target}}
     spec = lifecycle.parse_spec(block, "test.yaml")
+    assert not spec.uses_bigquery_cdc()
     tokens = {"BIGQUERY_PROJECT": "test-project", "BIGQUERY_DATASET": "slt"}
     seen = []
     assert lifecycle.check_witness_refs(spec, tokens, lambda *args: seen.append(args) or True) is None

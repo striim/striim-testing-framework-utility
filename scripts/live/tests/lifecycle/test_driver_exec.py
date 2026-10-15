@@ -92,3 +92,30 @@ def test_a_consumer_service_marker_reaches_the_selection_without_an_ini_entry(ru
     selection = json.loads((run.root / "live" / "selection.json").read_text())
     assert [c["name"] for c in selection["collected"]] == ["driver-flow"], selection
     assert "extdb" in selection["collected"][0]["markers"], selection
+
+
+def test_unrelated_bigquery_admin_does_not_rewrite_postgres_cdc_scope(run_case):
+    # Requiring another service may supply BigQuery administration without using
+    # BigQuery as this app's sink. Its presence must not allocate a CDC dataset.
+    body = '''class Admin:
+    endpoint = "http://127.0.0.1:9050"
+    project = "test-project"
+    dataset = "slt"
+def admins(base, defn):
+    return {"bigquery-target": {"admin": Admin(), "schema": "slt"}}
+'''
+    def prepare(root, name):
+        _driver(body)(root, name)
+        # The fixture's literal changes insert ids10/11; derive this oracle by hand.
+        (root / 'cases/cdc-sentinel/expected.csv').write_text('id\n10\n11\n')
+    def edit(text):
+        return text.replace('requires: [postgres]', 'requires: [postgres, extdb]').replace(
+            'assert:\n  smoke: true',
+            'exact: {version: 1, max_rows: 4}\nassert:\n  smoke: true\n  data:\n'
+            '  - target: ${PG_TARGET_SCHEMA}.${TID}tgt\n    target_db: postgres-target\n'
+            '    match: expected.csv\n    exact: {columns: {id: integer}}')
+    run = run_case('cdc-sentinel', {'mirror': 'live'}, edit=edit, prepare=prepare)
+    assert run.ret == 0, run.text
+    assert run.envelope()['run']['qualifies'] is True
+    assert all(c['equal'] for c in run.envelope()['data']['comparisons'])
+    assert not any(e['kind'] == 'bigquery-dataset' for e in run.envelope()['resources']['owned'])

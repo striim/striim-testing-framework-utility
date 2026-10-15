@@ -117,6 +117,10 @@ class LifecycleSpec:
     def uses_sentinel(self) -> bool:
         return self.readiness["kind"] == "sentinel" or self.completion["kind"] == "sentinel"
 
+    def uses_bigquery_cdc(self) -> bool:
+        return bool(self.mode == "cdc" and self.sentinel
+                    and self.sentinel["observe"]["db"] == "bigquery-target")
+
 
 def parse_duration(value, what: str, path) -> float:
     if isinstance(value, bool):
