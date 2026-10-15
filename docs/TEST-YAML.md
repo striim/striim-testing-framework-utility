@@ -97,6 +97,13 @@ Sampling checks every observed snapshot. It cannot rule out a bad state between
 reads. Choose an interval suitable for the behavior under test. The observer is
 joined before cleanup, including when seeding or recovery fails.
 
+Snapshot histories include both monotonic time and `observedUtc` so they can be
+aligned with transaction steps. Worker failures are reported immediately. If a
+case fails before observer assertions, `Observer.abandon()` retains the bounded
+history in a failed `observer-incomplete` record. A finished observer is not
+reported incomplete during teardown; the original case failure is preserved.
+
+
 ## `transactions:` — overlapping Postgres seed sessions
 
 The optional ordered `transactions:` list controls named seed sessions. Session
@@ -267,11 +274,6 @@ op:
 - Local files get the same token rendering and isolation checks as example files.
 
 
-Snapshot histories include both monotonic time and `observedUtc` so they can be
-aligned with transaction steps. Worker failures are reported immediately. If a
-case fails before observer assertions, `Observer.abandon()` retains the bounded
-history in a failed `observer-incomplete` record. A finished observer is not
-reported incomplete during teardown; the original case failure is preserved.
 
 ## `recover:` — interrupt the app, bring it back, then assert
 
