@@ -234,7 +234,7 @@ def _worker(req):
             left = deadline - time.monotonic()
             if left <= 0:
                 break
-            conn = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=min(0.2, left))
+            conn = http.client.HTTPConnection(endpoint.hostname, endpoint.port, timeout=left)
             try:
                 conn.request(method, root + suffix, body=b"{}" if method == "POST" else None,
                              headers={"Content-Type": "application/json"})

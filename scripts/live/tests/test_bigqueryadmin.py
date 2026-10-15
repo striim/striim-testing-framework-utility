@@ -55,6 +55,8 @@ def peer():
             self.reply({})
 
         def do_DELETE(self):
+            if state.mode == "slow-delete":
+                time.sleep(0.4)
             self.reply({})
 
         def do_GET(self):
@@ -273,3 +275,11 @@ def test_short_bigquery_stability_read_has_worker_startup_budget():
                                           {'db':'bigquery-target','table':'slt.t'}, {})
     record, held = lifecycle._hold(SimpleNamespace(stability_s=0.001), lifecycle.Clock, observe, lambda n:n==1)
     assert held and record['value']==1 and budgets
+
+
+def test_job_delete_can_finish_within_the_original_budget(peer):
+    peer.mode = 'slow-delete'
+    started = time.monotonic()
+    assert peer.admin.select_rows('slt.t', remaining=6) == [{'id':9007199254740993}]
+    assert peer.admin.last_operation['jobDelete'] == 'response'
+    assert time.monotonic() - started < 6
