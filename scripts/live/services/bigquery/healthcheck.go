@@ -20,9 +20,12 @@ func setting(key, fallback string) string {
 
 func probe() error {
 	project := setting("BIGQUERY_PROJECT", "test-project")
-	dataset := setting("BIGQUERY_DATASET", "slt")
 	base := "http://127.0.0.1:9050/bigquery/v2/projects/" + project
-	client := &http.Client{Timeout: 2 * time.Second}
+	return probeAt(base, &http.Client{Timeout: 2 * time.Second})
+}
+
+func probeAt(base string, client *http.Client) error {
+	dataset := setting("BIGQUERY_DATASET", "slt")
 	requests := []struct{ method, url, body string }{
 		{"GET", base + "/datasets/" + dataset, ""},
 		{"POST", base + "/queries", `{"query":"SELECT 1","useLegacySql":false}`},
@@ -44,11 +47,30 @@ func probe() error {
 		}
 		if item.method == "POST" {
 			var result struct {
-				JobComplete bool `json:"jobComplete"`
-				Rows        []struct{ F []struct{ V string } }
+				JobComplete  bool `json:"jobComplete"`
+				JobReference struct {
+					JobID string `json:"jobId"`
+				} `json:"jobReference"`
+				Rows []struct{ F []struct{ V string } }
 			}
 			if err := json.Unmarshal(body, &result); err != nil {
 				return err
+			}
+			if result.JobReference.JobID == "" {
+				return fmt.Errorf("SELECT 1 returned no job identifier")
+			}
+			cleanup, err := http.NewRequest("DELETE", base+"/jobs/"+result.JobReference.JobID+"/delete", nil)
+			if err != nil {
+				return err
+			}
+			deleted, err := client.Do(cleanup)
+			if err != nil {
+				return err
+			}
+			io.Copy(io.Discard, io.LimitReader(deleted.Body, 65537))
+			deleted.Body.Close()
+			if deleted.StatusCode != 200 && deleted.StatusCode != 204 && deleted.StatusCode != 404 {
+				return fmt.Errorf("health job delete: status %d", deleted.StatusCode)
 			}
 			if !result.JobComplete || len(result.Rows) != 1 || len(result.Rows[0].F) != 1 || result.Rows[0].F[0].V != "1" {
 				return fmt.Errorf("SELECT 1 did not return the expected completed result")
