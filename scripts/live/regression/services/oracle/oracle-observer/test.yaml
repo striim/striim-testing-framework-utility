@@ -1,5 +1,6 @@
 name: oracle-observer
-purpose: Oracle observer routes record writer logons and exclude framework probes.
+purpose: Oracle observer routes distinguish tagged framework probes from writer logons.
+disabled_parallel: Observer views and triggers see all data-user sessions in the PDB; use a serial run on an unshared service.
 tql: app.tql
 topology: single
 requires:
@@ -30,9 +31,9 @@ assert:
   - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}LOGONS
     db: oracle-target
     min_rows: 1
-  - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}SESSIONS
+  - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}WRITERS
     db: oracle-target
-    rows: 1
+    min_rows: 1
   - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}PROBES
     db: oracle-target
-    rows: 0
+    min_rows: 1

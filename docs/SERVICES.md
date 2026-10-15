@@ -170,12 +170,14 @@ BEGIN
     SELECT PROGRAM INTO login_program FROM SYS.V_$SESSION
       WHERE SID = TO_NUMBER(SYS_CONTEXT('USERENV', 'SID'));
     IF NVL(login_program, '?') <> 'striim-test-observer' THEN
-      INSERT INTO ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}LOGONS
-        (SESSION_ID, PROGRAM)
-        VALUES (TO_NUMBER(SYS_CONTEXT('USERENV', 'SESSIONID')), login_program);
+      EXECUTE IMMEDIATE
+        'INSERT INTO ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}LOGONS (SESSION_ID, PROGRAM) VALUES (:1, :2)'
+        USING TO_NUMBER(SYS_CONTEXT('USERENV', 'SESSIONID')), login_program;
       COMMIT;
     END IF;
   END IF;
+EXCEPTION WHEN OTHERS THEN
+  ROLLBACK;
 END;
 /
 ```
@@ -187,10 +189,25 @@ framework target probes; filtering the program above excludes those probes
 without excluding the writer. A module set after connection cannot filter an
 AFTER LOGON trigger.
 
+Observer views and database logon triggers see every session of the data user in
+that PDB, including other cases and runs. Exact session or logon counts are valid
+only in a serial run on an unshared service. Mark such cases `disabled_parallel`
+with that reason; this guard does not isolate separate runs sharing the service.
+The shipped regression uses minimum counts and is also guarded against parallel
+execution. It records all target logons, then checks tagged PROBES and untagged
+WRITERS separately, so losing the framework's program tag fails the case.
+
+Dynamic SQL avoids a static dependency on the log table; the exception handler
+rolls back and swallows logging errors so a missing table cannot invalidate the
+trigger or block logins. Compilation warnings still fail immediately with
+`oracle-ddl-compilation-error`, after an attempt to drop the just-created object.
+
 The framework removes the case's prefixed observer triggers before views and
 ordinary tables, including failed cases and resource-retained runs. A failed
-observer cleanup fails the run and records a verification gap; another case's
-objects are never removed. Use only ordinary identifier characters in observer
+observer cleanup fails the run, preserves Oracle tables and records verification
+gaps for their skipped cleanup; another case's objects are never removed.
+Observer teardown precedes app cleanup so slow undeploy cannot skip it when an
+interrupt teardown deadline expires. Use only ordinary identifier characters in observer
 names and `${TID_ORACLE}` as the prefix. The [YAML reference](TEST-YAML.md#oracle-observer-ddl-and-seeds)
 shows the ordered routes and error codes.
 

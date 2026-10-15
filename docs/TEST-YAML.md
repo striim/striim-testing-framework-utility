@@ -76,8 +76,11 @@ then its prefixed views, before ordinary Oracle table cleanup. This also runs
 after DDL, deploy or assertion failure, for seed-only routes, and with either
 resource-retention flag: retained apps/tables do not retain observer hooks.
 Catalog readback verifies absence. A failed drop or unreadable catalog fails
-cleanup as `oracle-observer-cleanup-failed`, records a verification gap and keeps
-any original case failure visible. An empty cleanup prefix is refused as
+cleanup as `oracle-observer-cleanup-failed`, preserves Oracle tables and records
+verification gaps for their skipped cleanup, keeping any original case failure
+visible. Observer teardown runs before app cleanup so a slow undeploy cannot skip
+it when an interrupt teardown deadline expires. A compilation warning fails as
+`oracle-ddl-compilation-error` after an attempt to drop the just-created object. An empty cleanup prefix is refused as
 `oracle-observer-cleanup-scope`; unrelated objects are untouched.
 
 Probe connections identify themselves as `PROGRAM = 'striim-test-observer'`
@@ -85,6 +88,13 @@ during login, including data assertions and admin DDL. Observer queries/triggers
 must exclude that program while filtering the writer's username. Do not filter
 on MODULE set after connect: an AFTER LOGON trigger has already run by then.
 The supported Thin-mode driver minimum is python-oracledb 2.5.
+
+Observer views and triggers see every session of the data user in the PDB,
+including other cases and runs. Exact counts are valid only in a serial run on an
+unshared service. Use `disabled_parallel` with that reason; this guard does not
+isolate separate runs that share a service. The shipped regression records all
+target logons and checks PROBES and WRITERS with `min_rows: 1`, proving both that
+the framework tag reaches Oracle and that the writer remains visible.
 
 See [Oracle observer setup and SQL](SERVICES.md#oracle-observers) for direct
 grants, a filtered view/logon trigger, and the required image rebuild.

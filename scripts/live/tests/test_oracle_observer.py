@@ -175,12 +175,12 @@ def test_observer_regression_exercises_routes_and_filtered_writer_logons():
     assert [db for db, _ in manifest.ddl_files] == ['oracle-source', 'oracle-target', 'oracle-admin']
     checks = manifest.assert_['data']
     assert any(x['target'].endswith('LOGONS') and x['min_rows'] == 1 for x in checks)
-    assert any(x['target'].endswith('PROBES') and x['rows'] == 0 for x in checks)
+    assert any(x['target'].endswith('PROBES') and x['min_rows'] == 1 for x in checks)
     target = (root / 'ddl_target.sql').read_text()
     trigger = (root / 'observer_trigger.sql').read_text()
-    assert 'SYS.V_$SESSION' in target
+    assert 'SYS.V_$SESSION' in trigger
     assert 'GRANT INSERT' in target and '${ORACLE_ADMIN_USER}' in target
-    assert "<> 'striim-test-observer'" in trigger and trigger.rstrip().endswith('/')
+    assert "<> 'striim-test-observer'" not in trigger and trigger.rstrip().endswith('/')
 
 
 @pytest.mark.parametrize("modifiers", [
