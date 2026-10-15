@@ -239,7 +239,7 @@ def test_timestamp_uses_integer_microseconds_for_negative_fraction(peer):
 
 
 def test_bigquery_ddl_records_rendered_input_without_running_twice(tmp_path):
-    ident = runident.derive('ddl-evidence', {'SLT_RUN_EPOCH': 'judge-ddl'})
+    ident = runident.derive('ddl-evidence', {'SLT_RUN_EPOCH': 'ddl-evidence-test'})
     ledger = ownership.Ledger.open(ident, state_dir=tmp_path, env={})
     admin = BigQueryAdmin({'host':'127.0.0.1','port':9050,'project':'test-project','dataset':'slt'})
     tables, sent, recorded = set(), [], []
