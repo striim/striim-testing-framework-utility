@@ -1091,8 +1091,12 @@ file gives: fill any `NOT NULL` columns there.
 
 ### Rules
 
-- **Routes.** Source SQL and table-count witnesses use Postgres. Sentinel output may be
-  Postgres, either Spanner dialect, a freshly owned Kafka topic, or an owned file.
+- **Routes.** Sentinel source SQL and replication-slot progress use Postgres.
+  Table-count witnesses use Postgres, or either Spanner dialect when the case
+  declares `audit: {version: 1}` with an audited append-only output. Those Spanner
+  baseline/source-count/row-count probes require positive owned counts; zero is
+  never completion proof. Sentinel output may be Postgres, either Spanner dialect,
+  a freshly owned Kafka topic, or an owned file.
   File sinks require Docker. Kafka completion must be sentinel, with sentinel
   or source-progress readiness. See the output references below.
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
