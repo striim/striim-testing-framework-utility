@@ -163,6 +163,14 @@ SECTIONS = (
 )
 # Service settings no service.yaml field explains.
 SERVICE_EXTRAS = {
+    "SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS": ("`600000`",
+        "First initialization of disposable Postgres: idle-transaction deadline in milliseconds "
+        "for qasource/qatarget in sltdb only. Positive integer, at most 2147483647. "
+        "Recreate the owned service to change it; external databases are unchanged."),
+    "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS": ("`600000`",
+        "First initialization of disposable integration Postgres: idle-transaction deadline "
+        "in milliseconds for qasource/qatarget in intdb only. Positive integer, at most "
+        "2147483647. Recreate the owned service to change it; external databases are unchanged."),
     "SLT_MSSQL_BOOTSTRAP_PASSWORD": ("`QAtestuser1`",
                                      "The strong `sa` password the container boots with; the setup then "
                                      "sets the test password."),
