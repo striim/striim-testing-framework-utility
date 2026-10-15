@@ -24,6 +24,7 @@ use direct resumable uploads, without GCS staging.
 (9051) to remap host ports. `SLT_BIGQUERY_PROJECT` (test-project) and
 `SLT_BIGQUERY_DATASET` (slt) configure both bootstrap and clients.
 `SLT_BIGQUERY_CPUS` (1) and `SLT_BIGQUERY_MEM_LIMIT` (1g) bound the emulator.
+The server's Go heap budget is 640 MiB, leaving headroom within the container cap.
 
 Docker Striim uses its documented `PrivateServiceConnectEndpoint` property with a
 reachable IPv4 HTTP address. The service uses a separate generated
@@ -41,9 +42,24 @@ their exact digests when collecting qualification evidence.
 Preserve `UPSTREAM-LICENSE` when redistributing. The pinned archive is checked before
 extraction. Patch checksums and zero-fuzz application reject source drift. The empty
 initial series does not claim repaired CSV load semantics. Architecture and lane
-qualification remain recorded separately in `upstream.lock`.
+qualification remain recorded separately in run evidence.
 
 The source recipe builds Linux amd64 and arm64 images. Native amd64 API/query
 health, independent integer/text readback, port remapping, two-stack isolation and
 local credential refresh have been exercised. Arm64 has been cross-built; native
 ARM runtime behavior and native-Striim mode remain unqualified.
+
+`bigquery-target` supports bounded basic row assertions and typed exact comparisons through
+anonymous REST clients. Only qualified scalar schemas are accepted; unsupported types fail
+even on an empty table. See `docs/TEST-YAML.md` for the page/row/byte/deadline contract.
+Query identifiers are retained in assertion details; server cancellation is not rollback.
+
+Fixture DDL accepts plain `CREATE TABLE` statements with a `${TID}` table prefix in the
+configured project/dataset. A pre-existing table is a collision, never adopted or replaced.
+Cleanup deletes confirmed exact-name ledger entries and verifies absence. Endpoint/project/
+dataset changes refuse recovery deletion. Retained ledgers can be replayed; the shared
+bootstrap dataset and unknown tables are never dropped. Writer-created staging tables have
+no deletion authority until their explicit ownership contract is implemented.
+
+Finite initial-load lifecycle targets can use BigQuery counts with a positive Postgres source
+baseline. APPENDONLY insert/delete sentinel observation remains unsupported.

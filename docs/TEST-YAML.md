@@ -427,6 +427,17 @@ assert:
 Nothing is truncated: a side over either limit fails with `canonical-limit-exceeded`. Set the limits
 near your data's size, so a runaway target fails fast.
 
+The local BigQuery service also supports `bigquery-target` reads. Use a fully qualified
+`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}table` and require `bigquery`.
+The reader preserves case and scalar INT64, NUMERIC, TIMESTAMP, DATETIME, DATE, BYTES,
+BOOL and STRING values. Nested/repeated fields, JSON, GEOGRAPHY and floating point fields
+are refused, including on empty tables. Its REST transport caps response bytes before JSON
+parsing, reads at most `max_rows + 1`, and stops after 128 result pages. Raw row bytes also
+have a conservative transfer cap of twice `max_bytes`; canonical bytes retain the exact
+`max_bytes` limit. A disposable reader process enforces the total deadline even when a server
+trickles bytes. Assertion details retain query job identifiers. Cancellation is bounded and
+best effort; it does not prove server rollback.
+
 ### `exact:` on a spec
 
 `exact: true` takes every default. The mapping form:
@@ -561,8 +572,9 @@ file gives: fill any `NOT NULL` columns there.
 
 ### Rules
 
-- **Routes.** Every `db:` in the block is `postgres-source` or `postgres-target`. A file sink needs
-  Docker mode.
+- **Routes.** Postgres supports source and target probes. `bigquery-target` supports finite
+  `initial-load` target counts; its source probes remain Postgres. BigQuery CDC sentinels are
+  refused until insert/delete propagation through MERGE is qualified. A file sink needs Docker mode.
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
   `dest`, and the block's own `path`s start with `${OWNED_DIR}/`, with no `.`, `..` or empty parts.
   `${OWNED_DIR}` is a directory on the Striim nodes that the run creates for itself and removes at
@@ -577,7 +589,7 @@ file gives: fill any `NOT NULL` columns there.
   observations.
 
 **Clean-up (`reset: owned`).** The run records each object before it creates it, and removes only
-those, by exact name: Postgres tables and replication slots, the namespace, and `${OWNED_DIR}`. An
+those, by exact name: Postgres tables and replication slots, BigQuery tables, the namespace, and `${OWNED_DIR}`. An
 object with the same name that the run did not create is left alone and fails the run
 (`collision:<kind>:<name>`). Tables on other databases are not tracked, and are reported as not
 verified. With `--keep-resources` nothing is removed; `striim-test doctor` then names the

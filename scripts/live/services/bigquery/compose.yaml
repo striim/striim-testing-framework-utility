@@ -10,6 +10,8 @@ services:
       - --project=${SLT_BIGQUERY_PROJECT:-test-project}
       - --dataset=${SLT_BIGQUERY_DATASET:-slt}
     environment:
+      # Leave headroom for runtime stacks, mappings and the query engine within the 1 GiB cap.
+      GOMEMLIMIT: 640MiB
       BIGQUERY_PROJECT: ${SLT_BIGQUERY_PROJECT:-test-project}
       BIGQUERY_DATASET: ${SLT_BIGQUERY_DATASET:-slt}
     ports:

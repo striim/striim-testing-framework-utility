@@ -35,7 +35,7 @@ MODES = ("initial-load", "cdc")
 SINKS = ("db", "file")
 READINESS_KINDS = ("baseline-landed", "source-progress", "sentinel")
 COMPLETION_KINDS = ("source-count", "row-count", "file-lines", "sentinel")
-DB_ROUTES = ("postgres-source", "postgres-target")
+DB_ROUTES = ("postgres-source", "postgres-target", "bigquery-target")
 OWNED_DIR_PREFIX = "${OWNED_DIR}/"
 DEFAULT_STABILITY_S = 5.0
 DEFAULT_READINESS_S = 60.0
@@ -242,6 +242,20 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
         if not isinstance(completion.get("path"), str):
             _err(path, "completion.path is required for kind file-lines")
         _positive_int(path, completion.get("lines"), "completion.lines")
+
+    # Only finite initial-load target observations are qualified for this engine.
+    for section in (readiness, completion):
+        source = section.get("source")
+        if isinstance(source, dict) and source.get("db") == "bigquery-target":
+            _err(path, "BigQuery lifecycle source probes are unsupported; use Postgres")
+    sentinel_routes = block.get("sentinel") if isinstance(block.get("sentinel"), dict) else {}
+    observe = sentinel_routes.get("observe") if isinstance(sentinel_routes.get("observe"), dict) else {}
+    target_routes = [section.get("db") for section in (readiness, completion)]
+    target_routes += [(section.get("target") or {}).get("db") for section in (readiness, completion)
+                      if isinstance(section.get("target"), dict)]
+    target_routes += [sentinel_routes.get("db"), observe.get("db")]
+    if mode == "cdc" and "bigquery-target" in target_routes:
+        _err(path, "BigQuery CDC sentinel observation is unqualified until MERGE insert/delete is proven")
 
     sentinel = block.get("sentinel")
     needed = rk == "sentinel" or ck == "sentinel"
@@ -705,12 +719,21 @@ def check_witness_refs(spec: LifecycleSpec, tokens: dict, owned) -> str | None:
     names = {}
     for what, ref in refs:
         rendered = _render(ref["table"], tokens)
-        m = _TABLE.match(rendered)
-        if not m:
-            return f"witness-unresolvable: {what} {rendered!r} does not render to schema.table"
-        name = f"{m.group(1)}.{m.group(2)}".lower()
+        if ref["db"] == "bigquery-target":
+            from livetest.bigqueryadmin import table_ref
+            try:
+                name = table_ref(rendered, tokens.get("BIGQUERY_PROJECT", ""), tokens.get("BIGQUERY_DATASET", ""))
+            except ValueError as exc:
+                return f"witness-unresolvable: {what}: {exc}"
+            kind = "bigquery-table"
+        else:
+            m = _TABLE.match(rendered)
+            if not m:
+                return f"witness-unresolvable: {what} {rendered!r} does not render to schema.table"
+            name = f"{m.group(1)}.{m.group(2)}".lower()
+            kind = "pg-table"
         names[what] = name
-        if not owned("pg-table", ref["db"], name):
+        if not owned(kind, ref["db"], name):
             return (f"witness-not-owned: {what} {ref['db']}:{name} is not a confirmed resource of this "
                     f"attempt; a witness never observes a table this run did not create")
     for side in ("readiness", "completion"):
@@ -833,6 +856,10 @@ def await_running_bounded(client, apps, deadline: Deadline) -> dict:
 
 
 def _count_observer(admins, ref, tokens):
+    if ref["db"] == "bigquery-target":
+        admin = _admin(admins, ref["db"])
+        table = admin.ref(_render(ref["table"], tokens))
+        return lambda remaining: admin.count_rows(table, remaining), table
     table = _table(_render(ref["table"], tokens))
     probe = make_probe(_admin(admins, ref["db"]))
 
@@ -1032,7 +1059,9 @@ def complete(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens,
         tgt_obs, tgt = _count_observer(admins, spec.completion["target"], tokens)
 
         def observe(remaining):
-            return {"source": src_obs(remaining), "target": tgt_obs(remaining)}
+            began = clock.monotonic()
+            source = src_obs(remaining)
+            return {"source": source, "target": tgt_obs(max(0.0, remaining - (clock.monotonic() - began)))}
 
         def satisfied(v):
             return v["source"] > 0 and v["source"] == v["target"]

@@ -105,7 +105,7 @@ ServiceNow.
 | `gcs` | stock: `fsouza/fake-gcs-server:1.54.0`, plus a fake token server | not applicable | 4443, 4444 token | `SLT_GCS_HOST` and `SLT_GCS_*` | **supported, not exercised here** (`scripts/live/regression/services/gcs`) |
 | `teradata` | **none: bring your own instance.** The framework ships no Teradata container; its definition holds only the connection settings | not applicable | 1025 (`SLT_TERADATA_PORT`) | `SLT_TERADATA_HOST` and `SLT_TERADATA_*`, in `.env` or the shell (below) | **supported, not exercised here**. With `SLT_TERADATA_HOST` unset, its tests skip, naming the setting. A service of your own named `teradata` with a container (`servicesRoots`, [YOUR-OWN-SERVICES.md](YOUR-OWN-SERVICES.md)) replaces the definition |
 | `servicenow` | **none: bring your own instance.** ServiceNow is hosted: no container runs an instance. Its definition holds only the connection settings | not applicable | 443 (`SLT_SERVICENOW_PORT`) | `SLT_SERVICENOW_HOST` and `SLT_SERVICENOW_*`, in `.env` or the shell | **supported, not exercised here**. With `SLT_SERVICENOW_HOST` unset, its tests skip, naming the setting. The framework does not read or write ServiceNow: assert on where a reader's data lands, or on Striim's own figures ([SERVICENOW.md](SERVICENOW.md)) |
-| `bigquery` | recipe: pinned community `goccy/bigquery-emulator` 0.8.1 source, plus a dedicated fake token server | append-only REST baseline | 9050, 9051 token | `SLT_BIGQUERY_HOST` and `SLT_BIGQUERY_*` | **tested**: Linux x86-64 API/query bootstrap, two isolated stacks, local OAuth refresh and independent integer/text readback. Writer qualification and framework row assertions remain separate gates; CSV batches, Storage Write, recovery and cloud equivalence are not qualified |
+| `bigquery` | recipe: pinned community `goccy/bigquery-emulator` 0.8.1 source, plus a dedicated fake token server | append-only REST baseline | 9050, 9051 token | `SLT_BIGQUERY_HOST` and `SLT_BIGQUERY_*` | **tested**: Linux x86-64 API/query bootstrap, two isolated stacks, local OAuth refresh and independent integer/text readback. Bounded scalar assertions and finite initial-load target counts are available; writer qualification remains separate; CSV batches, Storage Write, recovery and cloud equivalence are not qualified |
 
 "Recipe" means the framework builds the image from a public base; "stock" means it uses a public image
 as it is. Any service can move to another host port through the variable shown, when the default is
@@ -164,12 +164,12 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Feature | Status |
 |---|---|
 | `exact:` on `data` (Postgres) and `file` (Docker mode) | **tested**: samples 01 to 04 |
-| `exact:` on `diff`, and on other databases | `diff`: **supported, not exercised here**. Other databases: **not supported**; compare without `exact:`, or copy the rows to Postgres |
+| `exact:` on `diff`, and on other databases | `diff`: **supported, not exercised here**. Local `bigquery-target`: bounded qualified scalar reads. Other databases: **not supported**; compare without `exact:`, or copy the rows to Postgres |
 | `lifecycle:` `initial-load` with a table (`baseline-landed`, `source-count`) | **tested**: samples 01 and 02 |
 | `lifecycle:` `initial-load` with a file (`baseline-landed`, `file-lines`) | **tested**: sample 03 (Docker mode) |
 | `lifecycle:` `cdc` with `sentinel` | **tested**: sample 04 |
 | `lifecycle:` `source-progress`, `row-count` | **supported, not exercised here** |
-| `lifecycle:` on a database other than Postgres | **not supported**: witnesses read Postgres only. Use no `lifecycle:` block (the test then polls its assertions until `timeout`) |
+| `lifecycle:` on a database other than Postgres | Local `bigquery-target`: finite initial-load target counts with Postgres source probes. BigQuery CDC sentinels and other engines are **not supported** |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
