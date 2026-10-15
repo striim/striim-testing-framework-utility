@@ -1957,7 +1957,8 @@ class LiveItem(pytest.Item):
         self._slt_inputs = _slt_inputs.snapshot(m, self.manifest_path, strict=m.exact is not None)
         m._slt_inputs = self._slt_inputs   # send sites that hold only the manifest record through it
         from livetest.bigquerycase import validate_writer
-        validate_writer(m, (m.source_dir / m.tql).read_text())
+        if "bigquery" in m.requires:
+            validate_writer(m, (m.source_dir / m.tql).read_text())
         ctx = _resolve_striim(self.config)
         if ctx is None:
             self._slt_infra_skip = "cluster"   # see pytest_runtest_makereport
