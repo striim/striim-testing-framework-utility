@@ -86,10 +86,9 @@ def decode_rows(schema, rows):
         if kind in ("NUMERIC", "DECIMAL"):
             return Decimal(value)
         if kind == "TIMESTAMP":
-            micros = Decimal(value) * 1_000_000
-            if micros != micros.to_integral_value():
-                raise BigQueryError("invalid-value", "sub-microsecond TIMESTAMP is unsupported")
-            return dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc) + dt.timedelta(microseconds=int(micros))
+            if not re.fullmatch(r"-?[0-9]+", value):
+                raise BigQueryError("invalid-value", "TIMESTAMP REST value must be integer microseconds")
+            return dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc) + dt.timedelta(microseconds=int(value))
         if kind == "DATETIME":
             result = dt.datetime.fromisoformat(value)
             if result.tzinfo:
@@ -312,7 +311,7 @@ def _worker(req):
         "configuration": {"query": {"query": req["sql"], "useLegacySql": False}}})
     rows, schema, token, row_bytes = [], None, None, 0
     for _ in range(128):
-        params = {"maxResults": min(1000, req["max_rows"] + 1 - len(rows)), "timeoutMs": 100}
+        params = {"maxResults": min(1000, req["max_rows"] + 1 - len(rows)), "timeoutMs": 100, "formatOptions.useInt64Timestamp": "true"}
         if token:
             params["pageToken"] = token
         page = api("GET", root + f"/queries/{req['job']}", query_params=params)

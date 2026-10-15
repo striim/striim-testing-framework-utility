@@ -15,7 +15,7 @@ from livetest.bigqueryadmin import BigQueryAdmin, BigQueryError, decode_rows, ta
 
 def test_scalar_decoding_never_rounds_through_float():
     kinds = ["INT64", "NUMERIC", "TIMESTAMP", "DATETIME", "DATE", "BYTES", "BOOL", "STRING", "STRING"]
-    values = ["9007199254740993", "12.3400", "1700000000.000001", "2024-01-02T03:04:05.000001",
+    values = ["9007199254740993", "12.3400", "1700000000000001", "2024-01-02T03:04:05.000001",
               "2024-01-02", "AP8=", "true", "", None]
     schema = {"fields": [{"name": f"c{i}", "type": kind} for i, kind in enumerate(kinds)]}
     row = decode_rows(schema, [{"f": [{"v": v} for v in values]}])[0]
@@ -221,3 +221,13 @@ def test_reader_deletes_its_job_on_success_and_limit_error(peer):
     assert second != first
     assert any('/jobs/' + second + '/delete' in p for p in peer.requests)
     assert peer.admin.last_operation['jobDelete'] == 'response'
+
+
+def test_timestamp_uses_integer_microseconds_for_negative_fraction(peer):
+    peer.fields = [{'name': 'at', 'type': 'TIMESTAMP'}]
+    peer.rows = [{'f': [{'v': '-1'}]}]
+    rows = peer.admin.select_rows('slt.t', remaining=6)
+    assert rows == [{'at': dt.datetime(1969,12,31,23,59,59,999999,tzinfo=dt.timezone.utc)}]
+    from urllib.parse import parse_qs, urlsplit
+    query = next(p for p in peer.requests if '/queries/' in p)
+    assert parse_qs(urlsplit(query).query)['formatOptions.useInt64Timestamp'] == ['true']
