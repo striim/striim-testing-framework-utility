@@ -16,7 +16,9 @@ use direct resumable uploads, without GCS staging.
    `docker buildx build --load -t slt-bigquery:0.8.1-framework.8 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
-   rebuilding it. Without that override, Compose builds the source recipe with a
+   rebuilding it. Prebuilt images must carry the exact OCI version and upstream revision
+   labels from `upstream.lock`; missing or mismatched labels refuse the run.
+   Run evidence records each managed service image ID. Without that override, Compose builds the source recipe with a
    stack-prefixed image tag.
 3. Start with `docker compose up -d --wait`. Readiness checks the dataset API and
    the result of `SELECT 1`, as well as the dedicated token endpoint.
@@ -36,13 +38,15 @@ store or product code changes are required for this route.
 
 To use an existing emulator, set `SLT_BIGQUERY_HOST`, `SLT_BIGQUERY_PORT`,
 `SLT_BIGQUERY_WRITER_ENDPOINT` and `SLT_BIGQUERY_TOKEN_URI`. Endpoints must be
-local plain HTTP; the token URI must end in `/token`. This is not a cloud credential
+plain HTTP on loopback, private IPv4 or a supported Docker host name; the token URI
+must end in `/token`. A private address can also reach a corporate or VPN host:
+the operator must select an isolated emulator endpoint. This is not a cloud credential
 or ADC configuration. Native Striim requires an explicit working endpoint and token
 setup. `SLT_BIGQUERY_IMAGE` and `SLT_BIGQUERY_TOKEN_IMAGE` override images; retain
 their exact digests when collecting qualification evidence.
 
 Preserve `UPSTREAM-LICENSE` when redistributing. The pinned archive is checked before
-extraction. Patch checksums and strict context checks reject source drift. The anonymous-result
+extraction. Patch checksums and strict context checks reject source mismatches. The anonymous-result
 lifetime patch reclaims the result table and its dataset/catalog
 when its query job is deleted. Explicit destinations, replaced results and caller-modified
 anonymous datasets are preserved; cleanup authority covers results created in the current
@@ -233,3 +237,30 @@ drops exact fixture tables, removes the confirmed dataset with its contents and
 verifies absence. The shared bootstrap dataset is retained; kept resources retain
 the same scope for replay. Final MERGE state does not prove operation order,
 replay multiplicity or crash/checkpoint safety. APPENDONLY CDC stays unqualified.
+
+
+## Enforced writer scope and cloud differences
+
+Before provisioning, `requires: [bigquery]` cases validate each literal
+BigQueryWriter property block. Batch APPENDONLY is supported. MERGE requires a CDC
+lifecycle whose sentinel observes `bigquery-target`, so generated staging tables
+stay inside the ledger-owned per-test dataset. Other MERGE lifecycle shapes fail
+before deployment. Streaming requires explicit `UseLegacyStreamingAPI=true` and
+APPENDONLY mode. Storage Write, streaming MERGE, connection profiles and GCS staging
+are refused. Properties outside the understood writer property list also fail
+closed; adding a property requires reviewing its route first. These guards do not
+claim that PSC routes an unqualified client through the REST emulator.
+
+The emulator has no streaming buffer. Real BigQuery restricts DML over recent
+legacy REST streaming inserts; a local DML success does not qualify that cloud
+behavior. Quotas, rate limits and DML concurrency/queue limits are not modeled.
+See [BigQuery DML limitations](https://cloud.google.com/bigquery/docs/data-manipulation-language#limitations).
+No real-cloud confirmation is claimed by this lane.
+
+DDL and seed scripts split with [GoogleSQL lexical rules](https://cloud.google.com/bigquery/docs/reference/standard-sql/lexical):
+quoted identifiers, single/double/triple strings, raw/bytes prefixes and backslash
+escapes preserve embedded semicolons. Procedural scripts with internal statement
+blocks are outside this plain-DDL/seed contract.
+
+Generated fake-key uploads fail immediately if a container copy fails, for BigQuery,
+GCS and Spanner alike. The upload remains retryable; a failed copy cannot mark it done.

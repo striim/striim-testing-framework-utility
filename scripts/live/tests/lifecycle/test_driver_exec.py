@@ -119,3 +119,21 @@ def admins(base, defn):
     assert run.envelope()['run']['qualifies'] is True
     assert all(c['equal'] for c in run.envelope()['data']['comparisons'])
     assert not any(e['kind'] == 'bigquery-dataset' for e in run.envelope()['resources']['owned'])
+
+
+@pytest.mark.parametrize('properties,reason', [
+    ("Mode:'MERGE', StreamingUpload:false", 'owned CDC dataset'),
+    ("StreamingUpload:true", 'UseLegacyStreamingAPI=true'),
+    ("StreamingUpload:false, GCSBucketName:'test-bucket'", 'unsupported'),
+])
+def test_unqualified_bigquery_writer_fails_before_provisioning(run_case, tmp_path, properties, reason):
+    fixtures = _fixtures(tmp_path, seed=False)
+    case = fixtures / 'driver-flow'
+    manifest = case / 'test.yaml'
+    manifest.write_text(manifest.read_text().replace('requires: [extdb]', 'requires: [bigquery]'))
+    (case / 'app.tql').write_text(f'CREATE TARGET t USING Global.BigQueryWriter ({properties});')
+    run = run_case('driver-flow', fixtures=fixtures)
+    assert run.ret == 1, run.text
+    assert reason in run.text
+    log = run.root / 'fake.log'
+    assert not log.exists() or 'deploy' not in log.read_text()

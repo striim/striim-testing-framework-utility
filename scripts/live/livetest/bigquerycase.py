@@ -1,0 +1,66 @@
+"""Fail before provisioning when a writer leaves the qualified emulator paths."""
+from __future__ import annotations
+
+import re
+
+# Only literal properties from the documented writer contract are understood here.
+# In particular, connection profiles and cloud-storage staging are not qualified.
+_PROPERTIES = set("""allowquotednewlines batchpolicy billingprojectid cddlaction columndelimiter
+connectionretrypolicy datalocation encoding excludedtables ignorableexceptioncode includeinsertid
+mode nullmarker optimizedmerge parallelthreads privateserviceconnectendpoint projectid
+quotecharacter serviceaccountkey standardsql streamingconfiguration streamingupload tables
+uploadpolicy maxuploadingthreads queuesize _h_maxtaskqueuesize""".split())
+_TOKEN = re.compile(r"\s+|--[^\n]*|//[^\n]*|/\*.*?\*/|'(?:\\.|''|[^'\\])*'|\"(?:\\.|\"\"|[^\"\\])*\"|[A-Za-z_][A-Za-z_0-9]*|[^\s]", re.S)
+
+
+def validate_writer(manifest, text):
+    if "bigquery" not in getattr(manifest, "requires", ()):
+        return
+    tokens = [m.group() for m in _TOKEN.finditer(text)
+              if not m.group().isspace() and not m.group().startswith(("--", "//", "/*"))]
+
+    def refuse(reason):
+        raise ValueError(f"BigQuery emulator lane: {reason}")
+
+    for index, token in enumerate(tokens):
+        if token.lower() != "bigquerywriter":
+            continue
+        prefix = tokens[max(0, index-3):index]
+        if not ([t.lower() for t in prefix[-1:]] == ["using"]
+                or [t.lower() for t in prefix] == ["using", "global", "."]):
+            refuse("BigQueryWriter must use a literal USING property block")
+        i, props = index + 1, {}
+        if tokens[i:i+1] != ["("]:
+            refuse("BigQueryWriter requires literal properties")
+        i += 1
+        while tokens[i:i+1] != [")"]:
+            if i + 2 >= len(tokens) or tokens[i+1] != ":":
+                refuse("cannot validate BigQueryWriter properties")
+            key, value = tokens[i].lower(), tokens[i+2]
+            if key not in _PROPERTIES or key in props:
+                refuse(f"unsupported or duplicate BigQueryWriter property: {key}")
+            if not (value[:1] in ("'", '"') or re.fullmatch(r"[A-Za-z_0-9]+", value)):
+                refuse(f"property {key} must be a literal")
+            props[key] = value[1:-1] if value[:1] in ("'", '"') else value
+            i += 3
+            if tokens[i:i+1] == [","]:
+                i += 1
+            elif tokens[i:i+1] != [")"]:
+                refuse("cannot validate BigQueryWriter property expression")
+        streaming = props.get("streamingupload", "false").lower()
+        mode = props.get("mode", "APPENDONLY").upper()
+        if streaming not in ("true", "false") or mode not in ("APPENDONLY", "MERGE"):
+            refuse("StreamingUpload and Mode must be explicit qualified literal values")
+        if streaming == "true":
+            config = {}
+            for pair in props.get("streamingconfiguration", "").split(","):
+                parts = pair.split("=")
+                if len(parts) != 2 or parts[0].strip().lower() in config:
+                    refuse("streaming requires explicit UseLegacyStreamingAPI=true")
+                config[parts[0].strip().lower()] = parts[1].strip().lower()
+            if config.get("uselegacystreamingapi") != "true":
+                refuse("Storage Write is unqualified; set UseLegacyStreamingAPI=true")
+            if mode == "MERGE":
+                refuse("streaming MERGE is unqualified; use batch MERGE")
+        if mode == "MERGE" and not (manifest.lifecycle and manifest.lifecycle.uses_bigquery_cdc()):
+            refuse("MERGE requires an owned CDC dataset (sentinel observes bigquery-target)")

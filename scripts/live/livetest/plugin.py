@@ -1791,7 +1791,10 @@ def _rendered_tql(m: TestManifest, tokens: dict, upload_renames: dict) -> str:
     # the usual ${...} token render (upload_renames' values are already fully rendered,
     # so re-rendering them here is a harmless no-op).
     text = appactions.apply_upload_renames((m.source_dir / m.tql).read_text(), upload_renames)
+    from livetest.bigquerycase import validate_writer
+    validate_writer(m, text)
     _slt_out = render(text, tokens)
+    validate_writer(m, _slt_out)
     _slt_inputs.record_on(m, "tql", m.tql, _slt_out, path=m.source_dir / m.tql)   # the TQL as sent
     return _slt_out
 
@@ -1953,6 +1956,8 @@ class LiveItem(pytest.Item):
         # A case without an exact: block keeps its old outcome for a missing input: the send fails, or it skips first.
         self._slt_inputs = _slt_inputs.snapshot(m, self.manifest_path, strict=m.exact is not None)
         m._slt_inputs = self._slt_inputs   # send sites that hold only the manifest record through it
+        from livetest.bigquerycase import validate_writer
+        validate_writer(m, (m.source_dir / m.tql).read_text())
         ctx = _resolve_striim(self.config)
         if ctx is None:
             self._slt_infra_skip = "cluster"   # see pytest_runtest_makereport
@@ -2277,7 +2282,7 @@ class LiveItem(pytest.Item):
                     endpoint_ip = None if endpoints_explicit else _gcs_endpoint_ip(ctx)
                     tokens["BIGQUERY_ENDPOINT"] = os.environ.get("SLT_BIGQUERY_WRITER_ENDPOINT") or f"http://{endpoint_ip}:{resolved.base['port']}"
                     from urllib.parse import urlsplit
-                    from bigquery_driver import local_http
+                    from livetest.bigqueryadmin import local_http
                     local_http(tokens["BIGQUERY_ENDPOINT"])
                     token_uri = os.environ.get("SLT_BIGQUERY_TOKEN_URI") or f"http://{endpoint_ip}:{resolved.base['token_port']}/token"
                     token_url = urlsplit(token_uri)

@@ -26,3 +26,8 @@ striim-test run samples/live/bigquery-batch-merge
 This proves bounded insert/update/delete completion. Final MERGE state does not
 prove applied-operation order, replay multiplicity, crash recovery or cloud
 semantics. The installed-client exact-chunk-boundary exclusion also applies.
+
+Streaming MERGE is refused by this lane. The emulator has no streaming-buffer
+restriction and does not model cloud quotas or DML concurrency limits. Real
+BigQuery can reject DML over recent legacy-streamed rows; this batch fixture does
+not qualify that behavior. MERGE without this owned CDC lifecycle is also refused.

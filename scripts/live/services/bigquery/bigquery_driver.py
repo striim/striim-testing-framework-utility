@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import json
+from pathlib import Path
 import subprocess
 import time
 
@@ -43,6 +45,16 @@ def unavailable(env, mode):
         return ("BigQuery emulator image is missing; build services/bigquery/Dockerfile with "
                 "docker buildx build --load -t slt-bigquery:0.8.1-framework.8 . "
                 "or set SLT_BIGQUERY_IMAGE to your qualified local image")
+    lock = json.loads((Path(__file__).with_name("upstream.lock")).read_text())
+    expected = {"org.opencontainers.image.version": lock["build"]["framework_version"],
+                "org.opencontainers.image.revision": lock["upstream"]["commit"]}
+    try:
+        labels = json.loads(result.stdout)[0]["Config"]["Labels"]
+        matches = isinstance(labels, dict) and all(labels.get(k) == v for k, v in expected.items())
+    except (ValueError, KeyError, IndexError, TypeError):
+        matches = False
+    if not matches:
+        return "BigQuery emulator image labels do not match upstream.lock; rebuild the pinned recipe"
     return None
 
 

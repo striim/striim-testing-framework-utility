@@ -150,3 +150,86 @@ def test_provision_retries_transient_bootstrap_failure():
     driver.provision({"bigquery-target":{"admin":SimpleNamespace(ensure_setup=setup)}}, None, None)
     assert len(calls) == 3
     assert all(0 < c["remaining"] <= 5 for c in calls)
+
+
+@pytest.mark.parametrize("lifecycle", [None, SimpleNamespace(uses_bigquery_cdc=lambda: False)])
+def test_merge_without_owned_dataset_is_refused_before_render(tmp_path, lifecycle):
+    (tmp_path / "app.tql").write_text("CREATE TARGET t USING Global.BigQueryWriter (Mode:'MERGE', StreamingUpload:false);")
+    manifest = SimpleNamespace(source_dir=tmp_path, tql="app.tql", requires=["bigquery"], lifecycle=lifecycle)
+    with pytest.raises(ValueError, match="owned CDC dataset"):
+        plugin._rendered_tql(manifest, {}, {})
+
+
+@pytest.mark.parametrize("properties", [
+    "StreamingUpload:true", "StreamingUpload:true, StreamingConfiguration:'UseLegacyStreamingAPI=false'",
+    "StreamingUpload:true, StreamingConfiguration:'UseLegacyStreamingAPI=true', Mode:'MERGE'",
+    "StreamingUpload:false, GCSBucketName:'test-bucket'",
+])
+def test_unqualified_writer_transport_is_refused(tmp_path, properties):
+    (tmp_path / "app.tql").write_text(f"CREATE TARGET t USING Global.BigQueryWriter ({properties});")
+    manifest = SimpleNamespace(source_dir=tmp_path, tql="app.tql", requires=["bigquery"],
+                               lifecycle=SimpleNamespace(uses_bigquery_cdc=lambda: True))
+    with pytest.raises(ValueError, match="BigQuery emulator lane"):
+        plugin._rendered_tql(manifest, {}, {})
+
+
+@pytest.mark.parametrize("labels", [{}, {"org.opencontainers.image.version":"older"},
+    {"org.opencontainers.image.version":"0.8.1-framework.8", "org.opencontainers.image.revision":"wrong"}])
+def test_prebuilt_image_must_match_pinned_labels(monkeypatch, labels):
+    monkeypatch.setattr(driver.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0,
+        stdout=json.dumps([{"Id":"sha256:"+"a"*64, "Config":{"Labels":labels}}])))
+    assert "labels" in driver.unavailable({"SLT_BIGQUERY_IMAGE":"example:qualified"}, "docker")
+
+
+def test_prebuilt_image_accepts_only_the_pinned_labels(monkeypatch):
+    lock = json.loads((ROOT / 'upstream.lock').read_text())
+    labels = {'org.opencontainers.image.version':lock['build']['framework_version'],
+              'org.opencontainers.image.revision':lock['upstream']['commit']}
+    monkeypatch.setattr(driver.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0,
+        stdout=json.dumps([{'Id':'sha256:'+'a'*64,'Config':{'Labels':labels}}])))
+    assert driver.unavailable({'SLT_BIGQUERY_IMAGE':'example:qualified'}, 'docker') is None
+
+
+@pytest.mark.parametrize('key_name,flag', [('fake-gcp-key.json','_slt_gcp_key_done'),
+                                         ('fake-bigquery-key.json','_slt_bigquery_key_done')])
+def test_failed_fake_key_copy_aborts_and_remains_retryable(monkeypatch, key_name, flag):
+    import subprocess
+    config = SimpleNamespace()
+    monkeypatch.setattr(plugin, '_make_fake_gcp_key', lambda *a: '{}')
+    monkeypatch.setattr(plugin.stack, 'app_nodes', lambda: ('primary',))
+    def failed(*args, **kwargs):
+        assert kwargs['check'] is True
+        raise subprocess.CalledProcessError(1, args[0])
+    monkeypatch.setattr(subprocess, 'run', failed)
+    with pytest.raises(subprocess.CalledProcessError):
+        plugin.ensure_fake_gcp_key(config, SimpleNamespace(mode='docker'), key_name=key_name)
+    assert not getattr(config, flag, False)
+
+
+def test_shipped_writer_cases_stay_in_qualified_paths():
+    from livetest.bigquerycase import validate_writer
+    from livetest.manifest import load_manifest
+    repo = ROOT.parents[3]
+    paths = list((repo / 'samples/live').glob('bigquery-*/test.yaml'))
+    paths += list((repo / 'scripts/live/regression/services/bigquery').glob('*/test.yaml'))
+    assert len(paths) == 13
+    for path in paths:
+        manifest = load_manifest(path)
+        validate_writer(manifest, (manifest.source_dir / manifest.tql).read_text())
+
+
+@pytest.mark.parametrize('document', ['[]', 'null', '{}', 'not JSON'])
+def test_prebuilt_inspect_malformed_output_is_refused(monkeypatch, document):
+    monkeypatch.setattr(driver.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0, stdout=document))
+    assert 'labels' in driver.unavailable({'SLT_BIGQUERY_IMAGE':'example:qualified'}, 'docker')
+
+
+def test_writer_checks_each_block_and_ignores_comment_or_string_decoys():
+    from livetest.bigquerycase import validate_writer
+    manifest = SimpleNamespace(requires=['bigquery'], lifecycle=None)
+    text = """-- USING BigQueryWriter (StreamingUpload:true)
+    CREATE TARGET a USING Global.BigQueryWriter (StreamingUpload:false,
+      Tables:'BigQueryWriter', BatchPolicy:'EventCount:1,Interval:1');
+    CREATE TARGET b USING Global.BigQueryWriter (StreamingUpload:true);"""
+    with pytest.raises(ValueError, match='UseLegacyStreamingAPI=true'):
+        validate_writer(manifest, text)
