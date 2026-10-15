@@ -324,3 +324,17 @@ def test_fault_evidence_sample_declares_a_nonfinal_window():
     m = load_manifest(SAMPLES / "15-fault-evidence/test.yaml")
     assert m.recover["trigger"]["above"] == 100
     assert _golden("15-fault-evidence")[1] == _golden("14-progress-recovery")[1]
+
+
+def test_fault_evidence_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '15-fault-evidence'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('15-fault-evidence')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
