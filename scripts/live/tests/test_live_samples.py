@@ -34,6 +34,7 @@ MYSQL = {
     "05-mysql-initial-load": COMMON | {"ddl_source.sql", "ddl_target.sql", "seed.sql"},
     "06-mysql-cdc": COMMON | {"ddl_source.sql", "ddl_target.sql", "changes.sql"},
 }
+BIGQUERY = {"bigquery-legacy-append": COMMON | {"ddl_source.sql", "ddl_target.sql", "seed.sql"}}
 MODES = {"01-plain-replication": ("initial-load", "db"), "02-transform": ("initial-load", "db"),
          "03-file-output": ("initial-load", "file"), "04-lifecycle-check": ("cdc", "db")}
 
@@ -66,13 +67,13 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL)
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + list(BIGQUERY)
 
 
-@pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
+@pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL) + list(BIGQUERY))
 def test_sample_ships_exactly_its_assets(name):
     root = SAMPLES / name
-    assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == {**ASSETS, **MYSQL}[name]
+    assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == {**ASSETS, **MYSQL, **BIGQUERY}[name]
     assert not (root / "gold-targets.yaml").exists()
 
 
@@ -219,6 +220,25 @@ def test_mysql_cdc_golden_follows_the_changes():
     assert "StartPositionByName: true" in (SAMPLES / "06-mysql-cdc" / "app.tql").read_text()
 
 
-@pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
+@pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL) + list(BIGQUERY))
 def test_readme_shows_how_to_run_it(name):
     assert f"striim-test run samples/live/{name}" in (SAMPLES / name / "README.md").read_text()
+
+
+def test_bigquery_sample_has_exact_finite_legacy_contract():
+    name = "bigquery-legacy-append"
+    raw = _raw(name)
+    manifest = load_manifest(SAMPLES / name / "test.yaml")
+    assert manifest.requires == ["postgres", "bigquery"]
+    checked = canon.check_manifest(raw, case_dir=SAMPLES / name)
+    assert checked is not None and len(checked["specs"]) == 1
+    spec = lifecycle.parse_spec(raw["lifecycle"], SAMPLES / name / "test.yaml", timeout=raw["timeout"])
+    assert (spec.mode, spec.sink) == ("initial-load", "db")
+    assert raw["lifecycle"]["completion"]["target"]["db"] == "bigquery-target"
+    header, rows = _golden(name)
+    seed = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
+    assert header == ["id", "msg"]
+    assert [(r["id"], r["msg"]) for r in rows] == seed == [("1", "alpha"), ("2", "beta")]
+    tql = (SAMPLES / name / "app.tql").read_text()
+    assert "StreamingUpload: true" in tql and "UseLegacyStreamingAPI=true" in tql
+    assert "CREATE NAMESPACE ${NS};" in tql and "START APPLICATION ${APP};" in tql

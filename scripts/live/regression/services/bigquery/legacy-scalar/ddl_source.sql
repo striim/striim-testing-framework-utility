@@ -1,0 +1,1 @@
+CREATE TABLE ${TID}src (id BIGINT PRIMARY KEY, msg TEXT, big_id BIGINT, amount NUMERIC(20,4));

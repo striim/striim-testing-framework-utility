@@ -79,3 +79,33 @@ no deletion authority until their explicit ownership contract is implemented.
 
 Finite initial-load lifecycle targets can use BigQuery counts with a positive Postgres source
 baseline. APPENDONLY insert/delete sentinel observation remains unsupported.
+
+## Qualified legacy writer path
+
+The tested product is Striim 5.4.2 with BigQuery REST SDK 2.59.0. Qualification
+uses framework revision `8369251` and image `0.8.1-framework.5` on Linux amd64,
+image SHA256 `5923fbf717e5e10c8879ea6e6ce238dffa61c57d5328fb96b8f47362e89b1d66`.
+The sample and regression fixtures use the same hand-derived inputs and expected
+values as those runs.
+
+| Contract | Observed coverage |
+|---|---|
+| Write mode | APPENDONLY, `StreamingUpload=true`, `StreamingConfiguration='UseLegacyStreamingAPI=true'`; actual REST insertAll requests |
+| Scalar fidelity | NULL and empty STRING, pipe, newline, double quote, signed INT64 limits and values beyond 2^53, decimal values compared at four places |
+| Completion | Positive finite Postgres source baseline, target count completion, stability, then typed exact values and multiplicity |
+| Comparison controls | Changed expected text fails exact comparison; a dedicated API-seeded canary fails on one extra identical row |
+| Server error | A documented insertAll per-row error produces a target termination with the injected reason; separate from conversion errors |
+| Queue startup | Capacity one fails during startup with its property diagnostic; capacity two independently starts and writes both expected rows |
+| Endpoint | Documented PSC property with reachable IPv4 HTTP; direct and connection-profile initialization/reconstruction exercised |
+| Architecture | Native Linux amd64 tested; native ARM execution remains unqualified |
+
+Startup-only expected-HALT controls record passed assertions and
+`run.qualifies=false` because they do not prove a completed data lifecycle.
+The positive finite-load cases carry that data qualification. The tested queue
+values do not establish other queue sizes, scoped property forwarding, saturation
+or backpressure.
+
+This coverage does not establish streaming insert-ID deduplication, crash replay,
+CDC completion, Storage Write, writer TLS deployment, cloud performance or cloud
+service equivalence. Additional writer scalar types require their own fixtures;
+the native all-types reader control is separate from writer type qualification.
