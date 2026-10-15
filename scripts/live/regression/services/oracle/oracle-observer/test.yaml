@@ -1,0 +1,38 @@
+name: oracle-observer
+purpose: Oracle observer routes record writer logons and exclude framework probes.
+tql: app.tql
+topology: single
+requires:
+- oracle
+timeout: 180
+tags:
+- oracle
+- observer
+- regression
+ddl:
+- file: ddl_source.sql
+  db: oracle-source
+- file: ddl_target.sql
+  db: oracle-target
+- file: observer_trigger.sql
+  db: oracle-admin
+seed:
+- file: seed.sql
+  db: oracle-source
+assert:
+  smoke: true
+  diff:
+  - source: ${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC
+    source_db: oracle-source
+    target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT
+    target_db: oracle-target
+  data:
+  - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}LOGONS
+    db: oracle-target
+    min_rows: 1
+  - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}SESSIONS
+    db: oracle-target
+    rows: 1
+  - target: ${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}PROBES
+    db: oracle-target
+    rows: 0

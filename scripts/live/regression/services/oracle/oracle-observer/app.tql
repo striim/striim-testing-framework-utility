@@ -1,0 +1,25 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE ${TID}source USING Global.DatabaseReader (
+  ConnectionURL: '${ORACLE_URL}',
+  Username: '${ORACLE_SOURCE_USER}',
+  Password: '${ORACLE_SOURCE_PASSWORD}',
+  Tables: '${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC'
+) OUTPUT TO ${TID}stream;
+
+CREATE OR REPLACE TARGET ${TID}writer USING Global.DatabaseWriter (
+  ConnectionURL: '${ORACLE_URL}',
+  Username: '${ORACLE_TARGET_USER}',
+  Password: '${ORACLE_TARGET_PASSWORD}',
+  Tables: '${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}SRC,${ORACLE_TARGET_SCHEMA}.${TID_ORACLE}TGT',
+  BatchPolicy: 'EventCount:100,Interval:1',
+  CommitPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM ${TID}stream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

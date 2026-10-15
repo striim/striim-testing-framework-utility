@@ -20,11 +20,12 @@ _TRANSIENT = ("DPY-6001", "DPY-6005", "ORA-12514", "ORA-12541", "ORA-01033", "OR
 # run serially and each example's DDL drops+recreates its own tables.
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
+_SQL_IDENT = r'(?:"(?:[^"\n]|"")*"|[A-Za-z_][A-Za-z0-9_$#]*)'
 
 def _default_connect(**kw):
     import oracledb
     return oracledb.connect(
-        user=kw["user"], password=kw["password"],
+        user=kw["user"], password=kw["password"], program="striim-test-observer",
         dsn=f'{kw["host"]}:{int(kw["port"])}/{kw["service"]}',
     )
 
@@ -34,24 +35,69 @@ def _check(ident: str) -> str:
     return ident
 
 def _split_statements(sql: str) -> list[str]:
-    # Split a plain-SQL script into individual statements for python-oracledb,
-    # which executes ONE statement per execute() and rejects a trailing ';'.
-    # Strips '-- ' line comments and blank/terminator-only chunks. Framework
-    # Oracle DDL/seed files must be plain SQL (no sqlplus-only directives, no
-    # PL/SQL blocks with internal ';').
-    from livetest.sqlutil import split_sql_statements
-    out = []
-    for s in split_sql_statements(sql):          # string-aware ';' split (no ';'-in-literal footgun)
-        s = s.strip().rstrip("/").strip()        # oracledb rejects a trailing '/'
-        if s:
-            out.append(s)
+    # Oracle trigger bodies retain internal semicolons and require a slash-only
+    # terminator. Keep this dialect handling local; other engines use plain SQL.
+    out, buf = [], []
+    quote = ""
+    i = 0
+    while i < len(sql):
+        ch = sql[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    buf.append(sql[i + 1]); i += 1
+                else:
+                    quote = ""
+            i += 1
+            continue
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            i = len(sql) if end < 0 else end
+            buf.append("\n")
+            continue
+        if sql.startswith("/*", i):
+            end = sql.find("*/", i + 2)
+            if end < 0:
+                raise ValueError("oracle-sql-comment: unterminated block comment")
+            buf.append(" "); i = end + 2
+            continue
+        if ch == "/":
+            line_start = sql.rfind("\n", 0, i) + 1
+            line_end = sql.find("\n", i)
+            if line_end < 0: line_end = len(sql)
+            if not sql[line_start:i].strip() and not sql[i + 1:line_end].strip():
+                statement = "".join(buf).strip()
+                if statement: out.append(statement)
+                buf = []; i = line_end + 1
+                continue
+        if ch in ("'", '"'):
+            if ch == "'" and buf and buf[-1] in ("q", "Q"):
+                raise ValueError("oracle-sql-quoting: alternative quoting is unsupported; use doubled quotes")
+            quote = ch
+        if ch == ";" and not re.match(
+                r"\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:EDITIONABLE\s+|NONEDITIONABLE\s+)?TRIGGER\b",
+                "".join(buf), re.I):
+            statement = "".join(buf).strip()
+            if statement: out.append(statement)
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    statement = "".join(buf).strip()
+    if quote:
+        raise ValueError("oracle-sql-quoting: unterminated quoted text")
+    if re.match(r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:EDITIONABLE\s+|NONEDITIONABLE\s+)?TRIGGER\b", statement, re.I):
+        raise ValueError("oracle-plsql-terminator: a trigger requires a slash-only line")
+    if statement: out.append(statement)
     return out
 
 class OraAdmin:
-    def __init__(self, dsn: dict, connect=None):
+    def __init__(self, dsn: dict, connect=None, *, prefix=None):
         # dsn: {host, port, service, user, password}
         self.dsn = dsn
         self._connect = connect or _default_connect
+        self.prefix, self.touched = prefix, False
 
     def _open(self, connect_timeout: float = 90.0, poll: float = 3.0):
         kw = dict(host=self.dsn["host"], port=int(self.dsn["port"]),
@@ -83,17 +129,64 @@ class OraAdmin:
                 time.sleep(poll)
 
     def run_sql(self, sql: str) -> None:
+        statements = _split_statements(sql)
+        # Only views/triggers need the new scope rule; ordinary table DDL keeps
+        # its existing route contract. Qualified observer objects must be owned
+        # by the connected user, so cleanup can find them in USER_OBJECTS.
+        for stmt in statements:
+            match = re.match(r'(?is)\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:EDITIONABLE\s+|NONEDITIONABLE\s+)?|DROP\s+|ALTER\s+)'
+                             rf'(?:(?:NO)?FORCE\s+)?(?:VIEW|TRIGGER)\s+({_SQL_IDENT}(?:\s*\.\s*{_SQL_IDENT})?)', stmt)
+            if match and self.prefix is not None:
+                parts = [p[1:-1].replace('""', '"') if p.startswith('"') else p
+                         for p in re.findall(_SQL_IDENT, match[1])]
+                if (not self.prefix or not _IDENT.fullmatch(self.prefix)
+                        or any(not _IDENT.fullmatch(part) for part in parts)
+                        or not parts[-1].upper().startswith(self.prefix.upper())
+                        or (len(parts) == 2 and parts[0].upper() != self.dsn["source_user"].upper())):
+                    raise ValueError("oracle-observer-ddl-scope: view/trigger must belong to this case and connected user")
+        self.touched = True  # including DDL that creates an invalid object then raises
         conn = self._open()
         try:
             conn.autocommit = True
             cur = conn.cursor()
             try:
-                for stmt in _split_statements(sql):
+                for stmt in statements:
                     cur.execute(stmt)
             finally:
                 cur.close()
         finally:
             conn.close()
+
+    def drop_observer_objects(self, prefix: str) -> None:
+        if not prefix or not _IDENT.fullmatch(prefix) or not prefix.endswith("_"):
+            raise ValueError("oracle-observer-cleanup-scope: a nonempty case prefix is required")
+        query = "SELECT object_name, object_type FROM user_objects WHERE object_type IN ('TRIGGER', 'VIEW')"
+        def owned():
+            _, rows = self._query(query)
+            return {(name, kind) for name, kind in rows if kind in ("TRIGGER", "VIEW")
+                    and isinstance(name, str) and name.upper().startswith(prefix.upper())
+                    and _IDENT.fullmatch(name)}
+        objects = owned()
+        errors = []
+        if objects:
+            conn = self._open()
+            try:
+                conn.autocommit = True
+                cur = conn.cursor()
+                try:
+                    for name, kind in sorted(objects, key=lambda item: (item[1] != "TRIGGER", item[0])):
+                        try:
+                            cur.execute(f'DROP {kind} "{name}"')
+                        except Exception as exc:
+                            errors.append(f"{kind} {name}: {exc}")
+                finally:
+                    cur.close()
+            finally:
+                conn.close()
+        remaining = owned()
+        if remaining: errors.append(f"objects remain: {sorted(remaining)}")
+        if errors:
+            raise RuntimeError("oracle-observer-cleanup-failed: " + "; ".join(errors))
 
     def drop_test_tables(self, prefix: str = "") -> None:
         """Teardown cleanup: drop tables owned by this admin's data user (its fixed

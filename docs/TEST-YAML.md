@@ -42,6 +42,53 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `diff_poll` | number | no | `2` | seconds between the reads of an `assert.diff` poll; must be greater than 0 |
 | `generate` | list | no | `[]` | run a data generator and place its output on the Striim server: entries `{kind, workload, dest, when}`. `kind` is `ggtrail` (GoldenGate trail files from a `workload.yaml`); `workload` is relative to the test dir; `dest` is a server directory; `when` defaults to `post_start` |
 
+### Oracle observer DDL and seeds
+
+With `requires: [oracle]`, use `db: oracle-source` or `oracle-target` for the
+corresponding data user, and `db: oracle-admin` for a privileged observer trigger
+owner. The admin route uses `SLT_ORA_ADMIN_USER` / `SLT_ORA_ADMIN_PASSWORD`
+(default `system` / `striim`) and the same data PDB, `SLT_ORA_SERVICE`.
+It never uses the CDC root service. An unused admin route opens no connection.
+
+<!-- snippet: fragment -->
+```yaml
+requires: [oracle]
+ddl:
+- file: observer_tables.sql
+  db: oracle-target
+- file: observer_trigger.sql
+  db: oracle-admin
+```
+
+The same routes are accepted in `seed` entries with the normal `when` and `after`
+keys. Put tables, views and grants before the trigger that uses them. Every view
+and trigger name starts with `${TID_ORACLE}`. Qualified observer objects must
+belong to the connected route user; foreign names fail
+`oracle-observer-ddl-scope` before execution. Trigger bodies keep their internal
+semicolons and end with a slash on a line by itself, as in SQL*Plus; a missing
+slash fails `oracle-plsql-terminator`. Plain SQL keeps its existing semicolon
+format. Alternative `q'...'` quoting is refused with `oracle-sql-quoting`; use
+doubled single quotes instead. This extension supports trigger definitions,
+not general anonymous PL/SQL scripts.
+
+After a case, the framework always removes its prefixed database triggers first,
+then its prefixed views, before ordinary Oracle table cleanup. This also runs
+after DDL, deploy or assertion failure, for seed-only routes, and with either
+resource-retention flag: retained apps/tables do not retain observer hooks.
+Catalog readback verifies absence. A failed drop or unreadable catalog fails
+cleanup as `oracle-observer-cleanup-failed`, records a verification gap and keeps
+any original case failure visible. An empty cleanup prefix is refused as
+`oracle-observer-cleanup-scope`; unrelated objects are untouched.
+
+Probe connections identify themselves as `PROGRAM = 'striim-test-observer'`
+during login, including data assertions and admin DDL. Observer queries/triggers
+must exclude that program while filtering the writer's username. Do not filter
+on MODULE set after connect: an AFTER LOGON trigger has already run by then.
+The supported Thin-mode driver minimum is python-oracledb 2.5.
+
+See [Oracle observer setup and SQL](SERVICES.md#oracle-observers) for direct
+grants, a filtered view/logon trigger, and the required image rebuild.
+
 ## `seed:` — `when` and `after`
 
 Each `seed` entry chooses its own lifecycle point, so one test can lay down a baseline before
