@@ -260,7 +260,9 @@ No real-cloud confirmation is claimed by this lane.
 DDL and seed scripts split with [GoogleSQL lexical rules](https://cloud.google.com/bigquery/docs/reference/standard-sql/lexical):
 quoted identifiers, single/double/triple strings, raw/bytes prefixes and backslash
 escapes preserve embedded semicolons. Procedural scripts with internal statement
-blocks are outside this plain-DDL/seed contract.
+blocks are outside this plain-DDL/seed contract. Lexical preservation does not
+qualify every emulator literal conversion: a native probe of `'''q';r'''`
+stored `q'; r`. Triple-quoted literal value fidelity remains unqualified.
 
 Generated fake-key uploads fail immediately if a container copy fails, for BigQuery,
 GCS and Spanner alike. The upload remains retryable; a failed copy cannot mark it done.
