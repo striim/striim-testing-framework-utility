@@ -839,6 +839,29 @@ assert:
 An empty source fails fast (asserts nothing). Polls until the target's distinct row set equals
 the source's.
 
+For a typed Spanner diff, both endpoints name the table within the selected
+service database, and every non-text column is declared. This checks counted
+rows rather than the legacy distinct text set:
+
+<!-- snippet: fragment -->
+```yaml
+exact: {version: 1}
+assert:
+  diff:
+    - source_db: spanner-google
+      source: '${TID}src'
+      target_db: spanner-google
+      target: '${TID}tgt'
+      exact:
+        columns: {id: integer, amount: 'decimal:2'}
+```
+
+For the PostgreSQL dialect, use `spanner-postgres` on each endpoint. A declared
+lifecycle requires both read tables to be owned by this attempt. Derive the
+source rows by hand from the seed; copying `1,12.30` twice requires two identical
+target rows, and a missing copy or changed amount fails. This is a route-binding
+example, not a claim of live Spanner diff qualification.
+
 ### `file` — `FileWriter`/`JSONFormatter` target assertions
 <!-- snippet: fragment -->
 ```yaml
