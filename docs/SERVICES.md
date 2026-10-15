@@ -45,7 +45,7 @@ the setting when the port is busy.
 | `kafka` | Confluent 7.6.1: Kafka, ZooKeeper, Schema Registry | n/a | 9092, 19092, 8081 | `kafka` | `SLT_KAFKA_HOST` |
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
-| `bigquery` | pinned community BigQuery emulator + a dedicated token server | experimental append-only baseline | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
+| `bigquery` | pinned community BigQuery emulator + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -101,7 +101,7 @@ The default service; the samples use it. `postgres:16` with the `wal2json` plugi
   the test; an inactive slot left behind holds WAL and fills the disk.
 - **Your own Postgres for CDC** needs `wal_level=logical`, the `wal2json` plugin installed and
   allowed as an output plugin, and the `REPLICATION` attribute on the source user.
-- `exact:` comparisons read Postgres and local `bigquery-target` routes; BigQuery lifecycle targets support finite initial loads with Postgres source probes.
+- `exact:` comparisons read Postgres and local `bigquery-target` routes; BigQuery lifecycle targets support finite initial loads and bounded batch MERGE sentinels with Postgres source probes.
 
 ## Oracle (`oracle`)
 
@@ -367,8 +367,12 @@ The app uses `BIGQUERY_PROJECT`, `BIGQUERY_DATASET`, `BIGQUERY_ENDPOINT` and
 `BIGQUERY_SERVICE_ACCOUNT_KEY`. The writer's documented PSC property accepts the local
 IPv4 HTTP endpoint, so no machine DNS or trust changes are needed.
 
-This baseline provides bounded scalar row assertions. It does not qualify CSV batch uploads, Storage Write,
-recovery, IAM, billing or cloud equivalence. BigQueryWriter batch uploads are direct
+Bounded scalar assertions and actual Striim 5.4.2 legacy streaming / CSV batch fixtures
+are qualified on Linux amd64. The installed Java client exact-chunk-boundary case
+is explicitly excluded; its disabled regression still expects the correct row.
+Non-ASCII batch text requires the documented per-stack UTF-8 JVM setting in the
+service README. Storage Write, recovery, IAM, billing and cloud equivalence remain
+unqualified. BigQueryWriter batch uploads are direct
 resumable uploads; GCS is not a dependency. A selected lane with missing prerequisites
 exits nonzero (a skip is exit 3), never a passing empty run.
 
@@ -377,3 +381,12 @@ eligible application node. A failed key upload now stops setup immediately, incl
 GCS and Spanner; it previously could continue with a missing key on one node. This is a
 deliberate authentication setup change, with existing GCS/Spanner round trips retained as
 regression controls.
+
+
+The [BigQuery MERGE sample](../samples/live/bigquery-batch-merge/) qualifies bounded
+insert/update/delete propagation with same-writer readiness and terminal sentinels.
+Its CDC lifecycle allocates a fresh per-test dataset for the target and generated
+staging objects, records exact ownership and endpoint/project/dataset bindings,
+and removes that dataset only after app cleanup. The shared bootstrap dataset is
+preserved. Kept resources use the same ledger for replay. This is not a recovery,
+operation-order or replay-multiplicity qualification.

@@ -4,8 +4,8 @@ Build a local BigQuery REST emulator with a dedicated fake OAuth endpoint. This 
 community emulator, built from the exact public source and dependency images in
 `upstream.lock`. The framework image has its own version; it is not the upstream release image.
 
-The current source baseline supports legacy `insertAll`. The CSV API candidate has
-bounded native coverage. L2 qualification explicitly excludes the installed Java
+The pinned service supports legacy `insertAll` and bounded direct CSV batch loads.
+Actual Striim 5.4.2 writer fixtures cover both paths on Linux amd64. L2 qualification explicitly excludes the installed Java
 client exact-chunk-boundary failure described below. Actual writer qualification
 is recorded separately from these API controls. Storage Write, cloud IAM, billing, performance and
 recovery equivalence are outside this service's contract. BigQueryWriter batch loads
@@ -76,8 +76,8 @@ Fixture DDL accepts plain `CREATE TABLE` statements with a `${TID}` table prefix
 configured project/dataset. A pre-existing table is a collision, never adopted or replaced.
 Cleanup deletes confirmed exact-name ledger entries and verifies absence. Endpoint/project/
 dataset changes refuse recovery deletion. Retained ledgers can be replayed; the shared
-bootstrap dataset and unknown tables are never dropped. Writer-created staging tables have
-no deletion authority until their explicit ownership contract is implemented.
+bootstrap dataset and unknown tables outside a confirmed per-test dataset are never dropped.
+For CDC, the separate per-test dataset ownership contract below contains generated staging.
 
 Finite initial-load lifecycle targets can use BigQuery counts with a positive Postgres source
 baseline. APPENDONLY insert/delete sentinel observation remains unsupported.
@@ -107,7 +107,7 @@ The positive finite-load cases carry that data qualification. The tested queue
 values do not establish other queue sizes, scoped property forwarding, saturation
 or backpressure.
 
-This coverage does not establish streaming insert-ID deduplication, crash replay,
+This legacy coverage does not establish streaming insert-ID deduplication, crash replay,
 CDC completion, Storage Write, writer TLS deployment, cloud performance or cloud
 service equivalence. Additional writer scalar types require their own fixtures;
 the native all-types reader control is separate from writer type qualification.
@@ -168,10 +168,10 @@ and run the test against an isolated local stack with `BIGQUERY_TEST_ENDPOINT`,
 `BIGQUERY_JAVA_CLASSPATH` pointing at the public client dependencies. The corrected
 client must pass the unchanged one-row oracle before this exclusion is removed.
 
-The bounded native API qualification uses image `0.8.1-framework.6`, Linux amd64
-config SHA256 `287e309c1fd2adb5dc77afffc5da1fa25800f35b8eb2c017799e0147b4ae4716`.
+The bounded native API qualification uses image `0.8.1-framework.7`, Linux amd64
+config SHA256 `721406bd82f405efefcd5e945831e771b614d4a2b3aa928a4c24d597bb87dd26`.
 The arm64 cross-build config is
-`762aaaca42c916ac34079a8705153cbbbb342317709022458e8501e145e6e658`;
+`a7e788395af8d7bb2f24ba7b973d9a589f16f0ffedbfaa985af279bfdffea421`;
 native ARM execution remains unqualified. The full feasible upstream Go suite,
 HTTP/TLS client controls, load job persistence and chunk replay controls pass.
 The exact-boundary client regression is an explicit skip, outside this bounded
@@ -182,3 +182,38 @@ as required by the default writer upload. Both received and expanded CSV are
 limited to 16 MiB. Truncated files, checksum errors and expansion-limit failures
 are rejected before target mutation. Input byte statistics retain the received
 compressed size; loaded rows and decoded field-byte accounting remain unchanged.
+
+
+Actual batch writer fixtures cover one/two headerless rows, five-row rollover
+with eventCount two, NULL/empty/text, signed INT64 boundaries, four-place decimals,
+quoted newlines and a malformed numeric load that terminates the target. Uploads
+are gzip CSV file bytes, without an HTTP Content-Encoding header. The original
+input/golden literals are preserved. See the batch sample and service gallery.
+
+For non-ASCII text, run doctor and run with
+`SLT_STRIIM_JAVA_SYSTEM_PROPERTIES=-Dfile.encoding=UTF-8`. The installed formatter
+inherits the JVM default charset before compressing the local file; its BigQuery
+Encoding property alone does not select that charset. A default ASCII JVM changed
+non-ASCII characters before upload. The same Unicode literal and golden pass with
+this existing per-stack JVM setting; the emulator does not reconstruct lost text.
+
+A separate unmodified Java 2.59.0 Files.copy control uses its default 15-MiB chunk
+size: 15 MiB unknown-total followed by 12,345 final bytes loads one exact row.
+The forced 256-KiB control and default-size control are native API coverage;
+the actual writer fixtures use normal default settings and small compressed files.
+The exact-multiple defect concerns bytes fed to the upload channel, which can be
+compressed bytes rather than the uncompressed CSV length.
+
+
+Bounded CDC MERGE is exercised with PostgreSQLReader, batch mode and
+OptimizedMerge=false. The hand-derived transition `(1,old),(2,keep)` to
+`(1,new),(3,fresh)` includes a real update, delete and insert in captured staging
+CSV and writer-generated compaction/MERGE SQL. Both readiness and completion
+sentinels must be observed present and then absent through that same writer.
+The framework allocates a fresh per-test dataset before DDL/TQL, refuses an
+existing dataset, and ledger-binds its exact endpoint/project/dataset. This owns
+generated stage objects as part of that explicit namespace. Cleanup stops the app,
+drops exact fixture tables, removes the confirmed dataset with its contents and
+verifies absence. The shared bootstrap dataset is retained; kept resources retain
+the same scope for replay. Final MERGE state does not prove operation order,
+replay multiplicity or crash/checkpoint safety. APPENDONLY CDC stays unqualified.

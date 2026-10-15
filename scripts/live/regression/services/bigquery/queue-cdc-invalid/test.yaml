@@ -1,0 +1,28 @@
+name: bigquery-queue-cdc-invalid
+purpose: A PostgreSQL CDC writer rejects capacity one with its startup property diagnostic
+tql: app.tql
+topology: single
+requires:
+- postgres
+- bigquery
+timeout: 180
+tags:
+- bigquery
+- regression
+- startup
+- batch-load
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: bigquery-target
+- file: slot.sql
+  db: postgres-source
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+expect_halt: true
+expect_halt_contains:
+- _h_maxTaskQueueSize
+- must be greater than 2

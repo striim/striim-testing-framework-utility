@@ -16,9 +16,12 @@ that exact dataset including generated staging objects after stopping the app.
 The shared bootstrap dataset is retained. Kept resources retain this ledger scope.
 Never put unrelated data into a dataset allocated to a case.
 
-Build the pinned local service and set `SLT_BIGQUERY_IMAGE`. Run
-`striim-test doctor --case samples/live/bigquery-batch-merge` followed by
-`striim-test run samples/live/bigquery-batch-merge`.
+Build the pinned local service and set `SLT_BIGQUERY_IMAGE`, then run:
+
+```
+striim-test doctor --case samples/live/bigquery-batch-merge
+striim-test run samples/live/bigquery-batch-merge
+```
 
 This proves bounded insert/update/delete completion. Final MERGE state does not
 prove applied-operation order, replay multiplicity, crash recovery or cloud

@@ -18,6 +18,10 @@ computed name or an unresolved intent:
 * **Unsupported kinds are never deleted.** Tables of other engines, Kafka topics, GCS buckets and OP
   uploads cannot be acquired by the ledger (unsupported resource type): they are left in place and recorded as
   verification gaps, so such a run never qualifies.
+* **BigQuery.** Fixture tables use exact-name acquisition. CDC uses a fresh per-test dataset,
+  refused if it already exists and confirmed before any writer starts. That explicit dataset scope
+  includes generated staging objects. Cleanup stops the app, removes fixture tables, deletes only
+  the confirmed dataset with its contents and verifies absence. The shared bootstrap is never acquired.
 * **Identity and target binding.** A ledger file is imported only for the same full identity and
   ledger version. Every attempt records its targets (Postgres endpoint and system identifier, the
   Striim URL, the docker app-node containers and their ids). A prior attempt's entry is reset or

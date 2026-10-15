@@ -573,8 +573,12 @@ file gives: fill any `NOT NULL` columns there.
 ### Rules
 
 - **Routes.** Postgres supports source and target probes. `bigquery-target` supports finite
-  `initial-load` target counts; its source probes remain Postgres. BigQuery CDC sentinels are
-  refused until insert/delete propagation through MERGE is qualified. A file sink needs Docker mode.
+  `initial-load` target counts and bounded batch MERGE CDC sentinels. BigQuery CDC requires
+  Postgres source injection and sentinel readiness/completion; row-count completion is refused.
+  The framework allocates a fresh ledger-owned per-test BigQuery dataset before rendering DDL/TQL,
+  containing generated stage objects. It refuses pre-existing datasets and preserves the shared
+  bootstrap dataset. Use MERGE: APPENDONLY cannot satisfy an insert/delete witness.
+  See [the MERGE sample](../samples/live/bigquery-batch-merge/). A file sink needs Docker mode.
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
   `dest`, and the block's own `path`s start with `${OWNED_DIR}/`, with no `.`, `..` or empty parts.
   `${OWNED_DIR}` is a directory on the Striim nodes that the run creates for itself and removes at

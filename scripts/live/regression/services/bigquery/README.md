@@ -24,3 +24,11 @@ The [disabled positive client regression](../../../services/bigquery/tests/test_
 still expects one exact row. Re-enable it with a corrected client and the original
 payload; a skip does not qualify that boundary. No padding or chunk-size workaround
 is used by these writer fixtures.
+
+
+`batch-utf8` preserves the literal Unicode text with the documented per-stack UTF-8
+JVM option; without it an ASCII default formatter can replace characters before
+upload. `batch-malformed` expects a numeric load error and target termination;
+it is a startup error control, not data qualification. Bounded CDC is illustrated
+separately by [the MERGE sample](../../../../../samples/live/bigquery-batch-merge/),
+with its own dataset ownership and same-writer insert/delete witnesses.
