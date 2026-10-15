@@ -126,13 +126,16 @@ def test_inventory_maps_live_names_and_published_peer_port(monkeypatch):
     def inspect(argv):
         role = argv[-1]
         row = {"Id": "id_" + role, "State": {"Running": True}, "Config": {"Env": [
-            "JAVA_SYSTEM_PROPERTIES=-Dstriim.node.server.name=server_" + role]},
+            "JAVA_SYSTEM_PROPERTIES=-Dstriim.node.server.name=server_" + role,
+            "ROLE=" + ("primary" if role == "primary" else "node" if role == "secondary" else "agent")]},
             "NetworkSettings": {"Ports": {"9080/tcp": [{"HostPort": "19082"}]}}}
         return SimpleNamespace(returncode=0, stdout=json.dumps([row]))
     result = node_fault.inventory(Metadata(), SimpleNamespace(mode="docker", url="http://test.invalid:19080"), run=inspect)
     assert result["secondary"]["url"] == "http://test.invalid:19082"
     assert result["agent"]["url"] is None
     assert result["primary"]["server"] == "server_primary"
+    assert result["primary"]["hostsMetadata"] is True
+    assert result["secondary"]["hostsMetadata"] is False
 
 
 def test_secondary_api_port_is_published_and_allowed():

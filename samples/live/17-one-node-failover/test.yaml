@@ -3,6 +3,13 @@ purpose: A flow moves to the survivor after its single owner is killed mid-run, 
   complete data.
 tql: app.tql
 topology: cluster
+deployment_groups:
+- name: ${TID}workers
+  flow: ${NS}.${TID}flow
+  servers:
+  - ${STRIIM_SECONDARY_SERVER}
+  add_after_deploy:
+  - ${STRIIM_PRIMARY_SERVER}
 requires:
 - postgres
 timeout: 240

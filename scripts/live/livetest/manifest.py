@@ -30,7 +30,7 @@ VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
     "op", "udf", "server_files", "generate", "timeout", "diff_poll", "tags", "disabled",
     "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
-    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit",
+    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit", "deployment_groups",
     "lifecycle",   # C7.2
     "exact",   # C8.1
 }
@@ -41,6 +41,7 @@ VALID_MANIFEST_KEYS = {
 _HARNESS_TOKENS = frozenset({
     "NS", "APP", "APP_BARE", "TID", "TID_UPPER", "TID_ORACLE",
     "APP_GROUP", "SOURCE_GROUP", "STRIIM_WEB_URL",
+    "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER",
     "STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "JAVA_RELEASE",
     "MSSQL_JDBC_VERSION",
     "RUN_ID", "WORKER", "ATTEMPT", "OWNED_DIR",
@@ -78,6 +79,30 @@ _ALTER_FRAGMENT_REFUSED = re.compile(
     r"\b(?:ALTER\s+APPLICATION|RECOMPILE|(?:UN)?DEPLOY\s+APPLICATION|START\s+APPLICATION"
     r"|STOP\s+APPLICATION|END\s+APPLICATION|CREATE\s+(?:OR\s+REPLACE\s+)?APPLICATION)\b"
     r"|^\s*USE\s", re.I | re.M)
+
+def _deployment_groups(raw, path):
+    if not isinstance(raw, list):
+        raise ManifestError(f"{path}: invalid-deployment-group: expected a list")
+    names = set()
+    for item in raw:
+        if (not isinstance(item, dict) or set(item) - {"name", "servers", "add_after_deploy", "flow"}
+                or not isinstance(item.get("name"), str) or not item["name"].startswith("${TID}")
+                or not isinstance(item.get("flow"), str) or not item["flow"].startswith("${NS}.")
+                or item["name"] in names):
+            raise ManifestError(f"{path}: invalid-deployment-group: unique TID name, case flow and known keys required")
+        names.add(item["name"])
+        for key in ("servers", "add_after_deploy"):
+            values = item.get(key, [] if key == "add_after_deploy" else None)
+            if (not isinstance(values, list) or (key == "servers" and not values)
+                    or any(v not in ("${STRIIM_PRIMARY_SERVER}", "${STRIIM_SECONDARY_SERVER}",
+                                     "${STRIIM_AGENT_SERVER}") for v in values)
+                    or len(values) != len(set(values))):
+                raise ManifestError(f"{path}: invalid-deployment-group: {key} requires distinct server tokens")
+        combined = item["servers"] + item.get("add_after_deploy", [])
+        if len(set(combined)) != len(combined) or ("${STRIIM_AGENT_SERVER}" in combined and len(combined) > 1):
+            raise ManifestError(f"{path}: invalid-deployment-group: cannot mix agents and app servers or repeat members")
+    return raw
+
 
 class ManifestError(Exception):
     pass
@@ -956,6 +981,7 @@ class TestManifest:
     source_dir: Path = None             # where tql/ddl/seed/upload are read from
     local_files: frozenset = frozenset()  # ddl/seed/upload names marked `local: true`: read from `dir`
     audit_specs: list = field(default_factory=list)
+    deployment_groups: list = field(default_factory=list)
     snapshot_spec: dict | None = None
     transaction_steps: list = field(default_factory=list)
     lifecycle: object = None            # livetest.lifecycle.LifecycleSpec, or None (legacy)
@@ -1498,6 +1524,7 @@ def load_manifest(path: Path) -> TestManifest:
         transaction_steps=transaction_steps,
         snapshot_spec=snapshot_spec,
         audit_specs=audit_specs,
+        deployment_groups=_deployment_groups(raw.get("deployment_groups", []), path),
         dir=path.parent,
         depth=depth,
         topology=topology,

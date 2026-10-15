@@ -167,7 +167,8 @@ def inventory(client, ctx, *, run=None, timeout=30):
             if not host: raise RecoveryError("fault-api-origin-unavailable")
             peer = f"{parsed.scheme}://{host}:{int(ports[0]['HostPort'])}"
         result[role] = {"role": role, "container": container, "id": row["Id"],
-                        "server": next(iter(matches)), "url": peer}
+                        "server": next(iter(matches)), "url": peer,
+                        "hostsMetadata": "ROLE=primary" in env}
     return result
 
 
@@ -203,6 +204,10 @@ class Target:
             self.selected = candidates[0]
         else:
             self.selected = self.nodes[selection]
+        if self.selected.get("hostsMetadata"):
+            detail = "fault-node-hosts-metadata: refusing to interrupt the primary metadata host; select the secondary worker"
+            self._refusal(detail, "owner-selection", {self.selected["server"]})
+            raise RecoveryError(detail)
         peers = [n["url"] for role, n in self.nodes.items() if role != "agent" and role != self.selected["role"] and n["url"]]
         if not peers: raise RecoveryError("fault-fallback-unavailable: publish the surviving node API port")
         client.configure_failover(peers, app=app)

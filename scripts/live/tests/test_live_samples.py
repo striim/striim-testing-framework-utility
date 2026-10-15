@@ -381,7 +381,9 @@ def test_failover_sample_declares_single_flow_owner_and_complete_golden():
     assert m.recover["mode"] == "kill"
     assert m.recover["node"] == {"hosting": "${NS}.${TID}flow"}
     assert m.assert_["placement"] == [{"flow": "${NS}.${TID}flow", "node": "survivor", "timeout": "90s"}]
-    assert "WITH ${TID}flow ON ONE IN ${APP_GROUP}" in (root / "app.tql").read_text()
+    assert "WITH ${TID}flow ON ONE IN ${TID}workers" in (root / "app.tql").read_text()
+    assert m.deployment_groups == [{"name": "${TID}workers", "flow": "${NS}.${TID}flow",
+        "servers": ["${STRIIM_SECONDARY_SERVER}"], "add_after_deploy": ["${STRIIM_PRIMARY_SERVER}"]}]
     assert _golden("17-one-node-failover")[1] == [{"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
 
 

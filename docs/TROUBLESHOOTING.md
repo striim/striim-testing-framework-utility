@@ -253,7 +253,8 @@ drop or replay bypass does not establish ownership.
 |---|---|---|
 | `invalid-node-fault` | Named-node selection/mode is invalid or unavailable. | Use Docker topology: cluster, a valid role/unique hosting flow, and stop/kill/restart; restart requires node and quiesce refuses node. |
 | `node-fault-error` | The selected container command/state check failed. | Inspect the recorded container ID and Docker error; the fault is not proven. |
-| `fault-node-no-failover` | The hosted flow did not move to a surviving app node while its owner stayed down. | Inspect bounded failover observations and node logs. Keep metadata outside the killed container: the bundled primary also hosts the metadata database. Establish a secondary worker owner or independent metadata before calling this a product defect.
+| `fault-node-hosts-metadata` | The selected primary also hosts the metadata database. | Place the flow initially on the secondary and keep the primary available as survivor; the framework refuses this control-plane interruption before issuing the fault. |
+| `fault-node-no-failover` | The hosted flow did not move to a surviving app node while its owner stayed down. | Inspect bounded failover observations and node logs. Keep metadata outside the killed container: the bundled primary also hosts the metadata database. Sample 17 uses an owned group to start on the secondary and add the primary as survivor.
 | `fault-fallback-unavailable` | No reachable surviving node API is published. | Coordinate recreation of the Striim stack with the new second-node mapping; see UPGRADING. |
 | `fault-node-not-running` | The selected node was not running before interruption. | Restore/inspect the cluster before the case; a pre-existing stopped node is not this test's fault. |
 | `fault-node-unmapped` | A Striim server name could not be bound to a framework container. | Use the framework three-container cluster and inspect node-name discovery. |

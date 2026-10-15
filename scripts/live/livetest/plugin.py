@@ -2071,6 +2071,7 @@ class LiveItem(pytest.Item):
         _tx_pool = None
         _snapshot_observer = None
         _fault_target = None
+        _placement_nodes = None
         deployed = False
         deploy_attempted = False
         in_use_held = False
@@ -2320,6 +2321,17 @@ class LiveItem(pytest.Item):
             _report(m.name, "resetting this identity's recorded resources")
             ledger.reset(client=client, admins=admins, ctx=ctx, tokens=tokens)
             ledger.acquire_namespace(client)
+            _server_tokens = {"STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
+            for _key in _server_tokens:
+                tokens.pop(_key, None)
+            if m.deployment_groups or any("${" + _key + "}" in m.file_path(m.tql).read_text() for _key in _server_tokens):
+                from livetest.node_fault import inventory as _node_inventory
+                _placement_nodes = _node_inventory(client, ctx, timeout=m.timeout)
+                tokens.update({"STRIIM_" + role.upper() + "_SERVER": node["server"]
+                               for role, node in _placement_nodes.items()})
+            for _group in m.deployment_groups:
+                ledger.acquire_deployment_group(client, render(_group["name"], tokens),
+                    [render(v, tokens) for v in _group["servers"]])
             # Also drop any OP resume checkpoint this namespace left on the server. Dropping
             # the app and namespace does NOT remove them -- they are plain files in Striim's
             # working dir -- so without this the next run's same-named app resumes from the
@@ -2710,6 +2722,18 @@ class LiveItem(pytest.Item):
                     if expect_halt_early is None:
                         raise
 
+            if m.deployment_groups:
+                client.await_running(app, timeout=m.timeout)
+                from livetest.node_fault import flow_nodes as _flow_nodes
+                for _group in m.deployment_groups:
+                    _flow = render(_group["flow"], tokens)
+                    _owners = _flow_nodes(client, _flow, m.timeout)
+                    _initial = {render(v, tokens) for v in _group["servers"]}
+                    if len(_owners) != 1 or not _owners <= _initial:
+                        raise recovery.RecoveryError("deployment-group-initial-placement: flow did not start on its requested worker")
+                    ledger.expand_deployment_group(client, render(_group["name"], tokens),
+                        [render(v, tokens) for v in _group.get("add_after_deploy", [])])
+
             if expect_halt_early is not None:
                 self._slt_records += expect_halt_early
                 ran = True
@@ -2830,7 +2854,7 @@ class LiveItem(pytest.Item):
                                 raise recovery.RecoveryError("invalid-node-fault: hosting flow must belong to this case")
                             _selection = {"hosting": _flow}
                         client.await_running(app, timeout=m.timeout)
-                        _fault_target = _NodeTarget(client, ctx, _selection, app=app,
+                        _fault_target = _NodeTarget(client, ctx, _selection, app=app, nodes=_placement_nodes,
                             record=self._slt_records.append, timeout=recovery._restore_budget())
                     _progress_read = None
                     _progress_baseline = 0

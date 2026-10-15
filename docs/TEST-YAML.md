@@ -531,10 +531,45 @@ The survivor must publish its REST API port (default 9082); see
 | `disabled_parallel: true` | Excludes the case from concurrent selection; serial runs still execute it and it does not lock the shared stack |
 
 When proving worker failover, the metadata repository must remain available.
-The bundled recipe hosts it in the primary container, so killing that whole
-container also interrupts metadata. Use an initial worker placement or metadata
-hosting that preserves this dependency; a reset survivor API alone cannot prove
-a product placement defect.
+The bundled recipe hosts it in the primary container. A node fault selecting
+that metadata host is refused before interruption with
+`fault-node-hosts-metadata`. Use the secondary as the initial worker.
+
+### `deployment_groups` — owned initial placement and failover members
+
+Docker mode can create case-owned global deployment groups before importing TQL.
+Names must start with `${TID}`; `flow` must name a flow in `${NS}`. The framework
+refuses collisions, records acquisition in the ownership ledger, verifies exact
+membership, and drops these groups after removing the owned namespace. Cleanup
+and saved-ledger replay verify absence on the recorded Striim endpoint.
+
+<!-- snippet: fragment samples/live/17-one-node-failover/test.yaml -->
+```yaml
+deployment_groups:
+- name: ${TID}workers
+  flow: ${NS}.${TID}flow
+  servers:
+  - ${STRIIM_SECONDARY_SERVER}
+  add_after_deploy:
+  - ${STRIIM_PRIMARY_SERVER}
+```
+
+Deploy the named flow `ON ONE IN ${TID}workers` in the app's TQL. Before the
+post-start seed, the framework proves that the flow has one running owner among
+`servers`, then adds `add_after_deploy` members and verifies the complete group.
+The existing singleton flow keeps its initial worker; the added member becomes
+eligible for failover. This is for `ON ONE` flows; it does not expand an existing
+`ON ALL` deployment onto new servers. Sample 17 proves movement to the added
+primary while the secondary stays down.
+
+Only `name`, `flow`, `servers` and optional `add_after_deploy` are accepted.
+`servers` is nonempty; both member lists contain distinct framework server
+tokens, and agents cannot mix with app servers. Malformed declarations fail
+`invalid-deployment-group`; unreadable catalogs fail
+`deployment-group-catalog-unparseable`; existing names fail
+`collision:deployment-group`; changed membership fails
+`deployment-group-membership`; wrong initial owners fail
+`deployment-group-initial-placement`. No foreign group is modified.
 
 Coordinate all users of these shared nodes before running a node fault. A node
 operation affects every application hosted there, even when it selects one flow's
@@ -1989,6 +2024,11 @@ refs) is `${TOKEN}`-substituted before use. Tokens come from these places:
   and used by everything rendered after it.
 - **Placement tokens**: `${SOURCE_GROUP}` (= `Agents`, where a `cluster` topology's reader
   runs), `${APP_GROUP}` (= `default`, where the app runs).
+  Docker-only `${STRIIM_PRIMARY_SERVER}`, `${STRIIM_SECONDARY_SERVER}` and
+  `${STRIIM_AGENT_SERVER}` resolve to live server names from inspected framework
+  containers. They are reserved, cannot be overridden by `tokens:` or environment
+  values, and require readable node inventory. Use them in `deployment_groups`
+  instead of hard-coded runtime names.
 - **OP/UDF build tokens**: `${OP_JAR}`/`${OP_NAME}` for a single `op:` mapping,
   `${UDF_JAR}`/`${UDF_NAME}` for a single `udf:` mapping, or `${<TOKEN>_JAR}`/
   `${<TOKEN>_NAME}` per entry in either's list form.

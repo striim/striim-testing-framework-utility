@@ -10,13 +10,12 @@ selection but does not lock the shared nodes. See
 Run `striim-test run scripts/live/regression/framework/framework-one-node-failover` only after those prerequisites hold.
 
 The bundled Docker recipe hosts its metadata database in the primary container.
-Killing that container also removes the metadata service; the other server may
-shut down when that dependency disappears. An isolated worker-failover test must
-keep metadata available, with its initial flow owner on the secondary worker or
-with independent metadata hosting. This sample's default ON ONE deployment does
-not guarantee that prerequisite. Until placement or metadata hosting establishes
-it, a failed run is not evidence of a product failover defect. Keep the expected
-rows and the deadline unchanged; do not disable or mark this failure expected.
+The framework creates this case's owned worker group with only the secondary,
+deploys the flow there, and verifies that initial owner. It then adds the primary
+and verifies both members before writing the post-start seed. The flow remains
+on the secondary until the fault; the primary is eligible to receive it while
+metadata stays available. Killing a primary that hosts metadata is refused up
+front with `fault-node-hosts-metadata`.
 
 Before deployment, the framework confirms full membership again after node
 join settles and prints the app-node and agent counts. Transient membership is
@@ -37,9 +36,10 @@ The expected 5000 rows are derived from generate_series(1,5000): each id n has
 msg row-n. No sentinel row belongs in the golden. Typed, counted equality and
 lifecycle completion require all input pairs after failover.
 
-Broken-input check: replace `WITH ${TID}flow ON ONE IN ${APP_GROUP}` with
-`WITH ${TID}flow ON ALL IN ${APP_GROUP}`. The flow now has two owners, so the
-hosting selector must fail with fault-missed before any Docker fault is issued.
+Broken-input check: change `servers` to `${STRIIM_PRIMARY_SERVER}` and
+`add_after_deploy` to `${STRIIM_SECONDARY_SERVER}`. The initial owner hosts
+metadata, so the framework must refuse with `fault-node-hosts-metadata` before
+issuing a Docker fault. Expected rows and deadlines stay unchanged.
 
 If hosting selection fails, its failed recovery record retains the placement
 reads and Docker mapping before cleanup. Inspect MON and each queried server's
