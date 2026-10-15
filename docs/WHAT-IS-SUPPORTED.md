@@ -33,6 +33,7 @@ What differs in native mode:
 | File `nothing:` / file sentinel | yes | skipped: requires Docker access to owned output; Kafka sentinel/absence can use native services |
 | plain `assert.file` (without `exact:`) | yes | yes, when Striim runs on the same machine as `striim-test`: the file is read from the local disk. The two code samples do this |
 | `op:` / `udf:` jars | copied into the cluster | `STRIIM_HOME` must be the running server's own install, on this machine: the jars are copied into `$STRIIM_HOME/UploadedFiles`. `striim-test doctor --case` checks it |
+| Named-node faults and `placement` | yes, framework cluster and published survivor API | named-node recovery skips; no framework Docker role mapping |
 | `recover: {mode: kill}` | yes | **not supported**: there is no container to kill. The test is skipped, never downgraded to `stop` |
 | `expect_halt_contains` on a halt while running | checked against the server log | the test passes without the check, and its record says `halt reason not checked (native mode)` |
 | `assert.jmx` | yes | **not supported**: it fails at once, since there are no exporters to read |
@@ -155,6 +156,7 @@ The reference for each is [TEST-YAML.md](TEST-YAML.md).
 | `data`: a target table's rows, count or golden (Postgres, Oracle, SQL Server, MySQL, Teradata, Vertica, Spanner, Kafka) | **tested**: samples 01, 02 and 04 (Postgres), the code samples |
 | `diff`: the target's rows equal the source's | **supported, not exercised here** (`scripts/live/regression/services/postgres/postgres-diff`) |
 | `file`: what a `FileWriter` wrote | **tested**: sample 03 (with `exact:`), the code samples (without) |
+| `placement`: live flow owner against a named node or survivor | **supported, not yet qualified**: sample 17 issued an in-window fault live; failover verification remains under investigation |
 | `gcs`: an object's bytes, size or hash in the GCS emulator | **supported, not exercised here** |
 | `json`: a JSON column, compared by meaning | **supported, not exercised here** |
 | `monitor`: what Striim's monitor shows for a target | **supported, not exercised here** (`scripts/live/regression/framework/framework-assert-monitor`) |
@@ -189,7 +191,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
-| `recover:` `kill` | **supported, not exercised here**, Docker mode only (`framework-recover-kill`). It kills every Striim node container, so every other test on that cluster fails with it |
+| `recover:` `kill` | **supported, not exercised here**, Docker mode only (`framework-recover-kill`). Without `node:` it kills all app-node containers; with `node:` it selects one. Other apps on affected nodes are interrupted |
 | `xfail:` | **supported, not exercised here** |
 | `disabled:` | **supported, not exercised here** |
 | `action:` (`stop_start_cycle`, `drop_recreate_app`) | **supported, not exercised here** |
@@ -253,3 +255,4 @@ row above for recorded runs; a skip is never a pass.
 | Progress trigger | target-count or slot | target-count | end or consumer offset | — | Native or Docker with confirmed current-attempt ownership; checkpoint reads Striim |
 | Fault-boundary evidence | any supported case | any supported case | any supported case | any supported case | Timed or progress recovery; no issued fault is a failure |
 | Fresh recovery sentinel | yes | both dialects | yes | yes | Same lifecycle sentinel route, fresh per-cycle marker; file requires Docker |
+| Named node fault and role placement | route independent | route independent | route independent | route independent | Framework Docker cluster with two app nodes and agent; published survivor API; disabled_parallel |

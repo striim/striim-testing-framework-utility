@@ -354,6 +354,7 @@ In it, under `live/`:
 - **Progress trigger**: `recover.trigger` declares the reader, thresholds and polling budget. A missed window or unreadable position fails before interruption; inspect the progress error and source/target state.
 - **Fault boundary**: Each cycle writes a `recovery` assertion with trigger, first in-window `windowOpened`, pre-command value, UTC/monotonic times, held and interrupted booleans, issue time and bounded `afterInterrupt`. Timed recovery uses trigger kind `timed`. A failure before issuance has interrupted false; work completed during STOP fails with interrupted true and retained post-interruption value. Neither missed boundary is absorbed by `xfail`.
 - **Recovery marker**: Each cycle adds a `recovery` assertion whose expected booleans are `insertPresent: true` and `deleteAbsent: true`; actual rows retain the full marker witness, its phase and observations. This is additional to the fault-boundary record.
+- **Named node and placement**: A named fault adds another `recovery` assertion with `node`, `role`, exact `containerId`, monotonic `observedAt` and `interrupted`. A `placement` assertion compares the declared singleton node with live owner rows read from Striim; check its status before interpreting an empty owner set. Refused owner selection or final revalidation retains phase, flow, selected server, owner names, Docker mapping and redacted/truncated JSON strings for the queried MON, DESCRIBE and per-server STATUS replies. Initial selection checks all nodes; issuance rechecks only the selected server plus MON single-owner count.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -551,3 +552,7 @@ Start with [15-fault-evidence](../samples/live/15-fault-evidence/README.md), the
 ### Prove the route transports a fresh marker after recovery
 
 Start with [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-recovery-sentinel/README.md) exercises the same framework contract.
+
+### Interrupt one named node and check flow placement
+
+Start with [17-one-node-failover](../samples/live/17-one-node-failover/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-one-node-failover/README.md) exercises the same framework contract.

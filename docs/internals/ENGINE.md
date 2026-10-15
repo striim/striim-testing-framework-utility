@@ -276,3 +276,7 @@ The live engine modules `progress` implement this check. Manifest loading valida
 ### Prove the route transports a fresh marker after recovery
 
 The live engine modules `recovery_sentinel` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [16-recovery-sentinel fixture](../../samples/live/16-recovery-sentinel/README.md).
+
+### Interrupt one named node and check flow placement
+
+The live engine modules `node_fault` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [17-one-node-failover fixture](../../samples/live/17-one-node-failover/README.md).

@@ -82,6 +82,16 @@ SLT_PG_ADMIN_PASSWORD=...
 - On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds) before it
   exits non-zero.
 
+## Striim peer API for node faults
+
+Named-node recovery uses the framework's two-app-node Docker cluster plus agent.
+The survivor publishes REST on `SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082).
+Shared-mode reuse does not add missing port mappings; coordinate stack users and
+follow [UPGRADING.md](UPGRADING.md) to recreate an older disposable test stack.
+The primary API host determines the peer host; Docker inspection supplies its
+published port. Native services can still support database/Kafka checks, but
+named-node Docker recovery is skipped against native Striim.
+
 ## Postgres (`postgres`)
 
 The default service; the samples use it. `postgres:16` with the `wal2json` plugin, started with

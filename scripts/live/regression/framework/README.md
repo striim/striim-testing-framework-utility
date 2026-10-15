@@ -70,6 +70,7 @@ filtering, dest rendering and unknown-kind failure).
 | [framework-progress-recovery](framework-progress-recovery/README.md) | Interrupt inside an observed progress window |
 | [framework-fault-evidence](framework-fault-evidence/README.md) | Prove the fault was issued while its precondition held |
 | [framework-recovery-sentinel](framework-recovery-sentinel/README.md) | Prove the route transports a fresh marker after recovery |
+| [framework-one-node-failover](framework-one-node-failover/README.md) | Interrupt one named node and check flow placement |
 
 ## The gate
 

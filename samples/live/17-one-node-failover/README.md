@@ -1,10 +1,13 @@
 # One-node failover
 
-Run `striim-test run samples/live/17-one-node-failover` against the configured
-Docker cluster with two app nodes and an agent. The second node must publish its
-REST API port; the compose default is 9082, configurable with
-`SLT_STRIIM_NODE_HTTP_HOST_PORT`. Existing stacks need the updated port mapping
-before this sample runs. Run it without concurrent cases sharing these nodes.
+This case kills one app node hosting a single-owner flow, then requires placement
+on its survivor and complete typed data. It needs Docker mode, `topology: cluster`,
+two app nodes plus an agent, and the survivor REST port (default 9082).
+Coordinate every stack user; `disabled_parallel: true` excludes concurrent
+selection but does not lock the shared nodes. See
+[the upgrade guide](../../../docs/UPGRADING.md) before reusing an older stack.
+
+Run `striim-test run samples/live/17-one-node-failover` only after those prerequisites hold.
 
 Before deployment, the framework confirms full membership again after node
 join settles and prints the app-node and agent counts. Transient membership is

@@ -38,25 +38,25 @@ step in detail, with the output to expect and what to do when something fails.
 
 ## The samples
 
-| Sample | Shows |
-|---|---|
-| `01-plain-replication` | an initial load, compared exactly with a hand-written golden |
-| `02-transform` | a CQ that changes each event before it is written |
-| `03-file-output` | an app that writes a file, and checking the file's contents (Docker mode only) |
-| `04-lifecycle-check` | a CDC app whose correct result is an empty target, and how `lifecycle:` proves it ran |
-| `05-mysql-initial-load` | an initial load on MySQL |
-| `06-mysql-cdc` | binlog CDC on MySQL: inserts, an update and a delete |
-| `07-spanner-exact` | typed and counted Spanner rows; requires the Spanner service |
-| `08-strict-json` | preserve JSON token types and reject undeclared fields; Docker file access |
-| `09-raw-file` | byte hashes, lengths and an exact file inventory; Docker file access |
-| `10-bounded-nothing` | no output in a bounded window after a file sentinel |
-| `11-transaction-seeds` | overlapping sessions, savepoints and a transaction across recovery |
-| `12-snapshot-observer` | consistent snapshots of related target tables |
-| `13-append-only-audit` | immutable delivery rows with counted multiset comparison |
-| `14-progress-recovery` | interrupt CDC inside a declared target progress window |
-| `15-fault-evidence` | fault-time progress evidence and missed-window failure |
-| `16-recovery-sentinel` | fresh route proof after recovery and before assertions |
-| `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data |
+| Sample | Shows | Prerequisites |
+|---|---|---|
+| `01-plain-replication` | an initial load, compared exactly with a hand-written golden | Postgres |
+| `02-transform` | a CQ that changes each event before it is written | Postgres |
+| `03-file-output` | an app that writes a file, and checking the file's contents (Docker mode only) | Postgres; Docker file access |
+| `04-lifecycle-check` | a CDC app whose correct result is an empty target, and how `lifecycle:` proves it ran | Postgres CDC |
+| `05-mysql-initial-load` | an initial load on MySQL | MySQL |
+| `06-mysql-cdc` | binlog CDC on MySQL: inserts, an update and a delete | MySQL binlog CDC |
+| `07-spanner-exact` | typed and counted Spanner rows; requires the Spanner service | Spanner service |
+| `08-strict-json` | preserve JSON token types and reject undeclared fields; Docker file access | Postgres; Docker file access |
+| `09-raw-file` | byte hashes, lengths and an exact file inventory; Docker file access | Postgres; Docker file access |
+| `10-bounded-nothing` | no output in a bounded window after a file sentinel | Postgres CDC; Docker file access |
+| `11-transaction-seeds` | overlapping sessions, savepoints and a transaction across recovery | Postgres CDC; STOP/restore |
+| `12-snapshot-observer` | consistent snapshots of related target tables | Postgres CDC; transaction preservation; STOP/restore |
+| `13-append-only-audit` | immutable delivery rows with counted multiset comparison | Postgres |
+| `14-progress-recovery` | interrupt CDC inside a declared target progress window | Postgres CDC; STOP/restore |
+| `15-fault-evidence` | fault-time progress evidence and missed-window failure | Postgres CDC; STOP/restore |
+| `16-recovery-sentinel` | fresh route proof after recovery and before assertions | Postgres CDC; STOP/restore |
+| `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data | Postgres CDC; Docker cluster, two app nodes and agent; published survivor API; **kills one shared app node** |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

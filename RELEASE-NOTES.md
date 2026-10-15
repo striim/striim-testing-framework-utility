@@ -4,6 +4,18 @@ One entry per release, newest first: the pull requests it contains.
 
 ## Unreleased
 
+Typed exact comparisons now cover Spanner and Kafka records. Strict JSON, raw
+file inventories, sentinel-qualified absence, controlled transaction seeds,
+consistent snapshot histories and append-only audit comparisons add stricter
+checks. Progress-triggered recovery records fault boundaries and can prove a
+fresh marker after restore. Named-node Docker faults also check live placement.
+
+**Upgrade action for named-node faults:** recreate an older shared Striim test
+stack after coordinating its users so the second app node publishes
+`SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082). See [UPGRADING.md](docs/UPGRADING.md).
+Existing port mappings are not changed by shared-mode reuse. Sample 17 kills a
+shared app node; read its prerequisites before running all samples.
+
 Timed recovery now requires the app to be RUNNING at the fault boundary. A completed or halted app fails `fault-missed` instead of counting as an interruption. Progress-triggered recovery checks again after the interruption takes effect, refusing a target count that reached its upper bound.
 
 ## v0.1.0 (2026-10-08)

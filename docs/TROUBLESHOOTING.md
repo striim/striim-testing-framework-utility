@@ -246,3 +246,34 @@ drop or replay bypass does not establish ownership.
 |---|---|---|
 | `invalid-post-recovery-sentinel` | Recovery sentinel lacks running/lifecycle prerequisites. | Set expect_running: true and declare a supported lifecycle sentinel; use reserved recovery tokens only in sentinel files. |
 | `post-recovery-sentinel-missed` | The fresh post-restore marker did not arrive and disappear. | Inspect insert/delete witness evidence and resumed reader/writer capture before post_recover seeds. |
+
+## Interrupt one named node and check flow placement
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-node-fault` | Named-node selection/mode is invalid or unavailable. | Use Docker topology: cluster, a valid role/unique hosting flow, and stop/kill/restart; restart requires node and quiesce refuses node. |
+| `node-fault-error` | The selected container command/state check failed. | Inspect the recorded container ID and Docker error; the fault is not proven. |
+| `fault-node-no-failover` | The hosted flow did not move to a surviving app node while its owner stayed down. | Deploy the child flow ON ONE in the app-node group with sufficient surviving capacity; inspect placement. |
+| `fault-fallback-unavailable` | No reachable surviving node API is published. | Coordinate recreation of the Striim stack with the new second-node mapping; see UPGRADING. |
+| `fault-node-not-running` | The selected node was not running before interruption. | Restore/inspect the cluster before the case; a pre-existing stopped node is not this test's fault. |
+| `fault-node-unmapped` | A Striim server name could not be bound to a framework container. | Use the framework three-container cluster and inspect node-name discovery. |
+| `fault-node-inventory-unreadable` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-inventory-ambiguous` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-inventory-deadline` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-restore-status` | The selected container did not reach the required state after restore. | Inspect that container and the restore command error; teardown restores only the selected node. |
+| `fault-api-origin-unavailable` | The original API host cannot supply a surviving peer URL. | Use a resolvable Striim API URL and the published second-node REST mapping. |
+| `placement-mismatch` | The flow owner differs from the declared node/survivor. | Inspect running MON ownership and deployment placement; correct the deployment group. |
+| `placement-read-error` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |
+| `placement-read-deadline` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |
+| `placement-read-shape` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-name-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-list-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-description-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-components-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `invalid-placement-spec` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `invalid-placement-flow` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `invalid-placement-node` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `CLUSTER-READY` | Full post-settle deployment-group membership was not observed within the join deadline. | Check last default/Agents counts and saved node logs; a registration message alone cannot qualify cluster topology. |
+| `placement-flow-monitor-unavailable` | MON does not identify the requested FLOW. | Check the fully qualified flow name and returned entityType/fullName; do not use an absent flow status as a running-state proof. |
+| `placement-application-unavailable` | A deployed flow cannot be bound to one full parent application identity. | Inspect the matching server DESCRIBE components; a bare applicationName is not sufficient proof. |
+| `placement-node-status-unavailable` | The same server cannot report an unambiguous runtime state for that parent application. | Inspect the recorded STATUS reply and server binding, correct availability/privileges, and retain the owner check. |
