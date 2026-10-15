@@ -56,7 +56,7 @@ def test_all_stock_ports_and_prefixes_survive_dotenv(paths, tmp_path):
 
 @pytest.mark.parametrize('rel,tag,key', [
     ('live/services/postgres', 'slt-postgres:16', 'SLT_STACK_PREFIX'),
-    ('live/services/bigquery', 'slt-bigquery:0.8.1-framework.4', 'SLT_STACK_PREFIX'),
+    ('live/services/bigquery', 'slt-bigquery:0.8.1-framework.5', 'SLT_STACK_PREFIX'),
     ('live/services/mssql', 'slt-mssql:2022', 'SLT_STACK_PREFIX'),
     ('live/services/oracle', 'slt-oracle:23.26.2', 'SLT_STACK_PREFIX'),
     ('live/services/vertica', 'slt-vertica:25.3.0-8', 'SLT_STACK_PREFIX'),
