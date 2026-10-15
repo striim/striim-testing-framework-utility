@@ -9,6 +9,15 @@ selection but does not lock the shared nodes. See
 
 Run `striim-test run scripts/live/regression/framework/framework-one-node-failover` only after those prerequisites hold.
 
+The bundled Docker recipe hosts its metadata database in the primary container.
+Killing that container also removes the metadata service; the other server may
+shut down when that dependency disappears. An isolated worker-failover test must
+keep metadata available, with its initial flow owner on the secondary worker or
+with independent metadata hosting. This sample's default ON ONE deployment does
+not guarantee that prerequisite. Until placement or metadata hosting establishes
+it, a failed run is not evidence of a product failover defect. Keep the expected
+rows and the deadline unchanged; do not disable or mark this failure expected.
+
 Before deployment, the framework confirms full membership again after node
 join settles and prints the app-node and agent counts. Transient membership is
 retried within the existing join budget; persistent missing membership skips

@@ -530,6 +530,12 @@ The survivor must publish its REST API port (default 9082); see
 | `mode: quiesce` with `node` | Refused; quiesce is application-level |
 | `disabled_parallel: true` | Excludes the case from concurrent selection; serial runs still execute it and it does not lock the shared stack |
 
+When proving worker failover, the metadata repository must remain available.
+The bundled recipe hosts it in the primary container, so killing that whole
+container also interrupts metadata. Use an initial worker placement or metadata
+hosting that preserves this dependency; a reset survivor API alone cannot prove
+a product placement defect.
+
 Coordinate all users of these shared nodes before running a node fault. A node
 operation affects every application hosted there, even when it selects one flow's
 owner. Resolve the owner before waiting for the progress window; the final
