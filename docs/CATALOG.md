@@ -55,7 +55,7 @@ Runnable regression guides are included under Contributing and internals.
 | [12 Consistent target snapshots](../samples/live/12-snapshot-observer/README.md) | `samples/live/12-snapshot-observer/README.md` | The transaction-session sample writes each row to two source tables in the same transaction. |
 | [13 Append-only audit target](../samples/live/13-append-only-audit/README.md) | `samples/live/13-append-only-audit/README.md` | DatabaseReader emits two rows. A CQ converts them to a locally declared typed stream, so DatabaseWriter records deliveries as inserts. |
 | [Recovery inside a progress window](../samples/live/14-progress-recovery/README.md) | `samples/live/14-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
-| [Fault-time evidence](../samples/live/15-fault-evidence/README.md) | `samples/live/15-fault-evidence/README.md` | Run striim-test run samples/live/15-fault-evidence on a configured Striim host. |
+| [Fault-time evidence](../samples/live/15-fault-evidence/README.md) | `samples/live/15-fault-evidence/README.md` | The 5000 golden pairs are derived from generate_series(1,5000) and row- plus id. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services
@@ -115,7 +115,7 @@ Runnable regression guides are included under Contributing and internals.
 | [framework/ — the harness testing itself](../scripts/live/regression/framework/README.md) | `scripts/live/regression/framework/README.md` | Other tests check an app, an Open Processor or a writer. |
 | [Append-only audit target](../scripts/live/regression/framework/framework-append-only-audit/README.md) | `scripts/live/regression/framework/framework-append-only-audit/README.md` | Run striim-test run scripts/live/regression/framework/framework-append-only-audit. |
 | [Bounded absence](../scripts/live/regression/framework/framework-bounded-nothing/README.md) | `scripts/live/regression/framework/framework-bounded-nothing/README.md` | Run striim-test run scripts/live/regression/framework/framework-bounded-nothing in Docker mode. |
-| [Fault-time evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md) | `scripts/live/regression/framework/framework-fault-evidence/README.md` | Run striim-test run samples/live/15-fault-evidence on a configured Striim host. |
+| [Fault-time evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md) | `scripts/live/regression/framework/framework-fault-evidence/README.md` | The 5000 golden pairs are derived from generate_series(1,5000) and row- plus id. |
 | [Recovery inside a progress window](../scripts/live/regression/framework/framework-progress-recovery/README.md) | `scripts/live/regression/framework/framework-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
 | [Raw file inventory](../scripts/live/regression/framework/framework-raw-file/README.md) | `scripts/live/regression/framework/framework-raw-file/README.md` | Run striim-test run scripts/live/regression/framework/framework-raw-file in Docker mode. |
 | [Consistent snapshots](../scripts/live/regression/framework/framework-snapshot-observer/README.md) | `scripts/live/regression/framework/framework-snapshot-observer/README.md` | Run striim-test run scripts/live/regression/framework/framework-snapshot-observer. |

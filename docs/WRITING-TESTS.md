@@ -352,6 +352,7 @@ In it, under `live/`:
 - **Consistent snapshots**: A `data` assertion for `snapshot:<db>` contains history rows with `observedUtc`, monotonic `at`, matched zero-based `prefix` (null when none matched), aggregate `sha256` and total `rows`. Failure before final qualification keeps an `observer-incomplete` record and worker error. This uses the `data` record type; there is no separate snapshot assertion tier. An undeclared state also records per-table keyColumns, bounded canonical keys, total rows and truncation flags, retained through abandon().
 - **Append-only audit**: Audit uses the normal exact multiset comparison, so repeated deliveries appear as extra counted rows. The declaration records ignored sink-generated delivery keys; it must still retain every payload delivery.
 - **Progress trigger**: `recover.trigger` declares the reader, thresholds and polling budget. A missed window or unreadable position fails before interruption; inspect the progress error and source/target state.
+- **Fault boundary**: Each cycle writes a `recovery` assertion with trigger, first in-window `windowOpened`, pre-command value, UTC/monotonic times, held and interrupted booleans, issue time and bounded `afterInterrupt`. Timed recovery uses trigger kind `timed`. A failure before issuance has interrupted false; work completed during STOP fails with interrupted true and retained post-interruption value. Neither missed boundary is absorbed by `xfail`.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -541,3 +542,7 @@ Start with [13-append-only-audit](../samples/live/13-append-only-audit/README.md
 ### Interrupt inside an observed progress window
 
 Start with [14-progress-recovery](../samples/live/14-progress-recovery/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-progress-recovery/README.md) exercises the same framework contract.
+
+### Prove the fault was issued while its precondition held
+
+Start with [15-fault-evidence](../samples/live/15-fault-evidence/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-fault-evidence/README.md) exercises the same framework contract.

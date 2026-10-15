@@ -232,3 +232,10 @@ drop or replay bypass does not establish ownership.
 | `progress-window-missed` | The count reached/passed the upper bound before the fault. | Choose a window that includes observable in-flight work and slow/provide sufficient input; final equality cannot prove a fault. |
 | `progress-read-error` | The progress transport/query failed. | Read the nested error; check target/slot/topic access and offset/checkpoint fields. |
 | `progress-app-not-running` | The app left RUNNING before the declared fault could land. | Inspect app status and deployment; ensure the work remains in flight until the trigger. |
+
+## Prove the fault was issued while its precondition held
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `fault-missed` | The final fault precondition failed; no command was sent. | Use the suffix (deadline/window/read/app-status) to correct the trigger; this is never absorbed by xfail. |
+| `fault-interrupt-error` | The interrupt command failed after its final observation. | Inspect the recorded command boundary and transport error; a failed request is not a completed fault. |

@@ -552,18 +552,27 @@ lifecycle, rather than an unclaimed custom topic. A slot must already be recorde
 as owned; naming a shared slot does not grant permission to observe it.
 Only target-count recovery has reported live qualification (sample 14);
 checkpoint, slot and Kafka position triggers have hermetic coverage.
-Every fault receives an assertion record of type `recovery` in `evidence.json`
-and the results sidecar. Its actual row contains the cycle, observed value,
-`held`, monotonic `observedAt` and `issuedAt`, UTC `observedUtc`, deadline,
-baseline and `interrupted`. Progress is re-read immediately before the command;
-the earlier poll alone is insufficient. This read and the interruption are
-separate operations, so the observation does not claim an atomic product snapshot
-at the physical kill instant. A missed deadline, unreadable position, closed
-window or app that left RUNNING fails with `fault-missed` and records `held: false`
-and `issuedAt: null`; no command is issued. This framework error is never an
-expected assertion failure. A command failure records held progress but does not
-record a passed interruption. Timed recovery checks RUNNING at its fault boundary.
-See `samples/live/15-fault-evidence` for the broken-window check.
+Every cycle writes an assertion of type `recovery` in `evidence.json` and the
+results sidecar. Its actual row contains `cycle`, `trigger`, `baseline`,
+`windowOpened` (the first in-window value and monotonic/UTC time), the final
+pre-command `value`, `held`, monotonic `observedAt`/`issuedAt`, UTC `observedUtc`,
+`deadline` and `interrupted`. Timed recovery uses `trigger.kind: timed` and checks
+RUNNING at issuance. Progress recovery reads its precondition at the command boundary.
+
+A fresh progress read immediately before the command must still qualify.
+After interruption, another read has at most five seconds or the shorter trigger
+timeout; `afterInterrupt` retains its observations. A target count reaching
+`below` in that interval fails `fault-missed` even if the pre-command count held.
+These separate reads do not claim an atomic snapshot at the physical kill instant.
+
+A failure before issuance records `held: false`, `issuedAt: null` and
+`interrupted: false`; no command was issued. A closed window after interruption
+records the issue time, `interrupted: true` and the post-interruption value.
+A command failure retains its held precondition but cannot pass the interruption.
+`fault-missed` and `fault-interrupt-error` are framework recovery failures;
+`xfail` cannot absorb them. Inspect the suffix (`progress-deadline`,
+`progress-window-missed`, `progress-read-error`, `progress-app-not-running`) and
+the retained evidence. See [15-fault-evidence](../samples/live/15-fault-evidence/README.md).
 
 Kafka offsets describe the next record position; the trigger observes the named
 partition, never a sum across partitions. Checkpoint advances are measured anew
@@ -1871,3 +1880,5 @@ After an interruption takes effect, a fresh progress read has at most five secon
 Worked case: [14-progress-recovery](../samples/live/14-progress-recovery/README.md). Framework gallery: [framework-progress-recovery](../scripts/live/regression/framework/framework-progress-recovery/README.md).
 
 Fault evidence retains `windowOpened` (the first in-window value and time), the pre-command value, `issuedAt`, and the bounded `afterInterrupt` observation. When work finishes during STOP, the record is failed with `interrupted: true`; no command is retried. Timed recovery also requires RUNNING at issuance.
+
+Worked case: [15-fault-evidence](../samples/live/15-fault-evidence/README.md). Framework gallery: [framework-fault-evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md).

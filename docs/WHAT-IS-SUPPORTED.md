@@ -184,6 +184,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Transaction snapshot observer | **supported, not exercised here** with the corrected PSTB sample; hermetic multi-table consistency/failure-history coverage. A prior live run detected an expected partial transaction without preservation |
 | Append-only delivery audit | **supported, not exercised here**: hermetic duplicate checks on every exact route; sample 13 has no reported live qualification |
 | Progress-triggered recovery | **tested**: sample 14 target-count STOP reported passing on Striim 5.4.2; checkpoint, slot and Kafka position triggers have hermetic coverage only |
+| Fault-boundary recovery evidence | **tested**: sample 15 reported passing on Striim 5.4.2; hermetic pre-command and post-interruption missed-window checks |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
@@ -249,3 +250,4 @@ row above for recorded runs; a skip is never a pass.
 | Snapshot observer | repeatable read/read only | multi-use read-only transaction | — | — | Native or Docker; declared lifecycle and owned target tables |
 | Append-only audit | yes | both dialects | kafka_record | yes | Native or Docker database/Kafka; Docker file; append writer and fresh owned target |
 | Progress trigger | target-count or slot | target-count | end or consumer offset | — | Native or Docker with confirmed current-attempt ownership; checkpoint reads Striim |
+| Fault-boundary evidence | any supported case | any supported case | any supported case | any supported case | Timed or progress recovery; no issued fault is a failure |

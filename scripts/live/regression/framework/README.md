@@ -68,6 +68,7 @@ filtering, dest rendering and unknown-kind failure).
 | [framework-snapshot-observer](framework-snapshot-observer/README.md) | Check consistent target snapshots against committed prefixes |
 | [framework-append-only-audit](framework-append-only-audit/README.md) | Reject replay duplicates with an append-only audit |
 | [framework-progress-recovery](framework-progress-recovery/README.md) | Interrupt inside an observed progress window |
+| [framework-fault-evidence](framework-fault-evidence/README.md) | Prove the fault was issued while its precondition held |
 
 ## The gate
 
