@@ -1,0 +1,79 @@
+--- a/server/handler.go
++++ b/server/handler.go
+@@ -304,11 +304,11 @@
+ 		errorResponse(ctx, w, errInternalError(err.Error()))
+ 		return
+ 	}
+-	addr := server.httpServer.Addr
+-	if !strings.HasPrefix(addr, "http") {
+-		addr = "http://" + addr
+-	}
+-	addr = strings.TrimRight(addr, "/")
++	addr, originErr := uploadOrigin(r)
++	if originErr != nil {
++		errorResponse(ctx, w, errInvalid(originErr.Error()))
++		return
++	}
+ 	w.Header().Add(
+ 		"Location",
+ 		fmt.Sprintf(
+--- /dev/null
++++ b/server/load_origin.go
+@@ -0,0 +1,30 @@
++package server
++
++import (
++	"net/http"
++	"net/url"
++	"os"
++	"strings"
++)
++
++func uploadOrigin(r *http.Request) (string, error) {
++	scheme, host := "http", r.Host
++	if r.TLS != nil {
++		scheme = "https"
++	}
++	// Forwarded headers are ignored unless the operator explicitly trusts its proxy.
++	if os.Getenv("BIGQUERY_EMULATOR_TRUST_FORWARDED_ORIGIN") == "true" {
++		if v := r.Header.Get("X-Forwarded-Proto"); v != "" {
++			scheme = v
++		}
++		if v := r.Header.Get("X-Forwarded-Host"); v != "" {
++			host = v
++		}
++	}
++	u, err := url.Parse(scheme + "://" + host)
++	if err != nil || (scheme != "http" && scheme != "https") || host == "" || strings.Contains(host, ",") ||
++		u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Hostname() == "" {
++		return "", errInvalid("invalid upload request origin")
++	}
++	return u.String(), nil
++}
+--- /dev/null
++++ b/server/load_origin_test.go
+@@ -0,0 +1,24 @@
++package server
++
++import (
++	"net/http/httptest"
++	"testing"
++)
++
++func TestUploadOriginExplicitTrust(t *testing.T) {
++	r := httptest.NewRequest("POST", "http://127.0.0.1:19050/upload", nil)
++	r.Header.Set("X-Forwarded-Proto", "https")
++	r.Header.Set("X-Forwarded-Host", "proxy.example.test:9443")
++	t.Setenv("BIGQUERY_EMULATOR_TRUST_FORWARDED_ORIGIN", "")
++	if got, err := uploadOrigin(r); err != nil || got != "http://127.0.0.1:19050" {
++		t.Fatalf("untrusted headers: %q %v", got, err)
++	}
++	t.Setenv("BIGQUERY_EMULATOR_TRUST_FORWARDED_ORIGIN", "true")
++	if got, err := uploadOrigin(r); err != nil || got != "https://proxy.example.test:9443" {
++		t.Fatalf("trusted headers: %q %v", got, err)
++	}
++	r.Header.Set("X-Forwarded-Proto", "ftp")
++	if _, err := uploadOrigin(r); err == nil {
++		t.Fatal("invalid forwarded scheme accepted")
++	}
++}

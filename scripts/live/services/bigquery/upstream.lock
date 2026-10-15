@@ -12,7 +12,7 @@
     "runtime": "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
     "dockerfile_frontend": "docker/dockerfile:1.4@sha256:9ba7531bd80fb0a858632727cf7a112fbfd19b17e94c4e84ced81e24ef1a0dbc",
     "token": "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
-    "framework_version": "0.8.1-framework.5"
+    "framework_version": "0.8.1-framework.6"
   },
   "patches": [
     {
@@ -24,6 +24,34 @@
       "file": "0006-preserve-insertall-number-precision.patch",
       "sha256": "2a7c22d4a3906011e3bc6d81719ecb461534eb9ecb8d43a2925b6a389315549c",
       "description": "Decode insertAll numeric literals without intermediate float64 rounding."
+    },
+    {
+      "file": "0007-preserve-upload-request-origin.patch",
+      "sha256": "d33c093880f5956ea589cf2f118232b81bbaca9459fa1596f6aa69bf4a0a51c6",
+      "description": "Return a validated client request origin; trust forwarded origin only with explicit operator configuration."
+    },
+    {
+      "file": "0008-backport-csv-delimiter-reader.patch",
+      "sha256": "e5cb88c69248592f484a2fdba1f7ebf567ae25d4b348bb8f89e2f5c2d26ec2aa",
+      "description": "Backport the delimiter reader from upstream PR 491 without unrelated changes.",
+      "upstream_url": "https://github.com/goccy/bigquery-emulator/pull/491",
+      "upstream_commit": "cb8555bee739c794343337e8c3242b59d5d7470a",
+      "upstream_status": "merged after v0.8.1"
+    },
+    {
+      "file": "0009-honor-positional-csv-load-options.patch",
+      "sha256": "79310197b2dc9476b0dd89148dd5f387d595cd45563fa2795a517d2b2ce2749e",
+      "description": "Honor explicit positional CSV schemas, header skipping, null markers and the qualified UTF-8/double-quote options."
+    },
+    {
+      "file": "0010-persist-truthful-load-job-results.patch",
+      "sha256": "eb4aadce2888132c4350fcf8e1ab8775d402835ed924b96d147a3ce70d450333",
+      "description": "Persist terminal load results, actual execution times and computed local byte/row statistics."
+    },
+    {
+      "file": "0011-bound-resumable-upload-sessions.patch",
+      "sha256": "30280b820d8eb06e14306b9807eff50547ade9f8440c8c631711aa6708900ffa",
+      "description": "Bound in-memory resumable sessions and support status, replay and exactly-once finalization within a live session."
     }
   ],
   "dependency_patches": [

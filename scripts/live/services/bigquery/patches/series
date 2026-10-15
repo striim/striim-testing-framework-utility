@@ -1,2 +1,7 @@
 0001-release-anonymous-query-results.patch
 0006-preserve-insertall-number-precision.patch
+0007-preserve-upload-request-origin.patch
+0008-backport-csv-delimiter-reader.patch
+0009-honor-positional-csv-load-options.patch
+0010-persist-truthful-load-job-results.patch
+0011-bound-resumable-upload-sessions.patch

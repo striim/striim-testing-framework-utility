@@ -1,0 +1,350 @@
+--- a/internal/metadata/job.go
++++ b/internal/metadata/job.go
+@@ -5,6 +5,7 @@
+ 	"database/sql"
+ 	"fmt"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	internaltypes "github.com/goccy/bigquery-emulator/internal/types"
+@@ -12,14 +13,15 @@
+ )
+ 
+ type Job struct {
+-	ID        string
+-	ProjectID string
+-	content   *bigqueryv2.Job
+-	response  *internaltypes.QueryResponse
+-	err       error
+-	completed bool
+-	mu        sync.RWMutex
+-	repo      *Repository
++	ID          string
++	ProjectID   string
++	loadContent atomic.Pointer[bigqueryv2.Job]
++	content     *bigqueryv2.Job
++	response    *internaltypes.QueryResponse
++	err         error
++	completed   bool
++	mu          sync.RWMutex
++	repo        *Repository
+ }
+ 
+ func (j *Job) Query() string {
+@@ -40,6 +42,9 @@
+ }
+ 
+ func (j *Job) Content() *bigqueryv2.Job {
++	if content := j.loadContent.Load(); content != nil {
++		return content
++	}
+ 	return j.content
+ }
+ 
+@@ -79,6 +84,10 @@
+ }
+ 
+ func NewJob(repo *Repository, projectID, jobID string, content *bigqueryv2.Job, response *internaltypes.QueryResponse, err error) *Job {
++	// JSON reload loses ForceSendFields; retain explicit zero load statistics.
++	if content != nil && content.Configuration != nil && content.Configuration.Load != nil && content.Statistics != nil && content.Statistics.Load != nil {
++		content.Statistics.Load.ForceSendFields = []string{"InputFileBytes", "InputFiles", "OutputRows", "OutputBytes", "BadRecords"}
++	}
+ 	return &Job{
+ 		ID:        jobID,
+ 		ProjectID: projectID,
+@@ -88,3 +97,11 @@
+ 		repo:      repo,
+ 	}
+ }
++
++// StoreLoadContent participates in the existing transaction that applies load rows.
++// Publish only after commit; terminal status and statistics use separate snapshots.
++func (j *Job) StoreLoadContent(ctx context.Context, tx *sql.Tx, content *bigqueryv2.Job) error {
++	return j.repo.UpdateJob(ctx, tx, NewJob(j.repo, j.ProjectID, j.ID, content, nil, nil))
++}
++
++func (j *Job) PublishLoadContent(content *bigqueryv2.Job) { j.loadContent.Store(content) }
+--- a/server/handler.go
++++ b/server/handler.go
+@@ -269,13 +269,18 @@
+ 		return
+ 	}
+ 	u := &uploadContentHandler{}
+-	err = u.Handle(ctx, &uploadContentRequest{
++	contentRequest := &uploadContentRequest{
+ 		server:  server,
+ 		project: project,
+ 		job:     uploadJob,
+ 		reader:  p,
+-	})
+-	if err != nil {
++	}
++	err = u.Handle(ctx, contentRequest)
++	if err != nil {
++		if saveErr := failLoad(ctx, server, uploadJob, contentRequest.inputBytes, contentRequest.started, err); saveErr != nil {
++			errorResponse(ctx, w, errInternalError(saveErr.Error()))
++			return
++		}
+ 		uploadErrorResponse(ctx, w, err)
+ 		return
+ 	}
+@@ -337,7 +342,10 @@
+ 		return nil, fmt.Errorf("failed to start transaction: %w", err)
+ 	}
+ 	defer tx.RollbackIfNotCommitted()
+-	job := metadata.NewJob(r.server.metaRepo, r.project.ID, r.job.JobReference.JobId, r.job.ToJob(), nil, nil)
++	content := r.job.ToJob()
++	content.Status = &bigqueryv2.JobStatus{State: "PENDING"}
++	content.Statistics = &bigqueryv2.JobStatistics{CreationTime: time.Now().UnixMilli()}
++	job := metadata.NewJob(r.server.metaRepo, r.project.ID, r.job.JobReference.JobId, content, nil, nil)
+ 	if err := r.project.AddJob(ctx, tx.Tx(), job); err != nil {
+ 		return nil, fmt.Errorf("failed to add job: %w", err)
+ 	}
+@@ -374,25 +382,23 @@
+ 		errorResponse(ctx, w, errNotFound(fmt.Sprintf("upload job %s is not found", jobID)))
+ 		return
+ 	}
+-	if err := h.Handle(ctx, &uploadContentRequest{
+-		server:  server,
+-		project: project,
+-		job:     job,
+-		reader:  r.Body,
+-	}); err != nil {
+-		uploadErrorResponse(ctx, w, err)
+-		return
+-	}
+-	content := job.Content()
+-	content.Status = &bigqueryv2.JobStatus{State: "DONE"}
+-	encodeResponse(ctx, w, content)
++	contentRequest := &uploadContentRequest{server: server, project: projectFromContext(ctx), job: job, reader: r.Body}
++	if err := h.Handle(ctx, contentRequest); err != nil {
++		if saveErr := failLoad(ctx, server, job, contentRequest.inputBytes, contentRequest.started, err); saveErr != nil {
++			errorResponse(ctx, w, errInternalError(saveErr.Error()))
++			return
++		}
++	}
++	encodeResponse(ctx, w, job.Content())
+ }
+ 
+ type uploadContentRequest struct {
+-	server  *Server
+-	project *metadata.Project
+-	job     *metadata.Job
+-	reader  io.Reader
++	started    int64
++	inputBytes int64
++	server     *Server
++	project    *metadata.Project
++	job        *metadata.Job
++	reader     io.Reader
+ }
+ 
+ func (h *uploadContentHandler) getCandidateName(col string, columnNames []string) string {
+@@ -445,7 +451,9 @@
+ }
+ 
+ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
++	r.started = time.Now().UnixMilli()
+ 	raw, readErr := io.ReadAll(io.LimitReader(r.reader, uploadLimit+1))
++	r.inputBytes = int64(len(raw))
+ 	if readErr != nil || len(raw) > uploadLimit {
+ 		return errInvalid("load exceeds upload byte limit")
+ 	}
+@@ -591,12 +599,28 @@
+ 			}
+ 		}
+ 	}
++	outputBytes := int64(0)
++	for _, row := range data {
++		for _, value := range row {
++			if value != nil {
++				outputBytes += int64(len(fmt.Sprint(value)))
++			}
++		}
++	}
+ 	if err := r.server.contentRepo.AddTableData(ctx, tx, tableRef.ProjectId, tableRef.DatasetId, tableDef); err != nil {
++		return errInvalid(err.Error())
++	}
++	content := loadContent(r.job, int64(len(raw)), int64(len(data)), outputBytes, r.started, nil)
++	if err := tx.MetadataRepoMode(); err != nil {
++		return err
++	}
++	if err := r.job.StoreLoadContent(ctx, tx.Tx(), content); err != nil {
+ 		return err
+ 	}
+ 	if err := tx.Commit(); err != nil {
+ 		return err
+ 	}
++	r.job.PublishLoadContent(content)
+ 	return nil
+ }
+ 
+@@ -1097,7 +1121,9 @@
+ 
+ func (h *jobsGetHandler) Handle(ctx context.Context, r *jobsGetRequest) (*bigqueryv2.Job, error) {
+ 	content := *r.job.Content()
+-	content.Status = &bigqueryv2.JobStatus{State: "DONE"}
++	if content.Configuration == nil || content.Configuration.Load == nil {
++		content.Status = &bigqueryv2.JobStatus{State: "DONE"}
++	}
+ 	return &content, nil
+ }
+ 
+--- /dev/null
++++ b/server/load_job.go
+@@ -0,0 +1,62 @@
++package server
++
++import (
++	"context"
++	"errors"
++	"github.com/goccy/bigquery-emulator/internal/metadata"
++	bigqueryv2 "google.golang.org/api/bigquery/v2"
++	"time"
++)
++
++func loadContent(job *metadata.Job, size int64, rows int64, outputBytes int64, started int64, cause error) *bigqueryv2.Job {
++	content := *job.Content()
++	now := time.Now().UnixMilli()
++	created := now
++	if content.Statistics != nil && content.Statistics.CreationTime != 0 {
++		created = content.Statistics.CreationTime
++	}
++	content.Status = &bigqueryv2.JobStatus{State: "DONE"}
++	bad := int64(0)
++	if cause != nil {
++		rows, outputBytes = 0, 0
++		reason := "invalid"
++		var serverErr *ServerError
++		if errors.As(cause, &serverErr) {
++			reason = string(serverErr.Reason)
++		}
++		var recordErr *csvRecordError
++		if errors.As(cause, &recordErr) {
++			bad = 1
++		}
++		content.Status.ErrorResult = &bigqueryv2.ErrorProto{Reason: reason, Message: cause.Error()}
++		content.Status.Errors = []*bigqueryv2.ErrorProto{content.Status.ErrorResult}
++	}
++	content.Statistics = &bigqueryv2.JobStatistics{CreationTime: created, StartTime: started, EndTime: now,
++		Load: &bigqueryv2.JobStatistics3{InputFileBytes: size, InputFiles: 1, OutputRows: rows, OutputBytes: outputBytes,
++			BadRecords: bad, ForceSendFields: []string{"InputFileBytes", "InputFiles", "OutputRows", "OutputBytes", "BadRecords"}}}
++	return &content
++}
++
++func failLoad(ctx context.Context, server *Server, job *metadata.Job, size int64, started int64, cause error) error {
++	content := loadContent(job, size, 0, 0, started, cause)
++	conn, err := server.connMgr.Connection(ctx, job.ProjectID, "")
++	if err != nil {
++		return err
++	}
++	tx, err := conn.Begin(ctx)
++	if err != nil {
++		return err
++	}
++	defer tx.RollbackIfNotCommitted()
++	if err := tx.MetadataRepoMode(); err != nil {
++		return err
++	}
++	if err := job.StoreLoadContent(ctx, tx.Tx(), content); err != nil {
++		return err
++	}
++	if err := tx.Commit(); err != nil {
++		return err
++	}
++	job.PublishLoadContent(content)
++	return nil
++}
+--- /dev/null
++++ b/server/load_job_test.go
+@@ -0,0 +1,89 @@
++package server
++
++import (
++	"encoding/json"
++	"github.com/goccy/bigquery-emulator/internal/metadata"
++	bigqueryv2 "google.golang.org/api/bigquery/v2"
++	"testing"
++	"time"
++)
++
++func TestLoadTerminalMetadataRecordsActualStart(t *testing.T) {
++	created := time.Now().Add(-time.Second).UnixMilli()
++	started := time.Now().Add(-time.Millisecond).UnixMilli()
++	job := metadata.NewJob(nil, "test", "load", &bigqueryv2.Job{Status: &bigqueryv2.JobStatus{State: "PENDING"}, Statistics: &bigqueryv2.JobStatistics{CreationTime: created}}, nil, nil)
++	for _, failure := range []bool{false, true} {
++		var cause error
++		if failure {
++			cause = &csvRecordError{errInvalid("literal bad numeric control")}
++		}
++		content := loadContent(job, 123, 2, 17, started, cause)
++		if content.Status.State != "DONE" || content.Statistics.CreationTime != created || content.Statistics.StartTime != started || content.Statistics.EndTime < started {
++			t.Fatalf("incorrect terminal times: %+v", content)
++		}
++		stats := content.Statistics.Load
++		if stats.InputFileBytes != 123 || stats.InputFiles != 1 {
++			t.Fatalf("input accounting: %+v", stats)
++		}
++		if failure {
++			if stats.OutputRows != 0 || stats.OutputBytes != 0 || stats.BadRecords != 1 || content.Status.ErrorResult == nil {
++				t.Fatalf("failed load reported success: %+v", content)
++			}
++		} else {
++			if stats.OutputRows != 2 || stats.OutputBytes != 17 || stats.BadRecords != 0 || content.Status.ErrorResult != nil {
++				t.Fatalf("successful load metadata: %+v", content)
++			}
++		}
++		raw, err := json.Marshal(content)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var encoded map[string]interface{}
++		if err = json.Unmarshal(raw, &encoded); err != nil {
++			t.Fatal(err)
++		}
++		load := encoded["statistics"].(map[string]interface{})["load"].(map[string]interface{})
++		if _, ok := load["badRecords"]; !ok {
++			t.Fatal("zero badRecords omitted")
++		}
++	}
++	if job.Content().Status.State != "PENDING" || job.Content().Statistics.StartTime != 0 {
++		t.Fatal("terminal snapshot mutated pending job before commit")
++	}
++}
++
++func TestReloadedLoadRetainsZeroStatistics(t *testing.T) {
++	job := metadata.NewJob(nil, "test", "zero", &bigqueryv2.Job{Configuration: &bigqueryv2.JobConfiguration{Load: &bigqueryv2.JobConfigurationLoad{}}, Statistics: &bigqueryv2.JobStatistics{CreationTime: time.Now().UnixMilli()}}, nil, nil)
++	terminal := loadContent(job, 0, 0, 0, time.Now().UnixMilli(), nil)
++	raw, err := json.Marshal(terminal)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var decoded bigqueryv2.Job
++	if err = json.Unmarshal(raw, &decoded); err != nil {
++		t.Fatal(err)
++	}
++	reloaded := metadata.NewJob(nil, "test", "zero", &decoded, nil, nil)
++	raw, err = json.Marshal(reloaded.Content())
++	if err != nil {
++		t.Fatal(err)
++	}
++	var wire map[string]interface{}
++	if err = json.Unmarshal(raw, &wire); err != nil {
++		t.Fatal(err)
++	}
++	stats := wire["statistics"].(map[string]interface{})["load"].(map[string]interface{})
++	for _, key := range []string{"inputFileBytes", "inputFiles", "outputRows", "outputBytes", "badRecords"} {
++		if _, ok := stats[key]; !ok {
++			t.Fatalf("reload omitted %s: %s", key, raw)
++		}
++	}
++}
++
++func TestLoadNonRecordErrorDoesNotInventBadRows(t *testing.T) {
++	job := metadata.NewJob(nil, "test", "missing", &bigqueryv2.Job{Configuration: &bigqueryv2.JobConfiguration{Load: &bigqueryv2.JobConfigurationLoad{}}}, nil, nil)
++	content := loadContent(job, 17, 0, 0, time.Now().UnixMilli(), errNotFound("missing dataset"))
++	if content.Status.ErrorResult.Reason != "notFound" || content.Statistics.Load.BadRecords != 0 || content.Statistics.Load.OutputRows != 0 {
++		t.Fatalf("invented load results: %+v", content)
++	}
++}

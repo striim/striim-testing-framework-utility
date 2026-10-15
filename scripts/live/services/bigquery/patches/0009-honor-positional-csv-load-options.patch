@@ -1,0 +1,306 @@
+--- a/server/handler.go
++++ b/server/handler.go
+@@ -445,6 +445,11 @@
+ }
+ 
+ func (h *uploadContentHandler) Handle(ctx context.Context, r *uploadContentRequest) error {
++	raw, readErr := io.ReadAll(io.LimitReader(r.reader, uploadLimit+1))
++	if readErr != nil || len(raw) > uploadLimit {
++		return errInvalid("load exceeds upload byte limit")
++	}
++	r.reader = bytes.NewReader(raw)
+ 	load := r.job.Content().Configuration.Load
+ 	tableRef := load.DestinationTable
+ 	if tableRef == nil {
+@@ -463,11 +468,7 @@
+ 	// before the destination table is created.
+ 	var csvRecords [][]string
+ 	if load.SourceFormat == "CSV" {
+-		reader, err := newLoadCSVReader(r.reader, load.FieldDelimiter)
+-		if err != nil {
+-			return err
+-		}
+-		records, err := reader.ReadAll()
++		records, err := loadCSV(raw, load)
+ 		if err != nil {
+ 			return fmt.Errorf("failed to read csv: %w", err)
+ 		}
+@@ -502,58 +503,15 @@
+ 	if err != nil {
+ 		return err
+ 	}
+-	columnToType := map[string]types.Type{}
+-	for _, field := range tableContent.Schema.Fields {
+-		columnToType[field.Name] = types.Type(field.Type)
+-	}
+ 
+ 	sourceFormat := load.SourceFormat
+ 	columns := []*types.Column{}
+ 	data := types.Data{}
+ 	switch sourceFormat {
+ 	case "CSV":
+-		records := csvRecords
+-		if len(records) == 0 {
+-			return fmt.Errorf("failed to find csv header")
+-		}
+-		if len(records) == 1 {
+-			return nil
+-		}
+-		header := records[0]
+-		var ignoreHeader bool
+-		for _, col := range header {
+-			if _, exists := columnToType[col]; !exists {
+-				ignoreHeader = true
+-				break
+-			}
+-			columns = append(columns, &types.Column{
+-				Name: col,
+-				Type: columnToType[col],
+-			})
+-		}
+-		if ignoreHeader {
+-			columns = []*types.Column{}
+-			for _, field := range tableContent.Schema.Fields {
+-				columns = append(columns, &types.Column{
+-					Name: field.Name,
+-					Type: types.Type(field.Type),
+-				})
+-			}
+-		}
+-		for _, record := range records[1:] {
+-			rowData := map[string]interface{}{}
+-			if len(record) != len(columns) {
+-				return fmt.Errorf("invalid column number: found broken row data: %v", record)
+-			}
+-			for i := 0; i < len(record); i++ {
+-				colData := record[i]
+-				if colData == "" {
+-					rowData[columns[i].Name] = nil
+-				} else {
+-					rowData[columns[i].Name] = colData
+-				}
+-			}
+-			data = append(data, rowData)
++		columns, data, err = csvData(csvRecords, load, tableContent.Schema.Fields)
++		if err != nil {
++			return err
+ 		}
+ 	case "PARQUET":
+ 		b, err := io.ReadAll(r.reader)
+--- a/server/load_csv.go
++++ b/server/load_csv.go
+@@ -1,12 +1,42 @@
+ package server
+ 
+ import (
++	"bytes"
+ 	"encoding/csv"
+ 	"fmt"
++	"github.com/goccy/bigquery-emulator/types"
++	bigqueryv2 "google.golang.org/api/bigquery/v2"
+ 	"io"
++	"regexp"
++	"strconv"
++	"strings"
++	"unicode/utf8"
+ )
+ 
++const uploadLimit = 16 << 20
++
+ // Delimiter helper backport from upstream PR #491.
++type csvRecordError struct{ cause error }
++
++func (e *csvRecordError) Error() string { return e.cause.Error() }
++func (e *csvRecordError) Unwrap() error { return e.cause }
++
++var csvNumericLiteral = regexp.MustCompile(`^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$`)
++
++func validateCSVNumber(value, typ string) error {
++	switch typ {
++	case "INTEGER", "INT64":
++		if _, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err != nil {
++			return &csvRecordError{errInvalid("invalid INT64 CSV value")}
++		}
++	case "NUMERIC":
++		if !csvNumericLiteral.MatchString(strings.TrimSpace(value)) {
++			return &csvRecordError{errInvalid("invalid NUMERIC CSV value")}
++		}
++	}
++	return nil
++}
++
+ func newLoadCSVReader(reader io.Reader, fieldDelimiter string) (*csv.Reader, error) {
+ 	csvReader := csv.NewReader(reader)
+ 	csvReader.FieldsPerRecord = -1
+@@ -20,3 +50,80 @@
+ 	csvReader.Comma = delimiters[0]
+ 	return csvReader, nil
+ }
++
++func loadCSV(raw []byte, load *bigqueryv2.JobConfigurationLoad) ([][]string, error) {
++	if !utf8.Valid(raw) || (load.Encoding != "" && load.Encoding != "UTF-8") {
++		return nil, errInvalid("only UTF-8 CSV is qualified")
++	}
++	if load.Quote != nil && *load.Quote != "\"" {
++		return nil, errInvalid("only double-quoted CSV is qualified")
++	}
++	if load.AllowJaggedRows || load.IgnoreUnknownValues || load.MaxBadRecords != 0 || load.SkipLeadingRows < 0 {
++		return nil, errInvalid("CSV requires exact row widths, zero bad rows and non-negative skipLeadingRows")
++	}
++	if !load.PreserveAsciiControlCharacters {
++		for _, b := range raw {
++			if b < 32 && b != '\n' && b != '\r' && b != '\t' {
++				return nil, errInvalid("ASCII controls require preserveAsciiControlCharacters")
++			}
++		}
++	}
++	reader, err := newLoadCSVReader(bytes.NewReader(raw), load.FieldDelimiter)
++	if err != nil {
++		return nil, err
++	}
++	records, err := reader.ReadAll()
++	if err != nil {
++		return nil, &csvRecordError{errInvalid(fmt.Sprintf("malformed CSV: %s", err))}
++	}
++	if !load.AllowQuotedNewlines {
++		for _, record := range records {
++			for _, value := range record {
++				if strings.ContainsAny(value, "\r\n") {
++					return nil, errInvalid("quoted newline requires allowQuotedNewlines")
++				}
++			}
++		}
++	}
++	return records, nil
++}
++
++func csvData(records [][]string, load *bigqueryv2.JobConfigurationLoad, fields []*bigqueryv2.TableFieldSchema) ([]*types.Column, types.Data, error) {
++	if load.Schema != nil {
++		fields = load.Schema.Fields // explicit positional schema, never inferred from data values
++	}
++	columns := make([]*types.Column, 0, len(fields))
++	for _, f := range fields {
++		if f.Mode == "REPEATED" || len(f.Fields) != 0 {
++			return nil, nil, errInvalid("CSV nested/repeated fields are unqualified")
++		}
++		columns = append(columns, &types.Column{Name: f.Name, Type: types.Type(f.Type)})
++	}
++	start := load.SkipLeadingRows
++	if load.Autodetect && start == 0 {
++		start = 1 // retain upstream's header-based autodetect; explicit schemas are positional
++	}
++	if start > int64(len(records)) {
++		start = int64(len(records))
++	}
++	data := types.Data{}
++	for _, record := range records[start:] {
++		if len(record) != len(columns) {
++			return nil, nil, &csvRecordError{errInvalid("CSV row width differs from positional schema")}
++		}
++		row := map[string]interface{}{}
++		for i, value := range record {
++			typ := strings.ToUpper(fields[i].Type)
++			if value == load.NullMarker && (value != "" || (typ != "STRING" && typ != "BYTES")) {
++				row[columns[i].Name] = nil
++			} else {
++				if err := validateCSVNumber(value, typ); err != nil {
++					return nil, nil, err
++				}
++				row[columns[i].Name] = value
++			}
++		}
++		data = append(data, row)
++	}
++	return columns, data, nil
++}
+--- /dev/null
++++ b/server/load_csv_test.go
+@@ -0,0 +1,88 @@
++package server
++
++import (
++	bigqueryv2 "google.golang.org/api/bigquery/v2"
++	"reflect"
++	"testing"
++)
++
++func TestLoadCSVLiteralContract(t *testing.T) {
++	fields := []*bigqueryv2.TableFieldSchema{{Name: "id", Type: "INTEGER"}, {Name: "msg", Type: "STRING"}}
++	cases := []struct {
++		name, raw string
++		skip      int64
++		want      []map[string]interface{}
++	}{
++		{"zero", "", 0, []map[string]interface{}{}},
++		{"one", "1|first\n", 0, []map[string]interface{}{{"id": "1", "msg": "first"}}},
++		{"two", "1|first\n2|second\n", 0, []map[string]interface{}{{"id": "1", "msg": "first"}, {"id": "2", "msg": "second"}}},
++		{"explicit-skip", "id|msg\n1|first\n", 1, []map[string]interface{}{{"id": "1", "msg": "first"}}},
++		{"null-empty", "1|NULL\n2|\n", 0, []map[string]interface{}{{"id": "1", "msg": nil}, {"id": "2", "msg": ""}}},
++		{"quoted-pipe-unicode", "1|\"a|β\"\n", 0, []map[string]interface{}{{"id": "1", "msg": "a|β"}}},
++		{"quoted-newline", "1|\"line1\nline2\"\n", 0, []map[string]interface{}{{"id": "1", "msg": "line1\nline2"}}},
++		{"quoted-quote", "1|\"He said \"\"hi\"\"\"\n", 0, []map[string]interface{}{{"id": "1", "msg": "He said \"hi\""}}},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			load := &bigqueryv2.JobConfigurationLoad{Schema: &bigqueryv2.TableSchema{Fields: fields}, FieldDelimiter: "|", NullMarker: "NULL", AllowQuotedNewlines: true, SkipLeadingRows: tc.skip}
++			records, err := loadCSV([]byte(tc.raw), load)
++			if err != nil {
++				t.Fatal(err)
++			}
++			columns, rows, err := csvData(records, load, fields)
++			if err != nil {
++				t.Fatal(err)
++			}
++			got := []map[string]interface{}{}
++			for _, row := range rows {
++				got = append(got, row)
++			}
++			if len(columns) != 2 || !reflect.DeepEqual(got, tc.want) {
++				t.Fatalf("columns=%v rows=%v want=%v", columns, got, tc.want)
++			}
++		})
++	}
++}
++
++func TestLoadCSVRejectsUnqualifiedInput(t *testing.T) {
++	cases := []struct {
++		name, raw string
++		modify    func(*bigqueryv2.JobConfigurationLoad)
++	}{
++		{"invalid-utf8", string([]byte{255}), func(*bigqueryv2.JobConfigurationLoad) {}},
++		{"encoding", "1|x\n", func(l *bigqueryv2.JobConfigurationLoad) { l.Encoding = "UTF-16LE" }},
++		{"quote", "1|x\n", func(l *bigqueryv2.JobConfigurationLoad) { s := "'"; l.Quote = &s }},
++		{"delimiter", "1|x\n", func(l *bigqueryv2.JobConfigurationLoad) { l.FieldDelimiter = "||" }},
++		{"quoted-newline", "1|\"x\ny\"\n", func(l *bigqueryv2.JobConfigurationLoad) { l.AllowQuotedNewlines = false }},
++		{"malformed-quote", "1|\"unfinished\n", func(*bigqueryv2.JobConfigurationLoad) {}},
++		{"jagged-option", "1|x\n", func(l *bigqueryv2.JobConfigurationLoad) { l.AllowJaggedRows = true }},
++		{"bad-record-option", "1|x\n", func(l *bigqueryv2.JobConfigurationLoad) { l.MaxBadRecords = 1 }},
++		{"negative-skip", "1|x\n", func(l *bigqueryv2.JobConfigurationLoad) { l.SkipLeadingRows = -1 }},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			l := &bigqueryv2.JobConfigurationLoad{FieldDelimiter: "|", AllowQuotedNewlines: true}
++			tc.modify(l)
++			if _, err := loadCSV([]byte(tc.raw), l); err == nil {
++				t.Fatal("unsupported CSV accepted")
++			}
++		})
++	}
++	fields := []*bigqueryv2.TableFieldSchema{{Name: "id", Type: "INTEGER"}, {Name: "msg", Type: "STRING"}}
++	if _, _, err := csvData([][]string{{"1"}}, &bigqueryv2.JobConfigurationLoad{}, fields); err == nil {
++		t.Fatal("jagged row accepted")
++	}
++}
++
++func TestLoadCSVDelimiters(t *testing.T) {
++	for _, delimiter := range []string{",", "|", "\t"} {
++		t.Run(delimiter, func(t *testing.T) {
++			load := &bigqueryv2.JobConfigurationLoad{FieldDelimiter: delimiter}
++			got, err := loadCSV([]byte("1"+delimiter+"first\n2"+delimiter+"second\n"), load)
++			want := [][]string{{"1", "first"}, {"2", "second"}}
++			if err != nil || !reflect.DeepEqual(got, want) {
++				t.Fatalf("delimiter %q got=%v err=%v", delimiter, got, err)
++			}
++		})
++	}
++}

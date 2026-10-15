@@ -4,14 +4,15 @@ Build a local BigQuery REST emulator with a dedicated fake OAuth endpoint. This 
 community emulator, built from the exact public source and dependency images in
 `upstream.lock`. The framework image has its own version; it is not the upstream release image.
 
-The current source baseline supports legacy `insertAll`. CSV batch compatibility is
-not qualified by this baseline. Storage Write, cloud IAM, billing, performance and
+The current source baseline supports legacy `insertAll`. The CSV API candidate has
+focused native coverage, but general batch-writer compatibility remains unqualified
+because of the Java client boundary failure described below. Storage Write, cloud IAM, billing, performance and
 recovery equivalence are outside this service's contract. BigQueryWriter batch loads
 use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
 2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.5 .`.
+   `docker buildx build --load -t slt-bigquery:0.8.1-framework.6 .`.
    To isolate build cache, select your own docker-container builder with `--builder`.
    Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
    rebuilding it. Without that override, Compose builds the source recipe with a
@@ -55,8 +56,8 @@ reuse one immutable builtin definition set, including its aliases, namespaces an
 table-valued functions, through the existing non-owning catalog APIs.
 The analyzer configuration is unchanged. The insertAll decoder preserves JSON
 numeric literals without intermediate floating-point rounding, including signed
-INT64 limits. CSV load semantics are not qualified by this series. Architecture
-and lane qualification remain recorded separately in run evidence.
+INT64 limits. Separate CSV and resumable-upload patches are described below.
+Architecture and lane qualification remain recorded separately in run evidence.
 
 The source recipe builds Linux amd64 and arm64 images. Native amd64 API/query
 health, independent integer/text readback, port remapping, two-stack isolation and
@@ -109,3 +110,48 @@ This coverage does not establish streaming insert-ID deduplication, crash replay
 CDC completion, Storage Write, writer TLS deployment, cloud performance or cloud
 service equivalence. Additional writer scalar types require their own fixtures;
 the native all-types reader control is separate from writer type qualification.
+
+## Batch API candidate and open qualification gate
+
+The pinned feasible upstream Go suite passes with the CSV/upload patches. Its
+optional Docker-based multi-client conformance suite is skipped when Docker is
+unavailable inside the build. Native API controls cover zero/one/two headerless
+records, explicit positional schemas, comma/pipe/tab delimiters, skipLeadingRows,
+custom NULL markers, empty STRING/BYTES, UTF-8, double quote and quoted newlines.
+Malformed numeric/jagged rows and unsupported quote/encoding settings fail while
+preserving existing target rows, including failed WRITE_TRUNCATE loads.
+
+Terminal success/failure and millisecond creation/start/end times persist;
+upload responses and jobs.get agree, including zero counters after metadata reload.
+`inputFileBytes` counts received file bytes. `outputRows` counts inserted records.
+`outputBytes` sums UTF-8 bytes of accepted decoded non-null field representations,
+without CSV syntax or separators. This is local accounting, without cloud billing
+or storage-size equivalence. Failed loads report zero output rows/bytes. Bad-record
+counts identify a known CSV record rejection; unrelated configuration/backend
+failures do not fabricate a bad record.
+
+Resumable buffers are limited to 16 MiB per upload, 32 MiB in aggregate, 32 active
+sessions and 256 retained session entries. A later initiation sweeps entries idle
+for ten minutes. Partial/status requests, byte-identical replay, out-of-order
+rejection and final replay have native HTTP controls. Finalization applies one
+load within the live session; replay tracking is bounded and in memory.
+Restart/recovery and larger uploads are outside this candidate's contract.
+
+Location follows the request origin, including remapped ports. Forwarded origin
+is ignored unless the operator explicitly sets
+`BIGQUERY_EMULATOR_TRUST_FORWARDED_ORIGIN=true` behind a trusted proxy. Compose
+leaves this off. The unmodified Java REST client 2.59.0 follows both direct HTTP
+and trusted-proxy TLS Locations; the TLS control uses a process-specific truststore
+and normal hostname verification. It does not qualify a Striim TLS deployment.
+
+The forced 256-KiB Java control loads a 300-KiB file correctly, with populated
+LoadStatistics. An exact 512-KiB file fails: the SDK sends only unknown-total data,
+then its zero-length close returns locally without a final HTTP request. The job
+remains incomplete. Both direct-buffer and Files.copy controls reproduce this.
+A separate diagnostic final request loads the row once and tolerates replay; that
+manual step does not qualify the unmodified client. The pinned public
+[Java RPC implementation](https://github.com/googleapis/java-bigquery/blob/v2.59.0/google-cloud-bigquery/src/main/java/com/google/cloud/bigquery/spi/v2/HttpBigQueryRpc.java#L1693)
+contains that zero-length return. Changing the emulator cannot supply a missing
+client request. General batch qualification, actual batch-writer samples and the
+final two-architecture image qualification remain pending this gate. No product
+code, SDK jar or writer workaround is included.

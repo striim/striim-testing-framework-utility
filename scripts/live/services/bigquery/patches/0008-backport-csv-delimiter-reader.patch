@@ -1,0 +1,66 @@
+--- a/server/handler.go
++++ b/server/handler.go
+@@ -463,7 +463,11 @@
+ 	// before the destination table is created.
+ 	var csvRecords [][]string
+ 	if load.SourceFormat == "CSV" {
+-		records, err := csv.NewReader(r.reader).ReadAll()
++		reader, err := newLoadCSVReader(r.reader, load.FieldDelimiter)
++		if err != nil {
++			return err
++		}
++		records, err := reader.ReadAll()
+ 		if err != nil {
+ 			return fmt.Errorf("failed to read csv: %w", err)
+ 		}
+--- /dev/null
++++ b/server/load_csv.go
+@@ -0,0 +1,22 @@
++package server
++
++import (
++	"encoding/csv"
++	"fmt"
++	"io"
++)
++
++// Delimiter helper backport from upstream PR #491.
++func newLoadCSVReader(reader io.Reader, fieldDelimiter string) (*csv.Reader, error) {
++	csvReader := csv.NewReader(reader)
++	csvReader.FieldsPerRecord = -1
++	if fieldDelimiter == "" {
++		return csvReader, nil
++	}
++	delimiters := []rune(fieldDelimiter)
++	if len(delimiters) != 1 {
++		return nil, fmt.Errorf("fieldDelimiter must be a single character")
++	}
++	csvReader.Comma = delimiters[0]
++	return csvReader, nil
++}
+--- /dev/null
++++ b/server/load_delimiter_test.go
+@@ -0,0 +1,23 @@
++package server
++
++import (
++	"reflect"
++	"strings"
++	"testing"
++)
++
++func TestLoadDelimiterReader(t *testing.T) {
++	for _, delimiter := range []string{",", "|", "\t"} {
++		r, err := newLoadCSVReader(strings.NewReader("1"+delimiter+"first\n2"+delimiter+"second\n"), delimiter)
++		if err != nil {
++			t.Fatal(err)
++		}
++		rows, err := r.ReadAll()
++		if err != nil || !reflect.DeepEqual(rows, [][]string{{"1", "first"}, {"2", "second"}}) {
++			t.Fatalf("delimiter %q rows=%v err=%v", delimiter, rows, err)
++		}
++	}
++	if _, err := newLoadCSVReader(strings.NewReader("1||first\n"), "||"); err == nil {
++		t.Fatal("invalid delimiter accepted")
++	}
++}
