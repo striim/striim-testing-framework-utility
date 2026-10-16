@@ -89,6 +89,7 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 | `SLT_STRIIM_JAVA_SYSTEM_PROPERTIES` | shell, `.env`, machine |  | Extra Java system properties for the nodes, for example `-Djava.awt.headless=true`. |
 | `SLT_STRIIM_DEPS_MANIFEST` | shell | unset | A manifest of the Striim installers you already have, to skip the 6.3 GB download ([RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md) has the format). |
 | `SLT_STRIIM_MIN_FREE_GB` | shell | `35` | Free Docker disk, in GB, a first image build requires. |
+| `SLT_TERADATA_JDBC` | shell, `.env`, machine | unset | `1`: fetch Teradata's JDBC driver from Maven Central and build it into the Striim image, for the `teradata` service. Teradata's licence for the driver applies ([SERVICES.md](SERVICES.md), Teradata). |
 | `SLT_STRIIM_HTTP_HOST_PORT` | shell, `.env` | `9080` | Host port of the console and REST API. |
 | `SLT_STRIIM_HTTPS_HOST_PORT` | shell, `.env` | `9081` | Host port of HTTPS. |
 | `SLT_STRIIM_JMX_HOST_PORT` | shell, `.env` | `7071` | Host port of the primary's JMX Prometheus exporter. |

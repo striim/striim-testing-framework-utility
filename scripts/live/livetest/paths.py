@@ -96,7 +96,7 @@ _INT_SERVICE_KEYS = (
 # Service knobs no service.yaml names: SLT_PRE_UP=0 turns off every service's pre_up hook
 # (livetest.prestart, inttest.services.run_pre_up).
 _SERVICE_EXTRA_KEYS = (
-    "SLT_PRE_UP", "SLT_STACK_PREFIX", "INT_STACK_PREFIX",
+    "SLT_PRE_UP", "SLT_STACK_PREFIX", "INT_STACK_PREFIX", "SLT_TERADATA_JDBC",
     "SLT_STRIIM_PRIMARY_CPUS", "SLT_STRIIM_NODE_CPUS", "SLT_STRIIM_MEM_MAX",
     "SLT_STRIIM_MEM_LIMIT", "SLT_STRIIM_JAVA_SYSTEM_PROPERTIES",
     "SLT_STRIIM_HTTP_HOST_PORT", "SLT_STRIIM_HTTPS_HOST_PORT",
