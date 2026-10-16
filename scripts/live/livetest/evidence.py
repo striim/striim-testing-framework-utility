@@ -871,16 +871,20 @@ def _diff_source_bound(c: dict, record: dict, bindings, owned) -> bool:
         return False
     if "error" in c or (c.get("actual") or {}).get("owned") is not True:
         return True
-    return any(isinstance(r, dict) and r.get("kind") == "pg-table" and r.get("db") == route
-               and r.get("name") == table.lower() and r.get("state") in _CREATED_STATES for r in (owned or []))
+    kind = "bigquery-table" if route == "bigquery-target" else "pg-table"
+    name = table if route == "bigquery-target" else table.lower()
+    return any(isinstance(r, dict) and r.get("kind") == kind and r.get("db") == route
+               and r.get("name") == name and r.get("state") in _CREATED_STATES for r in (owned or []))
 
 
 @functools.lru_cache(maxsize=1)
 def _diff_source():
     """``<route>:<schema.table>``, the source witness ``exactdata.assert_exact_diff`` writes."""
     from livetest import canon
-    routes = "|".join(re.escape(r) for r in canon.DB_ROUTES)
-    return re.compile(rf"^(?:{routes}):[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+    pg_routes = "|".join(re.escape(r) for r in canon.DB_ROUTES if r != "bigquery-target")
+    ident = r"[A-Za-z_][A-Za-z0-9_]*"
+    project = r"[a-z][a-z0-9-]{4,61}[a-z0-9]"
+    return re.compile(rf"^(?:(?:{pg_routes}):{ident}\.{ident}|bigquery-target:{project}\.{ident}\.{ident})$")
 
 
 _DECLARATION_KEYS = {"columns", "ignore", "keys", "order", "order_by", "profile"}

@@ -1,0 +1,1 @@
+CREATE TABLE ${TID}src (id TEXT PRIMARY KEY, msg TEXT);

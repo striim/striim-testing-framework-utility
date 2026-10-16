@@ -163,6 +163,10 @@ SECTIONS = (
 )
 # Service settings no service.yaml field explains.
 SERVICE_EXTRAS = {
+    "SLT_BIGQUERY_WRITER_ENDPOINT": (None, "Local IPv4 HTTP endpoint for the writer's documented PSC property."),
+    "SLT_BIGQUERY_TOKEN_URI": (None, "Dedicated local fake OAuth endpoint ending in `/token`."),
+    "SLT_BIGQUERY_IMAGE": (None, "Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence."),
+    "SLT_BIGQUERY_TOKEN_IMAGE": (None, "Override the dedicated fake token server image; use a pinned digest."),
     "SLT_MSSQL_BOOTSTRAP_PASSWORD": ("`QAtestuser1`",
                                      "The strong `sa` password the container boots with; the setup then "
                                      "sets the test password."),
@@ -190,8 +194,10 @@ NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
-         "gcs": "GCS emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
+         "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
 FIELDS = {
+    "writer_endpoint": "the writer's local IPv4 HTTP PSC endpoint",
+    "token_uri": "the dedicated local fake OAuth /token URI",
     "host": "your own instance's host: set it to use that instead of the container",
     "port": "its port", "dbname": "the database", "database": "the database", "bucket": "the bucket",
     "admin_user": "the admin account, which makes the test accounts and schemas and cleans up",
@@ -313,7 +319,7 @@ def build() -> str:
     prefixes = {"PG": "postgres", "POSTGRES": "postgres", "ORA": "oracle", "ORACLE": "oracle",
                 "MSSQL": "mssql", "MYSQL": "mysql", "VERTICA": "vertica", "KAFKA": "kafka",
                 "SCHEMA": "kafka", "ZOOKEEPER": "kafka", "SPANNER": "spanner", "GCS": "gcs",
-                "TOKEN": "gcs", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
+                "TOKEN": "gcs", "BIGQUERY": "bigquery", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
     for name in sorted((allowed | set(SERVICE_EXTRAS)) - listed - set(paths.LICENCE_KEYS)):
         tier, _, rest = name.partition("_")
         service = prefixes.get(rest.split("_")[0])

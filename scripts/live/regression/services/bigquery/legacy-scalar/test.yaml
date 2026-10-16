@@ -1,0 +1,60 @@
+name: bigquery-legacy-scalar
+purpose: Legacy insertAll preserves null, empty text, delimiters and exact scalar values
+tql: app.tql
+topology: single
+requires:
+- postgres
+- bigquery
+timeout: 180
+tags:
+- bigquery
+- regression
+- legacy-streaming
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: bigquery-target
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+exact:
+  version: 1
+  max_rows: 10
+assert:
+  smoke: true
+  data:
+  - target: ${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt
+    target_db: bigquery-target
+    match: expected/rows.csv
+    exact:
+      columns:
+        id: integer
+        big_id: integer
+        amount: decimal:4
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source:
+      db: postgres-source
+      table: ${PG_SOURCE_SCHEMA}.${TID}src
+    target:
+      db: bigquery-target
+      table: ${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt
+  completion:
+    kind: source-count
+    source:
+      db: postgres-source
+      table: ${PG_SOURCE_SCHEMA}.${TID}src
+    target:
+      db: bigquery-target
+      table: ${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt
+  stability: 2s
+  deadlines:
+    readiness: 90s
+    completion: 120s
+  reset: owned

@@ -100,6 +100,24 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 
 To use your own database instead of the container the framework starts, set its host (the first row); the other settings default to the container's values, shown here. [SERVICES.md](SERVICES.md) has each service's accounts, tokens and routes.
 
+### BigQuery emulator (`bigquery`)
+
+| Setting | Where | Docker default | What it does |
+|---|---|---|---|
+| `SLT_BIGQUERY_WRITER_ENDPOINT` | shell, `.env`, machine |  | Your own instance: the writer's local IPv4 HTTP PSC endpoint. |
+| `SLT_BIGQUERY_TOKEN_URI` | shell, `.env`, machine |  | Your own instance: the dedicated local fake OAuth /token URI. |
+| `SLT_BIGQUERY_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
+| `SLT_BIGQUERY_PORT` | shell, `.env`, machine | `9050` | Your own instance: its port. |
+| `SLT_BIGQUERY_TOKEN_HOST_PORT` | shell, `.env` | `9051` | Your own instance: the fake OAuth token server's port. |
+| `SLT_BIGQUERY_PROJECT` | shell, `.env`, machine | `test-project` | Your own instance: the project id. |
+| `SLT_BIGQUERY_DATASET` | shell, `.env`, machine | `slt` | Your own instance: dataset. |
+| `SLT_BIGQUERY_REST_HOST_PORT` | shell, `.env` | `9050` | Host port the container publishes; change it when the port is in use. |
+| `SLT_BIGQUERY_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
+| `SLT_BIGQUERY_IMAGE` | shell, `.env`, machine |  | Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence. |
+| `SLT_BIGQUERY_MEM_LIMIT` | shell, `.env`, machine | `1g` | Memory limit of the container. |
+| `SLT_BIGQUERY_TOKEN_IMAGE` | shell, `.env`, machine | `python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1` | Override the dedicated fake token server image; use a pinned digest. |
+| `SLT_BIGQUERY_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
+
 ### GCS emulator (`gcs`)
 
 | Setting | Where | Docker default | What it does |

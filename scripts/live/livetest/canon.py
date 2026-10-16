@@ -35,7 +35,7 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 MAX_MAX_BYTES = 512 * 1024 * 1024
 SAMPLE_ROWS = 20
 SAMPLE_BYTES = 64 * 1024
-DB_ROUTES = ("postgres-source", "postgres-target")
+DB_ROUTES = ("postgres-source", "postgres-target", "bigquery-target")
 BINDING_TOKENS = ("TID", "TID_UPPER", "TID_ORACLE", "NS", "APP", "APP_BARE", "PG_SLOT", "OWNED_DIR",
                   "RUN_ID", "WORKER", "ATTEMPT")          # plus every SENTINEL_* token
 _SPEC_KEYS = {"columns", "ignore", "order", "order_by"}
@@ -205,12 +205,12 @@ def check_manifest(raw: dict, case_dir=None) -> dict:
         if kind == "data":
             route = spec.get("target_db", spec.get("db", "postgres-source"))
             if route not in DB_ROUTES:
-                raise CanonError("exact-route-unsupported", f"{where}: route {route!r} (C8.3: postgres only)")
+                raise CanonError("exact-route-unsupported", f"{where}: route {route!r} (supported exact database routes)")
         elif kind == "diff":
             for end in ("source", "target"):
                 route = spec.get(f"{end}_db", spec.get("db", "postgres-source"))
                 if route not in DB_ROUTES:
-                    raise CanonError("exact-route-unsupported", f"{where}: {end} route {route!r} (C8.3: postgres only)")
+                    raise CanonError("exact-route-unsupported", f"{where}: {end} route {route!r} (supported exact database routes)")
         elif spec.get("native"):
             raise CanonError("exact-route-unsupported", f"{where}: native-mode file reads are not exact routes")
         try:

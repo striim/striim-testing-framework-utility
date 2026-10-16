@@ -1,0 +1,24 @@
+name: bigquery-queue-invalid
+purpose: A queue capacity of one fails initialization with its property diagnostic
+tql: app.tql
+topology: single
+requires:
+- postgres
+- bigquery
+timeout: 180
+tags:
+- bigquery
+- regression
+- legacy-streaming
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: bigquery-target
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+expect_halt: true
+expect_halt_contains:
+- _h_maxTaskQueueSize

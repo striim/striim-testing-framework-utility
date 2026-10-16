@@ -498,3 +498,11 @@ project's `.env`, the framework clone's `.env`, the machine settings file
 ([SET-UP-YOUR-OWN-REPO.md](SET-UP-YOUR-OWN-REPO.md)), then the defaults in `service.yaml`. Port
 settings (`*_HOST_PORT`, `*_CLIENT_PORT`) are refused in the machine file, because they tell one
 checkout from another. Secrets in a settings file that no service declares are never passed on.
+
+
+The built-in [BigQuery service](../scripts/live/services/bigquery/README.md) is an
+example of `admins` plus idempotent `provision`: it verifies a dataset and query
+health, supplies the `bigquery-target` REST route, and keeps generated writer
+credentials separate from GCS/Spanner. It uses a user-supplied qualified emulator image
+and bounded row readers. Reuse the service rather than adding cloud credentials
+or a GCS staging dependency to a direct-upload BigQueryWriter test.

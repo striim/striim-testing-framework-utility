@@ -1,0 +1,37 @@
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery
+services:
+  slt-bigquery:
+    image: ${SLT_BIGQUERY_IMAGE:?Set SLT_BIGQUERY_IMAGE to a qualified local emulator image}
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery
+    cpus: ${SLT_BIGQUERY_CPUS:-1}
+    mem_limit: ${SLT_BIGQUERY_MEM_LIMIT:-1g}
+    command:
+      - --project=${SLT_BIGQUERY_PROJECT:-test-project}
+      - --dataset=${SLT_BIGQUERY_DATASET:-slt}
+    environment:
+      # Leave headroom for runtime stacks, mappings and the query engine within the 1 GiB cap.
+      GOMEMLIMIT: 640MiB
+      BIGQUERY_PROJECT: ${SLT_BIGQUERY_PROJECT:-test-project}
+      BIGQUERY_DATASET: ${SLT_BIGQUERY_DATASET:-slt}
+    ports:
+      - "${SLT_BIGQUERY_REST_HOST_PORT:-9050}:9050"
+    networks: [slt-bigquery-net]
+  slt-bigquery-token:
+    image: ${SLT_BIGQUERY_TOKEN_IMAGE:-python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1}
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery-token
+    cpus: 0.5
+    mem_limit: 128m
+    command: [python, /srv/faketoken.py]
+    volumes:
+      - ./faketoken.py:/srv/faketoken.py:ro
+    ports:
+      - "${SLT_BIGQUERY_TOKEN_HOST_PORT:-9051}:9051"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9051/token', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [slt-bigquery-net]
+networks:
+  slt-bigquery-net:
+    driver: bridge

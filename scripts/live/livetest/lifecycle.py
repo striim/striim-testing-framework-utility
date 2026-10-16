@@ -35,7 +35,7 @@ MODES = ("initial-load", "cdc")
 SINKS = ("db", "file")
 READINESS_KINDS = ("baseline-landed", "source-progress", "sentinel")
 COMPLETION_KINDS = ("source-count", "row-count", "file-lines", "sentinel")
-DB_ROUTES = ("postgres-source", "postgres-target")
+DB_ROUTES = ("postgres-source", "postgres-target", "bigquery-target")
 OWNED_DIR_PREFIX = "${OWNED_DIR}/"
 DEFAULT_STABILITY_S = 5.0
 DEFAULT_READINESS_S = 60.0
@@ -116,6 +116,10 @@ class LifecycleSpec:
 
     def uses_sentinel(self) -> bool:
         return self.readiness["kind"] == "sentinel" or self.completion["kind"] == "sentinel"
+
+    def uses_bigquery_cdc(self) -> bool:
+        return bool(self.mode == "cdc" and self.sentinel
+                    and self.sentinel["observe"]["db"] == "bigquery-target")
 
 
 def parse_duration(value, what: str, path) -> float:
@@ -242,6 +246,21 @@ def parse_spec(block, path, *, timeout=120) -> LifecycleSpec:
         if not isinstance(completion.get("path"), str):
             _err(path, "completion.path is required for kind file-lines")
         _positive_int(path, completion.get("lines"), "completion.lines")
+
+    # BigQuery sources remain unsupported; CDC completion requires both sentinel steps.
+    for section in (readiness, completion):
+        source = section.get("source")
+        if isinstance(source, dict) and source.get("db") == "bigquery-target":
+            _err(path, "BigQuery lifecycle source probes are unsupported; use Postgres")
+    sentinel_routes = block.get("sentinel") if isinstance(block.get("sentinel"), dict) else {}
+    observe = sentinel_routes.get("observe") if isinstance(sentinel_routes.get("observe"), dict) else {}
+    target_routes = [section.get("db") for section in (readiness, completion)]
+    target_routes += [(section.get("target") or {}).get("db") for section in (readiness, completion)
+                      if isinstance(section.get("target"), dict)]
+    target_routes += [sentinel_routes.get("db"), observe.get("db")]
+    if mode == "cdc" and "bigquery-target" in target_routes:
+        if rk != "sentinel" or ck != "sentinel" or sentinel_routes.get("db") != "postgres-source":
+            _err(path, "BigQuery CDC requires Postgres injection and sentinel readiness/completion")
 
     sentinel = block.get("sentinel")
     needed = rk == "sentinel" or ck == "sentinel"
@@ -705,12 +724,21 @@ def check_witness_refs(spec: LifecycleSpec, tokens: dict, owned) -> str | None:
     names = {}
     for what, ref in refs:
         rendered = _render(ref["table"], tokens)
-        m = _TABLE.match(rendered)
-        if not m:
-            return f"witness-unresolvable: {what} {rendered!r} does not render to schema.table"
-        name = f"{m.group(1)}.{m.group(2)}".lower()
+        if ref["db"] == "bigquery-target":
+            from livetest.bigqueryadmin import table_ref
+            try:
+                name = table_ref(rendered, tokens.get("BIGQUERY_PROJECT", ""), tokens.get("BIGQUERY_DATASET", ""))
+            except ValueError as exc:
+                return f"witness-unresolvable: {what}: {exc}"
+            kind = "bigquery-table"
+        else:
+            m = _TABLE.match(rendered)
+            if not m:
+                return f"witness-unresolvable: {what} {rendered!r} does not render to schema.table"
+            name = f"{m.group(1)}.{m.group(2)}".lower()
+            kind = "pg-table"
         names[what] = name
-        if not owned("pg-table", ref["db"], name):
+        if not owned(kind, ref["db"], name):
             return (f"witness-not-owned: {what} {ref['db']}:{name} is not a confirmed resource of this "
                     f"attempt; a witness never observes a table this run did not create")
     for side in ("readiness", "completion"):
@@ -790,7 +818,7 @@ def _hold(spec: LifecycleSpec, clock, observe, satisfied) -> tuple[dict, bool]:
     if spec.stability_s > 0:
         clock.sleep(spec.stability_s)
     try:
-        value = observe(max(1.0, spec.stability_s))
+        value = observe(max(1.0, spec.stability_s, getattr(observe, "minimum_budget", 0)))
     except Exception as e:              # noqa: BLE001
         value = {"error": str(e)}
     ok = not (isinstance(value, dict) and "error" in value) and satisfied(value)
@@ -833,6 +861,13 @@ def await_running_bounded(client, apps, deadline: Deadline) -> dict:
 
 
 def _count_observer(admins, ref, tokens):
+    if ref["db"] == "bigquery-target":
+        admin = _admin(admins, ref["db"])
+        table = admin.ref(_render(ref["table"], tokens))
+        def observe(remaining):
+            return admin.count_rows(table, remaining)
+        observe.minimum_budget = 3.0  # SDK startup belongs to this stability re-read's probe budget
+        return observe, table
     table = _table(_render(ref["table"], tokens))
     probe = make_probe(_admin(admins, ref["db"]))
 
@@ -898,14 +933,21 @@ class Sentinel:
     def run(self, watch: Watch, terminal=None) -> str:
         s = self.spec.sentinel
         observe_ref = s["observe"]
-        table = _table(_render(observe_ref["table"], self.tokens))
         key = observe_ref["key"]
         writer = make_probe(_admin(self.admins, s["db"]))
-        reader = make_probe(_admin(self.admins, observe_ref["db"]))
-        sql = f"SELECT count(*) FROM {table} WHERE CAST({key} AS text) = %s"
-
-        def count(remaining):
-            return int(reader.query(sql, (str(self.id),), remaining)[0][0])
+        raw_table = _render(observe_ref["table"], self.tokens)
+        if observe_ref["db"] == "bigquery-target":
+            reader = _admin(self.admins, observe_ref["db"])
+            table = reader.ref(raw_table)
+            def count(remaining):
+                return reader.count_key(table, key, self.id, remaining)
+            count.minimum_budget = 3.0
+        else:
+            table = _table(raw_table)
+            reader = make_probe(_admin(self.admins, observe_ref["db"]))
+            sql = f"SELECT count(*) FROM {table} WHERE CAST({key} AS text) = %s"
+            def count(remaining):
+                return int(reader.query(sql, (str(self.id),), remaining)[0][0])
         self.count = count
 
         for step, file_key, want in (("present", "insert", lambda n: n > 0), ("absent", "delete", lambda n: n == 0)):
@@ -1032,7 +1074,11 @@ def complete(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens,
         tgt_obs, tgt = _count_observer(admins, spec.completion["target"], tokens)
 
         def observe(remaining):
-            return {"source": src_obs(remaining), "target": tgt_obs(remaining)}
+            began = clock.monotonic()
+            source = src_obs(remaining)
+            return {"source": source, "target": tgt_obs(max(0.0, remaining - (clock.monotonic() - began)))}
+
+        observe.minimum_budget = getattr(tgt_obs, "minimum_budget", 0)
 
         def satisfied(v):
             return v["source"] > 0 and v["source"] == v["target"]

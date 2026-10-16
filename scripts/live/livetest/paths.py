@@ -26,6 +26,9 @@ KEYS = (
 # live_env and docker_env names in both tiers, plus the per-service and Striim view hosts. The
 # engines read them from the process environment; striim-test fills them in from .env.
 _LIVE_SERVICE_KEYS = (
+    "SLT_BIGQUERY_HOST", "SLT_BIGQUERY_PORT", "SLT_BIGQUERY_PROJECT", "SLT_BIGQUERY_DATASET",
+    "SLT_BIGQUERY_REST_HOST_PORT", "SLT_BIGQUERY_TOKEN_HOST_PORT", "SLT_BIGQUERY_VIEW_HOST",
+    "SLT_BIGQUERY_WRITER_ENDPOINT", "SLT_BIGQUERY_TOKEN_URI",
     "SLT_GCS_HOST", "SLT_GCS_HOST_PORT", "SLT_GCS_PORT", "SLT_GCS_PROJECT",
     "SLT_GCS_SRC_BUCKET", "SLT_GCS_TGT_BUCKET", "SLT_GCS_TOKEN_HOST_PORT", "SLT_GCS_VIEW_HOST",
     "SLT_KAFKA_BROKER_PORT", "SLT_KAFKA_DOCKER_HOST_PORT", "SLT_KAFKA_HOST",
