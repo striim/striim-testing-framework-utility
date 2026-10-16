@@ -81,3 +81,6 @@ The exemption list is the tier's to-do list; shrinking it to empty is what finis
 - `purpose:` is the caption — it names the single behaviour on display.
 - Comment the manifest generously. These files are read far more than they are run, and the
   comment explaining *why* a phase is chosen is the part a reader came for.
+
+`framework-kafka-nothing` exercises fresh topic ownership, Kafka insert/delete
+sentinels and bounded absence for a rolled-back PostgreSQL transaction (sample 18).

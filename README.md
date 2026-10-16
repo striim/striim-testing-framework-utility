@@ -50,6 +50,7 @@ step in detail, with the output to expect and what to do when something fails.
 | `08-strict-json` | preserve JSON token types and reject undeclared fields; Docker file access |
 | `09-raw-file` | byte hashes, lengths and an exact file inventory; Docker file access |
 | `10-bounded-nothing` | no output in a bounded window after a file sentinel |
+| `18-kafka-nothing` | no output in a bounded window after a Kafka sentinel; fresh owned topics |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.
