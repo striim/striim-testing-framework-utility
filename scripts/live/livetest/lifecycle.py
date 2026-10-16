@@ -206,7 +206,13 @@ def parse_spec(block, path, *, timeout=120, allow_spanner_counts=False) -> Lifec
         _err(path, "completion kind sentinel is for mode cdc")
     if mode == "cdc" and ck == "source-count":
         _err(path, "completion kind source-count is for mode initial-load")
-    if sink == "file" and (rk == "sentinel" or ck == "sentinel") and not isinstance((block.get("sentinel") or {}).get("observe", {}).get("path"), str):
+    sentinel_block = block.get("sentinel")
+    if sentinel_block is not None and not isinstance(sentinel_block, dict):
+        _err(path, "sentinel must be a mapping")
+    observe_block = sentinel_block.get("observe") if sentinel_block is not None else None
+    if sentinel_block is not None and not isinstance(observe_block, dict):
+        _err(path, "sentinel.observe must be a mapping")
+    if sink == "file" and (rk == "sentinel" or ck == "sentinel") and not isinstance((observe_block or {}).get("path"), str):
         _err(path, "sink file cannot use a sentinel kind without a file observe path")
     if sink == "file" and ck not in ("file-lines", "sentinel"):
         _err(path, f"sink file observes completion with kind file-lines, got {ck!r}")

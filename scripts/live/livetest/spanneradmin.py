@@ -247,6 +247,19 @@ class SpannerAdmin:
         _, rows = self._query(f"SELECT count(*) FROM {_check_table(table)}")
         return int(rows[0][0])
 
+    def count_key(self, table: str, key: str, value, remaining: float) -> int:
+        """Count one sentinel key without scanning materialized application rows."""
+        from google.cloud.spanner_v1 import param_types
+        if not _IDENT.fullmatch(key):
+            raise ValueError("sentinel key must be a plain column identifier")
+        postgres = self.dsn["dialect"] == "postgresql"
+        name, placeholder, cast = ("p1", "$1", "text") if postgres else ("sentinel_id", "@sentinel_id", "STRING")
+        sql = f"SELECT count(*) FROM {_check_table(table)} WHERE CAST({key} AS {cast}) = {placeholder}"
+        with self._db().snapshot() as snap:
+            rows = snap.execute_sql(sql, params={name: str(value)}, param_types={name: param_types.STRING},
+                                    timeout=max(0.05, remaining))
+            return int(next(iter(rows))[0])
+
     def select_rows(self, table: str) -> list[dict]:
         cols, rows = self._query(f"SELECT * FROM {_check_table(table)}")
         return _rows_to_dicts(cols, rows)

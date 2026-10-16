@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel", "17-one-node-failover"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel", "17-one-node-failover", "18-kafka-nothing"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -398,3 +398,23 @@ def test_node_fault_sample_keeps_a_window_open_without_changing_the_golden():
     assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
     assert _golden('17-one-node-failover')[1] == [
         {'id':str(n),'msg':f'row-{n}'} for n in range(1,5001)]
+
+
+def test_kafka_nothing_sample_and_regression_share_the_delivery_contract():
+    name = "18-kafka-nothing"
+    root = SAMPLES / name
+    m = load_manifest(root / "test.yaml")
+    assert m.lifecycle.sink == "kafka" and m.requires == ["postgres", "kafka"]
+    observe = m.lifecycle.sentinel["observe"]
+    assert observe == {"db": "kafka", "topic": "${KAFKA_TGT_TOPIC}", "payload": "json",
+                       "key": "value.data.id", "deletion": {"value.metadata.OperationName": "DELETE"}}
+    check = m.assert_["data"][0]
+    assert check["target"] == observe["topic"] and check["db"] == "kafka"
+    assert check["nothing"] == {"window": "3s", "where": {"value.data.id": 1}}
+    sql = (root / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and "VALUES (1, 'rolled back')" in sql and sql.endswith("ROLLBACK;\n")
+    twin = SAMPLES.parents[1] / "scripts/live/regression/framework/framework-kafka-nothing"
+    for filename in ["app.tql", "ddl_source.sql", "slot.sql", "rollback.sql", "sentinel_insert.sql", "sentinel_delete.sql"]:
+        assert (root / filename).read_bytes() == (twin / filename).read_bytes()
+    tql = (root / "app.tql").read_text()
+    assert "${KAFKA_TGT_TOPIC}" in tql and "Global.KafkaWriter" in tql and "Global.JSONFormatter" in tql

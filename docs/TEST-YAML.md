@@ -1538,7 +1538,21 @@ message value. Its topic must be freshly acquired by this attempt. Native mode
 is possible for Kafka with the required services and owned topic; file sentinels
 require Docker access to an owned output directory. Spanner uses owned tables;
 spanner-postgres selects the other dialect. These routes have hermetic coverage;
-sample 10 exercises the file route live, not Kafka or Spanner sentinels.
+sample 10 exercises the file route and sample 18 exercises the Kafka route.
+
+Kafka and file sentinels read the complete append sink on each poll. Their fixed
+limits are `DEFAULT_MAX_ROWS = 100000` and `DEFAULT_MAX_BYTES = 67108864` (64 MiB),
+including application data and sentinel insert/delete records. Exceeding either
+fails readiness/completion with `canonical-limit-exceeded`; raising `exact:` limits
+does not change these sentinel limits. Keep the complete append output within
+both limits or use a database sentinel. Spanner database sentinels count only the
+requested key with a bounded `WHERE` query. Database sentinel keys must be plain
+column identifiers; only Kafka/file keys accept dotted field paths. String values
+in `deletion` selectors render tokens just like `nothing.where`.
+
+Owned `spanner-postgres` DDL requires unquoted lowercase, unqualified table names.
+Mixed-case, quoted or schema-qualified names are refused before executing DDL,
+so catalog confirmation and cleanup always refer to the same table name.
 
 ## Infrastructure ownership (`SLT_INFRA_OWNERSHIP`)
 

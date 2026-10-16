@@ -58,6 +58,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Fault-time evidence](../samples/live/15-fault-evidence/README.md) | `samples/live/15-fault-evidence/README.md` | The 5000 golden pairs are derived from generate_series(1,5000) and row- plus id. |
 | [A fresh marker after restore](../samples/live/16-recovery-sentinel/README.md) | `samples/live/16-recovery-sentinel/README.md` | The readiness marker proves capture, a progress fault interrupts the 5000 input pairs, and recover.sentinel: true injects a new insert/delete marker after restore. |
 | [One-node failover](../samples/live/17-one-node-failover/README.md) | `samples/live/17-one-node-failover/README.md` | This case kills one app node hosting a single-owner flow, then requires placement on its survivor and complete typed data. |
+| [Prove a rolled-back insert never reaches Kafka](../samples/live/18-kafka-nothing/README.md) | `samples/live/18-kafka-nothing/README.md` | Run striim-test run samples/live/18-kafka-nothing with PostgreSQL and Kafka available. |
 | [Striim TQL authoring](../skills/tql-authoring/SKILL.md) | `skills/tql-authoring/SKILL.md` | Sends TQL work to the guide in docs/tql/ it needs. |
 
 ## Services
@@ -118,6 +119,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Append-only audit target](../scripts/live/regression/framework/framework-append-only-audit/README.md) | `scripts/live/regression/framework/framework-append-only-audit/README.md` | Run striim-test run scripts/live/regression/framework/framework-append-only-audit. |
 | [Bounded absence](../scripts/live/regression/framework/framework-bounded-nothing/README.md) | `scripts/live/regression/framework/framework-bounded-nothing/README.md` | Run striim-test run scripts/live/regression/framework/framework-bounded-nothing in Docker mode. |
 | [Fault-time evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md) | `scripts/live/regression/framework/framework-fault-evidence/README.md` | The 5000 golden pairs are derived from generate_series(1,5000) and row- plus id. |
+| [Kafka sentinel and bounded absence](../scripts/live/regression/framework/framework-kafka-nothing/README.md) | `scripts/live/regression/framework/framework-kafka-nothing/README.md` | Run striim-test run scripts/live/regression/framework/framework-kafka-nothing. |
 | [One-node failover](../scripts/live/regression/framework/framework-one-node-failover/README.md) | `scripts/live/regression/framework/framework-one-node-failover/README.md` | This case kills one app node hosting a single-owner flow, then requires placement on its survivor and complete typed data. |
 | [Recovery inside a progress window](../scripts/live/regression/framework/framework-progress-recovery/README.md) | `scripts/live/regression/framework/framework-progress-recovery/README.md` | The readiness sentinel proves CDC is capturing. |
 | [Raw file inventory](../scripts/live/regression/framework/framework-raw-file/README.md) | `scripts/live/regression/framework/framework-raw-file/README.md` | Run striim-test run scripts/live/regression/framework/framework-raw-file in Docker mode. |

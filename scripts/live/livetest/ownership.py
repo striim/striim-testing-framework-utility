@@ -653,7 +653,15 @@ class Ledger:
             if acquire_sinks and db in ("spanner-google", "spanner-postgres"):
                 admin = _lifecycle._admin(admins, db)
                 from livetest.spanneradmin import _check_table
-                tables = list(dict.fromkeys(_check_table(t.strip('"')) for t in _CREATE_TABLE.findall(sql)))
+                raw_tables = _CREATE_TABLE.findall(sql)
+                if any("." in t for t in raw_tables):
+                    raise OwnershipError(f"{db} ownership requires table names without schema qualification; "
+                                         "refused before DDL execution")
+                if db == "spanner-postgres" and any(
+                        '"' in t or t != t.lower() for t in raw_tables):
+                    raise OwnershipError("spanner-postgres ownership requires unquoted lowercase table names "
+                                         "without schema qualification; refused before DDL execution")
+                tables = list(dict.fromkeys(_check_table(t.strip('"')) for t in raw_tables))
                 present = admin.list_owned_tables()
                 for table in tables:
                     if table in present:
