@@ -2,6 +2,26 @@
 
 One entry per release, newest first: the pull requests it contains.
 
+## Unreleased
+
+Typed exact comparisons now cover Spanner and Kafka records. Strict JSON, raw
+file inventories, sentinel-qualified absence, controlled transaction seeds,
+consistent snapshot histories and append-only audit comparisons add stricter
+checks. Progress-triggered recovery records fault boundaries and can prove a
+fresh marker after restore. Named-node Docker faults also check live placement.
+
+**Node faults are opt-in:** `recover.node` cases skip before provisioning unless
+`SLT_ENABLE_NODE_FAULTS=1` is set for a dedicated disposable stack. Only opted-in
+stacks publish the secondary API (`SLT_STRIIM_NODE_HTTP_HOST_PORT`, default 9082).
+See [UPGRADING.md](docs/UPGRADING.md) before changing an older stack.
+
+**Breaking change — timed recovery:** timed recovery now requires the app to be
+RUNNING at the fault boundary. A completed or halted app fails `fault-missed`
+instead of counting as an interruption. Consumers updating their framework pin
+must ensure work remains in flight at `recover.after`, or use a progress trigger
+with a bounded window. Progress-triggered recovery also checks again after the
+interruption takes effect, refusing a target count that reached its upper bound.
+
 ## v0.1.0 (2026-10-08)
 
 First public release.

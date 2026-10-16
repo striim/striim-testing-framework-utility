@@ -264,3 +264,19 @@ The live engine modules `snapshot_observer` implement this check. Manifest loadi
 ### Reject replay duplicates with an append-only audit
 
 The live engine modules `audit` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [13-append-only-audit fixture](../../samples/live/13-append-only-audit/README.md).
+
+### Interrupt inside an observed progress window
+
+The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [14-progress-recovery fixture](../../samples/live/14-progress-recovery/README.md).
+
+### Prove the fault was issued while its precondition held
+
+The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [15-fault-evidence fixture](../../samples/live/15-fault-evidence/README.md).
+
+### Prove the route transports a fresh marker after recovery
+
+The live engine modules `recovery_sentinel` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [16-recovery-sentinel fixture](../../samples/live/16-recovery-sentinel/README.md).
+
+### Interrupt one named node and check flow placement
+
+The live engine modules `node_fault` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [17-one-node-failover fixture](../../samples/live/17-one-node-failover/README.md).

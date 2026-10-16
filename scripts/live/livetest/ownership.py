@@ -73,7 +73,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("namespace", "deployment-group", "pg-view", "pg-table", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -221,6 +221,26 @@ def pg_system_identifier(catalog):
 
 def _like_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def deployment_groups(client):
+    raw = client.list_deployment_groups(timeout=30)
+    if (not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict)
+            or raw[0].get("executionStatus") != "Success" or not isinstance(raw[0].get("output"), list)):
+        raise OwnershipError("deployment-group-catalog-unparseable: no confirmed group inventory")
+    groups = {}
+    for row in raw[0]["output"]:
+        if not isinstance(row, dict) or len(row) != 1:
+            raise OwnershipError("deployment-group-catalog-unparseable: ambiguous group")
+        group = next(iter(row.values()))
+        if (not isinstance(group, dict) or not isinstance(group.get("name"), str)
+                or group["name"] in groups or not isinstance(group.get("actualServers"), list)):
+            raise OwnershipError("deployment-group-catalog-unparseable: missing group name or servers")
+        servers = group["actualServers"]
+        if any(not isinstance(s, dict) or not isinstance(s.get("name"), str) for s in servers):
+            raise OwnershipError("deployment-group-catalog-unparseable: missing server name")
+        groups[group["name"]] = {s["name"] for s in servers}
+    return groups
 
 
 def namespace_present(client, ns: str):
@@ -509,7 +529,7 @@ class Ledger:
             was, cur = (rec.get("routes") or {}).get(route), (now.get("routes") or {}).get(route)
             if not was or not cur or was != cur:
                 return f"sink route {route} changed or is not bound"
-        elif kind == "namespace":
+        elif kind in ("namespace", "deployment-group"):
             was, cur = (rec.get("striim") or {}).get("url"), (now.get("striim") or {}).get("url")
             if not was or was != cur:
                 return f"Striim endpoint changed from {was!r} to {cur!r}"
@@ -563,6 +583,51 @@ class Ledger:
                          check=lambda e: self.target_problem(e, now), fault=False,
                          detail="reset by a later attempt", done=done)
         return done
+
+    def acquire_deployment_group(self, client, name, servers):
+        if not _IDENT.fullmatch(name) or not name.startswith(self.ident.tid) or not servers or any(
+                not isinstance(n, str) or not _IDENT.fullmatch(n) for n in servers):
+            raise OwnershipError("invalid-deployment-group: case prefix and safe server names required")
+        if name in deployment_groups(client):
+            raise OwnershipError(f"collision:deployment-group:{name} already exists; left untouched")
+        entry = self.add("deployment-group", name, servers=list(servers))
+        members = ",".join('"' + n + '"' for n in servers)
+        from requests.exceptions import ConnectionError, Timeout
+        from livetest.striim import StriimTimeout
+        can_confirm = False
+        try:
+            client.deploy_tql(f"USE Global; CREATE DG {name} ({members});")
+            can_confirm = True
+        except (ConnectionError, Timeout, StriimTimeout):
+            can_confirm = True  # a lost response can follow a successful CREATE
+            raise
+        finally:
+            if can_confirm:
+                groups = deployment_groups(client)
+                if name in groups:
+                    self._set(entry, "confirmed")
+        if groups.get(name) != set(servers):
+            raise OwnershipError("deployment-group-membership: initial members differ")
+        return entry
+
+    def expand_deployment_group(self, client, name, servers):
+        entries = self.find("deployment-group", name, attempt=self.ident.attempt, states=("confirmed",))
+        if len(entries) != 1:
+            raise OwnershipError("deployment-group-not-owned: cannot alter an unconfirmed group")
+        if any(not isinstance(n, str) or not _IDENT.fullmatch(n) for n in servers):
+            raise OwnershipError("invalid-deployment-group: unsafe server name")
+        entry = entries[0]
+        before = set(entry["servers"])
+        if deployment_groups(client).get(name) != before:
+            raise OwnershipError("deployment-group-membership: group changed before expansion")
+        if servers:
+            members = ",".join('"' + n + '"' for n in servers)
+            client.deploy_tql(f"USE Global; ALTER DG {name} ADD ({members});")
+        expected = before | set(servers)
+        if deployment_groups(client).get(name) != expected:
+            raise OwnershipError("deployment-group-membership: survivor is not eligible")
+        entry["servers"] = sorted(expected)
+        self.persist()
 
     def acquire_namespace(self, client) -> dict:
         ns = self.ident.ns
@@ -763,6 +828,10 @@ class Ledger:
             if client is None:
                 raise RuntimeError("no Striim client to drop the namespace")
             client.teardown_namespace(name)
+        elif kind == "deployment-group":
+            if not _IDENT.fullmatch(name) or not name.startswith(self.ident.tid):
+                raise OwnershipError("invalid-deployment-group: refusing foreign group cleanup")
+            client.deploy_tql(f"USE Global; DROP DG {name};")
         elif kind == "pg-function":
             make_catalog(_lifecycle._admin(admins, db)).run(f"DROP FUNCTION IF EXISTS {_quoted(name)}()", 30.0)
         elif kind == "spanner-table":
@@ -807,6 +876,8 @@ class Ledger:
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
+        if kind == "deployment-group":
+            return name not in deployment_groups(client)
         if kind == "pg-function":
             rows = make_catalog(_lifecycle._admin(admins, db)).query(
                 "SELECT to_regprocedure(%s) IS NULL", (name + "()",), 30.0)

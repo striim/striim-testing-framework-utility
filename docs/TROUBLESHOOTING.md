@@ -272,3 +272,61 @@ a keyed `WHERE` count and do not materialize the whole table.
 | `audit-writer-not-append-only` | The declared writer/typed input/target mapping permits upsert or does not match. | Use the route-specific append writer, identical textual target mapping and required false upsert flags. |
 | `audit-target-not-append-only` | The target schema/guard permits replacing an existing delivery. | Remove upsert/unique conflicts from the audit sink and retain duplicate rows for comparison. |
 | `audit-target-not-owned` | The audit target is not confirmed for this attempt. | Use framework-created ${TID} tables/topics or ${OWNED_DIR} output. |
+
+## Interrupt inside an observed progress window
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-progress-trigger` | The progress declaration or rendered target is invalid. | Use the documented kind, route, identifiers and open-window constraints; trigger cannot coexist with after/every. |
+| `invalid-progress-target` | The progress declaration or rendered target is invalid. | Use the documented kind, route, identifiers and open-window constraints; trigger cannot coexist with after/every. |
+| `progress-target-not-owned` | The slot/topic/table is not confirmed on this attempt and route. | Create the resource through framework DDL/acquisition and use its exact rendered route/name. |
+| `progress-deadline` | The condition was never observed before the deadline. | Check whether input reached the reader and whether the chosen threshold is reachable. |
+| `progress-window-missed` | The count reached/passed the upper bound before the fault. | Choose a window that includes observable in-flight work and slow/provide sufficient input; final equality cannot prove a fault. |
+| `progress-read-error` | The progress transport/query failed. | Read the nested error; check target/slot/topic access and offset/checkpoint fields. |
+| `progress-app-not-running` | The app left RUNNING before the declared fault could land. | Inspect app status and deployment; ensure the work remains in flight until the trigger. |
+
+## Prove the fault was issued while its precondition held
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `fault-missed` | The fault boundary was not proven, either before issuance or after interruption took effect. | Check `interrupted` and `afterInterrupt` before assuming the stack was undisturbed. Suffixes include deadline/window/read/app-status, no unique running Docker owner, and a flow moved before interruption. This is never absorbed by xfail. |
+| `fault-interrupt-error` | The interrupt command failed after its final observation. | Inspect the recorded command boundary and transport error; a failed request is not a completed fault. |
+
+## Prove the route transports a fresh marker after recovery
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-post-recovery-sentinel` | Recovery sentinel lacks running/lifecycle prerequisites. | Set expect_running: true and declare a supported lifecycle sentinel; use reserved recovery tokens only in sentinel files. |
+| `post-recovery-sentinel-missed` | The fresh post-restore marker did not arrive and disappear. | Inspect insert/delete witness evidence and resumed reader/writer capture before post_recover seeds. |
+
+## Interrupt one named node and check flow placement
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-node-fault` | Named-node selection/mode is invalid or unavailable. | Use Docker topology: cluster, a valid role/unique hosting flow, and stop/kill/restart; restart requires node and quiesce refuses node. |
+| `node-fault-error` | The selected container command/state check failed. | Inspect the recorded container ID and Docker error; the fault is not proven. |
+| `fault-node-hosts-metadata` | The selected primary also hosts the metadata database. | Place the flow initially on the secondary and keep the primary available as survivor; the framework refuses this control-plane interruption before issuing the fault. |
+| `fault-node-no-failover` | The hosted flow did not move to a surviving app node while its owner stayed down. | Inspect bounded failover observations and node logs. Keep metadata outside the killed container: the bundled primary also hosts the metadata database. Sample 17 uses an owned group to start on the secondary and add the primary as survivor.
+| `fault-fallback-unavailable` | No reachable surviving node API is published. | Coordinate recreation of the Striim stack with the new second-node mapping; see UPGRADING. |
+| `fault-node-not-running` | The selected node was not running before interruption. | Restore/inspect the cluster before the case; a pre-existing stopped node is not this test's fault. |
+| `fault-node-unmapped` | A Striim server name could not be bound to a framework container. | Use the framework three-container cluster and inspect node-name discovery. |
+| `fault-node-inventory-unreadable` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-inventory-ambiguous` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-inventory-deadline` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-restore-status` | The app left RUNNING/COMPLETED during the restore settle. | Inspect app status and server logs; the container-state check is a separate node-fault check. |
+| `fault-api-origin-unavailable` | The original API host cannot supply a surviving peer URL. | Use a resolvable Striim API URL and the published second-node REST mapping. |
+| `placement-mismatch` | The flow owner differs from the declared node/survivor. | Inspect running MON ownership and deployment placement; correct the deployment group. |
+| `placement-read-error` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |
+| `placement-read-deadline` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |
+| `placement-read-shape` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-name-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-list-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-description-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-components-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `invalid-placement-spec` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `invalid-placement-flow` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `invalid-placement-node` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `CLUSTER-READY` | Full post-settle deployment-group membership was not observed within the join deadline. | Check last default/Agents counts and saved node logs; a registration message alone cannot qualify cluster topology. |
+| `placement-flow-monitor-unavailable` | MON does not identify the requested FLOW. | Check the fully qualified flow name and returned entityType/fullName; do not use an absent flow status as a running-state proof. |
+| `placement-application-unavailable` | A deployed flow cannot be bound to one full parent application identity. | Inspect the matching server DESCRIBE components; a bare applicationName is not sufficient proof. |
+| `placement-node-status-unavailable` | The same server cannot report an unambiguous runtime state for that parent application. | Inspect the recorded STATUS reply and server binding, correct availability/privileges, and retain the owner check. |

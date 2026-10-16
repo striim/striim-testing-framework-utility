@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from livetest import docker_disk, stack
-from livetest.topology import parse_deployment_groups
+from livetest.topology import parse_deployment_groups, Topology
 
 _DEFAULT_STRIIM_VERSION = "5.4.2"
 
@@ -629,6 +629,13 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
 # clients read it — harmless for non-Spanner tests) and it makes SLT_SPANNER tests
 # self-provisioning like GCS/Kafka. It stays out of the base compose so a plain
 # `docker compose up` still targets real Spanner.
+def _compose_files():
+    files = list(_COMPOSE_FILES)
+    if os.environ.get("SLT_ENABLE_NODE_FAULTS") == "1":
+        files += ["-f", "compose.node-fault.yaml"]
+    return files
+
+
 _COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
 
 def compose_files(striim_dir: Path) -> list[Path]:
@@ -658,7 +665,7 @@ def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress
         # leave the old node up beside the new one: two nodes in the cluster, one of them
         # invisible to compose. Orphans are containers whose SERVICE is gone from the file,
         # so naming a subset of services here does not make the rest orphans.
-        run(["docker", "compose", *_COMPOSE_FILES, "up", "-d", "--remove-orphans",
+        run(["docker", "compose", *_compose_files(), "up", "-d", "--remove-orphans",
              "slt-striim", "slt-node", "slt-agent"],
             cwd=str(striim_dir))
 
@@ -678,7 +685,7 @@ def cluster_has_containers(striim_dir: Path, release: dict | None = None) -> boo
     runner here would silently read as "no containers"."""
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
     with _env_override({"STRIIM_VERSION": version}):
-        r = subprocess.run(["docker", "compose", *_COMPOSE_FILES, "ps", "-aq"],
+        r = subprocess.run(["docker", "compose", *_compose_files(), "ps", "-aq"],
                            cwd=str(striim_dir), capture_output=True, text=True)
     if r.returncode:
         raise RuntimeError(f"could not ask Docker what the Striim project owns: "
@@ -698,7 +705,7 @@ def cluster_down(striim_dir: Path, release: dict | None = None, run=None) -> Non
         # to 40 GB each) running while `stop live` reported a clean teardown and exited 0.
         # preflight's orphan check cannot catch these either: it only runs when
         # `cluster_has_containers()` is False, and the still-declared slt-striim keeps it True.
-        run(["docker", "compose", *_COMPOSE_FILES, "down", "-v", "--remove-orphans"],
+        run(["docker", "compose", *_compose_files(), "down", "-v", "--remove-orphans"],
             cwd=str(striim_dir))
 
 # Every spelling seen or plausible: ProductKey=, LicenceKey=, "License Key:", LicenseKey,
@@ -728,7 +735,7 @@ def save_cluster_logs(dest: Path, striim_dir: Path, run=None, tail: int = 300) -
                                                         stderr=subprocess.STDOUT, text=True,
                                                         timeout=60))
     try:
-        ps = run(["docker", "compose", *_COMPOSE_FILES, "ps", "-a", "--format", "{{.Name}}"],
+        ps = run(["docker", "compose", *_compose_files(), "ps", "-a", "--format", "{{.Name}}"],
                  cwd=str(striim_dir))
         names = [n.strip() for n in (getattr(ps, "stdout", "") or "").splitlines() if n.strip()]
         if not names:
@@ -927,7 +934,7 @@ def wait_agent_registered(client, timeout: int = 300, poll: float = 10) -> None:
         time.sleep(poll or 0.05)
 
 def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=None,
-                       context: str = "") -> None:
+                       context: str = "") -> Topology:
     # `context` is appended to either timeout message: restart_app_nodes uses it to say whether
     # its re-authentication deadline had already expired, so the two deadlines are never confused.
     # The full provisioned topology is ready only when BOTH the 2nd node has joined
@@ -941,12 +948,16 @@ def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=No
     # reporting it as a cluster problem sends the operator to look at healthy nodes.
     answered = False
     last_error: Exception | None = None
+    last_topology = None
     while True:
         try:
-            t = parse_deployment_groups(client.list_deployment_groups())
+            from livetest.striim import POLL_TIMEOUT
+            t = parse_deployment_groups(client.list_deployment_groups(
+                timeout=min(POLL_TIMEOUT[1], max(0, deadline - time.monotonic()))))
             answered = True
-            if t.has_cluster and t.has_agent:
-                return
+            last_topology = t
+            if t.has_cluster and t.has_agent and time.monotonic() <= deadline:
+                return t
         except Exception as e:
             last_error = e
         if time.monotonic() >= deadline:
@@ -958,8 +969,10 @@ def wait_cluster_ready(client, timeout: int = 300, poll: float = 10, progress=No
                     f"restart looks exactly like this. {context}".rstrip())
             raise TimeoutError(f"CLUSTER-READY deadline ({timeout}s) expired: cluster "
                                f"(>=2 nodes + agent) not ready within {timeout}s. "
+                               f"Last membership: default={len(last_topology.groups.get('default', []))}, "
+                               f"Agents={len(last_topology.groups.get('Agents', []))}. "
                                f"{context}".rstrip())
         if progress:
             elapsed = time.monotonic() - started
             progress("cluster", f"waiting for node + agent to register ({elapsed:.0f}s/{timeout}s)")
-        time.sleep(poll or 0.05)
+        time.sleep(min(poll or 0.05, max(0, deadline - time.monotonic())))

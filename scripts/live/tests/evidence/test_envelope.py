@@ -728,3 +728,114 @@ def test_failed_snapshot_keys_survive_written_evidence(good):
     evidence.validate_case(saved)
     tables = saved['assertions'][-1]['actual']['rows'][-1]['tables']
     assert tables['a']['keys'] == [['2']] and tables['b']['keys'] == []
+
+
+def test_checkpoint_read_error_after_interrupt_is_valid_diagnostic_evidence(good):
+    from livetest import progress
+    interrupted = [False]
+    records = []
+    def read(left):
+        if interrupted[0]: raise ConnectionError('checkpoint API unavailable')
+        return 1
+    progress.at_fault(progress.normalize({'kind': 'checkpoint', 'above': 0}), read,
+        lambda: interrupted.__setitem__(0, True), record=records.append, cycle=1)
+    assert records[0]['status'] == 'passed'
+    good._slt_records.extend(records)
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
+    row = saved['assertions'][-1]['actual']['rows'][0]
+    assert row['interrupted'] is True and row['afterInterrupt']['error']
+
+def test_recovery_sentinel_result_writes_and_validates_full_evidence(good, monkeypatch):
+    from types import SimpleNamespace
+    from livetest import recovery_sentinel
+    monkeypatch.setattr(lifecycle, 'check_witness_refs', lambda *args: None)
+    class Marker:
+        def __init__(self, *args, **kwargs): pass
+        def run(self, watch, terminal):
+            watch.observe({'step': 'present', 'count': 1})
+            watch.observe({'step': 'absent', 'count': 0})
+            return 'satisfied'
+    monkeypatch.setattr(lifecycle, 'Sentinel', Marker)
+    spec = SimpleNamespace(completion_s=1, sentinel={'observe': {'db': 'postgres-target'}})
+    recovery_sentinel.run(lifecycle.State('cdc'), spec, client=None, app='N.app', admins={},
+        tokens={}, ident=None, read_files=None, owned=lambda *args: True, source_dir='.',
+        cycle=1, record=good._slt_records.append)
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    result = next(r for r in saved['assertions'] if r['type'] == 'recovery')
+    assert result['expected']['rows'] == [{'insertPresent': True, 'deleteAbsent': True}]
+    assert len(result['actual']['rows'][0]['observations']) == 2
+
+
+
+def test_owner_selection_refusal_writes_placement_reads(good):
+    from livetest import node_fault, recovery
+    from livetest.striim import StriimClient
+    servers = ['server_primary', 'server_secondary', 'server_agent']
+    replies = json.loads((Path(__file__).parents[1] / 'fixtures/striim/flow-placement-5.4.2.json').read_text())['queries']
+    replies['MON N.flow;'][0]['output']['diagnostic'] = {'reason': 'observed'}
+    class API:
+        def post_tungsten_line(self, command, timeout):
+            return replies[command]
+    nodes = {role: {'role': role, 'server': 'server_' + role, 'id': 'id_' + role}
+             for role in ('primary', 'secondary', 'agent')}
+    with pytest.raises(recovery.RecoveryError, match='fault-missed'):
+        node_fault.Target(StriimClient(API()), SimpleNamespace(mode='docker'),
+            {'hosting': 'N.flow'}, app='N.app', nodes=nodes,
+            record=good._slt_records.append, timeout=1)
+    doc = doc_of(good, status='failed')
+    path = write(good, doc)
+    saved = json.loads(path.read_text()); evidence.validate_case(saved)
+    diagnostic = saved['assertions'][-1]['actual']['rows'][0]
+    assert set(diagnostic['reads']['servers']) == set(servers)
+    assert json.loads(diagnostic['reads']['monitor']['json'])['diagnostic'] == {'reason': 'observed'}
+    assert diagnostic['interrupted'] is False and not saved['run']['qualifies']
+    assert diagnostic['owners'] == ['server_primary', 'server_secondary']
+    assert set(diagnostic['reads']['statuses']) == {'server_primary', 'server_secondary'}
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_node_failover_wait_writes_valid_evidence_on_success_and_failure(good, monkeypatch, succeeded):
+    from ..test_node_failover_evidence import target_for
+    from livetest.recovery import RecoveryError
+    target, clock, records, commands = target_for(monkeypatch,
+        lambda clock, index: {'server_secondary'} if succeeded else set())
+    if succeeded:
+        target.restore()
+    else:
+        with pytest.raises(RecoveryError, match='fault-node-no-failover'):
+            target.restore()
+    good._slt_records.extend(records)
+    doc = doc_of(good, status='passed' if succeeded else 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    wait_record = next(r for r in saved['assertions']
+        if ((r.get('actual') or {}).get('rows') or [{}])[0].get('phase') == 'failover-wait')
+    event = wait_record['actual']['rows'][0]
+    assert event['phase'] == 'failover-wait' and event['failedOver'] is succeeded
+    assert event['observations'] and wait_record['status'] == ('passed' if succeeded else 'failed')
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_initial_placement_records_validate_on_pass_and_failure(good, succeeded):
+    from livetest import node_fault
+    from ..test_failover_boundaries import Clock
+    clock = Clock(); records = []
+    def read(flow, left):
+        if succeeded: return {'server_secondary'}
+        raise ValueError('server not ready')
+    kw = dict(client=None, flow='N.flow', servers={'server_secondary'}, timeout=1,
+        record=records.append, read=read, now=clock.now, sleep=clock.sleep)
+    if succeeded: node_fault.initial_placement(**kw)
+    else:
+        with pytest.raises(node_fault.RecoveryError): node_fault.initial_placement(**kw)
+    good._slt_records.extend(records)
+    doc = doc_of(good, status='passed' if succeeded else 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
+    assert saved['assertions'][-1]['actual']['rows'][0]['phase'] == 'initial-placement'

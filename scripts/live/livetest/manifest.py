@@ -19,8 +19,8 @@ VALID_TOPOLOGIES = {"single", "agent", "cluster"}
 # Assertion tiers an `xfail.tiers` may name. The record `type` each assert_* function writes
 # (resultschema.build_assertion_result) is the vocabulary; `smoke` is deliberately absent.
 XFAIL_TIERS_ALLOWED = frozenset(
-    {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx"})
-XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED
+    {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx", "placement"})
+XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED - {"placement"}
 VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # Every key load_manifest reads. Anything else is a typo or a key dropped in a schema change,
 # and both used to load silently: `timout: 30` simply never applied its timeout, and a manifest
@@ -30,7 +30,7 @@ VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
     "op", "udf", "server_files", "generate", "timeout", "diff_poll", "tags", "disabled",
     "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
-    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit",
+    "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit", "deployment_groups",
     "lifecycle",   # C7.2
     "exact",   # C8.1
 }
@@ -41,6 +41,7 @@ VALID_MANIFEST_KEYS = {
 _HARNESS_TOKENS = frozenset({
     "NS", "APP", "APP_BARE", "TID", "TID_UPPER", "TID_ORACLE",
     "APP_GROUP", "SOURCE_GROUP", "STRIIM_WEB_URL",
+    "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER",
     "STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "JAVA_RELEASE",
     "MSSQL_JDBC_VERSION",
     "RUN_ID", "WORKER", "ATTEMPT", "OWNED_DIR",
@@ -60,8 +61,8 @@ _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 #              for NODE_APP_QUIESCE_FLUSHED, then checkpoints. The drain. Use it as the
 #              CONTROL arm: a test that loses data under `stop` and not under `quiesce` has
 #              localised the fault to the shutdown path rather than to the pipeline.
-VALID_RECOVER_MODES = {"kill", "stop", "quiesce"}
-_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every"}
+VALID_RECOVER_MODES = {"kill", "stop", "quiesce", "restart"}
+_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel", "node"}
 _SERVICE_OUTAGE_KEYS = {"type", "service", "cycles", "delay_before", "down_for", "signal",
                         "ready_timeout", "settle", "concurrent"}
 _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -78,6 +79,30 @@ _ALTER_FRAGMENT_REFUSED = re.compile(
     r"\b(?:ALTER\s+APPLICATION|RECOMPILE|(?:UN)?DEPLOY\s+APPLICATION|START\s+APPLICATION"
     r"|STOP\s+APPLICATION|END\s+APPLICATION|CREATE\s+(?:OR\s+REPLACE\s+)?APPLICATION)\b"
     r"|^\s*USE\s", re.I | re.M)
+
+def _deployment_groups(raw, path):
+    if not isinstance(raw, list):
+        raise ManifestError(f"{path}: invalid-deployment-group: expected a list")
+    names = set()
+    for item in raw:
+        if (not isinstance(item, dict) or set(item) - {"name", "servers", "add_after_deploy", "flow"}
+                or not isinstance(item.get("name"), str) or not item["name"].startswith("${TID}")
+                or not isinstance(item.get("flow"), str) or not item["flow"].startswith("${NS}.")
+                or item["name"] in names):
+            raise ManifestError(f"{path}: invalid-deployment-group: unique TID name, case flow and known keys required")
+        names.add(item["name"])
+        for key in ("servers", "add_after_deploy"):
+            values = item.get(key, [] if key == "add_after_deploy" else None)
+            if (not isinstance(values, list) or (key == "servers" and not values)
+                    or any(v not in ("${STRIIM_PRIMARY_SERVER}", "${STRIIM_SECONDARY_SERVER}",
+                                     "${STRIIM_AGENT_SERVER}") for v in values)
+                    or len(values) != len(set(values))):
+                raise ManifestError(f"{path}: invalid-deployment-group: {key} requires distinct server tokens")
+        combined = item["servers"] + item.get("add_after_deploy", [])
+        if len(set(combined)) != len(combined) or ("${STRIIM_AGENT_SERVER}" in combined and len(combined) > 1):
+            raise ManifestError(f"{path}: invalid-deployment-group: cannot mix agents and app servers or repeat members")
+    return raw
+
 
 class ManifestError(Exception):
     pass
@@ -625,8 +650,35 @@ def _normalize_recover(raw, path) -> dict | None:
             f"{path}: 'recover.times: {times}' requires 'recover.expect_running: true' -- the "
             f"app is left stopped after cycle 1, so later cycles would 'interrupt' an already "
             f"stopped app and report success without interrupting anything")
-    return {"mode": mode, "after": after, "settle": settle,
-            "expect_running": expect_running, "times": times, "every": every}
+    result = {"mode": mode, "after": after, "settle": settle,
+              "expect_running": expect_running, "times": times, "every": every}
+    if "node" in raw:
+        from livetest.node_fault import normalize
+        if mode not in ("kill", "stop", "restart"):
+            raise ManifestError(f"{path}: invalid-node-fault: quiesce is an app operation")
+        try:
+            result["node"] = normalize(raw["node"])
+            if isinstance(result["node"], dict) and times > 1:
+                raise ValueError("invalid-node-fault: hosting faults require times: 1; the next owner may host metadata")
+        except ValueError as e:
+            raise ManifestError(f"{path}: {e}") from e
+    elif mode == "restart":
+        raise ManifestError(f"{path}: invalid-node-fault: restart requires one node")
+    if "sentinel" in raw:
+        if raw["sentinel"] is not True or not expect_running:
+            raise ManifestError(f"{path}: invalid-post-recovery-sentinel: sentinel must be true and expect_running must be true")
+        result["sentinel"] = True
+    if "trigger" in raw:
+        from livetest.progress import normalize
+        if "after" in raw or "every" in raw:
+            raise ManifestError(f"{path}: invalid-progress-trigger: trigger cannot coexist with after/every")
+        try:
+            result["trigger"] = normalize(raw["trigger"])
+            if times > 1 and not (result["trigger"]["kind"] == "checkpoint" and "above" not in result["trigger"]):
+                raise ValueError("invalid-progress-trigger: absolute triggers require times: 1; checkpoint without above advances each cycle")
+        except ValueError as e:
+            raise ManifestError(f"{path}: {e}") from e
+    return result
 
 
 def _extract_persistent_streams(tql_content: str) -> list[str]:
@@ -831,10 +883,10 @@ def _check_capture_tokens(action_specs: list, modules: list, tokens: dict, path)
             name = cap["token"]
             if reserved is None:
                 reserved = _reserved_tokens(modules)
-            if name in reserved or name in tokens:
+            if name in reserved or name.startswith("SENTINEL_RECOVERY_") or name in tokens:
                 raise ManifestError(
                     f"{path}: capture token {name!r} collides with a "
-                    f"{'harness-provided' if name in reserved else 'tokens:'} token")
+                    f"{'harness-provided' if name in reserved or name.startswith('SENTINEL_RECOVERY_') else 'tokens:'} token")
             if name in seen:
                 raise ManifestError(f"{path}: capture token {name!r} is captured twice")
             seen.add(name)
@@ -855,7 +907,7 @@ def _normalize_tokens(raw, modules: list, path) -> dict:
         if not isinstance(name, str) or not _TOKEN_NAME.match(name):
             raise ManifestError(
                 f"{path}: 'tokens' name {name!r} must match [A-Z][A-Z0-9_]*")
-        if name in reserved:
+        if name in reserved or name.startswith("SENTINEL_RECOVERY_"):
             raise ManifestError(
                 f"{path}: 'tokens' name {name!r} collides with a harness-provided token")
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
@@ -931,6 +983,7 @@ class TestManifest:
     source_dir: Path = None             # where tql/ddl/seed/upload are read from
     local_files: frozenset = frozenset()  # ddl/seed/upload names marked `local: true`: read from `dir`
     audit_specs: list = field(default_factory=list)
+    deployment_groups: list = field(default_factory=list)
     snapshot_spec: dict | None = None
     transaction_steps: list = field(default_factory=list)
     lifecycle: object = None            # livetest.lifecycle.LifecycleSpec, or None (legacy)
@@ -1101,6 +1154,12 @@ def load_manifest(path: Path) -> TestManifest:
             parse_jmx_specs(assert_["jmx"])
         except JmxSpecError as e:
             raise ManifestError(f"{path}: {e}") from None
+    if (assert_ or {}).get("placement") is not None:
+        from livetest.node_fault import normalize_placement
+        try:
+            normalize_placement(assert_["placement"], has_node_fault=bool(recover and recover.get("node")))
+        except ValueError as e:
+            raise ManifestError(f"{path}: {e}") from e
     # A recover phase whose result nothing inspects proves nothing: the app was interrupted
     # and restarted, and no claim was made about what survived. `smoke: true` alone does not
     # count -- it only re-asserts RUNNING, which `recover` already waits for.
@@ -1441,6 +1500,8 @@ def load_manifest(path: Path) -> TestManifest:
         _slt_lc_spec = _slt_lifecycle.parse_manifest_block(raw, path)
     except _slt_lifecycle.LifecycleSpecError as e:
         raise ManifestError(str(e)) from None
+    if recover and recover.get("sentinel") and (_slt_lc_spec is None or _slt_lc_spec.sentinel is None):
+        raise ManifestError(f"{path}: invalid-post-recovery-sentinel: requires a declared lifecycle sentinel")
     from livetest.nothing import validate as validate_nothing
     try:
         validate_nothing(raw, path, _slt_lc_spec)
@@ -1465,6 +1526,7 @@ def load_manifest(path: Path) -> TestManifest:
         transaction_steps=transaction_steps,
         snapshot_spec=snapshot_spec,
         audit_specs=audit_specs,
+        deployment_groups=_deployment_groups(raw.get("deployment_groups", []), path),
         dir=path.parent,
         depth=depth,
         topology=topology,

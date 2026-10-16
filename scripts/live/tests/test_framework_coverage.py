@@ -28,7 +28,7 @@ FRAMEWORK = pathlib.Path(__file__).resolve().parents[1] / "regression" / "framew
 # Assert tiers a manifest can declare. Kept as a literal rather than imported: this is the
 # checklist the gallery is measured against, so it should change only when someone edits it
 # deliberately, not because a refactor moved a set around.
-ASSERT_TIERS = {"smoke", "data", "diff", "file", "gcs", "json", "monitor", "jmx"}
+ASSERT_TIERS = {"smoke", "data", "diff", "file", "gcs", "json", "monitor", "jmx", "placement"}
 
 # Features with no framework example YET. Every entry states what would have to be built,
 # because "why is this exempt" is the question a reader arrives with. Shrinking this list to
@@ -46,7 +46,6 @@ EXEMPT = {
         "end to end; a framework/ example would repeat it. Add one when a second generator "
         "kind lands."
     ),
-    "topology": "every example is topology: single; a cluster example needs >=2 nodes + an agent",
     "requires": "covered implicitly by every example (postgres); no example varies it on purpose",
     "timeout": "covered implicitly by every example; nothing varies it to demonstrate the effect",
     "tags": "covered implicitly by every example",

@@ -229,7 +229,7 @@ def _grammar() -> dict:
         ("lifecycle", "ready", "reason"): {"satisfied"},
         ("lifecycle", "completion", "reason"): {"satisfied"},
         ("lifecycle", "cleanup", "status"): set(CLEANUP_STATUSES),
-        ("assertions", "*", "type"): kinds | {"transaction"},
+        ("assertions", "*", "type"): kinds | {"transaction", "recovery", "placement"},
         ("assertions", "*", "status"): {"passed", "failed"},
         ("data", "profile"): profiles,
         ("data", "comparisons", "*", "type"): kinds,

@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "18-kafka-nothing"]
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel", "17-one-node-failover", "18-kafka-nothing"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -295,6 +295,109 @@ def test_audit_sample_is_keyless_with_hand_derived_rows():
     assert "PRIMARY KEY" not in (root / "ddl_target.sql").read_text()
     assert _golden("13-append-only-audit")[1] == [{"id": "1", "msg": "alpha"}, {"id": "2", "msg": "beta"}]
     assert "ExecuteInsertAsUpdate: false" in (root / "app.tql").read_text()
+
+
+def test_progress_sample_golden_is_derived_from_its_series():
+    root = SAMPLES / "14-progress-recovery"
+    m = load_manifest(root / "test.yaml")
+    assert m.recover["trigger"]["below"] == 2500
+    assert "generate_series(1,5000)" in (root / "changes.sql").read_text()
+    assert _golden("14-progress-recovery")[1] == [
+        {"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
+
+
+def test_progress_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '14-progress-recovery'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('14-progress-recovery')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_fault_evidence_sample_declares_a_nonfinal_window():
+    m = load_manifest(SAMPLES / "15-fault-evidence/test.yaml")
+    assert m.recover["trigger"]["above"] == 100
+    assert _golden("15-fault-evidence")[1] == _golden("14-progress-recovery")[1]
+
+
+def test_fault_evidence_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '15-fault-evidence'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('15-fault-evidence')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_recovery_sentinel_sample_reuses_its_declared_marker():
+    m = load_manifest(SAMPLES / "16-recovery-sentinel/test.yaml")
+    assert m.recover["sentinel"] is True and m.lifecycle.sentinel is not None
+    assert _golden("16-recovery-sentinel")[1] == _golden("14-progress-recovery")[1]
+
+
+@pytest.mark.parametrize('name', ['11-transaction-seeds','12-snapshot-observer'])
+def test_transaction_recovery_samples_prove_b_landed_and_reader_resumed(name):
+    m = load_manifest(SAMPLES / name / 'test.yaml')
+    trigger = m.recover['trigger']
+    assert trigger['kind'] == 'target-count' and (trigger['above'],trigger['below']) == (0,2)
+    assert m.recover['sentinel'] is True
+    assert m.lifecycle.readiness['kind'] == 'sentinel'
+    assert 'RECOVERY 1 SECOND INTERVAL' in (SAMPLES / name / 'app.tql').read_text()
+    assert m.lifecycle.completion['key'] == 'id'
+    assert _golden(name)[1] == [{'id':'1','msg':'first'},{'id':'2','msg':'second'}]
+    if name == '12-snapshot-observer':
+        assert m.lifecycle.sentinel['observe']['table'] not in {t['target'] for t in m.snapshot_spec['tables'].values()}
+
+
+def test_recovery_sentinel_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '16-recovery-sentinel'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('16-recovery-sentinel')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_failover_sample_declares_single_flow_owner_and_complete_golden():
+    root = SAMPLES / "17-one-node-failover"
+    m = load_manifest(root / "test.yaml")
+    assert m.topology == "cluster"
+    assert m.recover["mode"] == "kill"
+    assert m.recover["node"] == {"hosting": "${NS}.${TID}flow"}
+    assert m.assert_["placement"] == [{"flow": "${NS}.${TID}flow", "node": "survivor", "timeout": "90s"}]
+    assert "WITH ${TID}flow ON ONE IN ${TID}workers" in (root / "app.tql").read_text()
+    assert m.deployment_groups == [{"name": "${TID}workers", "flow": "${NS}.${TID}flow",
+        "servers": ["${STRIIM_SECONDARY_SERVER}"], "add_after_deploy": ["${STRIIM_PRIMARY_SERVER}"]}]
+    assert _golden("17-one-node-failover")[1] == [{"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
+
+
+
+def test_node_fault_sample_keeps_a_window_open_without_changing_the_golden():
+    root = SAMPLES / '17-one-node-failover'
+    trigger = _raw('17-one-node-failover')['recover']['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'a per-row target delay is needed before the progress fault'
+    assert trigger['below'] < 5000
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('17-one-node-failover')[1] == [
+        {'id':str(n),'msg':f'row-{n}'} for n in range(1,5001)]
 
 
 def test_kafka_nothing_sample_and_regression_share_the_delivery_contract():
