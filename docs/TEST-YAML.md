@@ -37,10 +37,314 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
 | `recover` | mapping | no | — | interrupt the app after every `post_start` step and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
 | `exact` | mapping | no | none | turns on exact comparison for the `data`, `diff` and `file` specs that carry their own `exact:`: every row counted, values compared by declared type. See **`exact:`** below |
+| `audit` | mapping | no | none | `{version: 1}` enables audited exact specs; each names its append writer, and Spanner also names its sink-generated delivery key |
+| `transactions` | list | no | `[]` | ordered Postgres session steps; see `transactions:` below |
+| `snapshot_observer` | mapping | no | none | concurrent consistent target reads checked against declared committed prefixes |
 | `lifecycle` | mapping | no | none | how the framework knows the app is ready and has finished, before any assertion runs, and that the run cleans up only what it created. See **`lifecycle:`** below |
 | `depth` | string | no | `regression` | one of `smoke`, `gate`, `regression`, `fault`, `customer`, `measure`, `canary`; becomes the pytest marker `depth_<value>`, for selecting with `-m` |
 | `diff_poll` | number | no | `2` | seconds between the reads of an `assert.diff` poll; must be greater than 0 |
 | `generate` | list | no | `[]` | run a data generator and place its output on the Striim server: entries `{kind, workload, dest, when}`. `kind` is `ggtrail` (GoldenGate trail files from a `workload.yaml`); `workload` is relative to the test dir; `dest` is a server directory; `when` defaults to `post_start` |
+
+## `audit:` — append-only delivery targets
+
+An upserting business table can hide a replayed delivery. Add a separate audit
+branch that records deliveries and compare its hand-written golden as a counted
+multiset. Enable the top-level `audit: {version: 1}` block, then add
+`audit: {writer: '${TID}writer'}` to each audited `assert.data` or `assert.file`
+spec. Each spec also requires canonical `exact:` and `order: any` (the default),
+and lifecycle completion must observe that audited output. A vacuous block, unknown keys or an expected
+halt are refused (`invalid-audit-spec`). The top-level key makes older framework
+versions refuse the feature instead of silently treating a merge target as an audit.
+
+The named writer must be declared in the app and write to that exact table, topic
+or file. Exception handlers and automatic resume are refused, so a writer failure
+cannot be swallowed. All routes supported by exact data/file comparison are supported:
+
+- Postgres: a keyless table, with no unique/exclusion index, user trigger or
+  rewrite rule. The framework checks that shape and installs an owned trigger
+  that rejects UPDATE, DELETE and TRUNCATE with an error. The guard function is
+  acquired and confirmed in the ledger, checked by definition hash before
+  comparison, and dropped after the audit table at cleanup. Normal writer DML
+  permissions remain available. Checks run before deploy and before comparison.
+- Spanner: `audit: {writer: '${TID}writer', delivery_key: delivery_id}` requires
+  a sole primary key with a UUID default (`GENERATE_UUID()` in GoogleSQL,
+  `spanner.generate_uuid()` in PostgreSQL dialect). That key must be absent from
+  the locally typed writer input and explicitly listed in `exact.ignore`; custom
+  `KeyColumns` are refused. Each delivery gets a fresh sink-generated identity,
+  while equal business rows are all counted. Business keys cannot absorb replay.
+  In audit cases, Spanner also supports positive lifecycle baseline/source-count
+  and row-count probes, on owned tables. No empty count can prove completion.
+- Kafka: `project: kafka_record`; the owned audit topic must have `cleanup.policy:
+  delete`, `retention.ms: -1` and `retention.bytes: -1`. Framework-created target
+  topics in audit cases get those settings; compaction or bounded retention is
+  refused. Every decoded frame is counted, even for equal keys and values.
+- File: the matching FileWriter output under the owned directory, read with the
+  existing exact file reader. All matching rolled parts participate in the multiset.
+
+Database audit writers require a locally declared typed input stream, explicit
+`ExecuteInsertAsUpdate: false` and `ExecuteUpdateAsInsert: false`, and no ignored
+database errors (`audit-writer-not-append-only`). Convert CDC operations to typed
+delivery records in a CQ rather than applying updates/deletes to the audit table.
+Writer bindings are compared as written, before token rendering. Use the same
+tokens in TQL and the assertion; a literal spelling that happens to render to
+the same name is refused. Only one output binding is allowed.
+
+| Exact route | Required adapter | Output property |
+|---|---|---|
+| `postgres-source`, `postgres-target` | `DatabaseWriter` | `Tables` equals `target` |
+| `spanner-google` | `SpannerWriter` | `Tables` equals `target`, or `${SPANNER_GSQL_DB}.` followed by that exact target |
+| `spanner-postgres` | `SpannerPGDialectWriter` | `Tables` equals `target` |
+| Kafka `project: kafka_record` | `KafkaWriter` (including versioned variants) | `Topic` equals `target`; compatibility `Topics` accepted, both refused |
+| File | `FileWriter` | `FileName` equals `path`; exact reads include the matching rolled parts |
+
+All database adapters require the locally declared typed input and false upsert
+flags above; Kafka/FileWriter do not require those database-only properties.
+A writer may have an optional `VERSION` clause. Ambiguous declarations, duplicate
+properties and source-to-target `Tables` mappings are refused for an audit
+writer. The GoogleSQL qualified alternative accepts only the selected
+`${SPANNER_GSQL_DB}` token; it never strips an arbitrary database qualifier. Use a CQ to project onto its typed stream.
+
+The database audit input is insert-only, so it records a CDC delete as a new
+  typed delivery row rather than removing an earlier audit row. For append
+  sentinels on files or Kafka, include marker records in the golden as well.
+  After a successful phase the framework exports `${SENTINEL_READY_ID}` /
+  `${SENTINEL_DONE_ID}` and the corresponding `_TAG` tokens to later seeds and
+  goldens. Their bindings are recorded in evidence, so marker records can be
+  derived from the sentinel SQL without copying observed output.
+
+The business target can keep its merge semantics; the audit branch records each
+delivery independently. `audit-target-not-owned` refuses foreign outputs;
+`audit-target-not-append-only` refuses unsafe storage. Duplicate rows then fail
+the existing exact multiset comparison. A Spanner duplicate-key write must halt,
+and an audit case cannot turn that halt into an expected success. The contract
+does not claim delivery counts for a business target without an audit branch.
+
+### Audit bindings on other routes
+
+These fragments show the audited assertion; combine each with a completion
+probe observing the same output, using the lifecycle sentinel forms below.
+Goldens describe deliveries by hand, including any emitted marker rows. An ignored
+generated delivery identity permits every repeated business row to be counted.
+
+<!-- snippet: shape partial audit assertion; requires the matching TQL writer and lifecycle described here -->
+```yaml
+audit: {version: 1}
+exact: {version: 1}
+assert:
+  data:
+    - db: spanner-google
+      target: '${TID}audit'
+      match: expected/deliveries.csv
+      exact:
+        columns: {id: integer, msg: text}
+        ignore: [delivery_id]
+      audit: {writer: '${TID}writer', delivery_key: delivery_id}
+```
+
+Declare a local `${TID}row` type with `id` and `msg` and a `${TID}log` stream
+of that type. Its writer uses `Global.SpannerWriter`,
+`Tables: '${SPANNER_GSQL_DB}.${TID}audit'`,
+`ExecuteInsertAsUpdate: false` and `ExecuteUpdateAsInsert: false`.
+The table declares `delivery_id STRING(36) DEFAULT (GENERATE_UUID())` as its sole
+primary key; do not put that field in the input stream. PostgreSQL-dialect
+Spanner uses `Global.SpannerPGDialectWriter`, an identical `Tables`/`target`
+spelling and the `spanner.generate_uuid()` default. In an audit case, positive
+Spanner lifecycle counts are allowed; zero rows still cannot prove completion.
+
+<!-- snippet: shape partial audit assertion; requires the matching TQL writer and lifecycle described here -->
+```yaml
+audit: {version: 1}
+exact: {version: 1}
+assert:
+  data:
+    - db: kafka
+      target: '${KAFKA_TGT_TOPIC}'
+      project: kafka_record
+      keys: [value.id, value.msg]
+      match: expected/deliveries.csv
+      exact: {columns: {value.id: integer, value.msg: text}}
+      audit: {writer: '${TID}writer'}
+```
+
+The matching KafkaWriter has `Topic: '${KAFKA_TGT_TOPIC}'`. Use the declared
+lifecycle sentinel to acquire this fresh framework topic. The golden header is
+`value.id,value.msg`; two identical source deliveries require two identical
+rows, regardless of the Kafka record key.
+
+<!-- snippet: shape partial audit assertion; requires the matching TQL writer and lifecycle described here -->
+```yaml
+audit: {version: 1}
+exact: {version: 1}
+assert:
+  file:
+    - path: '${OWNED_DIR}/rows.json'
+      match: expected/deliveries.csv
+      payload: json
+      exact: {strict_json: true, columns: {id: integer, msg: text}}
+      audit: {writer: '${TID}writer'}
+```
+
+The FileWriter has `FileName: '${OWNED_DIR}/rows.json'` and a JSON formatter
+emitting the declared fields. Exact file reads expand the base name to its
+rolled parts; raw inventory assertions instead name every physical file.
+The golden `id,msg` contains one row per data or marker delivery. Adding a
+business merge target alongside these audit branches does not change that count.
+
+## `snapshot_observer:` — committed transaction prefixes during the run
+
+The optional `snapshot_observer:` mapping starts a concurrent reader after
+lifecycle readiness and before post-start input. It stops after completion,
+then takes a final snapshot. The case must have `lifecycle:`. Each read observes
+all named target tables in one transaction: PostgreSQL repeatable read/read only,
+or one multi-use Spanner read-only snapshot. All tables must be confirmed resources
+of this attempt. This observer never checks tables in separate transactions.
+
+Required keys are `db` (an exact database route), `tables` (alias to a mapping
+with required `target` and `columns`, plus optional `keys`) and `prefixes` (a non-empty list). Each prefix
+maps every alias to a hand-written case-relative CSV golden. Declare every
+compared column, using the exact type vocabulary. Every complete snapshot must
+equal one complete prefix, with row multiplicity intact; matching each table to
+a different prefix is a failure. The final snapshot must equal the last prefix.
+Targets contain `${TID}` and two aliases cannot render to the same table.
+When several prefixes declare the same state, intermediate reads choose the
+earliest matching index compatible with the observed history. The final read
+chooses the latest compatible match, so a repeated final state can complete.
+This proves a possible monotone history; it does not prove every intermediate
+prefix was observed.
+
+Optional `interval` is a positive duration (default 100ms). `max_rows` caps total
+rows in a read (default 100000, maximum 1000000); `max_bytes` bounds each table's
+read and canonical comparison (default 64 MiB, maximum 512 MiB). `max_snapshots`
+caps evidence history (default 10000, maximum 100000); reaching it fails instead
+of silently discarding reads. The case timeout bounds a snapshot read.
+
+Unknown keys, invalid routes, types, durations, alias sets or golden paths fail
+with `invalid-snapshot-spec`. Runtime failures include `snapshot-target-not-owned`,
+`snapshot-not-committed-prefix`, `snapshot-undeclared-column`,
+`snapshot-table-set-mismatch`, `snapshot-target-ambiguous`, `snapshot-duplicate-column`,
+`snapshot-limit-exceeded`, `snapshot-read-error`, `snapshot-read-timeout` and
+`snapshot-final-prefix-missing`, `snapshot-prefix-regressed` and
+`observer-incomplete`. This is an assertion record of type `data` (`xfail.tiers: [data]` addresses
+all observer failures, including read failures; there is no snapshot tier). The record includes every
+observation's prefix index, row count and combined canonical hash. Goldens are
+read from the case's input snapshot; the framework never derives them from output.
+
+Each table's optional `keys` is a non-empty list of unique declared column names,
+used only for diagnostics; it defaults to all declared columns. Prefix comparison
+always checks all declared columns. An undeclared state records `tables` per alias:
+`keyColumns`, canonical `keys` arrays, total `rows`, `keysTruncated` and
+`valuesTruncated`. It retains the first 50 rows per table and at most 256 characters
+per value, including when an earlier failure abandons the observer. Null remains
+null; other values use the exact canonical type representation.
+
+A CDC sample that promises atomic target transactions must pass source transaction
+boundaries and enable the writer's transaction preservation. Sample 12 uses
+`FilterTransactionBoundaries: false` and `PreserveSourceTransactionBoundary: true`;
+without these, a partial transaction can be expected behavior.
+
+Sampling checks every observed snapshot. It cannot rule out a bad state between
+reads. Choose an interval suitable for the behavior under test. The observer is
+joined before cleanup, including when seeding or recovery fails.
+
+Snapshot histories include both monotonic time and `observedUtc` so they can be
+aligned with transaction steps. Worker failures are reported immediately. If a
+case fails before observer assertions, `Observer.abandon()` retains the bounded
+history in a failed `observer-incomplete` record. A finished observer is not
+reported incomplete during teardown; the original case failure is preserved.
+
+
+## `transactions:` — overlapping Postgres seed sessions
+
+The optional ordered `transactions:` list controls named seed sessions. Session
+names match `[A-Za-z_][A-Za-z0-9_]{0,62}`; they are not SQL connection strings. Each
+step has `session` and `op`, optional `when` (`pre_deploy`, `post_start` (default)
+or `post_recover`), and optional `after` (a duration from the start of that
+transaction phase). The phases must occur in that order; steps within a phase
+execute in list order. Transaction steps run before ordinary seed files during
+pre-deploy and post-recovery; post-start ordinary seeds run first. Post-start
+steps require lifecycle readiness. A begin can add `observe` for bounded commit
+proof (see Transaction source diagnostics below);
+post-recover steps require `recover:` and run after the last restore, before settle.
+
+Every transaction step writes an assertion record of type `transaction` to the
+results sidecar and evidence, and a start/end progress-log line. The actual row
+contains session, op, phase, UTC startedAt/endedAt, durationS and succeeded/failed
+outcome, including commits after recovery. This proves the framework executed a
+commit; it does not prove the product reader captured it. Expected target rows
+remain the test's independent check. A failed step retains its failure record
+before owned sessions are rolled back and closed.
+
+- `op: begin` requires `db: postgres-source` or `postgres-target` and opens a new
+  owned connection. Begin two sessions before committing either to overlap them.
+- `op: sql` requires `file`, read and token-rendered like a seed file. It executes
+  in that session's open transaction. Transaction-control statements in these
+  files are refused (`transaction-control-in-sql`); use explicit steps.
+- `op: savepoint`, `rollback_to` or `release` requires a plain identifier `name`.
+  Rollback-to keeps its savepoint and removes later savepoints; release removes
+  it and later savepoints. Rolled-back SQL remains in the input evidence.
+- `op: commit` or `rollback` closes that session. List commits in the desired
+  order. A session can stay open across steps and across `recover:` until a
+  post-recover commit or rollback.
+
+Unknown keys, invalid operations, routes, paths or session/savepoint state are
+`invalid-transaction-seed`. Every declared session must eventually close. The
+framework rolls back and closes all remaining sessions on any failure, before
+table teardown, even when resources are kept. Connections and SQL statements
+use the case timeout. No connection is shared with another case. Pre-deploy
+steps cannot have a non-zero delay.
+
+<!-- snippet: fragment -->
+```yaml
+transactions:
+  - {session: a, op: begin, db: postgres-source, when: pre_deploy}
+  - {session: a, op: rollback, when: pre_deploy}
+```
+
+### Transaction source diagnostics
+
+Add `observe` to a transaction `begin` to capture source proof on its commit.
+It declares 1..16 table/key pairs and an optional owned replication slot.
+Unknown keys are refused with `invalid-transaction-observe`; unowned runtime
+references fail `transaction-observe-not-owned`. Each commit captures
+`txid_current()` on its session before commit, then confirms `txid_status()`
+through a separate bounded probe and records the declared source keys. An
+unconfirmed commit fails `transaction-commit-not-confirmed`. Post-commit probe
+failures retain `commitSucceeded: true` while reporting failed evidence.
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: source-progress, db: postgres-source}
+  completion: {kind: row-count, db: postgres-source, table: '${PG_SOURCE_SCHEMA}.${TID}src', expect: 1}
+  reset: owned
+transactions:
+  - session: a
+    op: begin
+    db: postgres-source
+    observe:
+      tables:
+        - {table: '${PG_SOURCE_SCHEMA}.${TID}src', key: id}
+      slot: '${PG_SLOT}'
+  - {session: a, op: sql, file: changes.sql}
+  - {session: a, op: commit}
+```
+
+Source observations use separate connections and do not commit or close held
+seed sessions. Recovery records source keys and the slot's confirmed_flush_lsn
+and restart_lsn before interruption and after restore, with UTC times. These
+probes have a two-second budget. Key samples select at most 51 values on the
+server, retain 50, and bound each value to 256 characters, with explicit
+truncation flags. Diagnostics do not replace the target's exact assertion.
+
+For `lifecycle.completion.kind: row-count`, optional `key: id` captures a bounded
+sample of target keys on failure using a separate two-second diagnostic probe.
+It cannot satisfy or extend the completion deadline. Probe errors are retained
+alongside the original failure. Lifecycle evidence keeps the first 10 and last
+40 observations within its existing 50-observation cap.
+
 
 ## `seed:` — `when` and `after`
 
@@ -117,6 +421,8 @@ op:
 - Refused: without `example:`; a path that is absolute, contains `..`, or lies under
   `expected/` or `docs/`; the same name marked local in one entry and not in another.
 - Local files get the same token rendering and isolation checks as example files.
+
+
 
 ## `recover:` — interrupt the app, bring it back, then assert
 
@@ -785,8 +1091,12 @@ file gives: fill any `NOT NULL` columns there.
 
 ### Rules
 
-- **Routes.** Source SQL and table-count witnesses use Postgres. Sentinel output may be
-  Postgres, either Spanner dialect, a freshly owned Kafka topic, or an owned file.
+- **Routes.** Sentinel source SQL and replication-slot progress use Postgres.
+  Table-count witnesses use Postgres, or either Spanner dialect when the case
+  declares `audit: {version: 1}` with an audited append-only output. Those Spanner
+  baseline/source-count/row-count probes require positive owned counts; zero is
+  never completion proof. Sentinel output may be Postgres, either Spanner dialect,
+  a freshly owned Kafka topic, or an owned file.
   File sinks require Docker. Kafka completion must be sentinel, with sentinel
   or source-progress readiness. See the output references below.
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
@@ -1485,3 +1795,13 @@ Worked case: [09-raw-file](../samples/live/09-raw-file/README.md). Framework gal
 Absence selector string values expand case tokens before matching. Finite numeric selectors compare by decimal value, so YAML `9.99` matches a delivered numeric `9.99`; booleans and strings retain distinct token types. Missing fields or incompatible output types still fail the read.
 
 Worked case: [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md). Framework gallery: [framework-bounded-nothing](../scripts/live/regression/framework/framework-bounded-nothing/README.md).
+
+Transaction seed SQL refuses `ABORT` along with other transaction-control statements; use a declared transaction step so session lifetime and rollback remain observable.
+
+Worked case: [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md). Framework gallery: [framework-transaction-seeds](../scripts/live/regression/framework/framework-transaction-seeds/README.md).
+Snapshot prefix indices must never decrease: `snapshot-prefix-regressed` fails a history that returns to an earlier committed state, even if it later reaches the final state. Repeated reads of the same prefix are allowed; sampling can skip intermediate prefixes.
+
+Worked case: [12-snapshot-observer](../samples/live/12-snapshot-observer/README.md). Framework gallery: [framework-snapshot-observer](../scripts/live/regression/framework/framework-snapshot-observer/README.md).
+Audit writer declarations accept an optional `VERSION` clause. KafkaWriter `Topic` must name the audited topic; the compatibility spelling `Topics` is also accepted, but specifying both is refused as ambiguous.
+
+Worked case: [13-append-only-audit](../samples/live/13-append-only-audit/README.md). Framework gallery: [framework-append-only-audit](../scripts/live/regression/framework/framework-append-only-audit/README.md).

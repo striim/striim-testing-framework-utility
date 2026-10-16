@@ -252,3 +252,15 @@ The live engine modules `rawfile` implement this check. Manifest loading validat
 ### Prove no matching data arrived after a sentinel
 
 The live engine modules `sinkprobe`, `nothing` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [10-bounded-nothing fixture](../../samples/live/10-bounded-nothing/README.md).
+
+### Control overlapping seed transactions and recovery commits
+
+The live engine modules `transactions`, `diagnostics` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [11-transaction-seeds fixture](../../samples/live/11-transaction-seeds/README.md).
+
+### Check consistent target snapshots against committed prefixes
+
+The live engine modules `snapshot_observer` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [12-snapshot-observer fixture](../../samples/live/12-snapshot-observer/README.md).
+
+### Reject replay duplicates with an append-only audit
+
+The live engine modules `audit` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [13-append-only-audit fixture](../../samples/live/13-append-only-audit/README.md).

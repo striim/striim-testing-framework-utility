@@ -99,7 +99,7 @@ def _run(argv, timeout: float):
     return subprocess.run(argv, capture_output=True, timeout=timeout)
 
 
-def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining):
+def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining, *, snapshot=None):
     """Stream a limited, typed Spanner snapshot; never use the legacy text reader."""
     from livetest.spanneradmin import _check_table, _IDENT
     table = _check_table(table)
@@ -110,7 +110,8 @@ def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining):
         sql += " ORDER BY " + ", ".join(order_by)
     sql += f" LIMIT {max_rows + 1}"
     rows, size = [], 0
-    with admin._db().snapshot() as snap:
+    from contextlib import nullcontext
+    with (nullcontext(snapshot) if snapshot is not None else admin._db().snapshot()) as snap:
         result = snap.execute_sql(sql, timeout=max(0.05, remaining))
         names = None
         for values in result:

@@ -124,6 +124,30 @@ def test_strict_json_file_comparison_writes_and_validates_full_evidence(good):
     assert saved["data"]["comparisons"][0]["equal"] is True
 
 
+def test_transaction_commit_after_recovery_is_written_to_evidence(good):
+    from livetest.transactions import Pool
+    class Connection:
+        def commit(self): pass
+        def rollback(self): pass
+        def close(self): pass
+    pool = Pool({"postgres-source": {"admin": object()}}, {}, source_sql=lambda f: "",
+                connect=lambda *args: Connection(), trace=good._slt_records.append)
+    steps = [{"session": "held", "op": "begin", "db": "postgres-source", "when": "post_start"},
+             {"session": "held", "op": "commit", "when": "post_recover"}]
+    pool.run_phase(steps, "post_start")
+    pool.run_phase(steps, "post_recover")
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    records = [r for r in saved["assertions"] if r["type"] == "transaction"]
+    assert len(records) == 2
+    event = records[-1]["actual"]["rows"][0]
+    assert (event["session"], event["op"], event["phase"], event["outcome"]) == (
+        "held", "commit", "post_recover", "succeeded")
+    assert event["startedAt"] <= event["endedAt"]
+
+
 def doc_of(item, status="passed"):
     return evidence.case_envelope(item, report(), status)
 
@@ -626,3 +650,81 @@ def test_kafka_strict_json_real_envelope_validator(good, equal):
     doc = doc_of(good, "passed" if equal else "failed")
     evidence.validate_case(doc)
     evidence.read(write(good, doc))
+
+
+def test_observed_commit_writes_source_keys_and_slot_evidence(good):
+    from livetest.transactions import Pool
+    class Cursor:
+        def execute(self, *args): pass
+        def fetchone(self): return (41,)
+        def close(self): pass
+    class Connection:
+        def cursor(self): return Cursor()
+        def commit(self): pass
+        def rollback(self): pass
+        def close(self): pass
+    class Probe:
+        def query(self, sql, params=None, remaining=1):
+            if 'txid_status' in sql: return [('committed',)]
+            if 'pg_replication_slots' in sql: return [('0/10','0/08')]
+            return [('1',False),('2',False)]
+    pool = Pool({'postgres-source': {'admin': object()}},
+        {'PG_SOURCE_SCHEMA': 'qasource', 'TID': 'case_', 'PG_SLOT': 'case_slot'},
+        source_sql=lambda f: '', connect=lambda *args: Connection(), probe=lambda *args: Probe(),
+        owned=lambda *args: True, trace=good._slt_records.append)
+    steps = [{'session':'a','op':'begin','db':'postgres-source','when':'post_start',
+        'observe': {'tables':[{'table':'${PG_SOURCE_SCHEMA}.${TID}src','key':'id'}],'slot':'${PG_SLOT}'}},
+        {'session':'a','op':'commit','when':'post_recover'}]
+    pool.run_phase(steps,'post_start')
+    pool.observe_recovery('pre_interrupt')
+    pool.observe_recovery('post_restore')
+    pool.run_phase(steps,'post_recover')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc_of(good), secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved,secrets=())
+    event = saved['assertions'][-1]['actual']['rows'][0]
+    assert event['txid'] == 41 and event['commitStatus'] == 'committed'
+    assert event['source']['tables'][0]['keys'] == ['1','2']
+    assert event['source']['slot']['restartLsn'] == '0/08'
+
+
+def test_abandoned_snapshot_history_is_written_on_completion_failure(good):
+    from livetest.snapshot_observer import Observer
+    from livetest.plugin import _abandon_snapshot
+    spec = {'db':'postgres-target','tables':{
+        'a':{'target':'${PG_TARGET_SCHEMA}.${TID}a','columns':{'id':'integer'}},
+        'b':{'target':'${PG_TARGET_SCHEMA}.${TID}b','columns':{'id':'integer'}}},
+        'prefixes':[{'a':'empty.csv','b':'empty.csv'}]}
+    observer = Observer(spec, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: b'id\n'), read=lambda *args: {'a':[], 'b':[]})
+    observer.sample()
+    good._slt_lc.completion = {**good._slt_lc.completion, 'reason':'deadline', 'witness':None}
+    _abandon_snapshot(observer, good._slt_records, 'lifecycle completion deadline')
+    doc = evidence.case_envelope(good, report(outcome='failed',text='completion deadline'), 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved,secrets=())
+    assert saved['run']['status'] == 'failed' and not saved['run']['qualifies']
+    record = saved['assertions'][-1]
+    assert 'observer-incomplete' in record['detail']
+    assert record['actual']['rows'][0]['prefix'] == 0
+    assert record['actual']['rows'][0]['observedUtc']
+
+
+def test_failed_snapshot_keys_survive_written_evidence(good):
+    from livetest.snapshot_observer import Observer
+    from livetest.assertions import AssertionFailed
+    spec = {'db': 'postgres-target', 'tables': {
+        'a': {'target': '${TID}a', 'columns': {'id': 'integer'}, 'keys': ['id']},
+        'b': {'target': '${TID}b', 'columns': {'id': 'integer'}, 'keys': ['id']}},
+        'prefixes': [{'a': 'empty.csv', 'b': 'empty.csv'}]}
+    observer = Observer(spec, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: b'id\n'),
+        read=lambda *a: {'a': [{'id': 2}], 'b': []})
+    with pytest.raises(AssertionFailed):
+        observer.sample()
+    doc = doc_of(good, status='failed')
+    doc['assertions'].append(observer.abandon('completion failed'))
+    path = write(good, doc)
+    saved = json.loads(Path(path).read_text())
+    evidence.validate_case(saved)
+    tables = saved['assertions'][-1]['actual']['rows'][-1]['tables']
+    assert tables['a']['keys'] == [['2']] and tables['b']['keys'] == []

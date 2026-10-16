@@ -177,9 +177,12 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `lifecycle:` `initial-load` with a file (`baseline-landed`, `file-lines`) | **tested**: sample 03 (Docker mode) |
 | `lifecycle:` `cdc` with `sentinel` | **tested**: sample 04 |
 | `lifecycle:` `source-progress`, `row-count` | **supported, not exercised here** |
-| File/Kafka/Spanner lifecycle sentinel and bounded absence | File: **tested**, sample 10 reported passing on Striim 5.4.2. Kafka/Spanner: **supported, not exercised here**, hermetic coverage. The sentinel SQL source remains Postgres; table-count witnesses remain Postgres |
+| File/Kafka/Spanner lifecycle sentinel and bounded absence | File: **tested**, sample 10 reported passing on Striim 5.4.2. Kafka/Spanner: **supported, not exercised here**, hermetic coverage. The sentinel SQL source remains Postgres; Spanner counts additionally require the append-only audit contract |
 | Strict JSON file payload | **tested**: sample 08 reported passing on Striim 5.4.2. Kafka JSON/Avro strict mode: **supported, not exercised here**, hermetic coverage |
 | Raw file bytes/inventory | **tested**: sample 09 reported passing on Striim 5.4.2, Docker mode; extra empty files fail |
+| Overlapping Postgres seed sessions and held-open recovery commit | **tested**: sample 11 reported passing on Striim 5.4.2 with explicit RECOVERY, progress-triggered STOP and fresh recovery sentinel; expected rows unchanged |
+| Transaction snapshot observer | **supported, not exercised here** with the corrected PSTB sample; hermetic multi-table consistency/failure-history coverage. A prior live run detected an expected partial transaction without preservation |
+| Append-only delivery audit | **supported, not exercised here**: hermetic duplicate checks on every exact route; sample 13 has no reported live qualification |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
@@ -223,7 +226,9 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `raw.max_bytes` | 64 MiB by default; at most 512 MiB | All files in the exact inventory share this total read budget |
 | `diff_poll` | above 0 | a zero poll would spin against the database |
 | `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
+| Snapshot rows/bytes | 100000 rows and 64 MiB by default; at most 1000000 and 512 MiB | Row budget covers all tables; byte budget applies per table |
+| `snapshot_observer.max_snapshots` | 10000 by default; at most 100000 | Exhaustion fails instead of truncating history |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
 
 ## Check routes
 
@@ -238,3 +243,6 @@ row above for recorded runs; a skip is never a pass.
 | Raw bytes and exact inventory | — | — | — | yes | Docker owned output directory; every empty/hidden rolled file counts |
 | Lifecycle sentinel | yes | both dialects | yes | yes | Postgres source; fresh owned sinks; file requires Docker; Kafka can use native |
 | Bounded `nothing:` | yes | both dialects | yes | yes | Only after the completion sentinel proves this route; file requires Docker |
+| Transaction seeds | source or target | — | — | — | Native or Docker Postgres; post-start requires lifecycle readiness |
+| Snapshot observer | repeatable read/read only | multi-use read-only transaction | — | — | Native or Docker; declared lifecycle and owned target tables |
+| Append-only audit | yes | both dialects | kafka_record | yes | Native or Docker database/Kafka; Docker file; append writer and fresh owned target |

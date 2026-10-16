@@ -64,6 +64,9 @@ filtering, dest rendering and unknown-kind failure).
 | `framework-kafka-cleanup` | named Kafka topics are cleaned up |
 | [framework-raw-file](framework-raw-file/README.md) | Check file bytes, hashes and the exact rolled inventory |
 | [framework-bounded-nothing](framework-bounded-nothing/README.md) | Prove no matching data arrived after a sentinel |
+| [framework-transaction-seeds](framework-transaction-seeds/README.md) | Control overlapping seed transactions and recovery commits |
+| [framework-snapshot-observer](framework-snapshot-observer/README.md) | Check consistent target snapshots against committed prefixes |
+| [framework-append-only-audit](framework-append-only-audit/README.md) | Reject replay duplicates with an append-only audit |
 
 ## The gate
 

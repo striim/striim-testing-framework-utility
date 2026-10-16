@@ -73,7 +73,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "pg-slot", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -447,11 +447,11 @@ class Ledger:
         self.persist()
 
     def owns(self, kind: str, db, name: str) -> bool:
-        """Witness ownership (C7.2): a confirmed table of this attempt on ``db``, or a normalized path
+        """Witness ownership: a confirmed resource of this attempt on ``db``, or a normalized path
         inside a confirmed owned directory of this attempt."""
         mine = self.ident.attempt
-        if kind == "pg-table":
-            return any(e["kind"] == "pg-table" and e["name"] == name and e.get("db") == db and e["attempt"] == mine
+        if kind in ("pg-table", "pg-slot"):
+            return any(e["kind"] == kind and e["name"] == name and e.get("db") == db and e["attempt"] == mine
                        and e["state"] == "confirmed" for e in self.entries)
         if kind in ("spanner-table", "topic"):
             actual_kind = "kafka-topic" if kind == "topic" else kind
@@ -490,7 +490,7 @@ class Ledger:
         if rec is None:
             return f"attempt {entry['attempt']} recorded no target binding"
         kind = entry["kind"]
-        if kind in ("pg-table", "pg-view", "pg-slot"):
+        if kind in ("pg-table", "pg-view", "pg-slot", "pg-function"):
             was, cur = (rec.get("routes") or {}).get(entry.get("db")), (now.get("routes") or {}).get(entry.get("db"))
             if not was or not cur:
                 return f"route {entry.get('db')} is not bound on both sides"
@@ -763,6 +763,8 @@ class Ledger:
             if client is None:
                 raise RuntimeError("no Striim client to drop the namespace")
             client.teardown_namespace(name)
+        elif kind == "pg-function":
+            make_catalog(_lifecycle._admin(admins, db)).run(f"DROP FUNCTION IF EXISTS {_quoted(name)}()", 30.0)
         elif kind == "spanner-table":
             _lifecycle._admin(admins, db).drop_owned_table(name)
         elif kind == "kafka-topic":
@@ -805,6 +807,10 @@ class Ledger:
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
+        if kind == "pg-function":
+            rows = make_catalog(_lifecycle._admin(admins, db)).query(
+                "SELECT to_regprocedure(%s) IS NULL", (name + "()",), 30.0)
+            return bool(rows[0][0])
         if kind == "spanner-table":
             return name not in _lifecycle._admin(admins, db).list_owned_tables()
         if kind == "kafka-topic":
