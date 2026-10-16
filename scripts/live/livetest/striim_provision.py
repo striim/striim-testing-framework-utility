@@ -57,8 +57,11 @@ SERVICE_JARS = {"teradata": (TERADATA_JDBC_JAR, TERADATA_JDBC_ENV)}
 
 
 def teradata_jdbc_opted_in(env=None) -> bool:
-    e = os.environ if env is None else env
-    return (e.get(TERADATA_JDBC_ENV) or "").strip() == "1"
+    """SLT_TERADATA_JDBC=1 in ``env``, or by default the environment then ``.env``."""
+    if env is not None:
+        return (env.get(TERADATA_JDBC_ENV) or "").strip() == "1"
+    from livetest import paths
+    return (paths.setting(TERADATA_JDBC_ENV) or "").strip() == "1"
 
 
 class StriimDepsError(Exception):
@@ -261,16 +264,19 @@ def optional_jars(striim_dir: Path) -> dict:
     extra = d / "extra-lib"
     if extra.is_dir():
         for path in sorted(extra.glob("*.jar")):
-            if path.is_file():
+            if path.is_file() and not path.name.startswith("."):    # as the Dockerfile's glob
                 found[f"extra-lib/{path.name}"] = _sha256_of(path)
     return found
 
 
-def _write_optional_jars(striim_dir: Path) -> None:
+def _optional_jars_record(striim_dir: Path) -> bytes:
     import json
     record = {"schemaVersion": 1, "sha256": optional_jars(striim_dir)}
-    data = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    _write_build_input(striim_dir, OPTIONAL_JARS_FILE, data)
+    return (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _write_optional_jars(striim_dir: Path) -> None:
+    _write_build_input(striim_dir, OPTIONAL_JARS_FILE, _optional_jars_record(striim_dir))
 
 
 def _write_build_input(striim_dir: Path, filename: str, data: bytes) -> None:
@@ -511,7 +517,8 @@ def ensure_deps(striim_dir: Path, release: dict | None = None, run=None, progres
         return
     if progress: progress("cluster", "downloading dependencies (one-time)")
     print(f"[striim] downloading build dependencies for {version} (one-time)…")
-    with _env_override({"STRIIM_VERSION": version}):
+    with _env_override({"STRIIM_VERSION": version,
+                        TERADATA_JDBC_ENV: "1" if teradata_jdbc_opted_in() else None}):
         run(["./download-dependencies.sh"], cwd=str(striim_dir))
 
 def image_ref(version: str = _DEFAULT_STRIIM_VERSION, env=None) -> str:
@@ -563,6 +570,9 @@ def _local_build_inputs(striim_dir: Path) -> dict:
         for path in paths:
             if path.is_file():
                 out[str(path.relative_to(root))] = path.read_bytes()
+    # Computed, not read: the file a build embeds can be older than deps/ (a reused cluster's
+    # check never writes it), and what the next build would copy is what must match.
+    out[f"files/{OPTIONAL_JARS_FILE}"] = _optional_jars_record(striim_dir)
     return out
 
 
@@ -638,11 +648,13 @@ def missing_service_jar(service: str, mode: str, run=None) -> str | None:
         return None
     jar, flag = spec
     run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=30))
+    probe = f'if [ -s "/opt/striim/lib/{jar}" ]; then echo present; else echo absent; fi'
     try:
-        r = run(["docker", "exec", stack.striim_container(), "test", "-s", f"/opt/striim/lib/{jar}"])
+        r = run(["docker", "exec", stack.striim_container(), "sh", "-c", probe])
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if getattr(r, "returncode", 0) != 1:
+    # A missing or stopped container also exits 1; only an answer from inside it counts.
+    if getattr(r, "returncode", 1) != 0 or (getattr(r, "stdout", "") or "").strip() != "absent":
         return None
     return (f"the Striim image has no {jar}: set {flag}=1 (shell or .env) to fetch it into the "
             f"image (Teradata's licence for the driver applies). The image rebuilds on the next "

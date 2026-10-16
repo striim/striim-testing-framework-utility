@@ -506,7 +506,6 @@ def test_nothing_set_downloads_missing_deps_as_before(tmp_path):
 def test_nothing_set_reuses_a_matching_image_and_writes_no_identity(tmp_path):
     ctx = _recipe(tmp_path)
     docker = _FakeDocker(ctx)
-    sp._write_optional_jars(ctx)                           # an input of every build since then
     docker.embedded = sp._local_build_inputs(ctx)          # an image built from these inputs
     sp.ensure_image(ctx, run=docker.build, query_run=docker.query)
     assert docker.builds == 0

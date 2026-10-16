@@ -263,7 +263,9 @@ your instance, or skips naming the setting to set.
    Striim image; with `SLT_STRIIM_DEPS_MANIFEST` set, the manifest must name it. It is off by default
    because Teradata's licence allows the driver only with a licensed Teradata platform. Stop a kept
    cluster after setting it, so it is re-created from the new image; until then its tests skip,
-   naming the setting. Native mode: put the jar in your Striim install's `lib/`.
+   naming the setting. Unsetting it stops the fetch but not the copy: to build without the driver,
+   also delete `deps/terajdbc-20.00.00.46.jar`. Native mode: put the jar in your Striim install's
+   `lib/`.
 3. Set your instance, in `.env` or the shell:
 
 | Setting | Live tier | Integration tier | Default |

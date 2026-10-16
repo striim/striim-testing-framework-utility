@@ -62,6 +62,15 @@ def test_ensure_deps_fetches_when_opted_in_and_missing(tmp_path, monkeypatch):
     assert calls and "download-dependencies.sh" in " ".join(calls[0])
 
 
+def test_the_opt_in_is_read_from_dotenv_and_handed_to_the_script(tmp_path, monkeypatch):
+    _deps(tmp_path)
+    monkeypatch.setattr(paths, "dotenv_values", lambda env=None: {sp.TERADATA_JDBC_ENV: "1"})
+    seen = []
+    sp.ensure_deps(tmp_path, run=lambda argv, cwd=None: seen.append(sp.os.environ.get(sp.TERADATA_JDBC_ENV)))
+    assert seen == ["1"]
+    assert sp.TERADATA_JDBC_ENV not in sp.os.environ
+
+
 def test_ensure_deps_skips_when_opted_in_and_present(tmp_path, monkeypatch):
     (_deps(tmp_path) / JAR).write_text("jar")
     monkeypatch.setenv(sp.TERADATA_JDBC_ENV, "1")
@@ -74,6 +83,7 @@ def test_optional_jars_names_the_driver_and_extra_lib(tmp_path):
     (d / "extra-lib").mkdir()
     (d / "extra-lib" / "mine.jar").write_bytes(b"mine")
     (d / "extra-lib" / "README.md").write_text("not a jar")
+    (d / "extra-lib" / "._mine.jar").write_bytes(b"resource fork")    # the Dockerfile's glob skips it
     assert sp.optional_jars(tmp_path) == {JAR: hashlib.sha256(b"jar").hexdigest(),
                                           "extra-lib/mine.jar": hashlib.sha256(b"mine").hexdigest()}
 
@@ -135,29 +145,29 @@ def test_manifest_without_opt_in_never_stages_it_and_drops_a_stale_copy(tmp_path
     assert not (staged / JAR).exists()
 
 
-def _answer(rc):
+def _answer(rc, stdout):
     calls = []
     def run(argv):
         calls.append(argv)
-        return types.SimpleNamespace(returncode=rc, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=rc, stdout=stdout, stderr="")
     return run, calls
 
 
 def test_missing_driver_names_the_setting():
-    run, calls = _answer(1)
+    run, calls = _answer(0, "absent\n")
     why = sp.missing_service_jar("teradata", "docker", run=run)
     assert sp.TERADATA_JDBC_ENV + "=1" in why and JAR in why
-    assert calls[0][:2] == ["docker", "exec"] and calls[0][-1] == f"/opt/striim/lib/{JAR}"
+    assert calls[0][:2] == ["docker", "exec"] and f"/opt/striim/lib/{JAR}" in calls[0][-1]
 
 
-@pytest.mark.parametrize("service,mode,rc", [
-    ("teradata", "docker", 0),       # present
-    ("teradata", "docker", 125),     # container not reachable: the normal path reports it
-    ("teradata", "native", 1),       # a native install's lib/ is the user's
-    ("postgres", "docker", 1),       # needs no optional jar
+@pytest.mark.parametrize("service,mode,rc,stdout", [
+    ("teradata", "docker", 0, "present\n"),
+    ("teradata", "docker", 1, ""),          # no such or stopped container: the normal path reports it
+    ("teradata", "native", 0, "absent\n"),  # a native install's lib/ is the user's
+    ("postgres", "docker", 0, "absent\n"),  # needs no optional jar
 ])
-def test_no_reason_otherwise(service, mode, rc):
-    run, _ = _answer(rc)
+def test_no_reason_otherwise(service, mode, rc, stdout):
+    run, _ = _answer(rc, stdout)
     assert sp.missing_service_jar(service, mode, run=run) is None
 
 
