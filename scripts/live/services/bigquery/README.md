@@ -157,8 +157,8 @@ exact-chunk-boundary case. Unknown-total chunks remain incomplete; no padding,
 chunk-size or expected-row workaround is used. No product code or SDK jar is changed.
 Actual writer and image architecture qualification are recorded separately.
 
-The image supplier's client regression retains the correct oracle: one exact row.
-It must pass with a corrected client before this exclusion is removed. A skip is
+A client regression with a one-row oracle must pass with a corrected client
+before this exclusion is lifted. A skip is
 not a passing boundary test. The emulator may retain PENDING job metadata; no
 completed load job or target rows result from the omitted final request.
 

@@ -369,7 +369,8 @@ IPv4 HTTP endpoint, so no machine DNS or trust changes are needed.
 
 Bounded scalar assertions and actual Striim 5.4.2 legacy streaming / CSV batch fixtures
 are qualified on Linux amd64. The installed Java client exact-chunk-boundary case
-is explicitly excluded; the image supplier's disabled regression still expects the correct row.
+is explicitly excluded; a client regression with a one-row oracle must pass before
+this exclusion is lifted.
 Non-ASCII batch text requires the documented per-stack UTF-8 JVM setting in the
 service README. Storage Write, recovery, IAM, billing and cloud equivalence remain
 unqualified. BigQueryWriter batch uploads are direct
