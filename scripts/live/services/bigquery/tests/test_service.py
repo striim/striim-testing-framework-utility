@@ -1,4 +1,3 @@
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -66,17 +65,35 @@ def test_docker_remap_moves_both_tokens_and_admin_address():
 
 def test_missing_prebuilt_image_is_an_actionable_prerequisite_failure(monkeypatch):
     monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
-    assert "docker buildx build --load" in driver.unavailable({"SLT_BIGQUERY_IMAGE": "example:qualified"}, "docker")
-    assert driver.unavailable({}, "docker") is None
-    assert driver.build_required({})
+    assert "SLT_BIGQUERY_IMAGE" in driver.unavailable({"SLT_BIGQUERY_IMAGE": "example:qualified"}, "docker")
+    assert "SLT_BIGQUERY_IMAGE" in driver.unavailable({}, "docker")
+    assert not driver.build_required({})
     assert not driver.build_required({"SLT_BIGQUERY_IMAGE": "example:qualified"})
     assert driver.unavailable({"SLT_BIGQUERY_HOST": "127.0.0.1",
                                "SLT_BIGQUERY_WRITER_ENDPOINT": "http://127.0.0.1:19050",
                                "SLT_BIGQUERY_TOKEN_URI": "http://127.0.0.1:19051/token"}, "docker") is None
 
 
+def test_unset_image_skips_before_compose(monkeypatch):
+    definition = registry.load_service('bigquery')
+    monkeypatch.delenv('SLT_BIGQUERY_HOST', raising=False)
+    monkeypatch.delenv('SLT_BIGQUERY_IMAGE', raising=False)
+    monkeypatch.setattr(driver.subprocess, 'run', lambda *a, **kw: pytest.fail('must not invoke Docker'))
+    with pytest.raises(pytest.skip.Exception, match='SLT_BIGQUERY_IMAGE'):
+        plugin._prepare_service(definition, {}, 'docker')
+
+
+def test_public_profile_contains_no_emulator_build_recipe():
+    import yaml
+    compose = yaml.safe_load((ROOT / 'compose.yaml').read_text())
+    assert all('build' not in svc for svc in compose['services'].values())
+    assert 'SLT_BIGQUERY_IMAGE:?' in compose['services']['slt-bigquery']['image']
+    assert not (ROOT / 'Dockerfile').exists()
+    assert not (ROOT / 'upstream.lock').exists()
+
+
 @pytest.mark.parametrize("override", [False, True])
-def test_compose_builds_recipe_but_preserves_explicit_prebuilt_image(monkeypatch, override):
+def test_compose_never_builds_the_supplied_image(monkeypatch, override):
     from livetest import services
     seen = []
     monkeypatch.setenv("SLT_KEEP_SERVICES", "1")
@@ -88,7 +105,7 @@ def test_compose_builds_recipe_but_preserves_explicit_prebuilt_image(monkeypatch
                         seen.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""))
     services._default_compose_up(registry.load_service("bigquery"))
     command = next(args for args in seen if "up" in args)
-    assert ("--build" in command) is not override
+    assert "--build" not in command
 
 
 def test_fake_key_upload_is_independent_of_gcs(monkeypatch):
@@ -109,25 +126,6 @@ def test_fake_key_upload_is_independent_of_gcs(monkeypatch):
     assert config._slt_gcp_key_done and config._slt_bigquery_key_done
 
 
-def test_lock_and_recipe_pin_the_same_source():
-    lock = json.loads((ROOT / "upstream.lock").read_text())
-    recipe = (ROOT / "Dockerfile").read_text()
-    for value in (lock["upstream"]["commit"], lock["upstream"]["archive_sha256"], lock["build"]["go"], lock["build"]["runtime"]):
-        assert value in recipe
-    assert lock["build"]["framework_version"] in recipe
-    series = (ROOT / "patches/series").read_text().splitlines()
-    assert series == [item["file"] for item in lock["patches"]]
-    dependencies = lock["dependency_patches"]
-    for module in ("googlesqlite", "go-googlesql"):
-        assert (ROOT / "patches" / (module + ".series")).read_text().splitlines() == [
-            item["file"] for item in dependencies if item["module"].endswith("/" + module)]
-    for item in dependencies:
-        assert item["module"] + "@" + item["version"] in recipe
-    expected = []
-    for item in lock["patches"] + dependencies:
-        assert hashlib.sha256((ROOT / "patches" / item["file"]).read_bytes()).hexdigest() == item["sha256"]
-        expected.append(item["sha256"] + "  " + item["file"])
-    assert (ROOT / "patches/SHA256SUMS").read_text().splitlines() == expected
 
 
 def test_existing_docker_emulator_requires_writer_and_token_overrides(monkeypatch):
@@ -182,9 +180,8 @@ def test_prebuilt_image_must_match_pinned_labels(monkeypatch, labels):
 
 
 def test_prebuilt_image_accepts_only_the_pinned_labels(monkeypatch):
-    lock = json.loads((ROOT / 'upstream.lock').read_text())
-    labels = {'org.opencontainers.image.version':lock['build']['framework_version'],
-              'org.opencontainers.image.revision':lock['upstream']['commit']}
+    labels = {'org.opencontainers.image.version':'0.8.1-framework.8',
+              'org.opencontainers.image.revision':'a531d3deb716eaba4972f9afa88e03e2c0f1a1af'}
     monkeypatch.setattr(driver.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=0,
         stdout=json.dumps([{'Id':'sha256:'+'a'*64,'Config':{'Labels':labels}}])))
     assert driver.unavailable({'SLT_BIGQUERY_IMAGE':'example:qualified'}, 'docker') is None

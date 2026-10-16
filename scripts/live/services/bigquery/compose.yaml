@@ -1,8 +1,7 @@
 name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery
 services:
   slt-bigquery:
-    build: .
-    image: ${SLT_BIGQUERY_IMAGE:-${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery:0.8.1-framework.8}
+    image: ${SLT_BIGQUERY_IMAGE:?Set SLT_BIGQUERY_IMAGE to a qualified local emulator image}
     container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigquery
     cpus: ${SLT_BIGQUERY_CPUS:-1}
     mem_limit: ${SLT_BIGQUERY_MEM_LIMIT:-1g}

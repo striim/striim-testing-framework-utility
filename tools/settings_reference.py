@@ -165,7 +165,7 @@ SECTIONS = (
 SERVICE_EXTRAS = {
     "SLT_BIGQUERY_WRITER_ENDPOINT": (None, "Local IPv4 HTTP endpoint for the writer's documented PSC property."),
     "SLT_BIGQUERY_TOKEN_URI": (None, "Dedicated local fake OAuth endpoint ending in `/token`."),
-    "SLT_BIGQUERY_IMAGE": (None, "Override the framework emulator image; retain its digest in qualification evidence."),
+    "SLT_BIGQUERY_IMAGE": (None, "Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence."),
     "SLT_BIGQUERY_TOKEN_IMAGE": (None, "Override the dedicated fake token server image; use a pinned digest."),
     "SLT_MSSQL_BOOTSTRAP_PASSWORD": ("`QAtestuser1`",
                                      "The strong `sa` password the container boots with; the setup then "

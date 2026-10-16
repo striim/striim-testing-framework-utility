@@ -1,12 +1,13 @@
-"""Every shipped service resolves with nothing set, and needs no private image.
+"""Shipped services use public images or an explicit customer image prerequisite.
 
 The framework ships stock services (public images, default settings) and
 recipes that build from a public base. A service that needs a private or locally built image
-lives in the consumer's repo and comes in through servicesRoots. These tests hold the line for every compose file under
+lives in the consumer's repo and comes in through servicesRoots. BigQuery accepts a
+qualified user-supplied image; its recipe is not distributed here. These tests hold the line for every compose file under
 scripts/*/services:
 
 * each `${VAR}` has a default, or is set in the tracked `.env` beside the compose file, except
-  the Striim license, which is the customer's input to the Striim recipe;
+  declared customer prerequisites (the Striim license and BigQuery image);
 * each image is on the public list below, or is built from an in-repo Dockerfile whose every
   FROM is on that list;
 * `docker compose config` accepts each file with nothing set (skipped without the docker CLI).
@@ -28,8 +29,6 @@ COMPOSE_FILES = sorted(p for p in (REPO / "scripts").glob("*/services/**/compose
 # Pulled from public registries as they are; also the only bases a shipped Dockerfile may use.
 PUBLIC_IMAGES = {
     "postgres:16", "mysql:8.0", "python:3.12-slim",
-    "golang:1.25.3-bookworm@sha256:4f43b271f9673eb7bd0cb3a49cc17b08d8d6ee110277e26dbacc93c43a5a7793",
-    "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
     "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
     "fsouza/fake-gcs-server:1.54.0",
     "gvenzl/oracle-free:23.26.2-slim-faststart",
@@ -40,9 +39,10 @@ PUBLIC_IMAGES = {
     "opentext/vertica-k8s:25.3.0-8-multiarch",
     "amd64/ubuntu:22.04", "ubuntu:24.04",
 }
-# The Striim recipe's customer inputs: the license the cluster boots with. No default on purpose.
+# Customer inputs have no implicit default: the cluster license and the supplied emulator image.
 CUSTOMER_INPUTS = {"live/striim/compose.yaml": {"CLUSTER_NAME", "COMPANY_NAME", "PRODUCT_KEY",
-                                                "LICENCE_KEY"}}
+                                                "LICENCE_KEY"},
+                   "live/bigquery/compose.yaml": {"SLT_BIGQUERY_IMAGE"}}
 
 _NAME = re.compile(r"[A-Za-z_]\w*")
 
@@ -152,6 +152,10 @@ def test_every_image_is_public_or_built_here_on_a_public_base(path):
         if build is None and "image" not in svc:
             continue                       # an override file: it adds settings, not images
         if build is None:
+            if (_key(path), name) == ('live/bigquery/compose.yaml', 'slt-bigquery'):
+                assert svc['image'].startswith('${SLT_BIGQUERY_IMAGE:?')
+                assert not (path.parent / 'Dockerfile').exists()
+                continue
             image = _resolve(svc["image"])
             if image in built_here:        # the node and agent run the primary's Striim build
                 continue
@@ -203,7 +207,7 @@ def _clean_env() -> dict:
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="no docker CLI")
 @pytest.mark.parametrize("path", COMPOSE_FILES, ids=_key)
-def test_docker_compose_config_resolves_with_nothing_set(path):
+def test_docker_compose_config_resolves_with_declared_customer_inputs(path):
     if subprocess.run(["docker", "compose", "version"], capture_output=True,
                       env=_clean_env()).returncode:
         pytest.skip("no docker compose plugin")
@@ -211,8 +215,16 @@ def test_docker_compose_config_resolves_with_nothing_set(path):
     if path.name != "compose.yaml":        # an override is only ever applied on its base
         paths, key = [path.parent / "compose.yaml", path], _key(path.parent / "compose.yaml")
     files = [a for p in paths for a in ("-f", str(p))]
+    env = _clean_env()
+    expected_warnings = CUSTOMER_INPUTS.get(key, set())
+    if key == 'live/bigquery/compose.yaml':
+        missing = subprocess.run(['docker', 'compose', *files, 'config', '-q'],
+                                 capture_output=True, text=True, cwd=path.parent, env=env, timeout=60)
+        assert missing.returncode != 0 and 'SLT_BIGQUERY_IMAGE' in missing.stderr
+        env['SLT_BIGQUERY_IMAGE'] = 'example.invalid/qualified-bigquery:test'
+        expected_warnings = set()
     r = subprocess.run(["docker", "compose", *files, "config", "-q"],
-                       capture_output=True, text=True, cwd=path.parent, env=_clean_env(),
+                       capture_output=True, text=True, cwd=path.parent, env=env,
                        timeout=60)
     assert r.returncode == 0, r.stderr
-    assert _unexpected_warnings(paths, r.stderr) == CUSTOMER_INPUTS.get(key, set()), r.stderr
+    assert _unexpected_warnings(paths, r.stderr) == expected_warnings, r.stderr

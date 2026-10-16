@@ -503,6 +503,6 @@ checkout from another. Secrets in a settings file that no service declares are n
 The built-in [BigQuery service](../scripts/live/services/bigquery/README.md) is an
 example of `admins` plus idempotent `provision`: it verifies a dataset and query
 health, supplies the `bigquery-target` REST route, and keeps generated writer
-credentials separate from GCS/Spanner. It uses a pinned community emulator recipe
+credentials separate from GCS/Spanner. It uses a user-supplied qualified emulator image
 and bounded row readers. Reuse the service rather than adding cloud credentials
 or a GCS staging dependency to a direct-upload BigQueryWriter test.

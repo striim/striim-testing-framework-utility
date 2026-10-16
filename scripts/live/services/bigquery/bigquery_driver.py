@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import json
-from pathlib import Path
 import subprocess
 import time
 
@@ -35,31 +34,29 @@ def unavailable(env, mode):
         return _existing_problem(env)
     image = env.get("SLT_BIGQUERY_IMAGE")
     if not image:
-        return None
+        return "set SLT_BIGQUERY_IMAGE to a qualified local BigQuery emulator image; the framework does not build it"
     try:
         result = subprocess.run(["docker", "image", "inspect", image], capture_output=True,
                                 text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        return "cannot inspect the local BigQuery emulator image; verify Docker and build the pinned recipe"
+        return "cannot inspect SLT_BIGQUERY_IMAGE; verify Docker and supply a qualified local emulator image"
     if result.returncode:
-        return ("BigQuery emulator image is missing; build services/bigquery/Dockerfile with "
-                "docker buildx build --load -t slt-bigquery:0.8.1-framework.8 . "
-                "or set SLT_BIGQUERY_IMAGE to your qualified local image")
-    lock = json.loads((Path(__file__).with_name("upstream.lock")).read_text())
-    expected = {"org.opencontainers.image.version": lock["build"]["framework_version"],
-                "org.opencontainers.image.revision": lock["upstream"]["commit"]}
+        return "SLT_BIGQUERY_IMAGE is missing locally; supply a qualified BigQuery emulator image"
+    # Consumer compatibility contract; the image supplier owns its recipe and source lock.
+    expected = {"org.opencontainers.image.version": "0.8.1-framework.8",
+                "org.opencontainers.image.revision": "a531d3deb716eaba4972f9afa88e03e2c0f1a1af"}
     try:
         labels = json.loads(result.stdout)[0]["Config"]["Labels"]
         matches = isinstance(labels, dict) and all(labels.get(k) == v for k, v in expected.items())
     except (ValueError, KeyError, IndexError, TypeError):
         matches = False
     if not matches:
-        return "BigQuery emulator image labels do not match upstream.lock; rebuild the pinned recipe"
+        return "SLT_BIGQUERY_IMAGE labels do not match the qualified version/revision; supply a compatible image"
     return None
 
 
 def build_required(env):
-    return not bool(env.get("SLT_BIGQUERY_IMAGE"))
+    return False
 
 
 def compose_env(env):

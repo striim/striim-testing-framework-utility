@@ -45,7 +45,7 @@ the setting when the port is busy.
 | `kafka` | Confluent 7.6.1: Kafka, ZooKeeper, Schema Registry | n/a | 9092, 19092, 8081 | `kafka` | `SLT_KAFKA_HOST` |
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
-| `bigquery` | pinned community BigQuery emulator + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
+| `bigquery` | user-supplied BigQuery emulator image + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -358,7 +358,7 @@ With the hosts and ports above, from this machine:
 
 ## BigQuery emulator (`bigquery`)
 
-Build the pinned community emulator described in
+Supply a qualified local emulator image through `SLT_BIGQUERY_IMAGE`, as described in
 [the service README](../scripts/live/services/bigquery/README.md). This experimental
 service uses anonymous REST administration and generated local-only writer credentials.
 Set `SLT_BIGQUERY_REST_HOST_PORT` and `SLT_BIGQUERY_TOKEN_HOST_PORT` to remap ports;
@@ -369,7 +369,7 @@ IPv4 HTTP endpoint, so no machine DNS or trust changes are needed.
 
 Bounded scalar assertions and actual Striim 5.4.2 legacy streaming / CSV batch fixtures
 are qualified on Linux amd64. The installed Java client exact-chunk-boundary case
-is explicitly excluded; its disabled regression still expects the correct row.
+is explicitly excluded; the image supplier's disabled regression still expects the correct row.
 Non-ASCII batch text requires the documented per-stack UTF-8 JVM setting in the
 service README. Storage Write, recovery, IAM, billing and cloud equivalence remain
 unqualified. BigQueryWriter batch uploads are direct

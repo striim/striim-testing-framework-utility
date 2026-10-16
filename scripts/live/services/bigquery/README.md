@@ -1,8 +1,18 @@
 # Local BigQuery emulator
 
-Build a local BigQuery REST emulator with a dedicated fake OAuth endpoint. This is a
-community emulator, built from the exact public source and dependency images in
-`upstream.lock`. The framework image has its own version; it is not the upstream release image.
+Supply a qualified local BigQuery REST emulator image through `SLT_BIGQUERY_IMAGE`.
+The framework starts that user-supplied image and a dedicated fake OAuth endpoint;
+it does not build or distribute the emulator. The image must serve the dataset,
+query/job, legacy `insertAll` and bounded direct CSV resumable-upload APIs on port
+9050, accept `--project` and `--dataset`, and include a readiness healthcheck that
+checks the configured dataset and `SELECT 1`. Use an isolated credential-free server.
+
+The qualified consumer contract requires OCI labels
+`org.opencontainers.image.version=0.8.1-framework.8` and
+`org.opencontainers.image.revision=a531d3deb716eaba4972f9afa88e03e2c0f1a1af`.
+Missing or incompatible labels refuse the image. The image supplier owns the source,
+patches, license, build recipe and image verification. Run evidence records the
+managed service image ID; retain that ID with the supplied image's qualification.
 
 The pinned service supports legacy `insertAll` and bounded direct CSV batch loads.
 Actual Striim 5.4.2 writer fixtures cover both paths on Linux amd64. L2 qualification explicitly excludes the installed Java
@@ -12,16 +22,11 @@ recovery equivalence are outside this service's contract. BigQueryWriter batch l
 use direct resumable uploads, without GCS staging.
 
 1. Install the live engine dependencies, including `google-cloud-bigquery`.
-2. Build the image from this directory with
-   `docker buildx build --load -t slt-bigquery:0.8.1-framework.8 .`.
-   To isolate build cache, select your own docker-container builder with `--builder`.
-   Set `SLT_BIGQUERY_IMAGE` to this tag to consume the prebuilt image without
-   rebuilding it. Prebuilt images must carry the exact OCI version and upstream revision
-   labels from `upstream.lock`; missing or mismatched labels refuse the run.
-   Run evidence records each managed service image ID. Without that override, Compose builds the source recipe with a
-   stack-prefixed image tag.
-3. Start with `docker compose up -d --wait`. Readiness checks the dataset API and
-   the result of `SELECT 1`, as well as the dedicated token endpoint.
+2. Set `SLT_BIGQUERY_IMAGE` to the qualified image tag or digest already present in Docker.
+   Without it, BigQuery cases skip with an actionable prerequisite reason. An explicitly
+   selected lane exits nonzero for missing prerequisites; a skipped case is never a pass.
+3. Run the case with `striim-test run`. The framework starts the supplied image and
+   the dedicated token endpoint. It does not build the emulator or pull an implicit image.
 
 `SLT_STACK_PREFIX` isolates Compose projects, containers and networks. Set
 `SLT_BIGQUERY_REST_HOST_PORT` (default 9050) and `SLT_BIGQUERY_TOKEN_HOST_PORT`
@@ -44,30 +49,6 @@ the operator must select an isolated emulator endpoint. This is not a cloud cred
 or ADC configuration. Native Striim requires an explicit working endpoint and token
 setup. `SLT_BIGQUERY_IMAGE` and `SLT_BIGQUERY_TOKEN_IMAGE` override images; retain
 their exact digests when collecting qualification evidence.
-
-Preserve `UPSTREAM-LICENSE` when redistributing. The pinned archive is checked before
-extraction. Patch checksums and strict context checks reject source mismatches. The anonymous-result
-lifetime patch reclaims the result table and its dataset/catalog
-when its query job is deleted. Explicit destinations, replaced results and caller-modified
-anonymous datasets are preserved; cleanup authority covers results created in the current
-server instance. The pinned googlesqlite 0.3.1 backport from upstream PR 80 creates path catalogs without
-reloading the root builtin-function set. The upstream change is open and unmerged;
-its exact commit and patch digest are recorded in `upstream.lock`. A separate
-go-googlesql 0.3.0 patch gives the value returned by `GetParserOptions` an owning
-wrapper, so its C++ allocation is freed when the Go wrapper is collected. Its
-existing parent lifetime is preserved. Cleared named parameters release their Go
-type references while other analyzer dependencies stay pinned. Recreated catalogs
-reuse one immutable builtin definition set, including its aliases, namespaces and
-table-valued functions, through the existing non-owning catalog APIs.
-The analyzer configuration is unchanged. The insertAll decoder preserves JSON
-numeric literals without intermediate floating-point rounding, including signed
-INT64 limits. Separate CSV and resumable-upload patches are described below.
-Architecture and lane qualification remain recorded separately in run evidence.
-
-The source recipe builds Linux amd64 and arm64 images. Native amd64 API/query
-health, independent integer/text readback, port remapping, two-stack isolation and
-local credential refresh have been exercised. Arm64 has been cross-built; native
-ARM runtime behavior and native-Striim mode remain unqualified.
 
 `bigquery-target` supports bounded basic row assertions and typed exact comparisons through
 anonymous REST clients. Only qualified scalar schemas are accepted; unsupported types fail
@@ -118,9 +99,7 @@ the native all-types reader control is separate from writer type qualification.
 
 ## Bounded batch API and client exclusion
 
-The pinned feasible upstream Go suite passes with the CSV/upload patches. Its
-optional Docker-based multi-client conformance suite is skipped when Docker is
-unavailable inside the build. Native API controls cover zero/one/two headerless
+The supplied image must preserve the qualified CSV/upload behavior. Separate native API controls cover zero/one/two headerless
 records, explicit positional schemas, comma/pipe/tab delimiters, skipLeadingRows,
 custom NULL markers, empty STRING/BYTES, UTF-8, double quote and quoted newlines.
 Malformed numeric/jagged rows and unsupported quote/encoding settings fail while
@@ -178,15 +157,10 @@ exact-chunk-boundary case. Unknown-total chunks remain incomplete; no padding,
 chunk-size or expected-row workaround is used. No product code or SDK jar is changed.
 Actual writer and image architecture qualification are recorded separately.
 
-The disabled regression in `tests/test_java_boundary.py` retains the correct oracle:
-one exact row, using `tests/clients/ExactChunkBoundary.java`. Its public reason names
-the installed 2.59.0 client defect. The emulator may retain PENDING job metadata; no
-completed load job or target rows result from the omitted final request. A skip is
-not a passing boundary test. When a corrected client is available, remove the skip
-and run the test against an isolated local stack with `BIGQUERY_TEST_ENDPOINT`,
-`BIGQUERY_TEST_TOKEN_ENDPOINT` (origin without `/token`) and
-`BIGQUERY_JAVA_CLASSPATH` pointing at the public client dependencies. The corrected
-client must pass the unchanged one-row oracle before this exclusion is removed.
+The image supplier's client regression retains the correct oracle: one exact row.
+It must pass with a corrected client before this exclusion is removed. A skip is
+not a passing boundary test. The emulator may retain PENDING job metadata; no
+completed load job or target rows result from the omitted final request.
 
 The preceding bounded native API qualification used image `0.8.1-framework.7`, Linux amd64
 config SHA256 `721406bd82f405efefcd5e945831e771b614d4a2b3aa928a4c24d597bb87dd26`.
