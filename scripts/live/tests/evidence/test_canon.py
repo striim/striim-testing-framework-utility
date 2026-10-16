@@ -16,7 +16,10 @@ import pytest
 
 
 @pytest.mark.parametrize("literal,expected", [
-    ("0", "0"), ("-0.000", "0"), ("100", "100"), ("1e30", "1" + "0" * 30),
+    ("0", "0"), ("0E+2", "0"), ("0.000", "0"),
+    ("-0", "-0"), ("-0E+2", "-0"), ("-0.000", "-0"),
+    ("100", "100"), ("1.50", "1.5"), ("1E-7", "0.0000001"),
+    ("1e30", "1" + "0" * 30),
     ("1e-30", "0." + "0" * 29 + "1"),
     ("-123456789012345678901234567890.123456789", "-123456789012345678901234567890.123456789"),
 ])
@@ -27,6 +30,15 @@ def test_number_cells_use_lossless_fixed_point(literal, expected):
         ctx.prec = 3
         assert canon._typed("number", literal, "expected", "n") == expected
         assert canon._typed("number", Decimal(literal), "actual", "n") == expected
+
+
+def test_number_comparison_keeps_zero_sign_distinct():
+    from decimal import Decimal
+    from livetest import canon
+    declaration = canon.declaration({"columns": {"n": "number"}}, db_route=True)
+    assert canon.compare([{"n": "-0E+2"}], [{"n": Decimal("-0.000")}], declaration)["equal"]
+    assert not canon.compare([{"n": "0.000"}], [{"n": Decimal("-0")}], declaration)["equal"]
+    assert not canon.compare([{"n": "-0"}], [{"n": Decimal("0E+2")}], declaration)["equal"]
 import yaml
 
 from livetest import canon
