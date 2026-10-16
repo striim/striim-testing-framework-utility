@@ -1896,11 +1896,21 @@ def _declared_depth(path):
     depth = raw.get("depth")
     return depth if isinstance(depth, str) else None
 
+def _declared_tags(path):
+    """Read collection labels without moving manifest validation out of run time."""
+    try:
+        raw = yaml.safe_load(path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    tags = raw.get("tags") if isinstance(raw, dict) else None
+    return [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+
+
 class LiveYamlFile(pytest.File):
     def collect(self):
         yield LiveItem.from_parent(self, name=self.path.parent.name, manifest_path=self.path,
                                    services=_declared_services(self.path),
-                                   depth=_declared_depth(self.path))
+                                   depth=_declared_depth(self.path), tags=_declared_tags(self.path))
 
 def _prepare_service(defn, env, mode):
     why = _prestart.prepare_selected(defn, env, mode)
@@ -1909,7 +1919,7 @@ def _prepare_service(defn, env, mode):
 
 
 class LiveItem(pytest.Item):
-    def __init__(self, *, manifest_path, services=(), depth=None, **kw):
+    def __init__(self, *, manifest_path, services=(), depth=None, tags=(), **kw):
         super().__init__(**kw)
         self.manifest_path = manifest_path
         self.add_marker(pytest.mark.live)
@@ -1925,6 +1935,14 @@ class LiveItem(pytest.Item):
                 except (AttributeError, ValueError):
                     continue
             self.add_marker(getattr(pytest.mark, svc))
+        registered = _registered_markers(self.config) if tags else set()
+        for tag in tags:
+            self.extra_keyword_matches.add(tag)
+            marker = "tag_" + re.sub(r"[^a-zA-Z0-9_]", "_", tag)
+            if marker not in registered:
+                self.config.addinivalue_line("markers", f"{marker}: manifest tag")
+                registered.add(marker)
+            self.add_marker(getattr(pytest.mark, marker))
         if depth in VALID_DEPTHS:
             self.add_marker(getattr(pytest.mark, f"depth_{depth}"))
 
