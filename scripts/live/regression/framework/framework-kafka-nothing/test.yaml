@@ -6,6 +6,7 @@ requires:
 - kafka
 timeout: 120
 tags:
+- framework
 - regression
 - cdc
 - kafka
