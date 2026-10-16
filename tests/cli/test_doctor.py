@@ -427,7 +427,7 @@ def test_installers_from_a_manifest_are_named_and_counted(tmp_path):
     m = _manifest(tmp_path, REQUIRED_DEPS)
     c, = doctor.check_installers({"SLT_STRIIM_DEPS_MANIFEST": str(m)})
     assert c.status == "ok"
-    assert c.message == (f"{m} (SLT_STRIIM_DEPS_MANIFEST) names all 9 files for Striim 5.4.2, "
+    assert c.message == (f"{m} (SLT_STRIIM_DEPS_MANIFEST) names all 10 files for Striim 5.4.2, "
                          f"all in {tmp_path / 'files'}; their digests are checked before the "
                          f"build")
 

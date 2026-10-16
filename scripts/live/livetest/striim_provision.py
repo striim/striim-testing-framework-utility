@@ -27,7 +27,7 @@ def _required_deps(version: str = _DEFAULT_STRIIM_VERSION) -> list[str]:
         f"striim-dbms-{version}-Linux.deb", f"striim-node-{version}-Linux.deb",
         f"striim-agent-{version}-Linux.deb", f"striim-samples-{version}-Linux.deb",
         "sqljdbc_6.0.8112.200_enu.tar.gz", "mysql-connector-java-8.0.30.zip",
-        "vertica-jdbc-25.3.0-0.jar",
+        "vertica-jdbc-25.3.0-0.jar", "terajdbc-20.00.00.46.jar",
         "jmx_prometheus_javaagent-0.16.1.jar",
         "instantclient-basic-linux.x64-21.6.0.0.0dbru.zip",
     ]
