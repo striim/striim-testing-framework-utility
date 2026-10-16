@@ -9,8 +9,8 @@ before the app starts, and `DatabaseWriter` copies them to a target table.
 - `DatabaseWriter`'s `Tables` is a source,target pair.
 - `expected/rows.csv` is written by hand from `seed.sql`.
 
-`exact:` and `lifecycle:` read Postgres only, so this sample checks MySQL another way: `rows: 5`
-pins the count, so a missing or duplicated row fails, and `match:` compares the rows' values as
+`exact:` and `lifecycle:` do not support the MySQL database route, so this sample uses `rows: 5`
+to pin the count, so a missing or duplicated row fails, and `match:` compares the rows' values as
 text. The check is repeated until it passes or `timeout` runs out.
 
 ```

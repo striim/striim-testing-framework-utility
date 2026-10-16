@@ -1,0 +1,53 @@
+name: framework-kafka-nothing
+purpose: A rolled-back source insert produces no Kafka record after a delivery sentinel.
+tql: app.tql
+requires:
+- postgres
+- kafka
+timeout: 120
+tags:
+- framework
+- regression
+- cdc
+- kafka
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: slot.sql
+  db: postgres-source
+seed:
+- file: rollback.sql
+  db: postgres-source
+  when: post_start
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: kafka
+  readiness:
+    kind: sentinel
+  completion:
+    kind: sentinel
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: kafka
+      topic: ${KAFKA_TGT_TOPIC}
+      payload: json
+      key: value.data.id
+      deletion:
+        value.metadata.OperationName: DELETE
+  stability: 1s
+  deadlines:
+    readiness: 60s
+    completion: 60s
+assert:
+  data:
+  - target: ${KAFKA_TGT_TOPIC}
+    db: kafka
+    payload: json
+    nothing:
+      window: 3s
+      where:
+        value.data.id: 1

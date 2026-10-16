@@ -66,7 +66,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL)
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "18-kafka-nothing"]
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
@@ -222,3 +222,70 @@ def test_mysql_cdc_golden_follows_the_changes():
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
 def test_readme_shows_how_to_run_it(name):
     assert f"striim-test run samples/live/{name}" in (SAMPLES / name / "README.md").read_text()
+
+
+def test_spanner_exact_sample():
+    name = "07-spanner-exact"
+    raw = _raw(name)
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.requires == ["spanner"]
+    assert canon.check_manifest(raw)["specs"][0][0] == "data"
+    _header, rows = _golden(name)
+    seed = (SAMPLES / name / "seed.sql").read_text()
+    pairs = re.findall(r"\((\d+), '([^']*)'\)", seed)
+    assert [(r["id"], r["msg"]) for r in rows] == pairs
+    assert {p.relative_to(SAMPLES / name).as_posix() for p in (SAMPLES / name).rglob("*") if p.is_file()} == COMMON | {"ddl.sql", "seed.sql"}
+
+
+def test_strict_json_sample_declares_every_field():
+    name = "08-strict-json"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.exact["specs"][0][2].strict_json
+    header, rows = _golden(name)
+    assert set(header) == set(m.exact["specs"][0][2].columns)
+    seed = (SAMPLES / name / "seed.sql").read_text()
+    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", seed)
+    assert [(r["id"], r["name"]) for r in rows] == pairs
+
+
+def test_raw_file_sample_digest_follows_seed():
+    import hashlib
+    name = "09-raw-file"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
+    data = "".join(f"{i},{name}\r\n" for i, name in pairs).encode()
+    expected = m.assert_["file"][0]["raw"]["files"]["rows.00.csv"]
+    assert expected == {"bytes": len(data), "records": len(pairs), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+    assert m.lifecycle.completion["lines"] == len(pairs)
+
+
+def test_bounded_nothing_sample_is_gated_by_file_sentinel():
+    name = "10-bounded-nothing"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.lifecycle.sink == "file" and m.lifecycle.completion["kind"] == "sentinel"
+    s = m.assert_["file"][0]
+    assert s["path"] == m.lifecycle.sentinel["observe"]["path"]
+    assert s["nothing"] == {"window": "3s", "where": {"data.id": 1}}
+    sql = (SAMPLES / name / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and sql.endswith("ROLLBACK;\n")
+
+
+
+def test_kafka_nothing_sample_and_regression_share_the_delivery_contract():
+    name = "18-kafka-nothing"
+    root = SAMPLES / name
+    m = load_manifest(root / "test.yaml")
+    assert m.lifecycle.sink == "kafka" and m.requires == ["postgres", "kafka"]
+    observe = m.lifecycle.sentinel["observe"]
+    assert observe == {"db": "kafka", "topic": "${KAFKA_TGT_TOPIC}", "payload": "json",
+                       "key": "value.data.id", "deletion": {"value.metadata.OperationName": "DELETE"}}
+    check = m.assert_["data"][0]
+    assert check["target"] == observe["topic"] and check["db"] == "kafka"
+    assert check["nothing"] == {"window": "3s", "where": {"value.data.id": 1}}
+    sql = (root / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and "VALUES (1, 'rolled back')" in sql and sql.endswith("ROLLBACK;\n")
+    twin = SAMPLES.parents[1] / "scripts/live/regression/framework/framework-kafka-nothing"
+    for filename in ["app.tql", "ddl_source.sql", "slot.sql", "rollback.sql", "sentinel_insert.sql", "sentinel_delete.sql"]:
+        assert (root / filename).read_bytes() == (twin / filename).read_bytes()
+    tql = (root / "app.tql").read_text()
+    assert "${KAFKA_TGT_TOPIC}" in tql and "Global.KafkaWriter" in tql and "Global.JSONFormatter" in tql

@@ -395,6 +395,115 @@ within one patch line (`5.4.0.6-5.4.0.6F`; the unlettered base sorts before `A`)
 lines (`5.4.0.2-5.4.0.6G`) is rejected at load: patch lines ship in parallel, so a fix in one says
 nothing about another. List the releases a matrix run actually measured failing.
 
+## Bounded absence after a sentinel
+
+`nothing: {window: 3s, where: {id: 1}}` on an `assert.data` or `assert.file`
+spec requires that no matching row arrive during the entire positive window.
+`where` is a non-empty mapping of identity field paths to scalar values; every
+field must match with its token type intact. Missing identity fields or incompatible
+token types fail rather than silently counting as non-matches. Use fixed identity
+fields that the route emits on every checked event. For file events use paths such as `data.id`;
+for Kafka records use `value.id`. Data specs name `target` and `db` (or
+`target_db`); file specs name `path`. Data absence specs take only `target`, `db`/`target_db`, `nothing` and optional
+`payload`; file absence specs take only `path` and `nothing`. `project` is refused
+here: Kafka selectors already use full record paths. No content match/count/exact
+key can coexist. Kafka may choose `payload: json` (default `avro`).
+
+The case must have `lifecycle.completion.kind: sentinel`, and that sentinel must
+observe the same output table, topic or file. Invalid combinations, unknown keys
+and an invalid window are `invalid-nothing-spec`. At runtime absence is refused
+unless completion actually succeeded (`nothing-sentinel-unproven`). A late
+matching event fails with `nothing-arrived`; a read failure is `nothing-read-error`.
+Each read has an independent positive `nothing.read_timeout` (default `5s`),
+including a fresh read started at the window boundary. This avoids reducing the
+final transport budget to a few milliseconds. Slow reads can extend observation
+past the minimum window; an event visible on that final read also fails.
+Selectors name the prohibited input explicitly, so append-sink sentinel records
+remain visible and are not silently excluded. This is a bounded claim, not a
+claim that nothing can ever arrive afterward.
+
+The lifecycle sentinel source remains Postgres SQL. Its `observe` supports:
+
+- Postgres: the existing `{db, table, key}` present-then-absent probe.
+- Spanner: `{db: spanner-google}` or `spanner-postgres`, `table` containing
+  `${TID}`, and `key`. Use `sink: db`. Tables are acquired from the catalog before
+  DDL and confirmed afterward; exact reads can use the same confirmed tables.
+- File: `sink: file`, with `observe: {path, key, deletion}`. The path is under
+  `${OWNED_DIR}/`, the key is an event field path (for example `data.id`), and
+  `deletion: {metadata.OperationName: DELETE}` identifies the delivered deletion.
+- Kafka: `sink: kafka`, with `observe: {db: kafka, topic, key, deletion}` and
+  optional `payload: avro` or `json`. Keys and deletion selectors use record paths
+  rooted at key or value. Only freshly acquired framework topics qualify.
+
+Append sinks require both insertion and deletion events for the fresh sentinel
+id. An empty file/topic cannot prove deletion because insertion is observed
+first. Their readiness is sentinel (or existing source-progress for Kafka), and
+completion is sentinel. Unknown observe keys are refused. No sentinel rows are
+removed from content assertions. Declare their expected records if also checking
+the complete append output.
+
+Spanner tables and Kafka topics are checked for collisions before creation and
+deleted by exact confirmed name. Since these backends expose no immutable
+incarnation id here, cleanup of their prior-attempt ledger entries is refused;
+matching endpoint configuration alone never authorizes a replayed delete.
+File sentinels require Docker-mode server file access. An unsupported route or
+unowned output fails; it cannot turn the absence check green.
+
+## Raw file bytes and rolled-file inventories
+
+Use `assert.file[].raw` for byte-exact output. `path` names the base output file;
+`raw.files` declares the complete inventory of its parent directory across all
+app nodes. A name on two nodes, an extra file or a missing file fails. Hidden files and
+empty rolled files are inventory entries, never filtered out. The
+directory should hold only the output being tested. Docker mode is required
+(`raw-file-route-unsupported`). `path` must be under `${OWNED_DIR}/` and the
+runtime directory must belong to this attempt (`raw-file-target-not-owned`).
+
+FileWriter's first rolled file inserts `.00` before the extension:
+`FileName: rows.csv` produces `rows.00.csv`, not `rows.csv`. Inventory keys are
+actual basenames and may contain framework tokens such as `${TID}`; names are
+rendered before comparison. The `path` supplies the parent directory to inventory,
+so it may name the base output or its first rolled file; it does not filter out
+other directory entries.
+
+Empty files are inventory entries too: an undeclared empty rolled file fails.
+Declare an expected empty file with zero bytes, the SHA-256 of empty bytes and
+zero records. Sample 09 instead uses an event-count-only rollover policy above
+its two-row input, so a timer cannot create an empty extra file. Its typed CQ
+and explicit formatter members select only the two data columns, avoiding
+variable event metadata; its ordered query and CRLF formatter derive the same
+17 expected bytes.
+
+Each filename maps to `bytes` (non-negative integer) and `sha256` (`sha256:` plus
+64 lowercase hex digits). Optional `records` counts records in that individual
+file: `raw.format: lines` (default) counts LF-delimited records, including a final
+unterminated record; `json` counts complete JSON objects with the strict parser.
+CR bytes remain part of the hashed bytes. An inventory cannot be empty.
+Optional `raw.max_bytes` caps total bytes (default 64 MiB, maximum 512 MiB).
+Unknown keys, unsafe names and invalid counts or digests are
+`invalid-raw-file-spec`. A raw spec takes only `path` and `raw`, without `exact`.
+
+<!-- snippet: fragment -->
+```yaml
+assert:
+  file:
+    - path: ${OWNED_DIR}/rows.csv
+      raw:
+        format: lines
+        files:
+          rows.00.csv:
+            bytes: 0
+            sha256: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+            records: 0
+```
+
+Hashes and lengths are compared before text conversion. Failures report
+`raw-file-inventory-mismatch`, `raw-file-mismatch`, `raw-file-limit-exceeded`
+or `raw-file-invalid-json` in the file assertion record. With lifecycle
+completion, the inventory is read once after completion; otherwise it is polled
+until it matches or the case timeout expires. Derive the expected bytes and
+counts from the input and formatter contract, never from captured output.
+
 ## `exact:` — compare rows exactly
 
 A plain `match:` compares the **distinct set** of rows, as text: a duplicated row passes, a row that
@@ -434,9 +543,10 @@ near your data's size, so a runaway target fails fast.
 | key | default | meaning |
 |---|---|---|
 | `columns` | `{}` | column name → type (table below). Values of a typed column compare by meaning, so `118.0` and `118.00` are equal as `decimal:2` |
+| `strict_json` | `false` | preserve JSON token types and require a declaration for every compared column; file or Kafka only |
 | `ignore` | `[]` | columns removed from both sides before comparing (a load timestamp, say). Each must exist on at least one side, and cannot also be typed |
 | `order` | `any` | `any`: the rows compare as a multiset, in any order. `sequence`: also in the same order |
-| `order_by` | none | the columns the target is read in order of. Required with `order: sequence` on `data` and `diff`, refused otherwise. The values must be unique per row (`order-not-total` if not) |
+| `order_by` | none | the columns the target is read in order of. Required with `order: sequence` on database `data` and `diff`, refused on Kafka/file routes. The values must be unique per row (`order-not-total` if not) |
 
 The spec's own `keys:` (a projection) still applies, before `ignore`.
 
@@ -447,6 +557,8 @@ columns need no entry.
 | type | golden cell | compared as |
 |---|---|---|
 | `integer` | `-12` | the number |
+| `text` | any text, including an empty cell | a string value; strict payloads require a string token |
+| `number` | `1.25` | a finite numeric value; quoted numbers and booleans fail |
 | `decimal:<s>` (s 0 to 38) | `118.00` | the value at `s` places; a value that does not fit exactly is `lossy-decimal`, never rounded |
 | `boolean` | `true` or `false` | the value |
 | `timestamptz` | ISO 8601 with `Z` or `±hh:mm` (`2026-09-01T08:00:00+00:00`) | the instant, in UTC |
@@ -456,13 +568,43 @@ columns need no entry.
 | `json` | JSON text | the JSON, with keys sorted; numbers keep their exact text (`1.0` is not `1.00`) |
 
 **Golden files.** A UTF-8 CSV without a byte-order mark, with a header row of unique names:
-- `<null>` is NULL. An empty cell is an empty string, and is refused in a typed column.
-- `<absent>` (file specs only) is a column the record does not carry.
+- `<null>` is NULL. An empty cell is an empty string: accepted by `text`, refused by numeric/date/binary/JSON declarations.
+- `<absent>` (file and Kafka record specs only) is a column the record does not carry.
 - Write the golden by hand from your data. The framework never writes one.
 
+**Strict JSON payloads.** Set `exact.strict_json: true` on a file or Kafka record
+spec. It is refused on database routes (`invalid-declaration`). Declare every
+compared column, including text and null columns; `keys` and `ignore` still select
+what is compared. An undeclared compared column fails with `undeclared-column`. A quoted integer
+or another token/type mismatch fails `invalid-value:actual:<column>`; fix the
+producer rather than changing the expected token type.
+`text` requires a string token (including an empty string); `number` requires a
+finite numeric token and compares its exact numeric value. Existing `integer`,
+`boolean`, `decimal:N`, `json` and `binary:hex` / `binary:base64` declarations work.
+A `json` column retains scalar token types: number 1 differs from string "1".
+Byte values require `binary:hex` or `binary:base64`; an object identity string is
+refused by those encodings. The golden stays a hand-written CSV; JSON columns
+contain JSON text, and `<null>` still means a null column.
+
+Strict file reads refuse duplicate object keys, non-finite constants, incomplete
+JSON and non-object events (`invalid-json`). They accept arrays of event objects
+and successive complete event objects or arrays. Kafka `project: kafka_record`
+uses Avro values by default; add `payload: json` to decode each message value as
+strict JSON. `payload` takes `avro` or `json` and requires `strict_json: true`
+(`invalid-exact-spec`). Message keys are strict JSON too. Unknown `exact` keys
+are refused; the strict flag must be boolean. Legacy declarations keep their
+existing parsing and comparison behavior.
+
 **Where it works.**
-- `data` and `diff`: the `postgres-source` and `postgres-target` routes only. Another route is
-  refused at load (`exact-route-unsupported`).
+- `data` and `diff`: `postgres-source`, `postgres-target`, `spanner-google` and
+  `spanner-postgres`. Spanner reads retain native types within a bounded read-only snapshot.
+- `data` also supports `db: kafka` with `project: kafka_record` and `keys:` rooted at
+  `key` or `value`. Declare types using those full paths (for example `value.id: integer`).
+  Missing paths stay absent; null stays null. Every decoded Avro frame is counted.
+  `order: sequence` follows consumed record order and needs no `order_by`; use one partition
+  when the test requires a single total order. Wire bytes and decoded rows are bounded.
+  An incomplete captured Kafka snapshot fails rather than returning a matching subset. Each partition is bounded by its captured high offset; later messages cannot hide unread captured rows. Missing or erroneous topic metadata is a read failure.
+  Other routes are refused at load (`exact-route-unsupported`).
 - `file`: Docker mode only; the file is read from the cluster's nodes. With `order: sequence` the
   path must match exactly one file on one node (`order-source-ambiguous`).
 - With a `lifecycle:` block, every table an exact spec reads (a diff's source too) must be one this
@@ -471,7 +613,8 @@ columns need no entry.
 **Refused at load** (by `striim-test doctor --case`, and at the start of a run):
 - a spec with `exact:` and no top-level block (`exact-block-missing`), or a block with no spec that
   uses it;
-- `exact:` without `match:`, or together with `rows`, `min_rows`, `ordered` or `project`;
+- `exact:` without `match:`, or together with `rows`, `min_rows` or `ordered`; `project` is allowed only for
+  Kafka `data` with `project: kafka_record`;
 - an unknown key or type, a column both typed and ignored;
 - a `match:` path outside the test's folder.
 
@@ -482,6 +625,87 @@ again until it matches or `timeout` runs out.
 
 `diff: [{..., exact: true}]` without the top-level block keeps its older meaning: the source and target
 rows compared as text, with their counts.
+
+### Strict Kafka JSON example
+
+A JSON key `{"id":1}` and value `{"id":1,"active":true,"note":null}` produce the
+hand-derived header `key.id,value.id,value.active,value.note` and row
+`1,1,true,<null>`. Every selected field is declared, including the nullable note.
+
+<!-- snippet: fragment -->
+```yaml
+exact: {version: 1}
+assert:
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      project: kafka_record
+      payload: json
+      keys: [key.id, value.id, value.active, value.note]
+      match: expected/messages.csv
+      exact:
+        strict_json: true
+        columns:
+          key.id: integer
+          value.id: integer
+          value.active: boolean
+          value.note: text
+```
+
+Changing value.id to the string "1" must fail even though its printed characters
+match. This Kafka example has hermetic coverage; sample 08 qualifies the file
+route live, not Kafka JSON payloads.
+
+
+Worked case: [08-strict-json](../samples/live/08-strict-json/README.md).
+
+### Native values on Spanner and Kafka
+
+The declaration follows the value returned by the reader, not the formatted text.
+
+| Returned value | Declaration | Limit or refusal |
+|---|---|---|
+| Spanner INT64 / Avro int or long | `integer` | booleans and quoted numbers are not integers |
+| Spanner NUMERIC / Avro logical decimal | `decimal:<s>` | choose the required scale; any value needing rounding fails |
+| Spanner FLOAT64 / Avro float or double | `number`, or `decimal:<s>` when exactly representable at that scale | non-finite values and lossy scale fail |
+| Spanner BOOL / Avro boolean | `boolean` | strings are not booleans |
+| Spanner STRING / Avro string or enum | `text` (or native undeclared text outside strict mode) | strict mode requires the declaration |
+| Spanner DATE / Avro logical date | `date` | compare the calendar date |
+| Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | this canonical profile uses microseconds; golden fractions have at most six digits. Project a separate integer/text field to check finer precision |
+| Spanner BYTES / Avro bytes or fixed | `binary:hex` or `binary:base64` | a byte value needs its declared encoding |
+| Spanner JSON, compatible arrays / Avro nested records or arrays | `json` | every nested value must be JSON-compatible; arrays of raw bytes or dates need a supported projection. Spanner client JSON decoding can round numbers, merge duplicate keys and conflate JSON null with SQL NULL; project raw text to check those distinctions |
+| nullable field / Avro union with null | the non-null value's declaration | `<null>` is null; incompatible mixed scalar branches need a supported projection |
+
+Kafka paths include the record section. For one message with JSON key `{"id":1}`
+and decoded Avro value `{"id":1,"active":true}`, the hand-derived golden header is
+`key.id,value.id,value.active` and its row is `1,1,true`.
+
+<!-- snippet: fragment -->
+```yaml
+exact: {version: 1, max_rows: 10, max_bytes: 4096}
+assert:
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      project: kafka_record
+      keys: [key.id, value.id, value.active]
+      match: expected/messages.csv
+      exact:
+        columns:
+          key.id: integer
+          value.id: integer
+          value.active: boolean
+        order: sequence
+```
+
+Use a single-partition topic for this sequence claim. Every decoded frame counts
+as a row, including duplicates; each frame retains its message key. The top-level
+`exact.max_rows` bounds decoded frames (default 100000, maximum 1000000), and
+`exact.max_bytes` bounds both Kafka wire bytes and canonical comparison bytes
+(default 64 MiB, maximum 512 MiB). There is no separate frame-limit setting. Reads
+must consume the complete captured watermark range before their deadline.
+This is a worked syntax example, with hermetic coverage; it is not a recorded
+live qualification of Kafka exact.
 
 ## `lifecycle:` — prove the app finished
 
@@ -515,7 +739,7 @@ lifecycle:
 |---|---|---|---|
 | `version` | **yes** | — | `1` |
 | `mode` | **yes** | — | `initial-load` (the app reads what exists, then stops producing, or loads a controlled baseline followed by CDC as described in WRITING-TESTS.md) or `cdc` (it captures changes while it runs) |
-| `sink` | **yes** | — | `db` (the app writes a table) or `file` (it writes a file) |
+| `sink` | **yes** | — | `db` (table), `file` (file) or `kafka` (topic) |
 | `readiness` | **yes** | — | `{kind: ..., ...}`: when the app is ready for the test's `post_start` data |
 | `completion` | **yes** | — | `{kind: ..., ...}`: when the app has finished |
 | `stability` | no | `5s` | how long the witnessed value must then stay unchanged; `500ms`, `5s`, `2m` or a number of seconds |
@@ -529,11 +753,11 @@ lifecycle:
 |---|---|---|---|
 | readiness `baseline-landed` | `initial-load` | `source: {db, table}`, and `target: {db, table}` (sink `db`) or `path:` (sink `file`) | the app is RUNNING and the target's row count, or the file's line count, equals the source's count taken before deploy |
 | readiness `source-progress` | `cdc` | `db: postgres-source` | the replication slot `${PG_SLOT}` is active |
-| readiness `sentinel` | `cdc`, sink `db` | none | the ready sentinel was seen on the target, then seen gone |
+| readiness `sentinel` | `cdc`, sink `db`, `file` or `kafka` | none | the ready insert and delete were witnessed; append sinks acknowledge deletion with the declared signal |
 | completion `source-count` | `initial-load`, sink `db` | `source: {db, table}`, `target: {db, table}` | the target's count equals the source's, and is above 0 |
 | completion `row-count` | sink `db` | `db`, `table`, `expect` (above 0) | the table's count equals `expect` |
 | completion `file-lines` | sink `file` | `path`, `lines` (above 0) | the file has `lines` lines, counted across its rollover files, blank lines ignored |
-| completion `sentinel` | `cdc`, sink `db` | none | the done sentinel, inserted after the `post_start` data, was seen on the target, then seen gone |
+| completion `sentinel` | `cdc`, sink `db`, `file` or `kafka` | none | the done sentinel, inserted after the `post_start` data, proves both insert and delete delivery |
 
 Zero is never proof: `expect: 0` and `lines: 0` are refused, and a source baseline of 0 fails the run
 with `zero-count`. For a test whose correct result is an empty target, use the `sentinel` kinds
@@ -555,14 +779,16 @@ sentinel:
 
 For each phase the framework picks a new id, runs `insert` with it as `${SENTINEL_ID}` (and
 `${SENTINEL_TAG}`, a text unique to the run and phase), waits until a row with that id is on the
-target, runs `delete`, and waits until it is gone. Only a row the app carried from source to target can
+target, runs `delete`, and waits for absence (database) or the declared deletion signal (append sink). Only a row the app carried from source to target can
 satisfy it. The source table must accept a row that has only the key and the values your `insert`
 file gives: fill any `NOT NULL` columns there.
 
 ### Rules
 
-- **Routes.** Every `db:` in the block is `postgres-source` or `postgres-target`. A file sink needs
-  Docker mode.
+- **Routes.** Source SQL and table-count witnesses use Postgres. Sentinel output may be
+  Postgres, either Spanner dialect, a freshly owned Kafka topic, or an owned file.
+  File sinks require Docker. Kafka completion must be sentinel, with sentinel
+  or source-progress readiness. See the output references below.
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
   `dest`, and the block's own `path`s start with `${OWNED_DIR}/`, with no `.`, `..` or empty parts.
   `${OWNED_DIR}` is a directory on the Striim nodes that the run creates for itself and removes at
@@ -577,11 +803,128 @@ file gives: fill any `NOT NULL` columns there.
   observations.
 
 **Clean-up (`reset: owned`).** The run records each object before it creates it, and removes only
-those, by exact name: Postgres tables and replication slots, the namespace, and `${OWNED_DIR}`. An
+those, by exact name: Postgres tables and replication slots, acquired Spanner sink tables and Kafka topics, the namespace, and `${OWNED_DIR}`. An
 object with the same name that the run did not create is left alone and fails the run
-(`collision:<kind>:<name>`). Tables on other databases are not tracked, and are reported as not
-verified. With `--keep-resources` nothing is removed; `striim-test doctor` then names the
-`python -m livetest.ownership replay <ledger>` command that removes it later.
+(`collision:<kind>:<name>`). Tables on other database engines are not tracked and are reported as unverified.
+With `--keep-resources` nothing is removed. Replay can remove the saved Postgres/file
+resources; it refuses prior-attempt Spanner/Kafka entries without incarnation proof.
+See [the exact-name cleanup guidance](TROUBLESHOOTING.md#prior-attempt-spanner-or-kafka-resources).
+
+### Sentinel output references
+
+The insert/delete SQL executes through the declared Postgres source route. The
+application must transport both events to the observed sink, with a stable
+identity and deletion signal. Append sinks keep both events in their output;
+empty output cannot prove that deletion arrived. These snippets show lifecycle
+and bounded absence together; supply the source DDL, SQL files and app route in
+the case. The prohibited identity is explicit and distinct from sentinel IDs.
+
+**File.**
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      path: ${OWNED_DIR}/events.json
+      key: data.id
+      deletion: {metadata.OperationName: DELETE}
+assert:
+  file:
+    - path: ${OWNED_DIR}/events.json
+      nothing:
+        window: 3s
+        read_timeout: 5s
+        where: {data.id: 999}
+```
+
+**Kafka.**
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: kafka
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: kafka
+      topic: ${KAFKA_TGT_TOPIC}
+      key: value.id
+      deletion: {value.operation: DELETE}
+      payload: json
+assert:
+  data:
+    - target: ${KAFKA_TGT_TOPIC}
+      db: kafka
+      payload: json
+      nothing:
+        window: 3s
+        read_timeout: 5s
+        where: {value.id: 999}
+```
+
+**Spanner.**
+
+<!-- snippet: fragment -->
+```yaml
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness: {kind: sentinel}
+  completion: {kind: sentinel}
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: spanner-google
+      table: ${TID}tgt
+      key: id
+assert:
+  data:
+    - target: ${TID}tgt
+      db: spanner-google
+      nothing:
+        window: 3s
+        read_timeout: 5s
+        where: {id: 999}
+```
+
+The Kafka example assumes the formatter emits id and operation fields in its
+message value. Its topic must be freshly acquired by this attempt. Native mode
+is possible for Kafka with the required services and owned topic; file sentinels
+require Docker access to an owned output directory. Spanner uses owned tables;
+spanner-postgres selects the other dialect. These routes have hermetic coverage;
+sample 10 exercises the file route and sample 18 exercises the Kafka route.
+
+Kafka and file sentinels read the complete append sink on each poll. Their fixed
+limits are `DEFAULT_MAX_ROWS = 100000` and `DEFAULT_MAX_BYTES = 67108864` (64 MiB),
+including application data and sentinel insert/delete records. Exceeding either
+fails readiness/completion with `canonical-limit-exceeded`; raising `exact:` limits
+does not change these sentinel limits. Keep the complete append output within
+both limits or use a database sentinel. Spanner database sentinels count only the
+requested key with a bounded `WHERE` query. Database sentinel keys must be plain
+column identifiers; only Kafka/file keys accept dotted field paths. String values
+in `deletion` selectors render tokens just like `nothing.where`.
+
+Owned `spanner-postgres` DDL requires unquoted lowercase, unqualified table names.
+Mixed-case, quoted or schema-qualified names are refused before executing DDL,
+so catalog confirmation and cleanup always refer to the same table name.
 
 ## Infrastructure ownership (`SLT_INFRA_OWNERSHIP`)
 
@@ -723,7 +1066,7 @@ assert:
 ```
 No specs — just asserts the app reaches and stays RUNNING through a short settle window.
 
-### `data` — Postgres/Oracle/MSSQL target row assertions
+### `data` — database rows and Kafka records
 <!-- snippet: fragment -->
 ```yaml
 assert:
@@ -737,6 +1080,11 @@ assert:
 Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `match` compares
 *stringified* values; use `<null>` in the golden CSV for SQL/JSON null. By default it compares
 distinct sets; pin `rows: N` too if cardinality matters.
+
+Database data specs can add `exact:` as described above. Kafka typed comparison
+uses `project: kafka_record` with full `key.*`/`value.*` projection paths. Its
+optional `payload` selects `avro` (default) or `json` and requires
+`exact.strict_json: true`; neither key creates a new assertion tier.
 
 For a Kafka target with JSON message keys and length-delimited Avro values, opt into
 `project: kafka_record` to compare the key and value of each record together:
@@ -780,7 +1128,34 @@ assert:
 An empty source fails fast (asserts nothing). Polls until the target's distinct row set equals
 the source's.
 
+For a typed Spanner diff, both endpoints name the table within the selected
+service database, and every non-text column is declared. This checks counted
+rows rather than the legacy distinct text set:
+
+<!-- snippet: fragment -->
+```yaml
+exact: {version: 1}
+assert:
+  diff:
+    - source_db: spanner-google
+      source: '${TID}src'
+      target_db: spanner-google
+      target: '${TID}tgt'
+      exact:
+        columns: {id: integer, amount: 'decimal:2'}
+```
+
+For the PostgreSQL dialect, use `spanner-postgres` on each endpoint. A declared
+lifecycle requires both read tables to be owned by this attempt. Derive the
+source rows by hand from the seed; copying `1,12.30` twice requires two identical
+target rows, and a missing copy or changed amount fails. This is a route-binding
+example, not a claim of live Spanner diff qualification.
+
 ### `file` — `FileWriter`/`JSONFormatter` target assertions
+
+File specs can add typed `exact:` or use a standalone `raw:` inventory as
+described above. A raw spec takes only `path` and `raw`: content/projection
+keys cannot coexist with the inventory.
 <!-- snippet: fragment -->
 ```yaml
 assert:
@@ -1100,3 +1475,13 @@ differing only in case — none of them is a readable test-name slug. Write ever
 - **Parallel runs are opt-in and leave teardown to you** — see `docs/internals/ENGINE.md` "Parallel runs
   (`SLT_PARALLEL=1 -n N`)" for the coordination machinery (`SLT_KEEP_SERVICES=1`, one-time
   provisioning, register-once OP jars, no automatic teardown).
+
+Worked case: [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
+
+Kafka `payload: json` comparisons retain their file/record declaration rules in evidence validation, including `strict_json: true` and record sequence order without a database `order_by`. Passing and failing comparisons both retain a validated envelope.
+
+Worked case: [09-raw-file](../samples/live/09-raw-file/README.md). Framework gallery: [framework-raw-file](../scripts/live/regression/framework/framework-raw-file/README.md).
+
+Absence selector string values expand case tokens before matching. Finite numeric selectors compare by decimal value, so YAML `9.99` matches a delivered numeric `9.99`; booleans and strings retain distinct token types. Missing fields or incompatible output types still fail the read.
+
+Worked case: [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md). Framework gallery: [framework-bounded-nothing](../scripts/live/regression/framework/framework-bounded-nothing/README.md).

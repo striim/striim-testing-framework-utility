@@ -236,3 +236,19 @@ waits 60 s and then fails naming the open transactions.
 - [design/c8-exact-data.md](design/c8-exact-data.md): exact comparison.
 - [PERF_SPEC.md](PERF_SPEC.md): the integration tier's performance extension.
 - [RELEASING.md](RELEASING.md): cutting a tagged release.
+
+### Check typed, counted Spanner rows
+
+The live engine modules `exactdata`, `canon` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [07-spanner-exact fixture](../../samples/live/07-spanner-exact/README.md).
+
+### Keep JSON token types in payload comparisons
+
+The live engine modules `strictjson` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [08-strict-json fixture](../../samples/live/08-strict-json/README.md).
+
+### Check file bytes, hashes and the exact rolled inventory
+
+The live engine modules `rawfile` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [09-raw-file fixture](../../samples/live/09-raw-file/README.md).
+
+### Prove no matching data arrived after a sentinel
+
+The live engine modules `sinkprobe`, `nothing` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [10-bounded-nothing fixture](../../samples/live/10-bounded-nothing/README.md).

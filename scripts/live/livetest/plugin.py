@@ -1104,7 +1104,7 @@ def _kafka_endpoints(base: dict) -> tuple[str, str]:
     return f"{base['host']}:{base['port']}", f"http://{base['host']}:{base['registry_port']}"
 
 
-def _kafka_admin(base):
+def _kafka_admin(base, ledger=None):
     # One admin against the broker + registry; seeds go to the source topic, the diff
     # reads both topics.
     broker, registry_url = _kafka_endpoints(base)
@@ -1113,8 +1113,11 @@ def _kafka_admin(base):
         "registry_url": registry_url,
         "seed_topic": base["src_topic"],
     })
-    _kafka_clear(admin, base["src_topic"])
-    _kafka_clear(admin, base["tgt_topic"])
+    for topic in (base["src_topic"], base["tgt_topic"]):
+        if ledger is None:
+            _kafka_clear(admin, topic)
+        else:
+            ledger.acquire_topic(admin, topic, lambda topic=topic: admin.ensure_topic(topic))
     return admin
 
 def _spec_route(s) -> str:
@@ -2170,7 +2173,8 @@ class LiveItem(pytest.Item):
                     gcs_cleanup += [(_gcs, resolved.base["src_bucket"]),
                                     (_gcs, resolved.base["tgt_bucket"])]
                 elif svc == "kafka":
-                    _kafka = _kafka_admin(resolved.base)
+                    _kafka = (_kafka_admin(resolved.base, ledger=ledger) if m.lifecycle is not None
+                              else _kafka_admin(resolved.base))
                     admins["kafka"] = {"admin": _kafka, "schema": None}
                     kafka_cleanup += [(_kafka, resolved.base["src_topic"]),
                                       (_kafka, resolved.base["tgt_topic"])]
@@ -2317,7 +2321,7 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)]))
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)]), acquire_sinks=m.lifecycle is not None)
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
                 _report(m.name, "seeding data")
@@ -3225,6 +3229,24 @@ class LiveItem(pytest.Item):
                             tokens=tokens, ident=ident, owned=ledger.owns,
                             read_files=lambda _p, **_k: read_server_files(ctx, _p, **_k),
                             source_dir=m.source_dir)
+                    from livetest.nothing import assert_nothing
+                    from livetest.sinkprobe import rows as sink_rows
+                    for _kind in ("data", "file"):
+                        _nothing_specs = [s for s in m.assert_.get(_kind, []) if "nothing" in s]
+                        if _nothing_specs:
+                            def _nothing_read(spec, remaining):
+                                if _kind == "file":
+                                    ref = {"path": spec["path"]}
+                                else:
+                                    route = spec.get("target_db", spec.get("db", "postgres-source"))
+                                    ref = {"db": route, "topic" if route == "kafka" else "table": spec["target"]}
+                                    if route == "kafka":
+                                        ref["payload"] = spec.get("payload", "avro")
+                                return sink_rows(ref, admins, tokens, remaining,
+                                    read_files=lambda p, **kw: read_server_files(ctx, p, **kw))
+                            self._slt_records += assert_nothing(_nothing_specs, kind=_kind, tokens=tokens,
+                                completion=self._slt_lc.completion, read=_nothing_read, status_probe=_terminal_probe)
+                            ran = True
                     if m.assert_.get("data"):
                         _report(m.name, "asserting: data")
                         # C8: exact specs compare slt-canon/1 rows; the rest stay legacy.
@@ -3234,7 +3256,7 @@ class LiveItem(pytest.Item):
                                 admins, _slt_exact_specs, m, tokens=tokens, owned=ledger.owns,
                                 lifecycle=m.lifecycle is not None, inputs=self._slt_inputs,
                                 collector=self._slt_data, status_probe=_terminal_probe)
-                        specs = substitute_targets(parse_data_specs(_slt_raw), tokens)
+                        specs = substitute_targets(parse_data_specs([s for s in _slt_raw if "nothing" not in s]), tokens)
                         for admin, group in admin_groups(admins, specs, m.name, "data"):
                             self._slt_records += assert_data(
                                 admin, group, m.dir, timeout=m.timeout, poll=m.diff_poll,
@@ -3266,7 +3288,13 @@ class LiveItem(pytest.Item):
                                 _slt_exact_specs, m, tokens=tokens, owned=ledger.owns,
                                 lifecycle=m.lifecycle is not None, inputs=self._slt_inputs, mode=ctx.mode,
                                 collector=self._slt_data, status_probe=_terminal_probe)
-                        fspecs = parse_file_specs(_slt_raw)
+                        from livetest.rawfile import assert_raw_files
+                        raw_specs = [s for s in _slt_raw if "raw" in s]
+                        if raw_specs:
+                            self._slt_records += assert_raw_files(raw_specs, timeout=m.timeout,
+                                tokens=tokens, mode=ctx.mode, owned=ledger.owns,
+                                lifecycle=m.lifecycle is not None, status_probe=_terminal_probe)
+                        fspecs = parse_file_specs([s for s in _slt_raw if "raw" not in s and "nothing" not in s])
                         for _fs in fspecs:
                             _fs["path"] = render(_fs["path"], tokens)
                         self._slt_records += assert_file(

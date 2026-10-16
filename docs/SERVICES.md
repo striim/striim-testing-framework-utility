@@ -100,7 +100,8 @@ The default service; the samples use it. `postgres:16` with the `wal2json` plugi
   the test; an inactive slot left behind holds WAL and fills the disk.
 - **Your own Postgres for CDC** needs `wal_level=logical`, the `wal2json` plugin installed and
   allowed as an output plugin, and the `REPLICATION` attribute on the source user.
-- `exact:` comparisons and `lifecycle:` blocks read Postgres routes only.
+- Postgres supports typed `exact:` and lifecycle witnesses. Exact comparison also supports
+  both Spanner dialects and Kafka records; see the [route matrix](WHAT-IS-SUPPORTED.md#check-routes).
 
 ## Oracle (`oracle`)
 
@@ -211,6 +212,10 @@ Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `Kaf
 - A topic your app creates that the framework does not know about (a persisted stream's topic, for
   example) goes in `kafka_cleanup_topics:` so it is removed at the end.
 
+Kafka sentinel/absence cases require freshly acquired framework source/target topics,
+not a reused or custom unclaimed topic. See [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md)
+for the file counterpart, and [TEST-YAML.md](TEST-YAML.md) for Kafka/Spanner references.
+
 ## Spanner (`spanner`)
 
 Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (GoogleSQL) and `pgdb`
@@ -230,6 +235,10 @@ Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (Goo
   it as `ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json'`.
 - GoogleSQL targets are `<database>.<table>` (`gsql.emp`); PostgreSQL-dialect targets are
   `public.<table>`.
+- Assertion `target:` is the table name, such as `${TID}tgt`; the selected route
+  already chooses the database. A two-part name is passed to SQL as written, not
+  interpreted as a database override. Writer `Tables` uses its adapter-specific form above.
+  Start with [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
 - The emulator runs one read-write transaction at a time: run Spanner tests serially.
 
 ## GCS (`gcs`)

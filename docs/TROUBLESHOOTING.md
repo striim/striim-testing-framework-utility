@@ -70,7 +70,7 @@ either the same way.
 | `exact-block-missing` | a spec has `exact:` but the top-level `exact: {version: 1}` is missing | add the block |
 | `undeclared-conversion:amount:Decimal` | a numeric, date or JSON column without a type | add it under `exact.columns` |
 | `invalid-value:expected:amount` | a golden cell does not parse as the column's type | fix the cell; write `<null>` for NULL |
-| `exact-route-unsupported`, or a `lifecycle:` route refused | `exact:` and `lifecycle:` read Postgres only | on other databases use `data` with `rows:` or `match:`, or `diff`, and no `lifecycle:` |
+| `exact-route-unsupported`, or a `lifecycle:` route refused | the selected route or projection does not support that check | check the [route matrix](WHAT-IS-SUPPORTED.md#check-routes); exact supports Postgres, both Spanner dialects and Kafka `kafka_record`, plus Docker files. Keep supported exact checks |
 | a `ddl:` file refused: schema or publication | the framework creates and drops the schemas a test uses | remove the `CREATE SCHEMA` / `CREATE PUBLICATION` |
 
 ## During a run
@@ -79,7 +79,7 @@ either the same way.
 |---|---|---|
 | `run` printed `run-dir:` and nothing else | a framework pinned before the result line printed only failures: nothing more means the run passed | `outcome.json` in the run directory says `"exit": 0`; move `framework.pin` to a newer release and run `python3 scripts/sync-framework.py` for the result line |
 | `exact data assertion failed`, with `samples.missing` / `samples.extra` | the target differs from the golden | read the two lists: fix the app, or the golden if the golden is wrong |
-| a `match:` test passes with a duplicated row | without `exact:`, `match` compares the distinct set of rows as text | add `exact:` (Postgres), or pin the count with `rows: N` |
+| a `match:` test passes with a duplicated row | without `exact:`, `match` compares the distinct set of rows as text | add `exact:` on a supported route; a hand-written row count alone cannot check every value |
 | lifecycle `deadline` at readiness | the app never delivered the sentinel, or never reached the baseline | check the app reached RUNNING, the replication slot, and the sentinel's `observe` table and `key` |
 | lifecycle `terminal-status:HALT` | the app halted | the Striim server log; the reason is in `evidence.json` |
 | lifecycle `zero-count` | the source had no rows to count | seed the source; for an empty correct result use the sentinel kinds |
@@ -131,3 +131,106 @@ which nothing executed as **exit 3, not a pass**.
 | `another integration-test session is already running against this checkout` | one integration run per checkout | wait for it, or use `--parallel` inside one run |
 | `NoSuchFileException` under `target/`, or a run that reports one case fewer than expected | you ran Maven in the module while the tier was building it | let the run finish; do not build the module at the same time |
 | a case reports a mismatch in event N, section, column | the emitted events differ from `expected/` | the message names the first difference |
+
+## Check typed, counted Spanner rows
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-declaration` | The exact declaration is malformed or has an unknown key/type. | Use the declared keys and types in TEST-YAML; retain the exact check. |
+| `invalid-exact-spec` | The exact declaration is malformed or has an unknown key/type. | Use the declared keys and types in TEST-YAML; retain the exact check. |
+| `exact-route-unsupported` | This route/projection cannot return typed exact rows. | Use a supported exact route or the route-appropriate assertion; see the route matrix. |
+| `canonical-limit-exceeded` | A read exceeds the declared row or byte budget. | Check unexpected rows/duplicates first; choose a sufficient bounded budget for the hand-derived input. |
+| `exact-read-error` | The typed target query failed. | Read the nested driver error, check privileges and target naming, and correct the route. |
+| `exact-read-timeout` | The typed query did not finish inside its deadline. | Check target reachability and query blocking; the read cannot qualify the result. |
+
+## Keep JSON token types in payload comparisons
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `undeclared-column` | Strict JSON contains a column absent from the declaration. | Declare every intended column with its token type, or fix the payload producer. |
+| `invalid-json` | The payload is malformed JSON, has duplicate keys/non-finite numbers, or has invalid framing. | Fix the producer; NaN and Infinity must not be emitted as JSON. |
+| `invalid-value:actual:<column>` | The observed token/value does not match its declared type. | Keep numeric/boolean/null token types; fix a formatter that quotes numbers, and declare binary encoding explicitly. |
+| `evidence-invalid` | The framework could not validate the written evidence envelope. | Treat the run as failed even when assertions passed. Report the framework commit and sanitized evidence/stdout through CONTRIBUTING; do not bypass validation. |
+
+## Check file bytes, hashes and the exact rolled inventory
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-raw-file-spec` | The raw inventory declaration is malformed or mixed with content assertions. | Use only path and raw on the spec; declare every expected rolled file, bytes, SHA-256 and records. |
+| `raw-file-inventory-mismatch` | The file names present differ from the complete declared inventory. | Check the .00 first-roll name, ${TID} rendering, and empty/hidden extra files; fix writer rollover rather than ignoring extras. |
+| `raw-file-mismatch` | An expected file has different bytes, hash or record count. | Check formatter members, encoding, separators and headers against the hand-derived golden. |
+| `raw-file-limit-exceeded` | The raw read exceeds max_bytes. | Check unintended output first, then declare an adequate bounded max_bytes. |
+| `raw-file-invalid-json` | The bytes cannot be parsed as complete strict JSON objects for raw.format: json. | Fix the emitted JSON record; counts cannot establish byte correctness. |
+| `raw-file-route-unsupported` | Raw inventory needs Docker access to owned output files. | Run the case in Docker mode with its owned directory. |
+| `raw-file-target-not-owned` | The raw path is outside this attempt's confirmed owned directory. | Use ${OWNED_DIR} and let the framework acquire the exact output scope. |
+
+## Prior-attempt Spanner or Kafka resources
+
+A later attempt can fail with `collision:kafka-topic` or `collision:spanner-table`
+after an earlier attempt's cleanup failed. This is intentional: attempts can use
+the same run/worker/case name, but matching names and endpoints cannot prove an
+object's incarnation. Replay refuses prior-attempt sink deletes, and acquisition
+refuses to clear a resource that already exists.
+
+1. Read the failed attempt's ownership ledger for the exact topic/table name and
+   backend binding. Confirm that attempt is abandoned and no active run uses it.
+2. In a framework checkout with its [test environment](../CONTRIBUTING.md#set-up)
+   installed, set only the relevant backend variables below from that ledger.
+   Replace each placeholder with the recorded value; do not use a prefix or pattern.
+3. Delete and verify that one object using the corresponding command. These are
+   manual destructive operations; only run the block for the abandoned resource.
+
+For a leftover Kafka topic (also removes its value schema subject):
+
+```bash
+export CLEANUP_BROKER='<recorded broker>' CLEANUP_REGISTRY='<recorded registry URL>'
+export CLEANUP_TOPIC='<exact recorded topic>'
+.venv-test/bin/python - <<'PY'
+import os
+from livetest.kafkaadmin import KafkaAdmin
+admin = KafkaAdmin({"broker": os.environ["CLEANUP_BROKER"],
+                    "registry_url": os.environ["CLEANUP_REGISTRY"]})
+topic = os.environ["CLEANUP_TOPIC"]
+admin.delete_topic(topic)
+assert not admin.topic_exists(topic), "topic is still present"
+PY
+```
+
+For a leftover Spanner table in the recorded emulator database:
+
+```bash
+export SPANNER_EMULATOR_HOST='<recorded emulator endpoint>'
+export CLEANUP_PROJECT='<recorded project>' CLEANUP_INSTANCE='<recorded instance>'
+export CLEANUP_DATABASE='<recorded database>' CLEANUP_TABLE='<exact recorded table>'
+.venv-test/bin/python - <<'PY'
+import os
+from livetest.spanneradmin import SpannerAdmin
+admin = SpannerAdmin({"project": os.environ["CLEANUP_PROJECT"],
+                      "instance": os.environ["CLEANUP_INSTANCE"],
+                      "database": os.environ["CLEANUP_DATABASE"],
+                      "emulator_host": os.environ["SPANNER_EMULATOR_HOST"]})
+table = os.environ["CLEANUP_TABLE"]
+admin.drop_owned_table(table)
+assert table not in admin.list_owned_tables(), "table is still present"
+PY
+```
+
+4. Start a fresh attempt. Do not use broad prefix drops or bypass the ownership
+   checks. If the original backend binding is unavailable, resolve it before deleting.
+
+## Prove no matching data arrived after a sentinel
+
+For Kafka/file sentinels, `canonical-limit-exceeded` at readiness/completion can
+mean the complete append sink exceeded 100000 decoded rows or 67108864 bytes
+(64 MiB): `DEFAULT_MAX_ROWS` / `DEFAULT_MAX_BYTES`. Sentinel insert/delete events
+and application data share this fixed budget; `exact:` overrides do not raise it.
+Reduce the case's total output or use a database sentinel. Spanner sentinels use
+a keyed `WHERE` count and do not materialize the whole table.
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-nothing-spec` | The absence spec has invalid keys, predicate or timing. | Use the route-appropriate nothing block; content keys and project are refused on data absence specs. |
+| `nothing-sentinel-unproven` | No satisfied route sentinel authorizes the bounded absence check. | Declare and deliver the lifecycle sentinel through the route reaching the input before checking absence. |
+| `nothing-arrived` | A matching row arrived during the declared absence window. | Inspect the offending row and fix the app/input; do not shorten the window to hide it. |
+| `nothing-read-error` | An absence probe failed or missed its read deadline. | Correct route reachability/ownership and inspect the nested error; an unreadable sink is not empty. |
+| `witness-unresolvable` | A lifecycle observation cannot be rendered/resolved. | Check sentinel tokens, route, table/path/topic and key declarations against the sink shape. |
