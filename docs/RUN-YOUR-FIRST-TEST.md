@@ -118,12 +118,13 @@ files must be in the manifest's folder or below it.
   "…": "…"}}
 ```
 
-It must name all ten files: `striim-dbms-5.4.2-Linux.deb`, `striim-node-5.4.2-Linux.deb`,
+It must name all nine files: `striim-dbms-5.4.2-Linux.deb`, `striim-node-5.4.2-Linux.deb`,
 `striim-agent-5.4.2-Linux.deb`, `striim-samples-5.4.2-Linux.deb`,
 `sqljdbc_6.0.8112.200_enu.tar.gz`, `mysql-connector-java-8.0.30.zip`, `vertica-jdbc-25.3.0-0.jar`,
-`terajdbc-20.00.00.46.jar`, `jmx_prometheus_javaagent-0.16.1.jar` and `instantclient-basic-linux.x64-21.6.0.0.0dbru.zip`. The
+`jmx_prometheus_javaagent-0.16.1.jar` and `instantclient-basic-linux.x64-21.6.0.0.0dbru.zip`. The
 run checks every digest before it builds, and stops at the first file that is missing or does not
-match, naming it. It copies the files into the clone (about 5.2 GB) and never changes the originals.
+match, naming it. With `SLT_TERADATA_JDBC=1` it must also name `terajdbc-20.00.00.46.jar`. It
+copies the files into the clone (about 5.2 GB) and never changes the originals.
 
 **Apple Silicon.** The Striim image is amd64 and runs under emulation: sample 01 takes about six
 minutes there, against about a minute and a half on a Linux x86-64 host.

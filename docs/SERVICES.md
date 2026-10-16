@@ -258,9 +258,12 @@ your instance, or skips naming the setting to set.
 
 1. Install the driver, an optional extra: `pip install -e ".[teradata]"` in the framework's
    environment, or `pip install teradatasql`.
-2. Give Striim the Teradata JDBC driver. The framework's Striim image does not include it: put the
-   jar in `scripts/live/services/striim/images/striim/deps/extra-lib/` (Docker mode), or in your
-   Striim install's `lib/` (native mode).
+2. Give Striim the Teradata JDBC driver. Docker mode: set `SLT_TERADATA_JDBC=1` (`.env` or the
+   shell). The run then fetches `terajdbc-20.00.00.46.jar` from Maven Central and builds it into the
+   Striim image; with `SLT_STRIIM_DEPS_MANIFEST` set, the manifest must name it. It is off by default
+   because Teradata's licence allows the driver only with a licensed Teradata platform. Stop a kept
+   cluster after setting it, so it is re-created from the new image; until then its tests skip,
+   naming the setting. Native mode: put the jar in your Striim install's `lib/`.
 3. Set your instance, in `.env` or the shell:
 
 | Setting | Live tier | Integration tier | Default |

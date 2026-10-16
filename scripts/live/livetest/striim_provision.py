@@ -27,7 +27,7 @@ def _required_deps(version: str = _DEFAULT_STRIIM_VERSION) -> list[str]:
         f"striim-dbms-{version}-Linux.deb", f"striim-node-{version}-Linux.deb",
         f"striim-agent-{version}-Linux.deb", f"striim-samples-{version}-Linux.deb",
         "sqljdbc_6.0.8112.200_enu.tar.gz", "mysql-connector-java-8.0.30.zip",
-        "vertica-jdbc-25.3.0-0.jar", "terajdbc-20.00.00.46.jar",
+        "vertica-jdbc-25.3.0-0.jar",
         "jmx_prometheus_javaagent-0.16.1.jar",
         "instantclient-basic-linux.x64-21.6.0.0.0dbru.zip",
     ]
@@ -43,6 +43,22 @@ DEPS_MANIFEST_SCHEMA_VERSION = 1
 _DEPS_MANIFEST_KEYS = frozenset({"schemaVersion", "directory", "sha256"})
 # The verified installer identity, recorded in the recipe's files/ (-> /slt-build-inputs).
 INSTALLER_IDENTITY_FILE = "slt-installer-identity.json"
+
+# Teradata's JDBC driver is under Teradata's licence (use only with a licensed Teradata platform),
+# so it is never a required input: download-dependencies.sh fetches it only on this opt-in, and the
+# Dockerfile copies it only when deps/ holds it.
+TERADATA_JDBC_ENV = "SLT_TERADATA_JDBC"
+TERADATA_JDBC_JAR = "terajdbc-20.00.00.46.jar"
+# The optional jars a build copies (the Teradata driver, deps/extra-lib/*.jar) by digest, written
+# to files/ so the image's embedded build inputs change with them and a changed set rebuilds.
+OPTIONAL_JARS_FILE = "slt-optional-jars.json"
+# Services whose Striim adapters need an optional jar in the image: {service: (jar, opt-in env)}.
+SERVICE_JARS = {"teradata": (TERADATA_JDBC_JAR, TERADATA_JDBC_ENV)}
+
+
+def teradata_jdbc_opted_in(env=None) -> bool:
+    e = os.environ if env is None else env
+    return (e.get(TERADATA_JDBC_ENV) or "").strip() == "1"
 
 
 class StriimDepsError(Exception):
@@ -138,14 +154,17 @@ def _staged_ok(final: Path, digest: str) -> bool:
 
 
 def _verified_sources(manifest=None, version=_DEFAULT_STRIIM_VERSION, env=None,
-                      staged: Path | None = None) -> tuple:
+                      staged: Path | None = None, names=None) -> tuple:
     """({name: source path}, {name: digest}, {names whose staged copy in ``staged`` already
     matches}). A source whose staged copy already matches its digest is not re-hashed: the staged
     bytes are what gets built. Every other source is hashed before anything is copied."""
     ddir, expected = load_striim_deps_manifest(manifest, env)
     sources, already = {}, set()
-    for name in _required_deps(version):
+    for name in (_required_deps(version) if names is None else names):
         if name not in expected:
+            if name == TERADATA_JDBC_JAR:
+                raise StriimDepsError(f"{TERADATA_JDBC_ENV}=1 but the Striim deps manifest names "
+                                      f"no {name}")
             raise StriimDepsError(f"no expected digest for Striim build dependency: {name}")
         p = ddir / name
         if p.is_symlink() and ddir not in p.resolve().parents:
@@ -172,10 +191,16 @@ def stage_striim_deps(striim_dir: Path, version: str = _DEFAULT_STRIIM_VERSION,
                       manifest=None, env=None) -> Path:
     """Copy the verified required files into the owned build context's ``deps/`` (the
     only place the Dockerfile bind-mounts them from) and verify the STAGED bytes. Files
-    outside the required set are never staged."""
+    outside the required set are never staged, except the Teradata driver with
+    SLT_TERADATA_JDBC=1, which the manifest must then name; without it a staged copy is removed."""
     import shutil
     dest = _deps_dir(striim_dir)
-    sources, expected, already = _verified_sources(manifest, version, env, staged=dest)
+    names = _required_deps(version)
+    if teradata_jdbc_opted_in(env):
+        names = [*names, TERADATA_JDBC_JAR]
+    elif (dest / TERADATA_JDBC_JAR).is_file():
+        (dest / TERADATA_JDBC_JAR).unlink()
+    sources, expected, already = _verified_sources(manifest, version, env, staged=dest, names=names)
     dest.mkdir(parents=True, exist_ok=True)
     for name, src in sources.items():
         if name in already:
@@ -222,21 +247,48 @@ def installer_identity(version: str, expected: dict) -> bytes:
 
 
 def _write_installer_identity(striim_dir: Path, version: str, expected: dict) -> None:
+    _write_build_input(striim_dir, INSTALLER_IDENTITY_FILE, installer_identity(version, expected))
+
+
+def optional_jars(striim_dir: Path) -> dict:
+    """{name: sha256} of the optional jars the Dockerfile will copy: the Teradata driver when
+    deps/ holds it (non-empty, as the Dockerfile tests), and every deps/extra-lib/*.jar."""
+    d = _deps_dir(striim_dir)
+    found = {}
+    jar = d / TERADATA_JDBC_JAR
+    if jar.is_file() and jar.stat().st_size > 0:
+        found[TERADATA_JDBC_JAR] = _sha256_of(jar)
+    extra = d / "extra-lib"
+    if extra.is_dir():
+        for path in sorted(extra.glob("*.jar")):
+            if path.is_file():
+                found[f"extra-lib/{path.name}"] = _sha256_of(path)
+    return found
+
+
+def _write_optional_jars(striim_dir: Path) -> None:
+    import json
+    record = {"schemaVersion": 1, "sha256": optional_jars(striim_dir)}
+    data = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    _write_build_input(striim_dir, OPTIONAL_JARS_FILE, data)
+
+
+def _write_build_input(striim_dir: Path, filename: str, data: bytes) -> None:
+    """Write ``data`` to the recipe's files/``filename`` atomically, never through a symlink."""
     directory = _identity_dir(striim_dir)
-    path = directory / INSTALLER_IDENTITY_FILE
+    path = directory / filename
     if path.is_symlink():
-        raise StriimDepsError(f"installer identity {path} is a symlink; refusing to follow it")
-    data = installer_identity(version, expected)
+        raise StriimDepsError(f"build input {path} is a symlink; refusing to follow it")
     if path.is_file() and path.read_bytes() == data:
         return
     directory.mkdir(parents=True, exist_ok=True)
-    tmp = directory / f".{INSTALLER_IDENTITY_FILE}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
+    tmp = directory / f".{filename}.tmp-{os.getpid()}-{os.urandom(4).hex()}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(tmp, flags, 0o644)
     except FileExistsError as exc:
         raise StriimDepsError(
-            f"installer identity temp file {tmp} already exists; refusing to follow or "
+            f"build input temp file {tmp} already exists; refusing to follow or "
             "reuse it") from exc
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -453,7 +505,9 @@ def ensure_deps(striim_dir: Path, release: dict | None = None, run=None, progres
         # An installed framework never downloads installers and never
         # trusts build-context deps without the manifest.
         _gate_striim_deps(striim_dir, version)   # raises, naming SLT_STRIIM_DEPS_MANIFEST
-    if deps_present(_deps_dir(striim_dir), version):
+    teradata_missing = (teradata_jdbc_opted_in()
+                        and not (_deps_dir(striim_dir) / TERADATA_JDBC_JAR).is_file())
+    if deps_present(_deps_dir(striim_dir), version) and not teradata_missing:
         return
     if progress: progress("cluster", "downloading dependencies (one-time)")
     print(f"[striim] downloading build dependencies for {version} (one-time)…")
@@ -575,6 +629,26 @@ def image_inputs_match(version: str, striim_dir: Path, run=None) -> bool:
                 pass
 
 
+def missing_service_jar(service: str, mode: str, run=None) -> str | None:
+    """Why the Docker cluster's Striim cannot reach ``service``: the optional JDBC jar its adapters
+    need is not in /opt/striim/lib of the primary. None when the service needs no such jar, when
+    not in Docker mode, or when the container cannot be asked (the normal path reports that)."""
+    spec = SERVICE_JARS.get(service)
+    if spec is None or mode != "docker":
+        return None
+    jar, flag = spec
+    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=30))
+    try:
+        r = run(["docker", "exec", stack.striim_container(), "test", "-s", f"/opt/striim/lib/{jar}"])
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if getattr(r, "returncode", 0) != 1:
+        return None
+    return (f"the Striim image has no {jar}: set {flag}=1 (shell or .env) to fetch it into the "
+            f"image (Teradata's licence for the driver applies). The image rebuilds on the next "
+            f"provision; stop a kept cluster first so it is re-created from the new image")
+
+
 def _gate_docker_disk(query, progress=None, cold: bool = True) -> None:
     """Refuse a build Docker has no room for: a full disk surfaces much later as a primary
     that never answers. ``cold`` (no image of this tag at all) is gated at the
@@ -615,6 +689,7 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
         _gate_striim_deps(striim_dir, version)
     else:
         _clear_installer_identity(striim_dir)
+    _write_optional_jars(striim_dir)
     present = image_present(version, run=query)
     if present and image_inputs_match(version, striim_dir, run=query):
         return

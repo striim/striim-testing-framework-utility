@@ -27,7 +27,6 @@ RUN --mount=type=bind,source=deps,target=/deps \
       sqljdbc_6.0.8112.200_enu.tar.gz \
       mysql-connector-java-8.0.30.zip \
       vertica-jdbc-25.3.0-0.jar \
-      terajdbc-20.00.00.46.jar \
       jmx_prometheus_javaagent-0.16.1.jar \
       ${INSTANTCLIENT_ZIPFILE}; do \
       [ -s "/deps/$f" ] || missing="${missing} $f"; \
@@ -97,10 +96,13 @@ RUN --mount=type=bind,source=deps,target=/deps \
     cp /deps/vertica-jdbc-25.3.0-0.jar /opt/striim/lib/ && \
     cp /deps/vertica-jdbc-25.3.0-0.jar /opt/striim/agent/lib/
 
-# Teradata: one jar, pure Java, as for Vertica. Teradata's licence for the driver applies.
+# Teradata, only when deps/ holds it (download-dependencies.sh fetches it with SLT_TERADATA_JDBC=1).
+# Teradata's licence for the driver applies.
 RUN --mount=type=bind,source=deps,target=/deps \
-    cp /deps/terajdbc-20.00.00.46.jar /opt/striim/lib/ && \
-    cp /deps/terajdbc-20.00.00.46.jar /opt/striim/agent/lib/
+    if [ -s /deps/terajdbc-20.00.00.46.jar ]; then \
+      cp /deps/terajdbc-20.00.00.46.jar /opt/striim/lib/ && \
+      cp /deps/terajdbc-20.00.00.46.jar /opt/striim/agent/lib/; \
+    fi
 
 # Your own JDBC drivers: every jar in deps/extra-lib/ goes onto the classpath, as for Vertica.
 RUN --mount=type=bind,source=deps,target=/deps \
