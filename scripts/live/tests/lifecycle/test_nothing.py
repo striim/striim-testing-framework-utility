@@ -112,7 +112,8 @@ def test_new_sink_presence_precedes_delete(monkeypatch, sink, delivered):
             else: values.append({"id": 42, "op": "DELETE"})
     monkeypatch.setattr(lifecycle, "make_probe", lambda admin: SimpleNamespace(run=write))
     monkeypatch.setattr(sinkprobe, "rows", lambda *a: list(values))
-    sentinel = lifecycle.Sentinel(s, {"postgres-source": {"admin": object()}}, {},
+    sentinel = lifecycle.Sentinel(s, {"postgres-source": {"admin": object()},
+        "spanner-google": {"admin": SimpleNamespace(count_key=lambda *a: len(values))}}, {"TID": "test_"},
         SimpleNamespace(per_test="case", attempt="attempt"), "done", {},
         lambda name: name.split(".")[0], id_source=lambda: 42)
     watch = lifecycle.Watch("sentinel", "delivery", lifecycle.Deadline(2, Clock()))

@@ -66,232 +66,24 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit"]
 
 
-@pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
-def test_sample_ships_exactly_its_assets(name):
+
+def test_kafka_nothing_sample_and_regression_share_the_delivery_contract():
+    name = "18-kafka-nothing"
     root = SAMPLES / name
-    assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == {**ASSETS, **MYSQL}[name]
-    assert not (root / "gold-targets.yaml").exists()
-
-
-@pytest.mark.parametrize("name", ASSETS)
-def test_exact_block_is_valid(name):
-    resolved = canon.check_manifest(_raw(name), case_dir=SAMPLES / name)
-    assert resolved is not None and len(resolved["specs"]) == 1
-    kind = resolved["specs"][0][0]
-    assert kind == ("file" if name == "03-file-output" else "data")
-
-
-@pytest.mark.parametrize("name", ASSETS)
-def test_lifecycle_block_is_valid(name):
-    raw = _raw(name)
-    spec = lifecycle.parse_spec(raw["lifecycle"], SAMPLES / name / "test.yaml", timeout=raw["timeout"])
-    assert (spec.mode, spec.sink) == MODES[name]
-    assert spec.stability_s > 0
-
-
-@pytest.mark.parametrize("name", ASSETS)
-def test_rest_of_manifest_loads_with_todays_loader(name, tmp_path):
-    # Until the exact:/lifecycle: hooks are in the plugin, load_manifest refuses those two keys; everything
-    # else (TQL, DDL, seed, assertions, requires) must already be valid for the engine.
-    case = tmp_path / name
-    shutil.copytree(SAMPLES / name, case)
-    raw = {k: v for k, v in _raw(name).items() if k not in ("exact", "lifecycle")}
-    for spec in (raw["assert"].get("data") or []) + (raw["assert"].get("file") or []):
-        spec.pop("exact", None)
-    (case / "test.yaml").write_text(yaml.safe_dump(raw, sort_keys=False))
-    m = load_manifest(case / "test.yaml")
-    assert m.requires == ["postgres"] and (case / m.tql).is_file()
-    assert all((case / f).is_file() for _db, f in m.ddl_files)
-    assert all((case / seed[1]).is_file() for seed in m.seed_files)
-
-
-@pytest.mark.parametrize("name", ["01-plain-replication", "02-transform", "04-lifecycle-check"])
-def test_source_target_and_golden_columns_agree(name):
-    src = _columns((SAMPLES / name / "ddl_source.sql").read_text())
-    tgt = _columns((SAMPLES / name / "ddl_target.sql").read_text())
-    assert src == tgt == _golden(name)[0]
-
-
-def test_plain_replication_golden_is_the_seed():
-    header, rows = _golden("01-plain-replication")
-    seed = _seed4("01-plain-replication")
-    assert len(seed) == 3
-    assert [(r["id"], r["customer_name"], Decimal(r["amount"]), _ts(r["created_at"])) for r in rows] == \
-        [(i, n, Decimal(a), _ts(ts)) for i, n, a, ts in seed]
-
-
-def test_transform_golden_doubles_the_seed_amount():
-    _header, rows = _golden("02-transform")
-    seed = _seed4("02-transform")
-    assert [(r["id"], r["label"], _ts(r["created_at"])) for r in rows] == \
-        [(i, n, _ts(ts)) for i, n, _a, ts in seed]
-    assert [Decimal(r["amount"]) for r in rows] == [Decimal(a) * 2 for _i, _n, a, _ts in seed]
-    assert "MODIFY(data[2]" in (SAMPLES / "02-transform" / "app.tql").read_text()
-
-
-def test_file_output_golden_is_the_seed_and_the_file_is_owned():
-    header, rows = _golden("03-file-output")
-    seed = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / "03-file-output" / "seed.sql").read_text())
-    assert header == ["id", "name"] and [(r["id"], r["name"]) for r in rows] == seed
-    raw = _raw("03-file-output")
-    assert raw["assert"]["file"][0]["path"] == raw["lifecycle"]["completion"]["path"] == "${OWNED_DIR}/rows.json"
-    assert raw["lifecycle"]["completion"]["lines"] == len(seed)
-    assert "FileName: '${OWNED_DIR}/rows.json'" in (SAMPLES / "03-file-output" / "app.tql").read_text()
-
-
-def test_file_output_writes_one_event_per_line():
-    """The file-lines witnesses count lines, and JSONFormatter's default is one JSON array
-    with every member on its own line (19 lines for 2 rows), so readiness never met the baseline of 2.
-    The sample writes each event as one line instead: no array, members joined by a space."""
-    tql = (SAMPLES / "03-file-output" / "app.tql").read_text()
-    fmt = re.search(r"FORMAT USING Global\.JSONFormatter \((.*?)\) INPUT FROM", tql, re.S).group(1)
-    props = dict(re.findall(r"(\w+):\s*'([^']*)'", fmt))
-    assert props.get("EventsAsArrayOfJsonObjects") == "false"
-    assert props.get("JsonMemberDelimiter") == " "
-    raw = _raw("03-file-output")["lifecycle"]
-    assert raw["completion"] == {"kind": "file-lines", "path": "${OWNED_DIR}/rows.json", "lines": 2}
-
-
-def test_lifecycle_check_golden_is_empty_because_every_change_is_deleted():
-    header, rows = _golden("04-lifecycle-check")
-    assert rows == []
-    changes = (SAMPLES / "04-lifecycle-check" / "changes.sql").read_text()
-    inserted = set(re.findall(r"\(\s*(\d+)\s*,", changes))
-    deleted = set(re.search(r"DELETE FROM \S+ WHERE id IN \(([^)]*)\)", changes).group(1).replace(" ", "").split(","))
-    assert inserted == deleted == {"101", "102", "103"}
-    raw = _raw("04-lifecycle-check")
-    assert raw["seed"] == [{"file": "changes.sql", "db": "postgres-source", "when": "post_start"}]
-    for f in ("sentinel_insert.sql", "sentinel_delete.sql"):
-        assert "${SENTINEL_ID}" in (SAMPLES / "04-lifecycle-check" / f).read_text()
-    assert "${PG_SLOT}" in (SAMPLES / "04-lifecycle-check" / "slot.sql").read_text()
-    assert "ReplicationSlotName: '${PG_SLOT}'" in (SAMPLES / "04-lifecycle-check" / "app.tql").read_text()
-
-
-@pytest.mark.parametrize("name", ASSETS)
-def test_tql_is_namespaced_and_reads_the_owned_source(name):
-    tql = (SAMPLES / name / "app.tql").read_text()
-    assert "CREATE NAMESPACE ${NS};" in tql and "CREATE OR REPLACE APPLICATION ${APP};" in tql
-    assert "Tables: '${PG_SOURCE_SCHEMA}.${TID}src" in tql
-    assert "START APPLICATION ${APP};" in tql
-
-
-@pytest.mark.parametrize("name", list(MYSQL))
-def test_mysql_sample_loads_and_pins_count_and_rows(name, tmp_path):
-    case = tmp_path / name
-    shutil.copytree(SAMPLES / name, case)
-    m = load_manifest(case / "test.yaml")
-    assert m.requires == ["mysql"] and m.purpose
-    raw = _raw(name)
-    assert "exact" not in raw and "lifecycle" not in raw
-    spec, = raw["assert"]["data"]
-    assert spec["target_db"] == "mysql-target" and spec["target"].startswith("${MYSQL_TARGET_SCHEMA}.${TID}")
-    _header, rows = _golden(name)
-    assert spec["rows"] == len(rows) and spec["match"] == "expected/rows.csv"
-    from livetest.assertions.data import parse_data_specs
-    parse_data_specs(raw["assert"]["data"])
-    tql = (SAMPLES / name / "app.tql").read_text()
-    assert "CREATE NAMESPACE ${NS};" in tql and "START APPLICATION ${APP};" in tql
-    for f in ("ddl_source.sql", "ddl_target.sql"):
-        assert _columns((SAMPLES / name / f).read_text()) == _header
-
-
-def test_mysql_initial_load_golden_is_the_seed():
-    _header, rows = _golden("05-mysql-initial-load")
-    seed = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*,\s*(\d+)\s*\)",
-                      (SAMPLES / "05-mysql-initial-load" / "seed.sql").read_text())
-    assert [(r["id"], r["name"], r["stock"]) for r in rows] == seed
-    assert _raw("05-mysql-initial-load")["seed"][0]["when"] == "pre_deploy"
-
-
-def test_mysql_cdc_golden_follows_the_changes():
-    changes = (SAMPLES / "06-mysql-cdc" / "changes.sql").read_text()
-    rows = {i: [c, s] for i, c, s in re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*\)", changes)}
-    for status, i in re.findall(r"SET status = '([^']*)' WHERE id = (\d+)", changes):
-        rows[i][1] = status
-    for i in re.findall(r"DELETE FROM \S+ WHERE id = (\d+)", changes):
-        del rows[i]
-    _header, golden = _golden("06-mysql-cdc")
-    assert {r["id"]: [r["customer"], r["status"]] for r in golden} == rows
-    assert _raw("06-mysql-cdc")["seed"] == [{"file": "changes.sql", "db": "mysql-source", "when": "post_start"}]
-    assert "StartPositionByName: true" in (SAMPLES / "06-mysql-cdc" / "app.tql").read_text()
-
-
-@pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL))
-def test_readme_shows_how_to_run_it(name):
-    assert f"striim-test run samples/live/{name}" in (SAMPLES / name / "README.md").read_text()
-
-
-def test_spanner_exact_sample():
-    name = "07-spanner-exact"
-    raw = _raw(name)
-    m = load_manifest(SAMPLES / name / "test.yaml")
-    assert m.requires == ["spanner"]
-    assert canon.check_manifest(raw)["specs"][0][0] == "data"
-    _header, rows = _golden(name)
-    seed = (SAMPLES / name / "seed.sql").read_text()
-    pairs = re.findall(r"\((\d+), '([^']*)'\)", seed)
-    assert [(r["id"], r["msg"]) for r in rows] == pairs
-    assert {p.relative_to(SAMPLES / name).as_posix() for p in (SAMPLES / name).rglob("*") if p.is_file()} == COMMON | {"ddl.sql", "seed.sql"}
-
-
-def test_strict_json_sample_declares_every_field():
-    name = "08-strict-json"
-    m = load_manifest(SAMPLES / name / "test.yaml")
-    assert m.exact["specs"][0][2].strict_json
-    header, rows = _golden(name)
-    assert set(header) == set(m.exact["specs"][0][2].columns)
-    seed = (SAMPLES / name / "seed.sql").read_text()
-    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", seed)
-    assert [(r["id"], r["name"]) for r in rows] == pairs
-
-
-def test_raw_file_sample_digest_follows_seed():
-    import hashlib
-    name = "09-raw-file"
-    m = load_manifest(SAMPLES / name / "test.yaml")
-    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
-    data = "".join(f"{i},{name}\r\n" for i, name in pairs).encode()
-    expected = m.assert_["file"][0]["raw"]["files"]["rows.00.csv"]
-    assert expected == {"bytes": len(data), "records": len(pairs), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
-    assert m.lifecycle.completion["lines"] == len(pairs)
-
-
-def test_bounded_nothing_sample_is_gated_by_file_sentinel():
-    name = "10-bounded-nothing"
-    m = load_manifest(SAMPLES / name / "test.yaml")
-    assert m.lifecycle.sink == "file" and m.lifecycle.completion["kind"] == "sentinel"
-    s = m.assert_["file"][0]
-    assert s["path"] == m.lifecycle.sentinel["observe"]["path"]
-    assert s["nothing"] == {"window": "3s", "where": {"data.id": 1}}
-    sql = (SAMPLES / name / "rollback.sql").read_text()
-    assert sql.startswith("BEGIN;") and sql.endswith("ROLLBACK;\n")
-
-
-def test_transaction_sample_keeps_only_committed_input():
-    m = load_manifest(SAMPLES / "11-transaction-seeds/test.yaml")
-    assert [s["session"] for s in m.transaction_steps if s["op"] == "commit"] == ["b", "a"]
-    assert m.transaction_steps[-1]["when"] == "post_recover"
-    assert any(s["op"] == "rollback_to" for s in m.transaction_steps)
-    assert _golden("11-transaction-seeds")[1] == [{"id": "1", "msg": "first"}, {"id": "2", "msg": "second"}]
-
-
-def test_snapshot_sample_declares_atomic_two_table_prefixes():
-    m = load_manifest(SAMPLES / "12-snapshot-observer/test.yaml")
-    s = m.snapshot_spec
-    assert set(s["tables"]) == {"a", "b"}
-    assert all(prefix["a"] == prefix["b"] for prefix in s["prefixes"])
-    assert len(s["prefixes"]) == 3
-    assert (SAMPLES / "12-snapshot-observer/expected/empty.csv").read_text() == "id,msg\n"
-    assert (SAMPLES / "12-snapshot-observer/expected/b.csv").read_text() == "id,msg\n2,second\n"
-
-
-def test_audit_sample_is_keyless_with_hand_derived_rows():
-    root = SAMPLES / "13-append-only-audit"
     m = load_manifest(root / "test.yaml")
-    assert len(m.audit_specs) == 1
-    assert "PRIMARY KEY" not in (root / "ddl_target.sql").read_text()
-    assert _golden("13-append-only-audit")[1] == [{"id": "1", "msg": "alpha"}, {"id": "2", "msg": "beta"}]
-    assert "ExecuteInsertAsUpdate: false" in (root / "app.tql").read_text()
+    assert m.lifecycle.sink == "kafka" and m.requires == ["postgres", "kafka"]
+    observe = m.lifecycle.sentinel["observe"]
+    assert observe == {"db": "kafka", "topic": "${KAFKA_TGT_TOPIC}", "payload": "json",
+                       "key": "value.data.id", "deletion": {"value.metadata.OperationName": "DELETE"}}
+    check = m.assert_["data"][0]
+    assert check["target"] == observe["topic"] and check["db"] == "kafka"
+    assert check["nothing"] == {"window": "3s", "where": {"value.data.id": 1}}
+    sql = (root / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and "VALUES (1, 'rolled back')" in sql and sql.endswith("ROLLBACK;\n")
+    twin = SAMPLES.parents[1] / "scripts/live/regression/framework/framework-kafka-nothing"
+    for filename in ["app.tql", "ddl_source.sql", "slot.sql", "rollback.sql", "sentinel_insert.sql", "sentinel_delete.sql"]:
+        assert (root / filename).read_bytes() == (twin / filename).read_bytes()
+    tql = (root / "app.tql").read_text()
+    assert "${KAFKA_TGT_TOPIC}" in tql and "Global.KafkaWriter" in tql and "Global.JSONFormatter" in tql

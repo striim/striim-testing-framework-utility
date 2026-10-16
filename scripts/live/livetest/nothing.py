@@ -104,12 +104,12 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
             read_timeout = lifecycle.parse_duration(spec["nothing"].get("read_timeout", "5s"), "nothing.read_timeout", target)
             deadline = clock.monotonic() + window
             reads = 0
-            try:
-                selector = {k: render(v, tokens) if isinstance(v, str) else v
-                            for k, v in spec["nothing"]["where"].items()}
-                while True:
-                    if status_probe:
-                        status_probe()
+            while True:
+                if status_probe:
+                    status_probe()
+                try:
+                    selector = {k: render(v, tokens) if isinstance(v, str) else v
+                                for k, v in spec["nothing"]["where"].items()}
                     read_started = clock.monotonic()
                     actual = [r for r in read(spec, read_timeout)
                               if strict_matches(r, selector)]
@@ -121,8 +121,9 @@ def assert_nothing(specs, *, kind, tokens, completion, read, clock=None, status_
                         ok, detail = True, f"nothing arrived for {window}s after completion sentinel; {reads} reads"
                         break
                     clock.sleep(max(0, min(0.2, deadline - clock.monotonic())))
-            except Exception as e:
-                detail = f"nothing-read-error: {e}"
+                except Exception as e:
+                    detail = f"nothing-read-error: {e}"
+                    break
         records.append(build_assertion_result(type=kind, status="passed" if ok else "failed", spec=spec,
             target=target, db=spec.get("target_db", spec.get("db")), detail=detail,
             expected={"kind": "count", "count": 0}, actual={"kind": "count", "count": len(actual)}))

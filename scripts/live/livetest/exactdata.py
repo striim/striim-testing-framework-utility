@@ -415,7 +415,7 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                                                                    f"attempt; nothing was read")
                 if kafka:
                     options = {"strict_json": True, "payload": spec.get("payload", "avro")} if decl.strict_json else {}
-                    records = admin.select_records(table_sql, poll_budget=remaining,
+                    records = admin.select_records(table_sql, poll_budget=remaining, strict=True,
                                                    max_rows=max_rows, max_bytes=max_bytes, **options)
                     actual = project_records(records, spec["keys"])
                 else:
