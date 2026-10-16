@@ -166,14 +166,66 @@ which nothing executed as **exit 3, not a pass**.
 
 ## Prior-attempt Spanner or Kafka resources
 
-Replay refuses these saved entries because matching endpoints cannot prove an
-object's incarnation. Read the failed attempt's ledger for exact table/topic
-names and backend binding. Confirm the attempt is abandoned and no active run
-owns those objects, then remove only those exact names through the backend's
-normal table/topic deletion command. Re-run with a fresh attempt. A broad prefix
-drop or replay bypass does not establish ownership.
+A later attempt can fail with `collision:kafka-topic` or `collision:spanner-table`
+after an earlier attempt's cleanup failed. This is intentional: attempts can use
+the same run/worker/case name, but matching names and endpoints cannot prove an
+object's incarnation. Replay refuses prior-attempt sink deletes, and acquisition
+refuses to clear a resource that already exists.
+
+1. Read the failed attempt's ownership ledger for the exact topic/table name and
+   backend binding. Confirm that attempt is abandoned and no active run uses it.
+2. In a framework checkout with its [test environment](../CONTRIBUTING.md#set-up)
+   installed, set only the relevant backend variables below from that ledger.
+   Replace each placeholder with the recorded value; do not use a prefix or pattern.
+3. Delete and verify that one object using the corresponding command. These are
+   manual destructive operations; only run the block for the abandoned resource.
+
+For a leftover Kafka topic (also removes its value schema subject):
+
+```bash
+export CLEANUP_BROKER='<recorded broker>' CLEANUP_REGISTRY='<recorded registry URL>'
+export CLEANUP_TOPIC='<exact recorded topic>'
+.venv-test/bin/python - <<'PY'
+import os
+from livetest.kafkaadmin import KafkaAdmin
+admin = KafkaAdmin({"broker": os.environ["CLEANUP_BROKER"],
+                    "registry_url": os.environ["CLEANUP_REGISTRY"]})
+topic = os.environ["CLEANUP_TOPIC"]
+admin.delete_topic(topic)
+assert not admin.topic_exists(topic), "topic is still present"
+PY
+```
+
+For a leftover Spanner table in the recorded emulator database:
+
+```bash
+export SPANNER_EMULATOR_HOST='<recorded emulator endpoint>'
+export CLEANUP_PROJECT='<recorded project>' CLEANUP_INSTANCE='<recorded instance>'
+export CLEANUP_DATABASE='<recorded database>' CLEANUP_TABLE='<exact recorded table>'
+.venv-test/bin/python - <<'PY'
+import os
+from livetest.spanneradmin import SpannerAdmin
+admin = SpannerAdmin({"project": os.environ["CLEANUP_PROJECT"],
+                      "instance": os.environ["CLEANUP_INSTANCE"],
+                      "database": os.environ["CLEANUP_DATABASE"],
+                      "emulator_host": os.environ["SPANNER_EMULATOR_HOST"]})
+table = os.environ["CLEANUP_TABLE"]
+admin.drop_owned_table(table)
+assert table not in admin.list_owned_tables(), "table is still present"
+PY
+```
+
+4. Start a fresh attempt. Do not use broad prefix drops or bypass the ownership
+   checks. If the original backend binding is unavailable, resolve it before deleting.
 
 ## Prove no matching data arrived after a sentinel
+
+For Kafka/file sentinels, `canonical-limit-exceeded` at readiness/completion can
+mean the complete append sink exceeded 100000 decoded rows or 67108864 bytes
+(64 MiB): `DEFAULT_MAX_ROWS` / `DEFAULT_MAX_BYTES`. Sentinel insert/delete events
+and application data share this fixed budget; `exact:` overrides do not raise it.
+Reduce the case's total output or use a database sentinel. Spanner sentinels use
+a keyed `WHERE` count and do not materialize the whole table.
 
 | Code | Meaning | What to change |
 |---|---|---|

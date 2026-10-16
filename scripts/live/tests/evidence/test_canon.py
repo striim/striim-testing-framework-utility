@@ -13,6 +13,20 @@ from decimal import Decimal as D
 from pathlib import Path
 
 import pytest
+
+
+@pytest.mark.parametrize("literal,expected", [
+    ("0", "0"), ("-0.000", "0"), ("100", "100"), ("1e30", "1" + "0" * 30),
+    ("1e-30", "0." + "0" * 29 + "1"),
+    ("-123456789012345678901234567890.123456789", "-123456789012345678901234567890.123456789"),
+])
+def test_number_cells_use_lossless_fixed_point(literal, expected):
+    from decimal import Decimal, localcontext
+    from livetest import canon
+    with localcontext() as ctx:
+        ctx.prec = 3
+        assert canon._typed("number", literal, "expected", "n") == expected
+        assert canon._typed("number", Decimal(literal), "actual", "n") == expected
 import yaml
 
 from livetest import canon

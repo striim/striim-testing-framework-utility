@@ -330,7 +330,7 @@ def _typed(typ: str, value, side: str, col: str, observed: bool = False) -> str:
             raise _invalid(side, col, "non-finite number")
         with decimal.localcontext() as ctx:
             ctx.prec = max(28, len(value.as_tuple().digits))
-            return str(value.normalize())
+            return "0" if value == 0 else format(value.normalize(), "f")
     if typ == "integer":
         if expected:
             if not _INT.match(value):

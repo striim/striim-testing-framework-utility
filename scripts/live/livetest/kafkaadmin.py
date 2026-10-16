@@ -387,8 +387,12 @@ class KafkaAdmin:
         return self._select(topic, poll_budget, lambda message: self._decode(message.value()))
 
     def select_records(self, topic: str, poll_budget: float = 8.0, *, max_rows=None, max_bytes=None,
-                       strict_json=False, payload="avro") -> list[dict]:
-        """Read JSON keys and Avro values together, without stringifying nested data."""
+                       strict_json=False, payload="avro", strict=False) -> list[dict]:
+        """Read keys and typed values; strict snapshots bound metadata and require every offset.
+
+        Legacy assertions leave strict off: a not-yet-created topic is empty and poll_budget
+        starts after metadata/watermarks, so their outer assertion timeout remains authoritative.
+        """
         def decode(message):
             if payload == "json":
                 from livetest.strictjson import loads
@@ -405,7 +409,7 @@ class KafkaAdmin:
                     from livetest.canon import CanonError
                     raise CanonError("invalid-json", str(e)) from None
                 raise
-        return self._select(topic, poll_budget, decode, strict=True,
+        return self._select(topic, poll_budget, decode, strict=strict,
                             max_rows=max_rows, max_bytes=max_bytes)
 
     def _select(self, topic: str, poll_budget: float, decode_message, *, strict: bool = False,

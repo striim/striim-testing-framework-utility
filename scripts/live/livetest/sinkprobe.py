@@ -26,6 +26,8 @@ def validate_ref(ref, sink, path):
     key = ref.get("key")
     if not isinstance(key, str) or not key or any(not lifecycle._IDENT.fullmatch(s) for s in key.split(".")):
         refuse(f"sentinel.observe.key must be a column name or field path, got {key!r}")
+    if sink == "db" and not lifecycle._IDENT.fullmatch(key):
+        refuse("sentinel.observe.key must be a plain column name for a db sink")
     if sink in ("file", "kafka"):
         deletion = ref.get("deletion")
         if not isinstance(deletion, dict) or not deletion or any(not isinstance(k, str) or not k for k in deletion):
@@ -42,7 +44,7 @@ def rows(ref, admins, tokens, remaining, read_files=None):
     if ref["db"] == "kafka":
         return admin.select_records(render(ref["topic"], tokens), poll_budget=remaining,
             max_rows=canon.DEFAULT_MAX_ROWS, max_bytes=canon.DEFAULT_MAX_BYTES,
-            strict_json=True, payload=ref.get("payload", "avro"))
+            strict_json=True, payload=ref.get("payload", "avro"), strict=True)
     if ref["db"].startswith("spanner-"):
         return exactdata.read_spanner(admin, render(ref["table"], tokens), None,
                                       canon.DEFAULT_MAX_ROWS, canon.DEFAULT_MAX_BYTES, remaining)
@@ -54,10 +56,15 @@ def run_sentinel(sentinel, watch, terminal):
     s, ref = sentinel.spec.sentinel, sentinel.spec.sentinel["observe"]
     writer = lifecycle.make_probe(lifecycle._admin(sentinel.admins, s["db"]))
     def count(remaining):
+        if ref.get("db", "").startswith("spanner-"):
+            admin = lifecycle._admin(sentinel.admins, ref["db"])
+            return admin.count_key(render(ref["table"], sentinel.tokens), ref["key"], sentinel.id, remaining)
         found = [r for r in rows(ref, sentinel.admins, sentinel.tokens, remaining, sentinel.read_files)
                  if nothing.get_path(r, ref["key"])[0]
                  and str(nothing.get_path(r, ref["key"])[1]) == str(sentinel.id)]
-        if "deletion" in ref and any(nothing.matches(r, ref["deletion"]) for r in found):
+        deletion = {k: render(v, sentinel.tokens) if isinstance(v, str) else v
+                    for k, v in ref.get("deletion", {}).items()}
+        if deletion and any(nothing.matches(r, deletion) for r in found):
             return 0
         return len(found)
     sentinel.count = count
