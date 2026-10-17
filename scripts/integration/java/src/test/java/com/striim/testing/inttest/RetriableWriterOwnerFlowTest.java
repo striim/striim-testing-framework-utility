@@ -68,7 +68,8 @@ class RetriableWriterOwnerFlowTest {
     }
 
     @Test
-    void signaturesMatchThePlatform() throws Exception {
+    void signaturesMatchJavapOfThePlatform() throws Exception {
+        // Checks the mock against this transcription, not the platform jar.
         // BaseProcess on 5.4.0.6C (javap): public Flow getOwnerFlow(); public void
         // setOwnerFlow(Flow); protected Flow ownerFlow. Flow extends FlowComponent and carries
         // public final MetaInfo$Flow flowInfo; MetaInfo$Flow extends MetaInfo$MetaObject.
