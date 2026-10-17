@@ -189,4 +189,21 @@ public abstract class RetriableWriter {
     public void setFlowComponent(final com.webaction.runtime.components.FlowComponent component) {
         this.flowComponent = component;
     }
+
+    /**
+     * The real accessor is {@code BaseProcess}'s; {@code Target.start} calls {@link #setOwnerFlow}
+     * before {@code init}. This tier does not model {@code Target.start}, so it stays null -- the
+     * platform's own answer off a server, which a writer reads as "no platform present" (e.g.
+     * DatabaseJdbcWriter skips its single-instance check). Present so {@code init} resolves
+     * instead of failing with {@code NoSuchMethodError}.
+     */
+    protected com.webaction.runtime.components.Flow ownerFlow;
+
+    public com.webaction.runtime.components.Flow getOwnerFlow() {
+        return ownerFlow;
+    }
+
+    public void setOwnerFlow(final com.webaction.runtime.components.Flow flow) {
+        this.ownerFlow = flow;
+    }
 }
