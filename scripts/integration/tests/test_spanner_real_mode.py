@@ -325,14 +325,94 @@ def test_real_drop_test_tables_refuses_any_prefix_but_this_tests_tid(key, prefix
     assert not db.method_calls
 
 
-def test_real_drop_test_tables_drops_only_this_tests_tables(key, monkeypatch):
-    admin, db = _guarded(key)
-    monkeypatch.setattr(admin, "_query", lambda sql: (["table_name"],
-                                                      [["t0123abcde_emp"], ["customers"], ["T0123ABCDE_X"]]))
+# Teardown's INFORMATION_SCHEMA, as the fake `_query` hands it back: this test's objects of every
+# kind that blocks DROP TABLE on Spanner, beside another owner's of each kind.
+_SCHEMA = {
+    "change_streams": [["t0123abcde_cs"], ["all_cs"]],
+    "views": [["t0123abcde_v"], ["cust_v"]],
+    "table_synonyms": [["t0123abcde_parent", "t0123abcde_syn"], ["customers", "cust_syn"]],
+    "table_constraints": [["FK_t0123abcde_grand_t0123abcde_parent_1", "t0123abcde_grand"],
+                          ["FK_customers_orders_1", "customers"]],
+    "indexes": [["PRIMARY_KEY", "t0123abcde_parent", "PRIMARY_KEY", False],
+                ["t0123abcde_ix", "t0123abcde_parent", "INDEX", False],
+                ["IDX_t0123abcde_grand_managed", "t0123abcde_grand", "INDEX", True],  # an FK's own
+                ["t0123abcde_six", "t0123abcde_parent", "SEARCH", "NO"],
+                ["cust_ix", "customers", "INDEX", False]],
+    "sequences": [["t0123abcde_seq"], ["cust_seq"]],
+    "parent_table_name": [["t0123abcde_parent", None], ["t0123abcde_child", "t0123abcde_parent"],
+                          ["t0123abcde_grand", "t0123abcde_child"], ["customers", None]],
+    "tables": [["t0123abcde_parent"], ["t0123abcde_child"], ["t0123abcde_grand"], ["customers"],
+               ["t0123abcde_v"], ["cust_v"]],
+}
+
+_TEARDOWN = [
+    "DROP CHANGE STREAM t0123abcde_cs",
+    "DROP VIEW t0123abcde_v",
+    "ALTER TABLE t0123abcde_parent DROP SYNONYM t0123abcde_syn",
+    "ALTER TABLE t0123abcde_grand DROP CONSTRAINT FK_t0123abcde_grand_t0123abcde_parent_1",
+    "DROP INDEX t0123abcde_ix",
+    "DROP SEARCH INDEX t0123abcde_six",
+    "DROP TABLE t0123abcde_grand",      # interleaved children before their parents
+    "DROP TABLE t0123abcde_child",
+    "DROP TABLE t0123abcde_parent",
+    "DROP SEQUENCE t0123abcde_seq",     # after the tables whose defaults may use it
+]
+
+
+def _fake_schema(admin, monkeypatch, failing=()):
+    def query(sql):
+        low = sql.lower()
+        kind = next(k for k in _SCHEMA if k in low)
+        if kind in failing:
+            raise RuntimeError(f"no {kind} here")
+        return [], _SCHEMA[kind]
+    monkeypatch.setattr(admin, "_query", query)
     admin._ddl_lock = MagicMock()
+
+
+def _ddl_calls(db):
+    return [c.args[0] for c in db.update_ddl.call_args_list]
+
+
+def test_real_teardown_drops_every_blocking_kind_in_order_in_one_batch(key, monkeypatch):
+    admin, db = _guarded(key)
+    _fake_schema(admin, monkeypatch)
     admin.drop_test_tables(TID)
-    dropped = [c.args[0] for c in db.update_ddl.call_args_list]
-    assert dropped == [["DROP TABLE t0123abcde_emp"], ["DROP TABLE T0123ABCDE_X"]]
+    assert _ddl_calls(db) == [_TEARDOWN]
+
+
+def test_real_teardown_never_names_another_owners_object(key, monkeypatch):
+    admin, db = _guarded(key)
+    _fake_schema(admin, monkeypatch)
+    admin.drop_test_tables(TID)
+    named = " ".join(s for call in _ddl_calls(db) for s in call)
+    for other in ("all_cs", "cust_v", "cust_syn", "customers", "cust_ix", "cust_seq", "PRIMARY_KEY",
+                  "IDX_t0123abcde_grand_managed"):
+        assert other not in named
+
+
+def test_emulator_teardown_uses_the_same_order(monkeypatch):
+    db = MagicMock()
+    admin = SpannerAdmin({"project": "p", "instance": "i", "database": "d", "dialect": "postgresql",
+                          "emulator_host": "localhost:19010"}, database=db, client=object())
+    _fake_schema(admin, monkeypatch)
+    admin.drop_test_tables(TID)
+    assert _ddl_calls(db) == [_TEARDOWN]
+
+
+def test_teardown_still_drops_the_rest_when_one_kind_cannot_be_listed(key, monkeypatch):
+    admin, db = _guarded(key)
+    _fake_schema(admin, monkeypatch, failing=("table_synonyms",))
+    admin.drop_test_tables(TID)
+    assert _ddl_calls(db) == [[s for s in _TEARDOWN if "SYNONYM" not in s]]
+
+
+def test_teardown_falls_back_to_one_statement_at_a_time(key, monkeypatch):
+    admin, db = _guarded(key)
+    _fake_schema(admin, monkeypatch)
+    db.update_ddl.side_effect = [RuntimeError("batch refused")] + [MagicMock()] * len(_TEARDOWN)
+    admin.drop_test_tables(TID)
+    assert _ddl_calls(db) == [_TEARDOWN] + [[s] for s in _TEARDOWN]
 
 
 # --- the plugin ---------------------------------------------------------------------------------

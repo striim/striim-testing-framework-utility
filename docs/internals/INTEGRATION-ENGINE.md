@@ -62,7 +62,8 @@ After each test:
   drops nothing there, so Spanner DDL fixtures authored for that pipeline must be
   self-healing. With real Cloud Spanner (`INT_SPANNER_CREDENTIALS`, see SERVICES.md) a serial
   run is refused, and `SpannerAdmin` refuses any statement or teardown prefix that is not this
-  test's `${TID}`.
+  test's `${TID}`. In both modes teardown also drops the prefix's change streams, views,
+  synonyms, foreign keys, indexes and sequences, since each blocks `DROP TABLE` or outlives it.
 
 Cleanup is skipped if a test fails, allowing manual debugging.
 

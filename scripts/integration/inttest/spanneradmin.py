@@ -392,13 +392,17 @@ class SpannerAdmin:
         return [list(row) for row in rows]
 
     def drop_test_tables(self, prefix: str = "") -> None:
-        """Teardown cleanup: drop user tables in this admin's database. prefix ""
-        drops ALL user tables (serial runs); a non-empty prefix (the per-test ${TID})
-        drops only this test's tables so a concurrent sibling's tables survive.
-        Filters to the user schema ('' for GoogleSQL, 'public' for the PostgreSQL
-        dialect) so information_schema/spanner_sys never match. Multi-pass: an
-        interleaved child / FK parent can only drop after its dependents, so retry
-        until no progress. Best-effort teardown.
+        """Teardown cleanup: drop this test's objects in this admin's database. prefix ""
+        drops ALL user objects (serial runs); a non-empty prefix (the per-test ${TID})
+        drops only this test's so a concurrent sibling's survive. Filters to the user
+        schema ('' for GoogleSQL, 'public' for the PostgreSQL dialect) so
+        information_schema/spanner_sys never match.
+
+        Spanner refuses DROP TABLE while a change stream watches the table, a view or
+        synonym names it, a foreign key references it, an index is on it or a child is
+        interleaved in it, so those go first, in that order, then the tables (children
+        first), then sequences. One batch; if it fails, one statement at a time, multi-
+        pass until no progress. Best-effort teardown.
 
         Real Spanner: only this test's own ${TID} is accepted as the prefix; "" and anything
         else are refused before a table is listed."""
@@ -407,26 +411,82 @@ class SpannerAdmin:
             if not (_TID.match(prefix or "") and prefix.lower() == tid.lower()):
                 raise RealSpannerError(f"real Spanner: refused to drop tables with prefix {prefix!r}: "
                                        f"only this test's ${{TID}} ({tid!r}) may be dropped")
-        _, rows = self._query(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema IN ('', 'public')"
-        )
-        tables = [r[0] for r in rows]
-        if prefix:
-            low = prefix.lower()
-            tables = [t for t in tables if t.lower().startswith(low)]
-        remaining = [t for t in tables if _IDENT.match(t)]
+        statements = self._teardown_ddl(prefix)
+        if not statements:
+            return
+        if self.real:
+            self._guard(statements)
+        try:
+            with self._ddl_lock():  # a sibling's CREATE must not collide
+                self._update_ddl(statements, budget_s=30.0)
+            return
+        except Exception:  # noqa: BLE001 -- an order this listing missed; one at a time below
+            pass
+        remaining = statements
         while remaining:
             failed = []
-            for t in remaining:
+            for stmt in remaining:
                 try:
-                    with self._ddl_lock():  # a sibling's CREATE must not collide
-                        self._update_ddl([f"DROP TABLE {t}"], budget_s=30.0)
+                    with self._ddl_lock():
+                        self._update_ddl([stmt], budget_s=30.0)
                 except Exception:  # noqa: BLE001 -- dependency ordering; retried below
-                    failed.append(t)
+                    failed.append(stmt)
             if len(failed) == len(remaining):
                 break  # no progress -- leave the rest (best-effort)
             remaining = failed
+
+    _USER_SCHEMA = "table_schema IN ('', 'public')"
+
+    def _teardown_ddl(self, prefix: str) -> list[str]:
+        """The DROP statements for every object `prefix` owns, in an order Spanner accepts."""
+        low = prefix.lower()
+
+        def owned(name) -> bool:
+            return bool(name) and bool(_IDENT.match(name)) and name.lower().startswith(low)
+
+        def rows(sql) -> list:
+            # A kind this database (or the emulator) does not list is skipped, not fatal.
+            try:
+                return self._query(sql)[1]
+            except Exception:  # noqa: BLE001
+                return []
+
+        _, listed = self._query(f"SELECT table_name FROM information_schema.tables WHERE {self._USER_SCHEMA}")
+        views = [r[0] for r in rows(f"SELECT table_name FROM information_schema.views WHERE {self._USER_SCHEMA}")
+                 if owned(r[0])]
+        tables = [r[0] for r in listed if owned(r[0]) and r[0] not in views]
+        parent = {r[0]: r[1] for r in rows("SELECT table_name, parent_table_name FROM information_schema.tables "
+                                           f"WHERE {self._USER_SCHEMA}")}
+
+        def depth(t, seen=()) -> int:
+            p = parent.get(t)
+            return 0 if not p or p in seen else 1 + depth(p, (*seen, t))
+
+        out = [f"DROP CHANGE STREAM {r[0]}"
+               for r in rows("SELECT change_stream_name FROM information_schema.change_streams") if owned(r[0])]
+        out += [f"DROP VIEW {v}" for v in views]
+        out += [f"ALTER TABLE {r[0]} DROP SYNONYM {r[1]}"
+                for r in rows("SELECT table_name, synonym_table_name FROM information_schema.table_synonyms "
+                              f"WHERE {self._USER_SCHEMA}") if owned(r[0]) and owned(r[1])]
+        # A foreign key is named by Spanner (FK_...) unless the DDL named it; it belongs to its table.
+        out += [f"ALTER TABLE {r[1]} DROP CONSTRAINT {r[0]}"
+                for r in rows("SELECT constraint_name, table_name FROM information_schema.table_constraints "
+                              f"WHERE constraint_type = 'FOREIGN KEY' AND {self._USER_SCHEMA}")
+                if owned(r[1]) and _IDENT.match(r[0] or "")]
+        drop_index = {"INDEX": "DROP INDEX", "SEARCH": "DROP SEARCH INDEX", "VECTOR": "DROP VECTOR INDEX"}
+        for name, table, kind, managed in rows(
+                "SELECT index_name, table_name, index_type, spanner_is_managed FROM information_schema.indexes "
+                f"WHERE {self._USER_SCHEMA}"):
+            # Managed indexes (a foreign key's own) go with their key; the primary key with its table.
+            if (str(kind).upper() in drop_index and not (managed is True or str(managed).upper() == "YES")
+                    and owned(name) and owned(table)):
+                out.append(f"{drop_index[str(kind).upper()]} {name}")
+        out += [f"DROP TABLE {t}" for t in sorted(tables, key=depth, reverse=True)]
+        sequences = ("SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'"
+                     if self.dsn.get("dialect") == "postgresql" else
+                     "SELECT name FROM information_schema.sequences WHERE schema = ''")
+        out += [f"DROP SEQUENCE {r[0]}" for r in rows(sequences) if owned(r[0])]
+        return out
 
     def _query(self, sql: str):
         with self._db().snapshot() as snap:
