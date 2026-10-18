@@ -704,6 +704,7 @@ def spanner_client(spanner_config, compose_lock):
     as both resolve to the same emulator (the common case), but an env override that
     only one path honors won't take effect if the other path wins the race."""
     _require_service_opt_in("spanner")
+    _refuse_real_spanner()
     _ensure_up("spanner", compose_lock)
     os.environ.setdefault(
         "SPANNER_EMULATOR_HOST",
@@ -725,11 +726,21 @@ def spanner_admins(spanner_config, compose_lock):
     since it works off `self.tokens`, not this fixture's legacy `_spanner_tokens()`
     dict. Opt-in: same `_require_service_opt_in` gate as `spanner_client`."""
     _require_service_opt_in("spanner")
+    _refuse_real_spanner()
     _ensure_up("spanner", compose_lock)
     from . import spanneradmin as spanneradmin_mod
 
     admins = spanneradmin_mod.admins_for(spanner_config)
     return {route: admin for admin, route in admins}
+
+
+def _refuse_real_spanner() -> None:
+    """The fixture path drives the emulator only: its tokens never carry real Spanner's
+    settings, and `spanner_client` sets SPANNER_EMULATOR_HOST for the whole process."""
+    if (os.environ.get("INT_SPANNER_CREDENTIALS") or "").strip():
+        pytest.fail("the spanner_client/spanner_admins fixtures use the emulator only; unset "
+                    "INT_SPANNER_CREDENTIALS, or run the case through test.yaml `requires: [spanner]`",
+                    pytrace=False)
 
 
 # ============================================================================
@@ -1282,6 +1293,14 @@ def _provision_requires(name: str, requires: list, lock: FileLock) -> None:
                 f"{sorted(_docker_mod.SUPPORTED_SERVICES)} are provisionable today"
             )
         _require_service_opt_in(svc)
+        if svc == "spanner":
+            from inttest import spanneradmin as _spanneradmin
+            try:
+                real = _spanneradmin.real_config(os.environ)
+            except _spanneradmin.RealSpannerError as e:
+                pytest.fail(f"{name}: {e}", pytrace=False)
+            if real:
+                continue  # real Cloud Spanner: no emulator to start; admins_for checks the databases
         # This case requires svc, so its host-side pre_up hook may run first
         # (inttest.services.run_pre_up says when it does not). A failed hook is an error,
         # not a skip: the files the case needs could not be fetched.

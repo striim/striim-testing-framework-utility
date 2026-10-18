@@ -337,6 +337,42 @@ other ports, so both tiers can run at once. Same accounts and passwords.
 
 Each one's settings are under `live_env` in `scripts/integration/services/<name>/service.yaml`.
 
+### Real Cloud Spanner
+
+The integration tier's `spanner` service can use a real Cloud Spanner instance instead of the
+emulator. You need a project, an instance, one GoogleSQL-dialect and one PostgreSQL-dialect
+database, all created already, and a service-account key file that can change their schemas.
+
+1. Set, in the shell or `.env`:
+
+   ```
+   INT_SPANNER_CREDENTIALS=/path/to/key.json
+   INT_SPANNER_PROJECT=my-project
+   INT_SPANNER_INSTANCE=my-instance
+   INT_SPANNER_GSQL_DB=my-gsql-db
+   INT_SPANNER_PG_DB=my-pg-db
+   ```
+
+2. Unset `INT_SPANNER_HOST`, `INT_SPANNER_PORT`, `INT_SPANNER_ADMIN_PORT` and
+   `SPANNER_EMULATOR_HOST`.
+3. Run with `SLT_PARALLEL=1`.
+
+What changes:
+
+- No emulator container starts. `${SPANNER_GSQL_URL}` and `${SPANNER_PG_URL}` become
+  `jdbc:cloudspanner:/projects/<project>/instances/<instance>/databases/<db>?credentials=<key path>`,
+  and `${SPANNER_CREDENTIALS}` is the key path.
+- The framework creates and deletes no instance or database. It checks that the instance and both
+  databases exist with the right dialects, and fails naming the one that does not.
+- Every statement the framework runs on Spanner (`ddl:`, `seed:`, teardown) must name only
+  objects that start with the case's `${TID}`: tables, indexes, change streams, views and
+  sequences, and the tables they are created on, interleaved in or reference. Anything else,
+  `FOR ALL` change streams included, fails the case before any statement runs. A serial run has
+  an empty `${TID}`, so it is refused.
+- A setting missing, or mixed with an emulator setting, fails the case naming the setting.
+- The `spanner_client` and `spanner_admins` pytest fixtures stay emulator-only and fail when
+  `INT_SPANNER_CREDENTIALS` is set.
+
 ## Connecting a SQL client
 
 With the hosts and ports above, from this machine:

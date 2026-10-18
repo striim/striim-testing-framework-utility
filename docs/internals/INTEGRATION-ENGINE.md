@@ -60,7 +60,9 @@ After each test:
   `${TID}`-prefixed tables imperatively (`IntYamlItem._teardown_db_isolation`, since
   a raw `pytest.Item` gets no fixtures); a serial run (where `${TID}` is empty)
   drops nothing there, so Spanner DDL fixtures authored for that pipeline must be
-  self-healing.
+  self-healing. With real Cloud Spanner (`INT_SPANNER_CREDENTIALS`, see SERVICES.md) a serial
+  run is refused, and `SpannerAdmin` refuses any statement or teardown prefix that is not this
+  test's `${TID}`.
 
 Cleanup is skipped if a test fails, allowing manual debugging.
 

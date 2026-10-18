@@ -210,6 +210,8 @@ FIELDS = {
                                                                           "database",
     "project": "the project id", "instance": "the instance", "gsql_db": "GoogleSQL-dialect database",
     "pg_db": "PostgreSQL-dialect database", "admin_port": "its REST admin port",
+    "credentials": "path of a service-account key file; set, the tests use real Cloud Spanner, not the "
+                   "emulator ([SERVICES.md](SERVICES.md#real-cloud-spanner))",
     "src_bucket": "the bucket source objects go in", "tgt_bucket": "the bucket target objects go in",
     "src_topic": "the source topic", "tgt_topic": "the target topic",
     "broker_port": "the broker port Striim connects to", "registry_port": "schema registry port",

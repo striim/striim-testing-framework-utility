@@ -397,6 +397,7 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_SPANNER_INSTANCE` | shell, `.env`, machine | `test-inst` | Your own instance: the instance. |
 | `INT_SPANNER_GSQL_DB` | shell, `.env`, machine | `gsql` | Your own instance: GoogleSQL-dialect database. |
 | `INT_SPANNER_PG_DB` | shell, `.env`, machine | `pgdb` | Your own instance: PostgreSQL-dialect database. |
+| `INT_SPANNER_CREDENTIALS` | shell, `.env`, machine |  | Your own instance: path of a service-account key file; set, the tests use real Cloud Spanner, not the emulator ([SERVICES.md](SERVICES.md#real-cloud-spanner)). |
 | `INT_SPANNER_GRPC_HOST_PORT` | shell, `.env` | `19010` | Host port the container publishes; change it when the port is in use. |
 | `INT_SPANNER_REST_HOST_PORT` | shell, `.env` | `19020` | Host port the container publishes for REST admin port; change it when the port is in use. |
 | `INT_SPANNER_CPUS` | shell, `.env`, machine | `0.5` | CPUs the container may use. |
