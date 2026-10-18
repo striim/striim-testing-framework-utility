@@ -26,10 +26,15 @@ def key(tmp_path):
     return str(path)
 
 
+#: The key's path on the Striim server; never on this machine, so nothing may stat or open it.
+SERVER_KEY = "/opt/striim/UploadedFiles/sa-key-placeholder.json"
+
+
 @pytest.fixture
 def real_env(key):
-    return {"INT_SPANNER_CREDENTIALS": key, "INT_SPANNER_PROJECT": "proj",
-            "INT_SPANNER_INSTANCE": "inst", "INT_SPANNER_GSQL_DB": "gdb", "INT_SPANNER_PG_DB": "pdb"}
+    return {"INT_SPANNER_CREDENTIALS": key, "INT_SPANNER_SERVER_CREDENTIALS": SERVER_KEY,
+            "INT_SPANNER_PROJECT": "proj", "INT_SPANNER_INSTANCE": "inst",
+            "INT_SPANNER_GSQL_DB": "gdb", "INT_SPANNER_PG_DB": "pdb"}
 
 
 def _tokens(tmp_path, env):
@@ -47,11 +52,13 @@ def test_emulator_mode_is_the_default_and_unchanged(tmp_path):
 
 def test_real_mode_tokens_name_the_real_databases_and_key_path(tmp_path, real_env, key):
     tok = _tokens(tmp_path, real_env)
-    assert tok["SPANNER_GSQL_URL"] == f"jdbc:cloudspanner:/projects/proj/instances/inst/databases/gdb?credentials={key}"
-    assert tok["SPANNER_PG_URL"] == f"jdbc:cloudspanner:/projects/proj/instances/inst/databases/pdb?credentials={key}"
+    # The URLs are the Striim server's: they carry the key's path on the server.
+    assert tok["SPANNER_GSQL_URL"] == f"jdbc:cloudspanner:/projects/proj/instances/inst/databases/gdb?credentials={SERVER_KEY}"
+    assert tok["SPANNER_PG_URL"] == f"jdbc:cloudspanner:/projects/proj/instances/inst/databases/pdb?credentials={SERVER_KEY}"
     assert (tok["SPANNER_PROJECT"], tok["SPANNER_INSTANCE"]) == ("proj", "inst")
     assert (tok["SPANNER_GSQL_DB"], tok["SPANNER_PG_DB"]) == ("gdb", "pdb")
-    assert tok["SPANNER_CREDENTIALS"] == key
+    assert tok["SPANNER_CREDENTIALS"] == key                  # the harness's own client
+    assert tok["SPANNER_SERVER_CREDENTIALS"] == SERVER_KEY
     assert not any("autoConfigEmulator" in v or "localhost" in v for v in tok.values())
 
 
@@ -73,6 +80,34 @@ def test_real_mode_refuses_a_key_path_that_is_not_a_file(tmp_path, real_env):
     missing = str(tmp_path / "nowhere.json")
     with pytest.raises(ServiceConfigError, match="nowhere.json"):
         _tokens(tmp_path, {**real_env, "INT_SPANNER_CREDENTIALS": missing})
+
+
+def test_real_mode_refuses_an_unset_server_key_path(tmp_path, real_env):
+    env = {k: v for k, v in real_env.items() if k != "INT_SPANNER_SERVER_CREDENTIALS"}
+    with pytest.raises(ServiceConfigError, match="INT_SPANNER_SERVER_CREDENTIALS"):
+        _tokens(tmp_path, env)
+
+
+@pytest.mark.parametrize("path", ["sa.json", "UploadedFiles/sa.json", "~/sa.json"])
+def test_real_mode_refuses_a_relative_server_key_path(tmp_path, real_env, path):
+    with pytest.raises(ServiceConfigError, match="INT_SPANNER_SERVER_CREDENTIALS.*absolute"):
+        _tokens(tmp_path, {**real_env, "INT_SPANNER_SERVER_CREDENTIALS": path})
+
+
+def test_server_key_path_without_real_mode_is_refused(tmp_path):
+    with pytest.raises(ServiceConfigError, match="INT_SPANNER_SERVER_CREDENTIALS.*INT_SPANNER_CREDENTIALS"):
+        _tokens(tmp_path, {"INT_SPANNER_SERVER_CREDENTIALS": SERVER_KEY})
+
+
+def test_server_key_path_is_never_looked_at_here(tmp_path, real_env, monkeypatch):
+    seen = []
+    real_isfile, real_exists = os.path.isfile, os.path.exists
+    monkeypatch.setattr(os.path, "isfile", lambda p: seen.append(p) or real_isfile(p))
+    monkeypatch.setattr(os.path, "exists", lambda p: seen.append(p) or real_exists(p))
+    assert not os.path.exists(SERVER_KEY)
+    seen.clear()
+    _tokens(tmp_path, real_env)
+    assert SERVER_KEY not in seen
 
 
 def test_real_mode_refuses_one_database_for_both_dialects(tmp_path, real_env):

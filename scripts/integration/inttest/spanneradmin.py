@@ -32,7 +32,7 @@ import fcntl
 import os
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from inttest import paths
 
@@ -51,6 +51,10 @@ _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")
 #      its teardown contract is "drop every table".
 #   3. The emulator settings cannot be mixed in: SPANNER_EMULATOR_HOST would silently send Google's
 #      client to an emulator, and INT_SPANNER_HOST/PORT would name one.
+# The key has two paths: INT_SPANNER_CREDENTIALS on this machine, for the harness's own client, and
+# INT_SPANNER_SERVER_CREDENTIALS on the Striim server, for the JDBC URLs. The second is required, not
+# defaulted to the first: the harness cannot tell whether Striim shares this filesystem, and a
+# wrong guess fails only inside the writer. It is never looked at here, and nothing uploads the key.
 
 class RealSpannerError(RuntimeError):
     """A real-Spanner setting, check or guard refused; the message names what to fix."""
@@ -70,13 +74,17 @@ def real_config(env) -> dict | None:
     unset). Raises RealSpannerError naming every problem. The key file is checked to exist and
     is never opened here."""
     key = (env.get("INT_SPANNER_CREDENTIALS") or "").strip()
+    server_key = (env.get("INT_SPANNER_SERVER_CREDENTIALS") or "").strip()
     if not key:
+        if server_key:
+            raise RealSpannerError("INT_SPANNER_SERVER_CREDENTIALS is set but INT_SPANNER_CREDENTIALS "
+                                   "is not: set both for real Spanner, or neither for the emulator")
         return None
     problems = []
     mixed = [n for n in _EMULATOR_SETTINGS if (env.get(n) or "").strip()]
     if mixed:
         problems.append(f"unset the emulator setting(s) {', '.join(mixed)}")
-    cfg = {"credentials": os.path.expanduser(key)}
+    cfg = {"credentials": os.path.expanduser(key), "server_credentials": server_key}
     missing = []
     for field, name in _REAL_SETTINGS:
         cfg[field] = (env.get(name) or "").strip()
@@ -84,6 +92,13 @@ def real_config(env) -> dict | None:
             missing.append(name)
     if missing:
         problems.append(f"set {', '.join(missing)} (no defaults apply to a real instance)")
+    if not server_key:
+        problems.append("set INT_SPANNER_SERVER_CREDENTIALS to the key's path on the Striim server, "
+                        "e.g. /opt/striim/UploadedFiles/<file> (the same as INT_SPANNER_CREDENTIALS "
+                        "when Striim runs on this machine)")
+    elif not (PurePosixPath(server_key).is_absolute() or PureWindowsPath(server_key).is_absolute()):
+        problems.append(f"INT_SPANNER_SERVER_CREDENTIALS must be an absolute path on the Striim server, "
+                        f"not {server_key}")
     if not os.path.isfile(cfg["credentials"]):
         problems.append(f"INT_SPANNER_CREDENTIALS names {key}, which is not a file")
     if cfg["gsql_db"] and cfg["gsql_db"] == cfg["pg_db"]:
@@ -96,8 +111,8 @@ def real_config(env) -> dict | None:
 
 def real_tokens(tokens: dict, env) -> dict:
     """`tokens` (the service's emulator `provides:`) rewritten for real Spanner, or unchanged in
-    emulator mode. Adds SPANNER_CREDENTIALS, the key path, which `dbroutes.connection_params`
-    reads as the mode."""
+    emulator mode. The URLs carry the server's key path (SPANNER_SERVER_CREDENTIALS); SPANNER_CREDENTIALS
+    is this machine's, which `dbroutes.connection_params` reads as the mode."""
     cfg = real_config(env)
     if cfg is None:
         return tokens
@@ -106,9 +121,10 @@ def real_tokens(tokens: dict, env) -> dict:
             "SPANNER_PROJECT": cfg["project"], "SPANNER_INSTANCE": cfg["instance"],
             "SPANNER_GSQL_DB": cfg["gsql_db"], "SPANNER_PG_DB": cfg["pg_db"],
             "SPANNER_HOST": REAL_HOST, "SPANNER_GRPC_PORT": REAL_PORT,
-            "SPANNER_GSQL_URL": f"{base}{cfg['gsql_db']}?credentials={cfg['credentials']}",
-            "SPANNER_PG_URL": f"{base}{cfg['pg_db']}?credentials={cfg['credentials']}",
-            "SPANNER_CREDENTIALS": cfg["credentials"]}
+            "SPANNER_GSQL_URL": f"{base}{cfg['gsql_db']}?credentials={cfg['server_credentials']}",
+            "SPANNER_PG_URL": f"{base}{cfg['pg_db']}?credentials={cfg['server_credentials']}",
+            "SPANNER_CREDENTIALS": cfg["credentials"],
+            "SPANNER_SERVER_CREDENTIALS": cfg["server_credentials"]}
 
 
 def _require_tid(tid: str) -> None:

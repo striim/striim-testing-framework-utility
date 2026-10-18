@@ -29,9 +29,11 @@ live_env:
   instance: INT_SPANNER_INSTANCE
   gsql_db: INT_SPANNER_GSQL_DB
   pg_db: INT_SPANNER_PG_DB
-  # Set, the service is real Cloud Spanner instead of the emulator: PROJECT, INSTANCE, GSQL_DB and
-  # PG_DB are then required and HOST/PORT/ADMIN_PORT refused (inttest/spanneradmin.py).
+  # Set, the service is real Cloud Spanner instead of the emulator: PROJECT, INSTANCE, GSQL_DB,
+  # PG_DB and SERVER_CREDENTIALS are then required and HOST/PORT/ADMIN_PORT refused
+  # (inttest/spanneradmin.py).
   credentials: INT_SPANNER_CREDENTIALS
+  server_credentials: INT_SPANNER_SERVER_CREDENTIALS
 # Tokens for the Striim app. The writer targets the emulator via the cloudspanner
 # JDBC URL with autoConfigEmulator=true (no credentials) — {view_host} is the host
 # the Striim server uses to reach the emulator (host.docker.internal for the Docker

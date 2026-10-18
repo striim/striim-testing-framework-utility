@@ -347,12 +347,17 @@ database, all created already, and a service-account key file that can change th
 
    ```
    INT_SPANNER_CREDENTIALS=/path/to/key.json
+   INT_SPANNER_SERVER_CREDENTIALS=/opt/striim/UploadedFiles/key.json
    INT_SPANNER_PROJECT=my-project
    INT_SPANNER_INSTANCE=my-instance
    INT_SPANNER_GSQL_DB=my-gsql-db
    INT_SPANNER_PG_DB=my-pg-db
    ```
 
+   `INT_SPANNER_CREDENTIALS` is the key on this machine, for the framework's own client.
+   `INT_SPANNER_SERVER_CREDENTIALS` is the absolute path of the same key on the Striim server; on
+   a Docker cluster, copy the key into the container yourself. When Striim runs on this machine,
+   both are the same path. The framework never reads the server path or uploads the key.
 2. Unset `INT_SPANNER_HOST`, `INT_SPANNER_PORT`, `INT_SPANNER_ADMIN_PORT` and
    `SPANNER_EMULATOR_HOST`.
 3. Run with `SLT_PARALLEL=1`.
@@ -360,9 +365,9 @@ database, all created already, and a service-account key file that can change th
 What changes:
 
 - No emulator container starts. `${SPANNER_GSQL_URL}` and `${SPANNER_PG_URL}` become
-  `jdbc:cloudspanner:/projects/<project>/instances/<instance>/databases/<db>?credentials=<key path>`,
-  and `${SPANNER_CREDENTIALS}` is the key path. The Striim server reads the key from that same
-  path, so on a Docker cluster the file must be at that path inside the container too.
+  `jdbc:cloudspanner:/projects/<project>/instances/<instance>/databases/<db>?credentials=<server key path>`.
+  `${SPANNER_SERVER_CREDENTIALS}` is the server's key path, for TQL; `${SPANNER_CREDENTIALS}` is
+  this machine's, for the framework only.
 - The framework creates and deletes no instance or database. It checks that the instance and both
   databases exist with the right dialects, and fails naming the one that does not.
 - Every statement the framework runs on Spanner (`ddl:`, `seed:`, teardown) must name only
