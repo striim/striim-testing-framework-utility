@@ -33,10 +33,11 @@ import com.webaction.uuid.UUID;
  *   <li>The real class extends {@code BaseWriter extends BaseProcess}, which drag in formatters,
  *       metering and the MDR. The hierarchy is collapsed to this one class, exactly as the
  *       harness's {@code WAEvent} collapses its own.</li>
- *   <li>{@code receive} and {@code retryTransaction}, the RETRY machinery this class is named
- *       for, are absent, and {@code onConnectionException} rethrows instead of reconnecting. A
- *       tier case reaches {@code processEvent} directly, so a writer's retry behaviour is NOT
- *       exercised here.</li>
+ *   <li>{@link #receive} keeps only the platform's lock: it holds {@code synchObject} around
+ *       {@code processEvent}. It skips the platform's {@code isClosed} check, typed-event
+ *       conversion, {@code eventBuffer} add and discard routing. {@code retryTransaction} is
+ *       absent and {@code onConnectionException} rethrows instead of reconnecting, so a writer's
+ *       retry behaviour is NOT exercised here.</li>
  *   <li>{@link #init} does not read {@code formatterProperties}; a Target that writes through JDBC
  *       has no formatter.</li>
  * </ul>
@@ -155,6 +156,18 @@ public abstract class RetriableWriter {
     protected Event convertTypedeventToWAevent(Event event) {
         throw new UnsupportedOperationException(
                 "typed events are not driven by the integration tier");
+    }
+
+    /**
+     * Delivers one event the way the platform's {@code receive} does: under {@code synchObject}.
+     *
+     * <p>{@code TargetCore} calls this, not {@code processEvent}. Without the lock the event
+     * thread races a writer's flush timer, which locks the same object.</p>
+     */
+    public void receive(int channel, Event event, ImmutableStemma position) throws Exception {
+        synchronized (synchObject) {
+            processEvent(channel, event, position);
+        }
     }
 
     /** One event, with the recovery position that pins it. */
