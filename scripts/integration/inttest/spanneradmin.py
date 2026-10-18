@@ -118,29 +118,41 @@ def _require_tid(tid: str) -> None:
             "are created and dropped: run in parallel mode (SLT_PARALLEL=1)")
 
 
-_NAME = r'("[^"]+"|`[^`]+`|[A-Za-z_][\w$#]*(?:\.[A-Za-z_][\w$#]*)?)'
+_PART = r'(?:"[^"]+"|`[^`]+`|[A-Za-z_][\w$#]*)'
+_NAME = rf"({_PART}(?:\s*\.\s*{_PART})*)"
 _KIND = (r"(TABLE|(?:UNIQUE\s+)?(?:NULL_FILTERED\s+)?INDEX|SEARCH\s+INDEX|VECTOR\s+INDEX"
          r"|CHANGE\s+STREAM|VIEW|SEQUENCE)")
-_DDL = re.compile(rf"\s*(?:CREATE(?:\s+OR\s+REPLACE)?|DROP|ALTER)\s+{_KIND}\s+"
+_DDL = re.compile(rf"\s*(CREATE(?:\s+OR\s+REPLACE)?|DROP|ALTER)\s+{_KIND}\s+"
                   rf"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?{_NAME}", re.I)
 _DML = re.compile(rf"\s*(?:INSERT(?:\s+OR\s+(?:IGNORE|UPDATE))?(?:\s+INTO)?|UPDATE|DELETE(?:\s+FROM)?)"
                   rf"\s+{_NAME}", re.I)
-_REFS = re.compile(rf"\b(?:INTERLEAVE\s+IN(?:\s+PARENT)?|REFERENCES|RENAME\s+TO)\s+{_NAME}", re.I)
+_REFS = re.compile(rf"\b(?:(?:INTERLEAVE\s+IN(?:\s+PARENT)?|REFERENCES|RENAME\s+TO)\s+"
+                   rf"|SYNONYM\s*\(\s*|SYNONYM\s+){_NAME}", re.I)
 _INDEX_ON = re.compile(rf"\bON\s+{_NAME}", re.I)
 _STREAM_FOR = re.compile(r"\bFOR\s+(.*?)(?:\bOPTIONS\b|$)", re.I | re.S)
 
 
-def _bare(name: str) -> str:
-    return name.strip('"`').rsplit(".", 1)[-1].strip('"`')
+def _carries(name: str, tid: str) -> bool:
+    # The last part must carry the TID; a qualifier may only be the default schema, since
+    # teardown lists tables in '' and public only.
+    parts = [p for q in re.findall(_PART, name) for p in q.strip('"`').split(".")]
+    return (bool(parts) and parts[-1].lower().startswith(tid.lower())
+            and all(p.lower() == "public" for p in parts[:-1]))
 
 
 def _refusal(stmt: str, tid: str) -> str | None:
     """Why `stmt` may not run against a shared real database, or None when every object it
     creates, alters, drops, writes or attaches to carries `tid`."""
+    # split_statements honours only single quotes, so a GoogleSQL double-quoted literal or a
+    # DELIMITER line can leave several statements in one entry; the checks below read one.
+    if re.search(r";\s*\S", stmt):
+        return "a ';' inside an entry (a second statement, or a ';' in a literal) is refused"
     ddl = _DDL.match(stmt)
     if ddl:
-        kind = " ".join(ddl.group(1).upper().split())
-        names = [ddl.group(2)] + [m.group(1) for m in _REFS.finditer(stmt)]
+        if ddl.group(1).upper() == "DROP" and stmt[ddl.end():].strip(" \t\r\n;"):
+            return "a DROP names one object and nothing else"
+        kind = " ".join(ddl.group(2).upper().split())
+        names = [ddl.group(3)] + [m.group(1) for m in _REFS.finditer(stmt)]
         if kind.endswith("INDEX"):
             on = _INDEX_ON.search(stmt, ddl.end())
             if on:
@@ -155,9 +167,10 @@ def _refusal(stmt: str, tid: str) -> str | None:
         if not dml:
             return "not a statement the real-Spanner guard recognises"
         names = [dml.group(1)]
-    foreign = [n for n in names if not _bare(n).lower().startswith(tid.lower())]
+    foreign = [n for n in names if not _carries(n, tid)]
     if foreign:
-        return f"{', '.join(foreign)} does not carry this test's ${{TID}} prefix {tid!r}"
+        return (f"{', '.join(foreign)} does not carry this test's ${{TID}} prefix {tid!r} "
+                "(or is outside the default schema)")
     return None
 
 

@@ -201,6 +201,8 @@ def _guarded(key, dialect="google_standard_sql"):
     "CREATE TABLE t0123abcde_kid (id INT64, k INT64) PRIMARY KEY (id, k), INTERLEAVE IN PARENT t0123abcde_emp",
     "CREATE UNIQUE NULL_FILTERED INDEX t0123abcde_ix ON t0123abcde_emp (id)",
     "CREATE INDEX IF NOT EXISTS t0123abcde_ix ON public.t0123abcde_emp (id)",
+    'DROP TABLE "public"."t0123abcde_emp"',
+    "DROP TABLE t0123abcde_emp;",
     "CREATE CHANGE STREAM t0123abcde_cs FOR t0123abcde_emp",
     "ALTER TABLE t0123abcde_emp ADD COLUMN c STRING(10)",
     "ALTER TABLE t0123abcde_kid ADD FOREIGN KEY (k) REFERENCES t0123abcde_emp (id)",
@@ -235,12 +237,32 @@ def test_guard_allows_this_tests_objects(key, stmt):
     "ALTER DATABASE gdb SET OPTIONS (version_retention_period = '1d')",
     "GRANT SELECT ON TABLE t0123abcde_emp TO ROLE r",
     "TRUNCATE TABLE t0123abcde_emp",
+    "DROP TABLE t0123abcde_emp; DROP TABLE customers",   # a second statement in one entry
+    "DROP TABLE t0123abcde_emp, customers",
+    "ALTER TABLE t0123abcde_emp ADD SYNONYM customers",
+    'DROP TABLE "t0123abcde_emp"."customers"',
+    "CREATE TABLE sales.t0123abcde_emp (id INT64) PRIMARY KEY (id)",  # teardown lists '' and public only
 ])
 def test_guard_refuses_anything_else_before_any_statement_runs(key, stmt):
     admin, db = _guarded(key)
     with pytest.raises(RealSpannerError, match="refus"):
         admin.run_statements(["CREATE TABLE t0123abcde_ok (id INT64) PRIMARY KEY (id)", stmt])
     assert not db.method_calls, "nothing may run when any statement is refused"
+
+
+@pytest.mark.parametrize("sql", [
+    # split_statements honours only single quotes, so GoogleSQL's double-quoted literal hides the ;
+    "INSERT INTO t0123abcde_emp (s) VALUES (\"O'Brien\");\nDROP TABLE customers;\nSELECT 'x';",
+    # and a DELIMITER line makes the rest one entry
+    "DELIMITER //\nDROP TABLE t0123abcde_emp; DROP TABLE customers //\n",
+])
+def test_guard_refuses_statements_split_merged_into_one_entry(key, sql):
+    admin, db = _guarded(key)
+    statements = dbroutes.split_statements(sql)
+    assert len(statements) == 1
+    with pytest.raises(RealSpannerError, match="refus"):
+        admin.run_statements(statements)
+    assert not db.method_calls
 
 
 def test_guard_refuses_everything_without_a_tid(key):
