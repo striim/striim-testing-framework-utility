@@ -670,7 +670,11 @@ its unit tests do. Proving platform integration is the live tier's job. What thi
 database**: a real driver, real metadata, real type conversion, in seconds rather than the minutes a
 live case costs. The stubs' own javadoc names each reduction; `com.webaction.recovery.Stemma` and
 `com.webaction.ser.KryoSingleton` carry the two that matter most (a one-level lattice, and bytes
-that are not the platform's Kryo encoding).
+that are not the platform's Kryo encoding). The locking does match the platform: each event is
+delivered through `receive`, which holds the writer's `synchObject` around `processEvent` as the
+platform's `RetriableWriter.receive` does, and `flush` is called without it, as `Target.flush`
+calls it. A writer's own flush timer that takes `synchObject` therefore never runs concurrently
+with an event.
 
 ## Reader ops: `IntegrationSeams`
 
