@@ -382,11 +382,13 @@ class SpannerAdmin:
         schema ('' for GoogleSQL, 'public' for the PostgreSQL dialect) so
         information_schema/spanner_sys never match.
 
-        Spanner refuses DROP TABLE while a change stream watches the table, a view or
-        synonym names it, a foreign key references it, an index is on it or a child is
-        interleaved in it, so those go first, in that order, then the tables (children
-        first), then sequences. One batch; if it fails, one statement at a time, multi-
-        pass until no progress. Best-effort teardown.
+        Spanner refuses DROP TABLE while a change stream watches the table, a view names
+        it, a foreign key references it, an index is on it or a child is interleaved in
+        it, so those go first, in that order, then the tables (children first), then
+        sequences. A synonym goes with its table (measured on the emulator, both dialects,
+        which also has no information_schema.table_synonyms to list). One batch; if it
+        fails, one statement at a time, multi-pass until no progress, then a re-list
+        names what is left.
 
         Real Spanner: only this test's own ${TID} is accepted as the prefix; "" and anything
         else are refused before a table is listed."""
@@ -470,9 +472,6 @@ class SpannerAdmin:
         out = [f"DROP CHANGE STREAM {q(r[0])}"
                for r in rows("SELECT change_stream_name FROM information_schema.change_streams") if owned(r[0])]
         out += [f"DROP VIEW {q(v)}" for v in views]
-        out += [f"ALTER TABLE {q(r[0])} DROP SYNONYM {q(r[1])}"
-                for r in rows("SELECT table_name, synonym_table_name FROM information_schema.table_synonyms "
-                              f"WHERE {self._USER_SCHEMA}") if owned(r[0]) and owned(r[1])]
         # A foreign key is named by Spanner (FK_...) unless the DDL named it; it belongs to its table.
         out += [f"ALTER TABLE {q(r[1])} DROP CONSTRAINT {q(r[0])}"
                 for r in rows("SELECT constraint_name, table_name FROM information_schema.table_constraints "

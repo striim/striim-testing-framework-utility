@@ -295,7 +295,6 @@ def test_real_drop_test_tables_refuses_any_prefix_but_this_tests_tid(key, prefix
 _SCHEMA = {
     "change_streams": [["t0123abcde_cs"], ["all_cs"]],
     "views": [["t0123abcde_v"], ["cust_v"]],
-    "table_synonyms": [["t0123abcde_parent", "t0123abcde_syn"], ["customers", "cust_syn"]],
     "table_constraints": [["FK_t0123abcde_grand_t0123abcde_parent_1", "t0123abcde_grand"],
                           ["FK_customers_orders_1", "customers"]],
     "indexes": [["PRIMARY_KEY", "t0123abcde_parent", "PRIMARY_KEY", False],
@@ -315,7 +314,6 @@ def _teardown(q="`"):
     return [
         f"DROP CHANGE STREAM {q}t0123abcde_cs{q}",
         f"DROP VIEW {q}t0123abcde_v{q}",
-        f"ALTER TABLE {q}t0123abcde_parent{q} DROP SYNONYM {q}t0123abcde_syn{q}",
         f"ALTER TABLE {q}t0123abcde_grand{q} DROP CONSTRAINT {q}FK_t0123abcde_grand_t0123abcde_parent_1{q}",
         f"DROP INDEX {q}t0123abcde_ix{q}",
         f"DROP SEARCH INDEX {q}t0123abcde_six{q}",
@@ -340,8 +338,8 @@ def _fake_schema(admin, monkeypatch, failing=(), schema=None):
     def update_ddl(statements):
         for stmt in statements:
             gone = stmt.rsplit(" ", 1)[-1].strip('"`')
-            for k, rows in schema.items():
-                rows[:] = [r for r in rows if gone not in (r[0], r[1] if k == "table_synonyms" else None)]
+            for rows in schema.values():
+                rows[:] = [r for r in rows if r[0] != gone]
         return MagicMock()
 
     monkeypatch.setattr(admin, "_query", query)
@@ -372,7 +370,7 @@ def test_real_teardown_never_names_another_owners_object(key, monkeypatch):
     _fake_schema(admin, monkeypatch)
     admin.drop_test_tables(TID)
     named = " ".join(s for call in _ddl_calls(db) for s in call)
-    for other in ("all_cs", "cust_v", "cust_syn", "customers", "cust_ix", "cust_seq", "PRIMARY_KEY",
+    for other in ("all_cs", "cust_v", "customers", "cust_ix", "cust_seq", "PRIMARY_KEY",
                   "IDX_t0123abcde_grand_managed"):
         assert other not in named
 
@@ -394,17 +392,26 @@ def test_postgresql_teardown_keeps_the_case_of_a_stored_name(key, monkeypatch):
 
 def test_real_teardown_drops_the_rest_then_refuses_to_pass_over_a_kind_it_cannot_list(key, monkeypatch):
     admin, db = _guarded(key)
-    _fake_schema(admin, monkeypatch, failing=("table_synonyms",))
-    with pytest.raises(RealSpannerError, match="synonyms.*no table_synonyms here"):
+    _fake_schema(admin, monkeypatch, failing=("sequences",))
+    with pytest.raises(RealSpannerError, match="sequences.*no sequences here"):
         admin.drop_test_tables(TID)
-    assert _ddl_calls(db) == [[s for s in _teardown() if "SYNONYM" not in s]]
+    assert _ddl_calls(db) == [[s for s in _teardown() if "SEQUENCE" not in s]]
+
+
+def test_teardown_lists_no_synonyms(key, monkeypatch):
+    # The emulator has no information_schema.table_synonyms, and a synonym goes with its table
+    # (measured on the emulator, both dialects), so teardown does not ask for it.
+    admin, db = _guarded(key)
+    _fake_schema(admin, monkeypatch, failing=("table_synonyms",))
+    admin.drop_test_tables(TID)
+    assert _ddl_calls(db) == [_teardown()]
 
 
 def test_emulator_teardown_warns_about_a_kind_it_cannot_list(monkeypatch, capsys):
     admin, db = _emulator_admin()
-    _fake_schema(admin, monkeypatch, failing=("table_synonyms",))
+    _fake_schema(admin, monkeypatch, failing=("sequences",))
     admin.drop_test_tables(TID)
-    assert _ddl_calls(db) == [[s for s in _teardown('"') if "SYNONYM" not in s]]
+    assert _ddl_calls(db) == [[s for s in _teardown('"') if "SEQUENCE" not in s]]
     assert "WARNING" in capsys.readouterr().out
 
 
