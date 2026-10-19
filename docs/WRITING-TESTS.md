@@ -495,7 +495,8 @@ the Striim server (`server_files:`), and every assertion tier.
 
 ## Organising a suite
 
-- **`tags:`** are free-form labels for your own reporting.
+- **`tags:`** are free-form labels. `-k` matches them, and each becomes a pytest marker,
+  `tag_<name>` ([TEST-YAML.md](TEST-YAML.md)).
 - **`depth:`** is one of `smoke`, `gate`, `regression` (the default), `fault`, `customer`,
   `measure`, `canary`. It becomes a pytest marker, `depth_<value>`. `striim-test run` selects by
   path or `--case`, not by depth, so keep a folder per group you want to run together, or run the
