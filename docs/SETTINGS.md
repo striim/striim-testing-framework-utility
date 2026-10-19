@@ -189,6 +189,8 @@ To use your own database instead of the container the framework starts, set its 
 
 | Setting | Where | Docker default | What it does |
 |---|---|---|---|
+| `SLT_ORA_ADMIN_USER` | shell, `.env`, machine | `system` | Your own instance: the optional observer admin account, owning database logon triggers in the data PDB. |
+| `SLT_ORA_ADMIN_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: the admin account's password. |
 | `SLT_ORA_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
 | `SLT_ORA_PORT` | shell, `.env`, machine | `1521` | Your own instance: its port. |
 | `SLT_ORA_SERVICE` | shell, `.env`, machine | `FREEPDB1` | Your own instance: service name of the pluggable database. |

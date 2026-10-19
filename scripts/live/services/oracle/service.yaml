@@ -15,6 +15,8 @@ docker_defaults:
   port: 1521
   service: FREEPDB1           # the PDB — data users (qasource/qatarget) connect here
   cdb_service: FREE           # the CDB root — the LogMiner CDC reader connects here
+  admin_user: system          # observer trigger owner, same PDB as data users
+  admin_password: striim
   source_user: qasource       # data source schema (owns QASOURCE.*); reader/seed connect here
   source_password: striim
   source_schema: QASOURCE      # in Oracle a user IS its schema — QASOURCE for qasource
@@ -29,6 +31,8 @@ docker_defaults:
 docker_env:
   port: SLT_ORA_HOST_PORT
 live_env:
+  admin_user: SLT_ORA_ADMIN_USER
+  admin_password: SLT_ORA_ADMIN_PASSWORD
   host: SLT_ORA_HOST
   port: SLT_ORA_PORT
   service: SLT_ORA_SERVICE
@@ -49,6 +53,7 @@ live_env:
 # initial-load reads/seeds use ${ORACLE_SOURCE_USER}; the DatabaseWriter target uses
 # ${ORACLE_TARGET_USER}.
 provides:
+  ORACLE_ADMIN_USER: "{admin_user}"
   ORACLE_HOST: "{view_host}"
   ORACLE_PORT: "{port}"
   ORACLE_SERVICE: "{service}"
