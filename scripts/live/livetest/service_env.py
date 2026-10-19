@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 import yaml
+from livetest.service_cache import watch, watch_services
 
 class RegistryError(Exception):
     pass
@@ -64,9 +65,12 @@ def declarations(env=None):
     env = dict(os.environ if env is None else env)
     clone = paths.dotenv_path({k: v for k, v in env.items() if k != 'SLT_PROJECT_ROOT'})
     checkout = paths.dotenv_path(env)
+    for file in (clone, checkout):
+        watch(file)
     basic = {**paths.read_dotenv(clone), **paths.read_dotenv(checkout), **env}
     entries = list(layout._cfg_services)
     if basic.get('GOLD_TARGETS'):
+        watch(Path(basic['GOLD_TARGETS']).expanduser())
         try:
             loaded = project.load_project(basic['GOLD_TARGETS'], env=basic)
         except project.ProjectError as e:
@@ -82,16 +86,19 @@ def declarations(env=None):
     for roots in roots_by_tier:
         seen = set()
         for root in roots:
+            watch_services(root)
             for file in sorted(root.glob('*/service.yaml')):
                 if file.parent.name in seen:
                     continue
                 seen.add(file.parent.name)
-                raw = yaml.safe_load(file.read_text()) or {}
+                raw = yaml.safe_load(Path(watch(file)).read_text()) or {}
                 keys = {raw.get('live_override_env'), raw.get('opt_in_env')}
                 keys.update(required_env(raw.get('required_env'), file))
                 for key in ('docker_env', 'live_env'):
                     keys.update((raw.get(key) or {}).values())
                 compose = raw.get('compose')
+                if compose:
+                    watch(file.parent / compose, content=True)
                 if compose and (file.parent / compose).is_file():
                     keys.update(compose_keys((file.parent / compose).read_text()))
                 for key in keys:
@@ -108,6 +115,7 @@ def values(paths, env=None):
     to that checkout; machine hook paths must be absolute. Shell values stay untouched.
     """
     env = os.environ if env is None else env
+    watch(paths.machine_env_path(env))
     types = declarations(env)
     allowed = set(paths.KEYS) | set(paths.SERVICE_KEYS) | set(paths.LICENCE_KEYS) | set(types)
     out = paths.machine_values(env, allowed=allowed)

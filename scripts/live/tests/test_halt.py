@@ -154,3 +154,104 @@ def test_a_timed_out_import_is_never_the_expected_halt():
     from livetest.assertions.halt import accept_expected_halt
     from livetest.striim import StriimTimeout
     assert accept_expected_halt(True, StriimTimeout("TQL import timed out")) is None
+
+
+# --- a deploy/startup halt must not silently skip declared work ----------------------
+
+def _startup_case(tmp_path, extra=""):
+    import textwrap
+    from livetest.manifest import load_manifest
+    d = tmp_path / "halt-case"
+    d.mkdir()
+    for f in ("app.tql", "pre.sql", "dml.sql"):
+        (d / f).write_text("-- x\n")
+    (d / "test.yaml").write_text(textwrap.dedent("""
+        name: halt-case
+        tql: app.tql
+        seed:
+          - {db: postgres-source, file: pre.sql}
+          - {db: postgres-source, file: dml.sql, when: post_start}
+        expect_halt: true
+    """) + textwrap.dedent(extra))
+    return load_manifest(d / "test.yaml")
+
+def test_skipped_by_startup_halt_names_post_start_seeds_and_asserts(tmp_path):
+    from livetest.assertions.halt import skipped_by_startup_halt
+    m = _startup_case(tmp_path, """
+        assert:
+          smoke: true
+    """)
+    assert skipped_by_startup_halt(m) == ["seed dml.sql (post_start)", "assert: smoke"]
+
+def test_startup_failure_with_seed_and_asserts_and_no_contains_fails():
+    # The app never started, so the post_start seed and the data assert never ran: not a pass.
+    exc = RuntimeError("DatabaseJdbcWriter: unsupported CommitPolicy")
+    skipped = ("seed dml.sql (post_start)", "assert: data")
+    with pytest.raises(AssertionFailed, match="assert: data") as excinfo:
+        accept_expected_halt(True, exc, skipped=skipped)
+    assert "expect_halt_contains" in str(excinfo.value)
+    assert "unsupported CommitPolicy" in str(excinfo.value)
+    assert excinfo.value.records[0]["status"] == "failed"
+
+def test_startup_failure_with_matching_contains_passes_and_names_what_was_skipped():
+    exc = RuntimeError("JSON column bug_json declared both a root array and an object path")
+    skipped = ("seed dml.sql (post_start)", "assert: data")
+    records = accept_expected_halt(True, exc, contains=("root array",), skipped=skipped)
+    assert records[0]["status"] == "passed"
+    assert "skipped (startup refusal)" in records[0]["detail"]
+    assert "assert: data" in records[0]["detail"]
+
+def test_startup_failure_with_wrong_contains_still_fails_on_the_contains():
+    exc = RuntimeError("DatabaseJdbcWriter: unsupported CommitPolicy")
+    with pytest.raises(AssertionFailed, match="poisoned"):
+        accept_expected_halt(True, exc, contains=("poisoned",), skipped=("assert: data",))
+
+def test_startup_refusal_only_case_still_passes_without_contains(tmp_path):
+    from livetest.assertions.halt import skipped_by_startup_halt
+    import textwrap
+    from livetest.manifest import load_manifest
+    d = tmp_path / "refusal-only"
+    d.mkdir()
+    (d / "app.tql").write_text("-- x\n")
+    (d / "test.yaml").write_text(textwrap.dedent("""
+        name: refusal-only
+        tql: app.tql
+        expect_halt: true
+    """))
+    m = load_manifest(d / "test.yaml")
+    assert skipped_by_startup_halt(m) == []
+    records = accept_expected_halt(True, RuntimeError("boom"), skipped=())
+    assert records[0]["status"] == "passed"
+    assert "skipped" not in records[0]["detail"]
+
+def test_running_phase_halt_is_unchanged_by_the_startup_rule():
+    # assert_halt (the polled path, after seeding) takes no `skipped`: a halt after start
+    # without expect_halt_contains passes as before.
+    records = assert_halt(StubClient("HALT"), "app", timeout=5, poll=0)
+    assert records[0]["status"] == "passed"
+
+
+def test_startup_halt_record_names_every_skipped_transaction_step(tmp_path):
+    from livetest.assertions.halt import skipped_by_startup_halt
+    from livetest.manifest import TestManifest
+    m = TestManifest(name='txn-halt', tql='app.tql', dir=tmp_path,
+        lifecycle=object(), transaction_steps=[
+            {'session':'setup', 'op':'begin', 'when':'pre_deploy'},
+            {'session':'first', 'op':'begin', 'when':'post_start'},
+            {'session':'first', 'op':'sql', 'file':'changes.sql', 'when':'post_start'},
+            {'session':'first', 'op':'commit', 'when':'post_start'},
+            {'session':'held', 'op':'commit', 'when':'post_recover'},
+        ])
+    skipped = skipped_by_startup_halt(m)
+    assert skipped == [
+        'transaction first begin (post_start)',
+        'transaction first sql changes.sql (post_start)',
+        'transaction first commit (post_start)',
+        'transaction held commit (post_recover)',
+        'lifecycle',
+    ]
+    record = accept_expected_halt(True, RuntimeError('startup failure'),
+        contains=('startup failure',), skipped=tuple(skipped))[0]
+    for item in skipped[:-1]:
+        assert item in record['detail']
+    assert 'transaction setup' not in record['detail']

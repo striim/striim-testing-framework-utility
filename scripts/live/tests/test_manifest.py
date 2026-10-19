@@ -863,7 +863,7 @@ def test_xfail_absent_defaults_to_empty(tmp_path):
 def test_xfail_string_form_becomes_a_reason(tmp_path):
     m = load_manifest(_xf(tmp_path, 'xfail: "PLATFORM-1: known server bug"'))
     assert m.xfail["reason"] == "PLATFORM-1: known server bug"
-    assert m.xfail["tiers"] == sorted(XFAIL_TIERS_ALLOWED), "the string form covers every assertion tier"
+    assert m.xfail["tiers"] == sorted(XFAIL_TIERS_ALLOWED - {"placement"}), "placement requires explicit opt-in"
 
 def test_xfail_string_form_is_not_strict(tmp_path):
     # The string branch sets no "strict" key at all, so the plugin's .get("strict", False)
@@ -873,7 +873,7 @@ def test_xfail_string_form_is_not_strict(tmp_path):
 
 def test_xfail_dict_defaults_strict_to_false(tmp_path):
     m = load_manifest(_xf(tmp_path, 'xfail: {reason: "PLATFORM-1: flaky upstream"}'))
-    assert m.xfail == {"reason": "PLATFORM-1: flaky upstream", "strict": False, "tiers": sorted(XFAIL_TIERS_ALLOWED)}
+    assert m.xfail == {"reason": "PLATFORM-1: flaky upstream", "strict": False, "tiers": sorted(XFAIL_TIERS_ALLOWED - {"placement"})}
 
 def test_xfail_dict_keeps_explicit_strict(tmp_path):
     m = load_manifest(_xf(tmp_path, 'xfail: {reason: "always fails", strict: true}'))

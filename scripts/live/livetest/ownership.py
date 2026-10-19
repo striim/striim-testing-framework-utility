@@ -73,7 +73,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("oracle-trigger", "namespace", "pg-view", "pg-table", "pg-slot", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("oracle-trigger", "namespace", "deployment-group", "pg-view", "pg-table", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -223,6 +223,26 @@ def _like_escape(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def deployment_groups(client):
+    raw = client.list_deployment_groups(timeout=30)
+    if (not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict)
+            or raw[0].get("executionStatus") != "Success" or not isinstance(raw[0].get("output"), list)):
+        raise OwnershipError("deployment-group-catalog-unparseable: no confirmed group inventory")
+    groups = {}
+    for row in raw[0]["output"]:
+        if not isinstance(row, dict) or len(row) != 1:
+            raise OwnershipError("deployment-group-catalog-unparseable: ambiguous group")
+        group = next(iter(row.values()))
+        if (not isinstance(group, dict) or not isinstance(group.get("name"), str)
+                or group["name"] in groups or not isinstance(group.get("actualServers"), list)):
+            raise OwnershipError("deployment-group-catalog-unparseable: missing group name or servers")
+        servers = group["actualServers"]
+        if any(not isinstance(s, dict) or not isinstance(s.get("name"), str) for s in servers):
+            raise OwnershipError("deployment-group-catalog-unparseable: missing server name")
+        groups[group["name"]] = {s["name"] for s in servers}
+    return groups
+
+
 def namespace_present(client, ns: str):
     """True/False from ``LIST NAMESPACES``, or None when the reply cannot be read (never assumed absent).
     The live response shape is UNVERIFIED -- confirm on a live cluster."""
@@ -317,6 +337,8 @@ def snapshot_targets(admins, ctx, nodes=None, env=None) -> dict:
             rec["role"] = getattr(admin, "role", "source")
             rec["systemIdentifier"] = pg_system_identifier(make_catalog(admin))
             routes[route] = rec
+        elif (route.startswith("spanner-") or route == "kafka") and isinstance(dsn, dict):
+            routes[route] = {k: v for k, v in dsn.items() if "password" not in k}
     striim = None
     if ctx is not None:
         striim = {"url": getattr(ctx, "url", None), "user": getattr(ctx, "user", None), "mode": getattr(ctx, "mode", None)}
@@ -445,12 +467,16 @@ class Ledger:
         self.persist()
 
     def owns(self, kind: str, db, name: str) -> bool:
-        """Witness ownership (C7.2): a confirmed table of this attempt on ``db``, or a normalized path
+        """Witness ownership: a confirmed resource of this attempt on ``db``, or a normalized path
         inside a confirmed owned directory of this attempt."""
         mine = self.ident.attempt
-        if kind == "pg-table":
-            return any(e["kind"] == "pg-table" and e["name"] == name and e.get("db") == db and e["attempt"] == mine
+        if kind in ("pg-table", "pg-slot"):
+            return any(e["kind"] == kind and e["name"] == name and e.get("db") == db and e["attempt"] == mine
                        and e["state"] == "confirmed" for e in self.entries)
+        if kind in ("spanner-table", "topic"):
+            actual_kind = "kafka-topic" if kind == "topic" else kind
+            return any(e["kind"] == actual_kind and e["name"] == name and e.get("db") == db
+                       and e["attempt"] == mine and e["state"] == "confirmed" for e in self.entries)
         if kind == "owned-file":
             return posixpath.normpath(name) == name and any(
                 e["kind"] == "owned-dir" and e["attempt"] == mine and e["state"] == "confirmed"
@@ -484,7 +510,7 @@ class Ledger:
         if rec is None:
             return f"attempt {entry['attempt']} recorded no target binding"
         kind = entry["kind"]
-        if kind in ("pg-table", "pg-view", "pg-slot"):
+        if kind in ("pg-table", "pg-view", "pg-slot", "pg-function"):
             was, cur = (rec.get("routes") or {}).get(entry.get("db")), (now.get("routes") or {}).get(entry.get("db"))
             if not was or not cur:
                 return f"route {entry.get('db')} is not bound on both sides"
@@ -494,7 +520,16 @@ class Ledger:
             if not was.get("systemIdentifier") or was.get("systemIdentifier") != cur.get("systemIdentifier"):
                 return (f"{entry.get('db')} backend identity changed or unreadable ({was.get('systemIdentifier')!r} "
                         f"-> {cur.get('systemIdentifier')!r})")
-        elif kind == "namespace":
+        elif kind in ("spanner-table", "kafka-topic"):
+            # These backends expose no immutable incarnation id. Never replay a prior
+            # attempt's delete using only a matching endpoint configuration.
+            if entry["attempt"] != self.ident.attempt:
+                return "backend incarnation unverified: prior-attempt sink cleanup is unsupported"
+            route = entry.get("db")
+            was, cur = (rec.get("routes") or {}).get(route), (now.get("routes") or {}).get(route)
+            if not was or not cur or was != cur:
+                return f"sink route {route} changed or is not bound"
+        elif kind in ("namespace", "deployment-group"):
             was, cur = (rec.get("striim") or {}).get("url"), (now.get("striim") or {}).get("url")
             if not was or was != cur:
                 return f"Striim endpoint changed from {was!r} to {cur!r}"
@@ -549,6 +584,51 @@ class Ledger:
                          detail="reset by a later attempt", done=done)
         return done
 
+    def acquire_deployment_group(self, client, name, servers):
+        if not _IDENT.fullmatch(name) or not name.startswith(self.ident.tid) or not servers or any(
+                not isinstance(n, str) or not _IDENT.fullmatch(n) for n in servers):
+            raise OwnershipError("invalid-deployment-group: case prefix and safe server names required")
+        if name in deployment_groups(client):
+            raise OwnershipError(f"collision:deployment-group:{name} already exists; left untouched")
+        entry = self.add("deployment-group", name, servers=list(servers))
+        members = ",".join('"' + n + '"' for n in servers)
+        from requests.exceptions import ConnectionError, Timeout
+        from livetest.striim import StriimTimeout
+        can_confirm = False
+        try:
+            client.deploy_tql(f"USE Global; CREATE DG {name} ({members});")
+            can_confirm = True
+        except (ConnectionError, Timeout, StriimTimeout):
+            can_confirm = True  # a lost response can follow a successful CREATE
+            raise
+        finally:
+            if can_confirm:
+                groups = deployment_groups(client)
+                if name in groups:
+                    self._set(entry, "confirmed")
+        if groups.get(name) != set(servers):
+            raise OwnershipError("deployment-group-membership: initial members differ")
+        return entry
+
+    def expand_deployment_group(self, client, name, servers):
+        entries = self.find("deployment-group", name, attempt=self.ident.attempt, states=("confirmed",))
+        if len(entries) != 1:
+            raise OwnershipError("deployment-group-not-owned: cannot alter an unconfirmed group")
+        if any(not isinstance(n, str) or not _IDENT.fullmatch(n) for n in servers):
+            raise OwnershipError("invalid-deployment-group: unsafe server name")
+        entry = entries[0]
+        before = set(entry["servers"])
+        if deployment_groups(client).get(name) != before:
+            raise OwnershipError("deployment-group-membership: group changed before expansion")
+        if servers:
+            members = ",".join('"' + n + '"' for n in servers)
+            client.deploy_tql(f"USE Global; ALTER DG {name} ADD ({members});")
+        expected = before | set(servers)
+        if deployment_groups(client).get(name) != expected:
+            raise OwnershipError("deployment-group-membership: survivor is not eligible")
+        entry["servers"] = sorted(expected)
+        self.persist()
+
     def acquire_namespace(self, client) -> dict:
         ns = self.ident.ns
         present = namespace_present(client, ns)
@@ -560,7 +640,7 @@ class Ledger:
                                  f"created; it is left untouched")
         return self.add("namespace", ns, None, "confirmed", "absent before this attempt; created by its TQL")
 
-    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one) -> None:
+    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one, acquire_sinks=False) -> None:
         """DDL one file at a time: refuse unsupported resources, acquire (pre-existence check), run,
         confirm from the catalog. The original exception of a failed file always propagates."""
         for db, fname in files:
@@ -570,6 +650,33 @@ class Ledger:
                 raise OwnershipError(f"unsupported-resource: {fname} runs CREATE {bad.group(1).upper()}, which the "
                                      f"ownership ledger does not support; refused before "
                                      f"execution")
+            if acquire_sinks and db in ("spanner-google", "spanner-postgres"):
+                admin = _lifecycle._admin(admins, db)
+                from livetest.spanneradmin import _check_table
+                raw_tables = _CREATE_TABLE.findall(sql)
+                if any("." in t for t in raw_tables):
+                    raise OwnershipError(f"{db} ownership requires table names without schema qualification; "
+                                         "refused before DDL execution")
+                if db == "spanner-postgres" and any(
+                        '"' in t or t != t.lower() for t in raw_tables):
+                    raise OwnershipError("spanner-postgres ownership requires unquoted lowercase table names "
+                                         "without schema qualification; refused before DDL execution")
+                tables = list(dict.fromkeys(_check_table(t.strip('"')) for t in raw_tables))
+                present = admin.list_owned_tables()
+                for table in tables:
+                    if table in present:
+                        raise OwnershipError(f"collision:spanner-table:{table} already exists before {fname}; left untouched")
+                intents = [self.add("spanner-table", table, db) for table in tables]
+                try:
+                    run_one(db, fname)
+                finally:
+                    now = admin.list_owned_tables()
+                    for entry in intents:
+                        if entry["name"] in now:
+                            self._set(entry, "confirmed")
+                        else:
+                            self._drop_entry(entry)
+                continue
             if db not in PG_ROUTES:
                 self.gaps.append(f"engine-tables {db}: the tables of {fname} are not acquired and never deleted "
                                  f"for this resource type (no bounded catalog for this engine); left in place")
@@ -615,6 +722,18 @@ class Ledger:
                             self._drop_entry(e)
                 except Exception as exc:    # noqa: BLE001 - never mask the file's own exception
                     self.gaps.append(f"{db}: could not confirm objects of {fname} from the catalog: {exc}")
+
+    def acquire_topic(self, admin, topic, create):
+        if admin.topic_exists(topic):
+            raise OwnershipError(f"collision:kafka-topic:{topic} already exists; left untouched")
+        entry = self.add("kafka-topic", topic, "kafka")
+        try:
+            create()
+        finally:
+            if admin.topic_exists(topic):
+                self._set(entry, "confirmed")
+            else:
+                self._drop_entry(entry)
 
     def allocate_owned_dir(self, ctx) -> dict:
         path = _safe_path(self.ident.owned_dir)
@@ -712,6 +831,16 @@ class Ledger:
             if client is None:
                 raise RuntimeError("no Striim client to drop the namespace")
             client.teardown_namespace(name)
+        elif kind == "deployment-group":
+            if not _IDENT.fullmatch(name) or not name.startswith(self.ident.tid):
+                raise OwnershipError("invalid-deployment-group: refusing foreign group cleanup")
+            client.deploy_tql(f"USE Global; DROP DG {name};")
+        elif kind == "pg-function":
+            make_catalog(_lifecycle._admin(admins, db)).run(f"DROP FUNCTION IF EXISTS {_quoted(name)}()", 30.0)
+        elif kind == "spanner-table":
+            _lifecycle._admin(admins, db).drop_owned_table(name)
+        elif kind == "kafka-topic":
+            _lifecycle._admin(admins, db).delete_topic(name)
         elif kind in ("pg-table", "pg-view"):
             what = "TABLE" if kind == "pg-table" else "MATERIALIZED VIEW" if entry.get("materialized") else "VIEW"
             try:
@@ -753,6 +882,16 @@ class Ledger:
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
+        if kind == "deployment-group":
+            return name not in deployment_groups(client)
+        if kind == "pg-function":
+            rows = make_catalog(_lifecycle._admin(admins, db)).query(
+                "SELECT to_regprocedure(%s) IS NULL", (name + "()",), 30.0)
+            return bool(rows[0][0])
+        if kind == "spanner-table":
+            return name not in _lifecycle._admin(admins, db).list_owned_tables()
+        if kind == "kafka-topic":
+            return not _lifecycle._admin(admins, db).topic_exists(name)
         if kind == "pg-table":
             return name not in pg_tables_present(make_catalog(_lifecycle._admin(admins, db)), [name])
         if kind == "pg-view":
@@ -855,7 +994,8 @@ class Ledger:
         for _admin, bucket in gcs_cleanup:
             self._not_acquired("bucket", bucket)
         for _admin, topic in kafka_cleanup:
-            self._not_acquired("topic", topic)
+            if not self.find("kafka-topic", topic, "kafka", attempt=mine):
+                self._not_acquired("topic", topic)
         for name in upload_names:
             self._not_acquired("upload", name)
         result = CleanupResult("ok", ledger_path=str(self.path))

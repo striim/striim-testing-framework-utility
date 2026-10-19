@@ -57,6 +57,9 @@ def referenced(m, manifest_path) -> list[tuple[str, Path]]:
     if getattr(m, "tql", None):
         out.append(("tql", src / m.tql))
     out += [("ddl", at(entry[1])) for entry in (getattr(m, "ddl_files", None) or [])]
+    for prefix in (getattr(m, "snapshot_spec", None) or {}).get("prefixes", []):
+        out += [("golden", case / file) for file in prefix.values()]
+    out += [("seed", at(step["file"])) for step in getattr(m, "transaction_steps", []) if "file" in step]
     out += [("seed", at(entry[1])) for entry in (getattr(m, "seed_files", None) or [])]
     out += [("server-file", local) for entry in (getattr(m, "server_files", None) or [])
             if (local := _server_file_source(src, entry[0])) is not None]

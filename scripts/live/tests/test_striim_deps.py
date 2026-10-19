@@ -24,6 +24,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "striim-deps"
 @pytest.fixture(autouse=True)
 def _no_ambient_manifest(monkeypatch):
     monkeypatch.delenv("SLT_STRIIM_DEPS_MANIFEST", raising=False)
+    monkeypatch.delenv("SLT_TERADATA_JDBC", raising=False)
 
 
 def _sha(b: bytes) -> str:

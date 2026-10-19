@@ -87,8 +87,27 @@ def assert_halt(client, app, timeout: int, poll: float = 2.0,
         raise AssertionFailed(detail, []) from e
 
 
+def skipped_by_startup_halt(m) -> list[str]:
+    """What manifest ``m`` declares to run after the app starts -- post_start seeds, generate
+    specs, server files and transaction steps, `lifecycle:`, and every `assert:` tier -- none of which runs once a
+    deploy/startup failure is accepted as the expected halt."""
+    out = [f"seed {f} (post_start)" for _db, f, when, _a in m.seed_files if when == "post_start"]
+    out += [f"generate {g.get('kind')} (post_start)" for g in m.generate_specs
+            if g.get("when") == "post_start"]
+    out += [f"server_files {f} (post_start)" for f, _d, when, _l in m.server_files
+            if when == "post_start"]
+    out += [f"transaction {step['session']} {step['op']}"
+            + (f" {step['file']}" if step.get("file") else "")
+            + f" ({step['when']})"
+            for step in m.transaction_steps if step["when"] != "pre_deploy"]
+    if m.lifecycle is not None:
+        out.append("lifecycle")
+    out += [f"assert: {tier}" for tier in m.assert_]
+    return out
+
+
 def accept_expected_halt(expect_halt: bool, exc: Exception,
-                         contains: tuple = ()) -> list[dict] | None:
+                         contains: tuple = (), skipped: tuple = ()) -> list[dict] | None:
     """Called at a genuine (non-poison) deploy/startup failure site. Returns a passed
     halt record if `expect_halt` accepts this exception as the test's expected outcome;
     returns None if it doesn't (caller must re-raise the original exception unchanged --
@@ -101,6 +120,12 @@ def accept_expected_halt(expect_halt: bool, exc: Exception,
     `status == "failed"`, so a returned failed record would silently PASS a halt for the
     wrong reason. Raise-on-failure / return-on-success is also what every other assertion
     helper in this package does, including assert_halt above.
+
+    `skipped` is what the manifest declares to run after start (skipped_by_startup_halt).
+    Accepting the halt drops all of it, so without `contains` this RAISES: an unpinned
+    expect_halt would otherwise pass a case whose app never started for an unrelated reason,
+    and its seeds and asserts would never run. With a matching `contains` the startup refusal
+    is the declared outcome; the record names what was skipped.
     """
     # A list means ALL substrings must match (AND), not any-of: a compound halt reason
     # (table name + conflict type) is the case that needs the extra precision this key
@@ -110,6 +135,13 @@ def accept_expected_halt(expect_halt: bool, exc: Exception,
     if not expect_halt or isinstance(exc, StriimTimeout):
         return None      # a timed-out import may still be running: never the expected outcome
     text = str(exc)
+    if skipped and not contains:
+        detail = (f"expect_halt: app failed during deploy/startup, so the manifest's "
+                  f"{list(skipped)!r} would not run; set expect_halt_contains to the "
+                  f"refusal text if a startup refusal is the expected outcome; "
+                  f"actual failure text: {text}")
+        raise AssertionFailed(detail, [build_assertion_result(
+            type="halt", status="failed", spec={}, detail=detail)])
     missing = [s for s in contains if s not in text]
     if missing:
         detail = (f"expect_halt_contains: app failed during deploy/startup as expected, but "
@@ -121,4 +153,6 @@ def accept_expected_halt(expect_halt: bool, exc: Exception,
     if contains:
         verified = [s for s in contains if s in text]
         detail += f"; expect_halt_contains verified: found {list(verified)!r} (all {len(contains)} required)"
+    if skipped:
+        detail += f"; skipped (startup refusal): {list(skipped)!r}"
     return [build_assertion_result(type="halt", status="passed", spec={}, detail=detail)]

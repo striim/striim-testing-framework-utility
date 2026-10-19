@@ -40,12 +40,13 @@ assert:
 - top-level `version` ≠ 1, an unknown top-level `exact` key, `max_rows`/`max_bytes` out of range;
 - a top-level block with no exact spec (vacuous);
 - a spec-level `exact` on `data`/`file`, or a mapping-form diff `exact`, without the block;
-- `exact` without `match` (data/file), or together with `rows`, `min_rows`, `ordered` or `project`;
+- `exact` without `match` (data/file), or together with `rows`, `min_rows` or `ordered`;
+  `project` is accepted only for Kafka `kafka_record`;
 - unknown `exact` keys or type spellings; a column both typed and ignored;
-- `order_by` without `order: sequence`, `order_by` on a file route, or `sequence` on a db route
+- `order_by` without `order: sequence`, `order_by` on a file or Kafka route, or `sequence` on a database route
   without `order_by`;
-- a data or diff route other than `postgres-source`/`postgres-target`, or a native-mode file read
-  (follow-ups F4/F6);
+- a data/diff database route outside Postgres or both Spanner dialects; Kafka exact data
+  requires `project: kafka_record`; native-mode exact file reads remain refused;
 - a `match` path that escapes the case dir after `resolve()`.
 
 Refusal codes: `exact-block-missing`, `invalid-exact-block`, `invalid-exact-spec`,
@@ -156,13 +157,20 @@ Comparison itself always uses the rendered rows.
   that connection only, which return `canon.JsonText`; the global typecasters are not changed. The
   `2 × max_bytes` factor bounds Postgres row text. It is not a measured cap on network bytes or Python RSS;
   real-Postgres validation is still outstanding.
+- **Spanner** (both dialects): `exactdata.read_spanner` reads native values in a
+  bounded read-only snapshot, with max_rows+1 detection, canonical byte accounting
+  and an RPC deadline. It never converts a typed cell through the legacy text reader.
+- **Kafka records**: `KafkaAdmin.select_records` captures partition watermarks,
+  reads the complete range under a deadline, preserves every decoded Avro frame
+  with its key, and bounds wire bytes and decoded rows. `exactdata.project_records`
+  selects full key/value paths; `canon.compare` retains type and multiplicity.
 - **File** (docker mode): listed through `ownership.docker_ls`; each file read with
   `docker exec <node> head -c <max_bytes+1> -- <file>` under a timeout; events parsed as the `file`
   assertion does, with `parse_float=Decimal`; projected by `file._project`. `sequence` requires the
   rendered path to match exactly one file on one node, else `order-source-ambiguous`. Native mode is
   refused.
 - **Ownership.** In a lifecycle case every exact read target (the diff source included) must be a
-  confirmed owned table of this attempt, and a file path must be inside a confirmed owned directory;
+  confirmed owned table/topic of this attempt, and a file path must be inside a confirmed owned directory;
   otherwise `exact-target-not-owned` before any read. A legacy case records `owned: false` and never
   qualifies.
 - **Timing.** Lifecycle case: one read per side after completion and stability, no polling. Legacy

@@ -94,5 +94,6 @@ import livetest.plugin, inttest.plugin, striim_test.cli
 assert sys.prefix != sys.base_prefix
 assert importlib.util.find_spec('teradatasql') is None
 """], check=True)
+subprocess.run([str(python), str(root / "tools/prepare-recovery-goldens.py")], check=True)
 print("Test environment ready: .venv-test/bin/python -m pytest")
 PY
