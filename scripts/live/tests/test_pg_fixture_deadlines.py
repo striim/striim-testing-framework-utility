@@ -156,3 +156,31 @@ def test_blocker_run_lookup_uses_real_ownership_ledgers(tmp_path):
     assert owners[current.ns] == "run-current"
     assert owners[sibling.ns] == "run-sibling"
     assert "unrecorded" not in owners
+
+
+
+def test_unblocked_fixture_never_reads_the_ledgers(monkeypatch):
+    from livetest import plugin
+    monkeypatch.setattr(plugin, "_pg_fixture_owners", lambda ledger: pytest.fail("ledgers read for an unblocked fixture"))
+    admin, _connections, _calls, _options = admin_spy()
+    _run_admin_sql({"admin": admin}, "SELECT 1", phase="seed", timeout=60, run_id="run-current", ledger=object())
+
+
+def test_blocked_fixture_reads_the_ledgers_once(monkeypatch):
+    from livetest import pgfixture, plugin
+    reads, captured = [], {}
+    monkeypatch.setattr(plugin, "_pg_fixture_owners", lambda ledger: reads.append(ledger) or {"SLT_sibling": "run-sibling"})
+    monkeypatch.setattr(PgAdmin, "run_sql", lambda self, sql, **kw: captured.update(kw))
+    _run_admin_sql({"admin": admin_spy()[0]}, "SELECT 1", ledger=object())
+    monkeypatch.setattr(pgfixture, "_connect", lambda *a, **k: Connection([], captured=threading.Event()))
+    found = [b for _ in range(3) for b in pgfixture._blockers(None, 100, captured["owners"])]
+    assert len(reads) == 1 and {b["owning_run"] for b in found} == {"run-sibling"}
+
+
+def test_connect_failure_keeps_the_error_text(monkeypatch):
+    from livetest import pgfixture
+    def connect(**kw):
+        raise OSError('password authentication failed for user "qasource"')
+    monkeypatch.setattr(pgfixture.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match='error=OSError: password authentication failed for user "qasource"'):
+        PgAdmin(dict(DSN), connect=connect).run_sql("SELECT 1", phase="seed", timeout=60)

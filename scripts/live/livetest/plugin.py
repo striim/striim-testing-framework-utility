@@ -944,7 +944,9 @@ def _run_admin_sql(entry, sql, *, phase="ddl", timeout=None, run_id=None, owners
     from livetest.pgclient import PgAdmin
     if isinstance(entry["admin"], PgAdmin):
         if owners is None and ledger is not None:
-            owners = _pg_fixture_owners(ledger)
+            cache = []
+            # read only if a fixture blocks: every ledger in the state dir is parsed
+            owners = lambda: (cache or cache.append(_pg_fixture_owners(ledger)) or cache)[0]
         entry["admin"].run_sql(sql, phase=phase, timeout=timeout, run_id=run_id, owners=owners)
     else:
         entry["admin"].run_sql(sql)

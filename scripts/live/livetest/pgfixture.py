@@ -62,6 +62,8 @@ def _connect(admin, which, *, seconds, options, application_name, attempts=1):
 
 
 def _blockers(admin, pid, owners):
+    if callable(owners):
+        owners = owners()
     conn = _connect(admin, "admin", seconds=2,
         options="-c statement_timeout=1000 -c lock_timeout=500",
         application_name="striim-test-diagnostic")
@@ -96,7 +98,7 @@ def execute(admin, statements, which, spec):
         conn = _connect(admin, which or admin.role, seconds=5, options=options, application_name=tag, attempts=30)
     except Exception as exc:
         raise RuntimeError(f"postgres-fixture-connect-failed: phase={phase} route={route} "
-                           f"connect_timeout_s=5 error={type(exc).__name__}") from exc
+                           f"connect_timeout_s=5 error={type(exc).__name__}: {str(exc).strip()[:200]}") from exc
     stop = threading.Event()
     observed, diagnostic_errors = [], []
     watcher = None
