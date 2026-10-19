@@ -57,6 +57,10 @@ def check_predates_manifest(spec, recover, seed_files) -> None:
         raise CheckpointHistorySpecError(
             "'assert.checkpoint_history.predates' needs 'recover:': it compares the checkpoints "
             "recorded before the interruption with the seed")
+    if recover.get("mode") == "quiesce":
+        raise CheckpointHistorySpecError(
+            "'assert.checkpoint_history.predates' cannot use recover mode quiesce: it records a "
+            "checkpoint as it stops, so the case always fails")
     if recover.get("times", 1) != 1 or "node" in recover or not recover.get("expect_running", True):
         raise CheckpointHistorySpecError(
             "'assert.checkpoint_history.predates' needs 'recover:' with times: 1, no 'node:' "
@@ -124,9 +128,11 @@ def assert_checkpoint_predates(witness: CheckpointWitness, spec: dict) -> list[d
             detail = (f"no checkpoint was recorded before seed {seed}: nothing shows where the "
                       f"restart resumed from")
         else:
+            seen = set(before)
             for phase in ("interrupt", "restored"):
                 for row in reads[phase]["rows"]:
-                    if _row_key(row) not in before and row not in new:
+                    if _row_key(row) not in seen:      # serialNo differs between reads
+                        seen.add(_row_key(row))
                         new.append(row)
             if new:
                 times = ", ".join(str(r.get("checkpointRecordedTime")) for r in new)

@@ -150,6 +150,14 @@ def test_predates_catches_a_checkpoint_between_the_last_read_and_the_kill():
         assert_checkpoint_predates(w, SPEC)
 
 
+def test_predates_names_each_new_checkpoint_once():
+    # B is serialNo 1 in the interrupt read and 2 once R lands: still one checkpoint.
+    w = _run([A], [A, B], [A, B, R])
+    with pytest.raises(AssertionFailed) as e:
+        assert_checkpoint_predates(w, SPEC)
+    assert str(e.value).count("10:01:50.456") == 1 and "10:03:10.000" in str(e.value)
+
+
 def test_predates_fails_when_the_restored_app_checkpoints_before_the_running_read():
     # A false failure, never a false pass.
     w = _run([A], [A], [A, R])
@@ -213,6 +221,7 @@ def test_predates_manifest_checks():
         ({**_RECOVER, "times": 2}, _SEEDS, "times: 1"),
         ({**_RECOVER, "node": "secondary"}, _SEEDS, "no 'node:'"),
         ({**_RECOVER, "expect_running": False}, _SEEDS, "expect_running: true"),
+        ({**_RECOVER, "mode": "quiesce"}, _SEEDS, "quiesce"),
         (_RECOVER, _SEEDS[:1], "found 0"),
         (_RECOVER, _SEEDS + [_SEEDS[1]], "found 2"),
         (_RECOVER, [("mysql-source", "seed_b.sql", "post_recover", 0.0)], "found 0"),

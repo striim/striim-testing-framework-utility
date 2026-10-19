@@ -2196,10 +2196,9 @@ not matter. A checkpoint recorded between the interruption read and the command 
 RUNNING read. A checkpoint the restored app records before that read also fails the case: with a
 one-minute `RECOVERY` interval that is unlikely, and it is a false failure, never a false pass.
 
-Requirements, refused at load otherwise: `recover:` with `times: 1`, no `node:` and
-`expect_running: true`; exactly one `seed:` entry with that file and `when: post_start`. The
-mapping takes no other key. Use it with `kill` or `stop`: a `quiesce` records a checkpoint as it
-stops, so expect it to fail.
+Requirements, refused at load otherwise: `recover:` with `times: 1`, no `node:`,
+`expect_running: true` and a mode other than `quiesce` (it records a checkpoint as it stops);
+exactly one `seed:` entry with that file and `when: post_start`. The mapping takes no other key.
 
 ### `jmx` — plugin MBean attributes from the Prometheus JMX exporters
 
