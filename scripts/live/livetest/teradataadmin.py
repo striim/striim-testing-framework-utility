@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
 import time
+from livetest.assertions import NotYetReadable
 from livetest.sqlutil import coerce_cell, split_sql_statements
 
 # Teradata admin for pytest's own connection (setup + DDL/seed + diff/data reads), backed
@@ -147,39 +148,42 @@ class TeradataAdmin:
             conn.close()
 
     def drop_test_tables(self, prefix: str = "") -> None:
-        """Teardown cleanup: drop this role's tables in its fixed database
+        """Teardown cleanup: drop this role's views, then its tables, in its fixed database
         (qasource/qatarget). prefix "" drops ALL of them -- serial runs, mirroring the
         Postgres whole-schema reset; a non-empty prefix (the per-test ${TID}) drops only
-        this test's tables so a concurrent sibling's tables survive (Teradata names are
-        case-insensitive, so match that way). Multi-pass: a table referenced by another's
-        FK can only drop after its dependents. Raises naming any table that will not drop."""
+        this test's objects so a concurrent sibling's survive (Teradata names are
+        case-insensitive, so match that way). Views go first: none is left over a dropped
+        table. Multi-pass: a view over another view, or a table referenced by another's FK,
+        can only drop after its dependents. Raises naming any object that will not drop."""
         if self.role == "admin":
             return    # the admin route owns no test tables; never sweep dbc
         schema = self._schema()
         conn = self._open()
         try:
             cur = conn.cursor()
-            # T = table with a primary index, O = no-primary-index table.
-            cur.execute("SELECT TRIM(TableName) FROM DBC.TablesV "
-                        "WHERE DatabaseName = ? AND TableKind IN ('T', 'O')", [schema])
-            tables = [r[0] for r in cur.fetchall()]
-            if prefix:
-                low = prefix.lower()
-                tables = [t for t in tables if t.lower().startswith(low)]
-            remaining = [t for t in tables if _IDENT.match(t)]
-            while remaining:
-                failed = []
-                for t in remaining:
-                    try:
-                        cur.execute(f"DROP TABLE {schema}.{t}")
-                    except Exception:      # noqa: BLE001 -- FK ordering; retried below
-                        failed.append(t)
-                if len(failed) == len(remaining):
-                    # No progress. Raise rather than return quietly: teardown_ddl_tables turns
-                    # this into a visible warning, and a table left behind otherwise surfaces
-                    # only as the next run's "already exists".
-                    raise RuntimeError(f"could not drop {schema} tables: {', '.join(failed)}")
-                remaining = failed
+            # V = view; T = table with a primary index, O = no-primary-index table.
+            for kind, kinds in (("VIEW", "('V')"), ("TABLE", "('T', 'O')")):
+                cur.execute("SELECT TRIM(TableName) FROM DBC.TablesV "
+                            f"WHERE DatabaseName = ? AND TableKind IN {kinds}", [schema])
+                names = [r[0] for r in cur.fetchall()]
+                if prefix:
+                    low = prefix.lower()
+                    names = [t for t in names if t.lower().startswith(low)]
+                remaining = [t for t in names if _IDENT.match(t)]
+                while remaining:
+                    failed = []
+                    for t in remaining:
+                        try:
+                            cur.execute(f"DROP {kind} {schema}.{t}")
+                        except Exception:      # noqa: BLE001 -- dependency order; retried below
+                            failed.append(t)
+                    if len(failed) == len(remaining):
+                        # No progress. Raise rather than return quietly: teardown_ddl_tables
+                        # turns this into a visible warning, and an object left behind
+                        # otherwise surfaces only as the next run's "already exists".
+                        raise RuntimeError(
+                            f"could not drop {schema} {kind.lower()}s: {', '.join(failed)}")
+                    remaining = failed
         finally:
             conn.close()
 
@@ -220,8 +224,16 @@ class TeradataAdmin:
         return int(rows[0][0])
 
     def select_rows(self, table: str) -> list[dict]:
-        # A plain (committed) read, unlike count_rows: match/diff assertions have no separate
+        # A committed read, unlike count_rows: match/diff assertions have no separate
         # committed check, so reading with ACCESS could pass them on rows a writer later rolls
-        # back. The cost is that a poll waits for the writer's commit, as MssqlAdmin's does.
-        cols, rows = self._query(f"SELECT * FROM {self._qualified(table)}")
+        # back. NOWAIT, so the read fails at once while the writer holds the table instead of
+        # queueing behind its open batch, where the poll's timeout could not fire. Error 7423
+        # is that refusal; the diff and data polls treat it as "not yet".
+        t = self._qualified(table)
+        try:
+            cols, rows = self._query(f"LOCKING TABLE {t} FOR READ NOWAIT SELECT * FROM {t}")
+        except Exception as e:
+            if "[Error 7423]" in str(e):
+                raise NotYetReadable(f"{t} is locked by a writer") from e
+            raise
         return [{c: coerce_cell(v) for c, v in zip(cols, r)} for r in rows]

@@ -31,7 +31,8 @@ from livetest.assertions.gcs import assert_gcs, parse_gcs_specs
 from livetest.assertions.json import assert_json, parse_json_specs
 from livetest.assertions.monitor import assert_monitor, parse_monitor_specs
 from livetest.assertions.checkpoint_history import (
-    assert_checkpoint_history, parse_checkpoint_history_spec,
+    CheckpointWitness, assert_checkpoint_history, assert_checkpoint_predates,
+    parse_checkpoint_history_spec,
 )
 from livetest.assertions.jmx import JmxSpecError, assert_jmx, parse_jmx_specs, render_row_keys
 from livetest.assertions.halt import assert_halt, accept_expected_halt, skipped_by_startup_halt
@@ -2979,6 +2980,11 @@ class LiveItem(pytest.Item):
                         if m.recover["trigger"]["kind"] == "checkpoint" and "above" not in m.recover["trigger"]:
                             _progress_baseline = _progress_read(m.recover["trigger"]["timeout"])
 
+                    # `checkpoint_history: {predates: <seed>}` reads the history just before
+                    # that seed, just before the interruption and once the app is RUNNING again.
+                    _cp_spec = (parse_checkpoint_history_spec(m.assert_["checkpoint_history"])
+                                if (m.assert_ or {}).get("checkpoint_history") is not None else None)
+                    _cp_witness = CheckpointWitness(client, app) if isinstance(_cp_spec, dict) else None
                     _post_seed = [(db, f, a) for db, f, when, a in m.seed_files
                                   if when == "post_start"]
                     if _post_seed and _await_running_for_seed():
@@ -3012,6 +3018,8 @@ class LiveItem(pytest.Item):
                                     # is indistinguishable from a hung run in the console.
                                     _hb_wait(_elapsed, _after)
                                     time.sleep(min(2.0, _left))
+                            if _cp_witness is not None and _f == _cp_spec["predates"]:
+                                _cp_witness.capture("seed")
                             _run_files([(_db, _f)])
                     if _tx_pool is not None and _await_running_for_seed():
                         _tx_pool.run_phase(m.transaction_steps, "post_start")
@@ -3097,11 +3105,17 @@ class LiveItem(pytest.Item):
                                     raise _fault_progress.ProgressError("progress-deadline during source observations")
                                 if _fault_target is not None:
                                     _fault_target.check_owner(left)
-                            _progress_observed = _fault_progress.at_fault(
-                                _rc.get("trigger"), _read_at_fault,
-                                lambda: _fault_target.interrupt(_rc["mode"]) if _fault_target is not None else recovery.interrupt(client, ctx, app, _rc["mode"],
+                            def _issue_interrupt():
+                                # The last checkpoint read before the command (predates only).
+                                if _cp_witness is not None and _i == 0:
+                                    _cp_witness.capture("interrupt")
+                                if _fault_target is not None:
+                                    return _fault_target.interrupt(_rc["mode"])
+                                return recovery.interrupt(client, ctx, app, _rc["mode"],
                                     verify_timeout=max(120.0, float(m.timeout) / 2.0),
-                                    report=lambda msg: _report(m.name, msg)),
+                                    report=lambda msg: _report(m.name, msg))
+                            _progress_observed = _fault_progress.at_fault(
+                                _rc.get("trigger"), _read_at_fault, _issue_interrupt,
                                 record=self._slt_records.append, cycle=_i + 1,
                                 baseline=_progress_baseline, after_read=_progress_read,
                                 before_issue=_before_fault)
@@ -3120,7 +3134,9 @@ class LiveItem(pytest.Item):
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
                                     report=lambda msg: _report(m.name, msg),
-                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}"))
+                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}"),
+                                    at_running=(lambda: _cp_witness.capture("restored"))
+                                        if _cp_witness is not None and _i == 0 else None)
                                 if _tx_pool is not None:
                                     _tx_pool.observe_recovery("post_restore")
                                 return status
@@ -3585,9 +3601,14 @@ class LiveItem(pytest.Item):
                         # than inferred from row counts surviving a restart.
                         _report(m.name, "asserting: checkpoint_history")
                         cp_expected = parse_checkpoint_history_spec(m.assert_["checkpoint_history"])
-                        self._slt_records += assert_checkpoint_history(
-                            client, app, cp_expected, timeout=m.timeout, status_probe=_terminal_probe,
-                            progress=_hb("asserting checkpoint_history"))
+                        if isinstance(cp_expected, dict):
+                            # Evaluated from the reads taken during the run; nothing to poll.
+                            self._slt_records += assert_checkpoint_predates(
+                                _cp_witness or CheckpointWitness(client, app), cp_expected)
+                        else:
+                            self._slt_records += assert_checkpoint_history(
+                                client, app, cp_expected, timeout=m.timeout, status_probe=_terminal_probe,
+                                progress=_hb("asserting checkpoint_history"))
                         ran = True
                     if m.assert_.get("jmx"):
                         # A plugin's MBean attributes, read from the stack's Prometheus JMX

@@ -5,7 +5,7 @@ import io
 import time
 from pathlib import Path
 
-from livetest.assertions import AssertionFailed
+from livetest.assertions import AssertionFailed, NotYetReadable
 from livetest.assertions.expected import load_expected_text
 from livetest.resultschema import build_assertion_result
 
@@ -263,7 +263,13 @@ def _evaluate(pg, spec: dict, golden_rows, want):
             return False, f"{target}: rows={count}, want min_rows>={spec['min_rows']}", expected, actual
 
     if want is not None:
-        rows = projected_records if projected_records is not None else pg.select_rows(target)
+        if projected_records is not None:
+            rows = projected_records
+        else:
+            try:
+                rows = pg.select_rows(target)
+            except NotYetReadable as e:
+                return False, f"{target}: not readable yet: {e}", {"kind": "rows", "rows": golden_rows}, None
         keys = spec.get("keys")
         if keys is not None:
             rows = [{k: v for k, v in r.items() if k in keys} for r in rows]
