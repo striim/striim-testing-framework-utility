@@ -137,6 +137,10 @@ SECTIONS = (
          "the `teradata` service. Teradata's licence for the driver applies "
          "([SERVICES.md](SERVICES.md), Teradata)."),
         ("SLT_STRIIM_HTTP_HOST_PORT", None, "Host port of the console and REST API."),
+        ("SLT_ENABLE_NODE_FAULTS", "unset (disabled)",
+         "Set to `1` only on a dedicated disposable stack to permit node faults and publish the secondary API."),
+        ("SLT_STRIIM_NODE_HTTP_HOST_PORT", "`9082` when enabled",
+         "Host port of the second node's REST API; published only with `SLT_ENABLE_NODE_FAULTS=1`."),
         ("SLT_STRIIM_HTTPS_HOST_PORT", None, "Host port of HTTPS."),
         ("SLT_STRIIM_JMX_HOST_PORT", None, "Host port of the primary's JMX Prometheus exporter."),
         ("SLT_STRIIM_NODE_JMX_HOST_PORT", None, "Host port of the second node's JMX exporter."),
@@ -190,7 +194,8 @@ FRAMEWORK_SET = (
 )
 RETIRED = {"SLT_MODE": "SLT_FRAMEWORK_MODE", "SLT_FRAMEWORK": "SLT_FRAMEWORK_HOME"}
 # Names the code holds that are not settings: tokens it fills in itself.
-NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID"}
+NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID",
+                "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",

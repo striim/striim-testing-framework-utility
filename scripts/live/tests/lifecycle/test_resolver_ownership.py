@@ -59,7 +59,8 @@ class _Cluster:
         monkeypatch.setattr(plugin, "_redeploy_reason", lambda *a: reason)
         monkeypatch.setattr(sp, "ensure_deps", lambda *a, **k: self.events.append("deps"))
         monkeypatch.setattr(sp, "ensure_image", lambda *a, **k: self.events.append("image"))
-        monkeypatch.setattr(sp, "wait_cluster_ready", lambda *a, **k: None)
+        monkeypatch.setattr(sp, "wait_cluster_ready", lambda *a, **k: plugin.Topology(
+            groups={"default": ["u1", "u2"], "Agents": ["a1"]}, has_cluster=True, has_agent=True))
 
         def down(*a, **k):
             self.events.append("down")
@@ -93,7 +94,7 @@ class _Cluster:
         monkeypatch.setattr(socket, "create_connection", connect)
         monkeypatch.setattr(plugin, "StriimClient",
                             SimpleNamespace(from_url=lambda *a, **k: SimpleNamespace(list_deployment_groups=lambda: "")))
-        monkeypatch.setattr(plugin, "parse_deployment_groups", lambda raw: "topology")
+        monkeypatch.setattr(plugin, "parse_deployment_groups", lambda raw: plugin.Topology(groups={"default": ["u1", "u2"], "Agents": ["a1"]}, has_cluster=True, has_agent=True))
         monkeypatch.setenv("SLT_CLUSTER_SETTLE", "0")
 
 
@@ -231,8 +232,9 @@ plugin._STRIIM_DIR = work / "ctx"
 plugin._make_progress = lambda config: ((lambda *a, **k: None), (lambda: None))
 plugin._cluster_provision_lock = lambda: work / "provision.lock"
 plugin.StriimClient = SimpleNamespace(from_url=lambda *a, **k: SimpleNamespace(list_deployment_groups=lambda: ""))
-plugin.parse_deployment_groups = lambda raw: "topology"
-sp.ensure_deps = sp.ensure_image = sp.wait_cluster_ready = lambda *a, **k: None
+plugin.parse_deployment_groups = lambda raw: plugin.Topology(groups={"default": ["u1", "u2"], "Agents": ["a1"]}, has_cluster=True, has_agent=True)
+sp.ensure_deps = sp.ensure_image = lambda *a, **k: None
+sp.wait_cluster_ready = lambda *a, **k: plugin.Topology(groups={"default": ["u1", "u2"], "Agents": ["a1"]}, has_cluster=True, has_agent=True)
 sp.cluster_up = cluster_up
 sp.cluster_down = lambda *a, **k: log("cluster_down")
 os.environ["SLT_CLUSTER_SETTLE"] = "0"

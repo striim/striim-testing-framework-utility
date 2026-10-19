@@ -20,3 +20,15 @@ partial multi-table source transactions even with source transaction boundaries
 preserved. This sample uses `CommitPolicy: '-1'` to disable group commit as a
 workaround. BatchPolicy and both transaction-boundary settings are unchanged;
 the observer still requires every snapshot to match a complete committed prefix.
+
+STOP is triggered only after B has landed (0 < target count < 2), while A
+remains uncommitted. A fresh recovery sentinel proves that the shared reader
+and writer route transports data after START, before A commits. Expected
+rows remain id 1/first and id 2/second. Broken-input check: suppress the recovery
+marker with the conditional insert from sample 16; the case must fail before
+A's post-recovery commit. Replacing b.sql with a no-op must fail the progress
+barrier before STOP instead of measuring an interruption with no data in flight.
+
+The sentinel uses separate owned marker tables on the same reader/writer,
+so temporary marker rows cannot contaminate the two observed data tables or
+their declared committed-prefix snapshots.

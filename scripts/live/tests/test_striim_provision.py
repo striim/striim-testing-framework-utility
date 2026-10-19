@@ -34,7 +34,7 @@ def test_ensure_deps_skips_when_present(tmp_path):
 
 class FakeClient:
     def __init__(self, seq): self.seq = seq
-    def list_deployment_groups(self): return self.seq.pop(0)
+    def list_deployment_groups(self, timeout=None): return self.seq.pop(0)
 
 def _groups(agent):
     servers = [{"uuid": "u1"}, {"uuid": "u2"}]
@@ -57,7 +57,7 @@ class FlakyThenOkClient:
         self.seq = seq
         self.calls = 0
 
-    def list_deployment_groups(self):
+    def list_deployment_groups(self, timeout=None):
         self.calls += 1
         item = self.seq.pop(0)
         if item is None:
@@ -452,7 +452,7 @@ class _ExpiringClient:
         self.reauth_calls += 1
         self._valid = True
 
-    def list_deployment_groups(self):
+    def list_deployment_groups(self, timeout=None):
         self.polls += 1
         if not self._valid:
             raise sp_striim_error("LIST DEPLOYMENTGROUPS failed: 401 — Please check if valid "
@@ -484,7 +484,7 @@ def test_restart_app_nodes_reauth_happens_before_the_first_poll(monkeypatch, tmp
     client = _ExpiringClient(_groups(True))
     real_reauth, real_list = client._reauth, client.list_deployment_groups
     client.api.getAuthToken = lambda timeout=None: (order.append("reauth"), real_reauth())
-    client.list_deployment_groups = lambda: (order.append("poll"), real_list())[1]
+    client.list_deployment_groups = lambda timeout=None: (order.append("poll"), real_list(timeout=timeout))[1]
     sp.restart_app_nodes(client, run=lambda argv: None, timeout=5)
     assert order[0] == "reauth", f"polled before re-authenticating: {order}"
 
@@ -520,7 +520,7 @@ def test_restart_app_nodes_names_the_reauth_deadline_when_it_expired(monkeypatch
     class _NeverBack:
         api = _TokenApi([ConnectionRefusedError(61, "Connection refused")] * 50)
 
-        def list_deployment_groups(self):
+        def list_deployment_groups(self, timeout=None):
             raise sp_striim_error("LIST DEPLOYMENTGROUPS failed: 401 — token")
 
     with pytest.raises(TimeoutError) as e:
@@ -547,7 +547,7 @@ def test_wait_cluster_ready_says_unauthenticated_when_no_poll_ever_answered():
     """Defect (b): reporting "cluster not ready" when the nodes were never observed at all
     is a real failure wearing the wrong label -- it cost a debugging session."""
     class _AlwaysUnauthorized:
-        def list_deployment_groups(self):
+        def list_deployment_groups(self, timeout=None):
             raise sp_striim_error("LIST DEPLOYMENTGROUPS failed: 401 — token")
 
     with pytest.raises(TimeoutError) as e:

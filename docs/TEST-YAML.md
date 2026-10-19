@@ -17,13 +17,14 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `purpose` | string | no* | — | one-line, present-tense description of the single behavior under test (WRITING-TESTS.md, "Rules every test follows"). *Optional at the loader, but every test should have one. |
 | `tql` | string | **yes** | — | the app file, relative to `source_dir` (the test dir, or `example:`'s dir if set) |
 | `topology` | string | no | `single` | `single` \| `agent` \| `cluster` (`agent` is a legacy alias for `cluster`). Matched against what's resolved; mismatch → **skip**. `single` always runs; `cluster` needs ≥2 nodes in `default` + a registered agent in `Agents` |
+| `deployment_groups` | list | no | — | owned initial worker groups and members added after deployment; Docker only |
 | `requires` | list[string] | no | `[]` | service names to provision/reuse (e.g. `postgres`, `oracle`, `mssql`, `kafka`, `spanner`, `gcs`; `teradata` and `servicenow` connect to your own instance, set with `SLT_TERADATA_HOST` / `SLT_SERVICENOW_HOST`) — each resolved once per session |
-| `tokens` | mapping | no | `{}` | manifest-declared `${NAME}` values, rendered wherever the harness renders tokens (TQL, DDL/seed, `server_files`, `assert` targets, `kafka_cleanup_topics`, `op.upload` names). Names match `[A-Z][A-Z0-9_]*`; values are strings (numbers are cast) and may not themselves contain `${...}`. A name the harness sets -- `NS`/`APP`/`APP_BARE`/`TID*`, the placement and `STRIIM_*` tokens, a module's `${<TOKEN>_JAR}`/`_NAME`, any service's `provides:` (e.g. `MSSQL_URL`) -- is refused at load, so merge order never decides. Lets one shipped app serve several manifests that differ in a value (e.g. `TrailFilePattern: '${SRC_TRAIL}'`, `k10*` vs `t10*`) |
+| `tokens` | mapping | no | `{}` | manifest-declared `${NAME}` values, rendered wherever the harness renders tokens (TQL, DDL/seed, `server_files`, `assert` targets, `kafka_cleanup_topics`, `op.upload` names). Names match `[A-Z][A-Z0-9_]*`; values are strings (numbers are cast) and may not themselves contain `${...}`. A name the harness sets -- `NS`/`APP`/`APP_BARE`/`TID*`, the placement and `STRIIM_*` tokens, a module's `${<TOKEN>_JAR}`/`_NAME`, any service's `provides:` (e.g. `MSSQL_URL`), and the reserved `SENTINEL_*` / `SENTINEL_RECOVERY_*` prefixes -- is refused at load, so merge order never decides. Lets one shipped app serve several manifests that differ in a value (e.g. `TrailFilePattern: '${SRC_TRAIL}'`, `k10*` vs `t10*`) |
 | `kafka_cleanup_topics` | list[string] | no | `[]` | extra Kafka topics the test's **app** creates that the framework didn't derive itself — e.g. a persisted stream's derived `<ns>_<streamName>` data topic and its `<topic>_CHECKPOINT` companion. Each entry is `${...}`-token-rendered (embed `${NS}`/`${TID}` for per-test uniqueness) and appended to the same best-effort per-test topic delete that already removes the derived `${KAFKA_SRC_TOPIC}`/`${KAFKA_TGT_TOPIC}` at teardown. Requires `kafka` in `requires` (loader fails loud otherwise). Absent/empty (every test that doesn't set it) is a strict no-op |
 | `ddl` | string \| list | no | none | schema setup, run once before seed/deploy. Plain string (or a bare list item) → the default `postgres-source` route. List form — entries in the same style `upload:`/`server_files:` use: `- file: <name>` plus an optional `db: <route>` (default `postgres-source`), applied in order. Routes are `<svc>-source`/`<svc>-target` (fixed `qasource`/`qatarget` schemas) plus the emulator routes (`spanner-*`, `gcs`, `kafka`) — see `SERVICES.md`. **Deprecated** (still parses, warns naming the file): the route-keyed entry `{source_db\|target_db: <route>, file: <name>}` — the route value already carries the direction; write `db:` |
 | `seed` | string \| list | no | none | data setup, same shape/back-compat as `ddl`, plus two per-entry keys `ddl` does not take: **`when`** (`pre_deploy` (default) \| `post_start` \| `post_recover`) and **`after`** — see below |
 | `action` | list | no | `[]` | app lifecycle operations run in order after every `post_start` seed and before every assertion tier. Five types: **`stop_start_cycle`** (`cycles`, `delay_before_stop`, `stop_duration`, optional `concurrent:` SQL loops on background threads); **`drop_recreate_app`** (`app` — token-rendered so a multi-app manifest names just the piece it rebuilds; `delay_before_stop`, `recreate_wait`, `seed`, and `capture`/`stopped_seed`/`tokens`, see [below](#action-drop_recreate_app--rebuild-the-app-from-its-tql)) which STOPs, `DROP APPLICATION … FORCE`s via `StriimClient._force_drop`, then rebuilds the app from its own `CREATE OR REPLACE APPLICATION … END` block in the rendered TQL and waits for RUNNING; **`service_outage`** (see [below](#action-service_outage--take-a-required-service-down-mid-run)) which stops a required service's container mid-run and starts it again; **`capture`** ([below](#action-capture--read-a-value-into-a-token)), which reads a `DESCRIBE` or `MON` field into a token; and **`alter_recompile`** ([below](#action-alter_recompile--replace-components-in-place)), the in-place `ALTER APPLICATION … RECOMPILE` upgrade. Gallery: `framework-action`, `framework-drop-recreate` |
-| `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `monitor`, `checkpoint_history`, `jmx`) — see below |
+| `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
 | `example` | string | no | none | app directory, relative to the project root (`SLT_PROJECT_ROOT`, this clone when unset), with or without an OP/UDF. When set, `tql`/`ddl`/`seed`/`upload` are read from THERE; only `expected/*.csv` and entries marked [`local: true`](#local-true--test-only-files-beside-an-example) stay test-local. Absent → everything is relative to the test dir (self-contained regression style) |
 | `op` | mapping \| list | no | none | build + upload OpenProcessor jar(s), registered via `LOAD OPEN PROCESSOR` — single mapping or a list, see below |
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
@@ -31,11 +32,11 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing |
 | `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, regression]`) for `-k`/reporting; not matched against anything in the manifest itself |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
-| `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
+| `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
 | `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
 | `expect_halt` | bool | no | `false` | `true` => the app is expected to reach a terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) instead of RUNNING -- a raise-path test. This can be satisfied at any phase: a synchronous failure during DEPLOY/START itself (the TQL-import call raises before the app is even running), the app never reaching RUNNING during startup, or a later terminal transition while the app is running (polled the same way as any other `assert:` tier). Alone, `expect_halt: true` satisfies the manifest's "at least one assertion" requirement -- no `assert:` block is needed. To also pin *why* it halted, add `expect_halt_contains`. A DEPLOY/START failure skips everything the case declares to run after start: `post_start` seeds, generate specs and server files, `lifecycle:`, and every `assert:` tier. If the case declares any of these, a DEPLOY/START failure fails the case and names them, unless `expect_halt_contains` matches the failure text. Set `expect_halt_contains` when a startup refusal is the expected outcome. The passing record then lists what was skipped. |
 | `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
-| `recover` | mapping | no | — | interrupt the app after every `post_start` step and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
+| `recover` | mapping | no | — | interrupt the app after `post_start` work begins and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
 | `exact` | mapping | no | none | turns on exact comparison for the `data`, `diff` and `file` specs that carry their own `exact:`: every row counted, values compared by declared type. See **`exact:`** below |
 | `audit` | mapping | no | none | `{version: 1}` enables audited exact specs; each names its append writer, and Spanner also names its sink-generated delivery key |
 | `transactions` | list | no | `[]` | ordered Postgres session steps; see `transactions:` below |
@@ -44,6 +45,11 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `depth` | string | no | `regression` | one of `smoke`, `gate`, `regression`, `fault`, `customer`, `measure`, `canary`; becomes the pytest marker `depth_<value>`, for selecting with `-m` |
 | `diff_poll` | number | no | `2` | seconds between the reads of an `assert.diff` poll; must be greater than 0 |
 | `generate` | list | no | `[]` | run a data generator and place its output on the Striim server: entries `{kind, workload, dest, when}`. `kind` is `ggtrail` (GoldenGate trail files from a `workload.yaml`); `workload` is relative to the test dir; `dest` is a server directory; `when` defaults to `post_start` |
+
+`placement` is also a valid `xfail.tiers` entry. It is excluded from the default
+tiers and must be explicitly opted into: a failure to prove placement must not be
+absorbed by an unrelated expected data failure. The same smoke, deployment and
+provisioning exclusions described in the table still apply.
 
 ## `audit:` — append-only delivery targets
 
@@ -424,16 +430,33 @@ op:
 
 
 
+Samples 11 and 12 enable recovery, wait for B to reach the target before STOP
+with a 0 < count < 2 progress window, and prove a fresh post-recovery sentinel
+before committing held session A. Sample 12 uses separate marker tables on
+the same reader/writer so sentinel traffic does not alter snapshot prefixes.
+Their hand-derived expected rows are unchanged.
+
 ## `recover:` — interrupt the app, bring it back, then assert
 
 Every other phase verifies a pipeline that ran undisturbed. That cannot observe a whole class of
 defect: an app checkpoint claiming progress no target durably made, so the events
 in flight at the interruption are never replayed. `recover:` is how a test asks for that.
 
+| Recovery key | Default and constraints |
+|---|---|
+| `mode` | Required: `stop`, `quiesce`, `kill`, or `restart` (the last requires `node`) |
+| `after`, `every` | Timed delays; both refused with `trigger`; `every` needs `times > 1` |
+| `times` | 1; repeated cycles require `expect_running: true` and a repeatable trigger |
+| `settle` | 20s after the last restore |
+| `expect_running` | `true`; a recovery marker requires it |
+| `trigger` | Optional bounded progress reader, defined below |
+| `sentinel` | Optional `true`, with the declared lifecycle sentinel |
+| `node` | Optional exact container role or hosting-flow selector; unavailable with `quiesce` |
+
 <!-- snippet: fragment -->
 ```yaml
 recover:
-  mode: stop          # required: kill | stop | quiesce
+  mode: stop          # required: kill | stop | quiesce | restart
   after: 3            # optional, default 0 -- delay before the FIRST interruption
   times: 2            # optional, default 1 -- how many interrupt/restore cycles
   every: 12           # optional, default = after -- gap between cycles 2..N; needs times > 1
@@ -460,22 +483,23 @@ report success having done nothing. The loader rejects both rather than ignoring
 comparison the existing vocabulary already expresses — source vs target, or two fan-out siblings
 against each other.
 
-**`mode` — the three are NOT interchangeable, and the difference is the point:**
+**Modes without `node:` operate on the application or the app-node cluster:**
 
 | mode | What it does | Notes |
 |---|---|---|
 | `kill` | `docker kill -s KILL` the app node containers, then `docker restart` + re-auth + wait ready | The crash case: no `close()`, no flush, no rollback. **Docker only** — the test SKIPS on a native Striim rather than downgrading to `stop`, which exercises a different path and would report a pass for a case never run. |
-| `stop` | `STOP APPLICATION`, then `START` | **Not a drain.** `Flow.stopImpl()` calls `stopDataFlow()`+`stop()` and never `flush()`, so a `DatabaseWriter` discards its pending batch and rolls back its open transaction. This is what field failures are reported on. |
-| `quiesce` | `QUIESCE APPLICATION`, then `START` | **The drain.** `Flow.quiesceFlush()` injects a `FlushCommandEvent`, waits for `NODE_APP_QUIESCE_FLUSHED` from every component, then checkpoints. Use as the **control arm**: loss under `stop` and none under `quiesce` localises the fault to the shutdown path rather than the pipeline. |
+| `stop` | `STOP APPLICATION`, then `START` | Interrupts the app without requesting a drain. Pending writer batches can be rolled back. |
+| `quiesce` | `QUIESCE APPLICATION`, then `START` | Requests a flush and checkpoint before stopping. Use as a control for a shutdown-loss test. |
+| `restart` | Requires `node:` | There is no application-level restart mode. |
 
 `stop` and `quiesce` differ by exactly one platform behaviour, which makes them a matched pair —
 run the same manifest under both.
 
-> **⚠ `kill` is cluster-wide, not scoped to your app.** It SIGKILLs every container in
+> **⚠ `kill` without `node:` affects the app-node cluster.** It SIGKILLs every container in
 > `stack.app_nodes()`, so under `SLT_PARALLEL`/xdist **every other in-flight test on those nodes
 > dies with it**. Nothing enforces this today: pair a `kill` manifest with
 > `disabled_parallel: true`, or keep it out of concurrent runs. `stop` and `quiesce` are
-> app-scoped and safe alongside siblings.
+> app-scoped when `node:` is absent.
 
 **`after`** is measured from the moment the last `post_start` step finished, not from RUNNING: on
 a CDC pipeline nothing is being written until the seed lands, and the point is to interrupt
@@ -493,6 +517,300 @@ pass and would prove nothing.
 
 Example: `scripts/live/regression/framework/framework-recover`, a writer on a tight commit policy
 that survives a `STOP`.
+
+### Single-node faults and flow placement
+
+Named-node recovery requires Docker mode, `topology: cluster`, the framework's
+primary and secondary app-node containers plus its agent, and an unambiguous
+Striim server-name mapping to each running container. A native case is skipped.
+The survivor must publish its REST API port. Sample 17 kills the secondary and
+uses the primary API (default 9080); it does not require the secondary API port.
+[UPGRADING.md](UPGRADING.md) applies only when the secondary must serve fallback reads.
+
+| Key or combination | Meaning and requirements |
+|---|---|
+| `node: primary` | Select the primary role; refused when it hosts metadata, as in the bundled recipe |
+| `node: secondary`, `agent` | Select that exact framework container role; this alone makes no claim about flow ownership |
+| `node: {hosting: '${NS}.${TID}flow'}` | Requires one running Docker owner; deploy the flow `ON ONE IN ${TID}workers` with the owned secondary group below |
+| `mode: kill` with `node` | `docker kill -s KILL` only the selected container ID |
+| `mode: stop` with `node` | `docker stop` that container, rather than `STOP APPLICATION` |
+| `mode: restart` | `docker restart` that container; requires `node` |
+| `mode: quiesce` with `node` | Refused; quiesce is application-level |
+| `disabled_parallel: true` | Excludes the case from concurrent selection; serial runs still execute it and it does not lock the shared stack |
+
+When proving worker failover, the metadata repository must remain available.
+The bundled recipe hosts it in the primary container. A node fault selecting
+that metadata host is refused before interruption with
+`fault-node-hosts-metadata`. Use the secondary as the initial worker.
+
+### `deployment_groups` — owned initial placement and failover members
+
+Docker mode can create case-owned global deployment groups before importing TQL.
+Names must start with `${TID}`; `flow` must name a flow in `${NS}`. The framework
+refuses collisions, records acquisition in the ownership ledger, verifies exact
+membership, and drops these groups after removing the owned namespace. Cleanup
+and saved-ledger replay verify absence on the recorded Striim endpoint.
+
+<!-- snippet: fragment samples/live/17-one-node-failover/test.yaml -->
+```yaml
+deployment_groups:
+- name: ${TID}workers
+  flow: ${NS}.${TID}flow
+  servers:
+  - ${STRIIM_SECONDARY_SERVER}
+  add_after_deploy:
+  - ${STRIIM_PRIMARY_SERVER}
+```
+
+Deploy the named flow `ON ONE IN ${TID}workers` in the app's TQL. Before the
+post-start seed, the framework proves that the flow has one running owner among
+`servers`, then adds `add_after_deploy` members and verifies the complete group.
+The existing singleton flow keeps its initial worker; the added member becomes
+eligible for failover. This is for `ON ONE` flows; it does not expand an existing
+`ON ALL` deployment onto new servers. Sample 17 proves movement to the added
+primary while the secondary stays down.
+
+Only `name`, `flow`, `servers` and optional `add_after_deploy` are accepted.
+`servers` is nonempty; both member lists contain distinct framework server
+tokens, and agents cannot mix with app servers. Malformed declarations fail
+`invalid-deployment-group`; unreadable catalogs fail
+`deployment-group-catalog-unparseable`; existing names fail
+`collision:deployment-group`; changed membership fails
+`deployment-group-membership`; wrong initial owners fail
+`deployment-group-initial-placement`. The initial owner proof retries read errors
+under the case timeout and records its allowed/observed owners, last read error
+and bounded native replies as a `recovery` record with `phase: initial-placement`,
+on success or failure. Native cases skip before inventory or group creation.
+No foreign group is modified.
+
+Use `{hosting:}` to prove the fault hits the running worker. A named-role fault
+tests that role, and `assert.placement` separately checks resulting flow placement.
+Coordinate all users of these shared nodes before running a node fault. A node
+operation affects every application hosted there, even when it selects one flow's
+owner. Resolve the owner before waiting for the progress window; the final
+pre-command check revalidates only that owner and MON's singleton count, leaving
+one fresh progress check immediately before the command.
+
+In Docker mode, add `recover.node` to scope `stop`, `kill` or `restart` to
+one container. Use `primary`, `secondary`, `agent`, or `{hosting: named flow}`.
+The hosting flow must belong to this case's namespace and have exactly one
+running owner in current Striim deployment metadata. A flow MON identifies the
+flow; it does not provide application status. Server DESCRIBE binds that flow to
+one full parent-application name, and STATUS on that same server must report the
+application RUNNING. Missing identity, parent or runtime state fails with
+`placement-flow-monitor-unavailable`, `placement-application-unavailable` or
+`placement-node-status-unavailable`; a deployed but stopped app is not a running
+owner. Its owner is checked again
+before the final progress read and fault command. Ambiguous selectors and unknown
+keys fail with `invalid-node-fault`; a moved or nonunique flow fails `fault-missed`.
+A refused hosting selection or changed owner records a failed `recovery` assertion
+before raising. Its row includes the phase (`owner-selection` or `fault-boundary`),
+flow, observed owners, selected server when available, Docker server/container
+mapping, `interrupted: false` and placement `reads`. Those reads preserve the
+returned deployment-group, MON, queried per-server DESCRIBE and runtime STATUS
+values as redacted
+JSON strings, with original redacted character counts and truncation flags.
+Each response is capped at 65536 characters; a truncated string is not complete
+JSON. A read error retains the responses already obtained and reports owners as
+null rather than inventing an empty owner set. These are diagnostics only: zero,
+multiple or unmapped owners still prevent a fault.
+
+`quiesce` cannot target a node. `restart` requires a node. Native mode skips named
+node faults, and continues to skip legacy kill.
+
+<!-- snippet: fragment -->
+```yaml
+topology: cluster
+disabled_parallel: true
+deployment_groups:
+- name: ${TID}workers
+  flow: ${NS}.${TID}flow
+  servers: ['${STRIIM_SECONDARY_SERVER}']
+  add_after_deploy: ['${STRIIM_PRIMARY_SERVER}']
+recover:
+  mode: kill
+  node: {hosting: '${NS}.${TID}flow'}
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: '${PG_TARGET_SCHEMA}.${TID}tgt'
+    above: 100
+    below: 2500
+assert:
+  placement:
+    - {flow: '${NS}.${TID}flow', node: survivor, timeout: 90s}
+  data:
+    - {target: '${PG_TARGET_SCHEMA}.${TID}tgt', db: postgres-target, rows: 5000}
+```
+
+Docker commands use the captured container ID and verify its resulting running
+state. A failed command fails `node-fault-error`. Only that container is started
+again, including after a failed case. A hosted app-node flow must move to the
+other app node while its owner is stopped; missing failover fails
+`fault-node-no-failover` under the restore deadline. A separate `recovery` assertion
+with `phase: failover-wait` records success or failure before restarting the
+original owner. Each placement read records its index, start/observation times,
+UTC time, remaining budget, owners or a redacted error, and whether it finished
+late. A late survivor read cannot satisfy the deadline. History keeps at most
+128 entries (the first 127 plus the latest); `observationCount` and
+`observationsDropped` expose omitted middle reads. Error text is capped at 1024
+characters with `errorTruncated`; `reads` preserves the last native placement
+reply diagnostics under their existing per-response limits. The agent has no app-node
+survivor requirement. Hosting faults require `times: 1`; after one worker
+failover the next owner may be the protected metadata host. Repeated hosting
+faults are refused at load as `invalid-node-fault`. Named-role faults may repeat
+under the existing trigger/cycle rules.
+
+All `recover.node` cases require `SLT_ENABLE_NODE_FAULTS=1`, set only for a
+dedicated disposable stack. Without it they skip before provisioning even when
+selected by a default samples run. `disabled_parallel` does not replace this gate.
+Only opted-in stacks add the secondary API port overlay.
+
+The surviving app node's published API port is discovered by Docker inspection.
+For the bundled secondary-worker fault, the primary API remains available at
+its published port (default 9080). The second-node mapping, default 9082
+(`SLT_STRIIM_NODE_HTTP_HOST_PORT`), is needed only when that node is the survivor.
+Missing fallback endpoints fail `fault-fallback-unavailable` before interruption.
+Read-only status, monitor, description and checkpoint reads share a bounded
+budget with authentication to a surviving endpoint after connection, timeout or
+endpoint authentication failures. State-changing API calls execute once.
+Legacy recovery without `node` retains its existing behavior.
+
+Docker topology resolution requires a fresh observation of at least two app
+nodes in `default` and an agent in `Agents` after node join has settled. A
+temporarily incomplete observation is retried within the original 300-second
+join budget plus `SLT_CLUSTER_SETTLE` (default 20 seconds); it is not cached as
+single-node after successful registration. Late reads cannot prove readiness.
+Persistent missing membership skips the case with `CLUSTER-READY`, the
+last group counts and saved node logs when the run has a JUnit output directory.
+The cluster requirement of a `topology: cluster` case is unchanged.
+
+`assert.placement` is a nonempty list of `flow`, `node`, and optional positive
+`timeout` (default case timeout). Unknown keys fail `invalid-placement-spec`.
+`flow` must name this case's qualified flow. `node` is an exact live Striim server
+name, a Docker role above, or `survivor` (requires an app-node fault).
+Placement failures require explicit `xfail.tiers: [placement]` to be expected;
+string-form or untiered xfail does not absorb them.
+The assertion retries read errors under its existing timeout and records the last
+redacted error in `detail`, including when a later read succeeds.
+The assertion reads running flow status and per-node deployed-flow metadata;
+exactly the requested node must own the flow. Zero, multiple or wrong owners fail
+`placement-mismatch`; unreadable metadata fails `placement-read-error`.
+Placement records retain expected and actual nodes. See
+`samples/live/17-one-node-failover` for a two-node case with complete data and a
+post-recovery sentinel.
+
+### Post-recovery route proof
+
+| Recovery marker key | Contract |
+|---|---|
+| `sentinel` | Optional, absent by default; the only accepted value is `true` |
+| `expect_running` | Must be `true` (the default) |
+| `lifecycle.sentinel` | Must be declared, with source insert/delete SQL and an owned observable sink |
+| Per-cycle marker | Fresh ID/tag after every restore, present then absent before subsequent work |
+
+Set `recover.sentinel: true` to insert a fresh lifecycle marker after **every**
+restore reaches RUNNING, before post-recovery transaction steps, ordinary seeds,
+settling and assertions. It requires `expect_running: true` and a declared
+`lifecycle.sentinel`; false, mappings and unknown values are refused with
+`invalid-post-recovery-sentinel`. The existing Postgres-source SQL and all A4
+sink kinds (Postgres, Spanner, file, Kafka) are reused with current-attempt
+ownership and the lifecycle completion deadline. Database sinks observe present
+then absent; append sinks observe insertion then its deletion event.
+
+A new ID/tag is allocated per recovery cycle; `SENTINEL_RECOVERY_1_ID` and
+`SENTINEL_RECOVERY_1_TAG` (then 2, 3, ...) become tokens and evidence bindings
+after proof succeeds. The prefix is reserved. A recovery assertion record retains
+its marker observations and real expected insert-present/delete-absent states,
+so the complete written evidence validates without an inapplicable-field reason.
+Missing, unreadable or terminal routes fail with
+`post-recovery-sentinel-missed`, never as an expected data failure, even when the
+final golden was already met. See `samples/live/16-recovery-sentinel` for a marker
+suppression check. File reads still require Docker mode.
+
+### Recovery progress triggers
+
+Use `recover.trigger` instead of `after`/`every` to interrupt when progress is
+observed. Each cycle waits afresh; timeout and poll are positive durations
+(default 60s and 100ms). Unknown keys fail with `invalid-progress-trigger`.
+Target tables, slots and topics must belong to the current attempt. Reads are
+bounded by the remaining trigger deadline. A read finishing late cannot satisfy
+the barrier. A terminal app, unreadable position, deadline or overshot window
+fails the case before interruption. Timed `after:` recovery keeps its behavior.
+
+<!-- snippet: fragment -->
+```yaml
+recover:
+  mode: stop
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: '${PG_TARGET_SCHEMA}.${TID}tgt'
+    above: 100
+    below: 2500
+    timeout: 90s
+    poll: 100ms
+assert:
+  data:
+    - {target: "${PG_TARGET_SCHEMA}.${TID}tgt", db: postgres-target, min_rows: 1}
+```
+
+Trigger kinds:
+
+| kind | Fields and condition |
+|---|---|
+| `target-count` | `db`, `table`, integer `above`, `below`; count must be strictly between both bounds. Postgres and both Spanner dialects. |
+| `checkpoint` | optional `field` (default serialNo), optional integer `above`; maximum history field must advance past above. Without above, the baseline is read before post-start input, using the existing checkpoint-history reader. Missing fields fail. |
+| `kafka-end` | `topic`, integer `partition`, integer `above`; fresh topic end offset must exceed above. |
+| `kafka-consumer` | same plus `group`; committed consumer offset must exceed above. A group without a committed offset has not passed the barrier. |
+| `postgres-slot` | Postgres `db`, `slot`, `above` as hexadecimal LSN (for example 0/10); confirmed_flush_lsn must exceed it. Full 64-bit positions are compared. |
+
+All triggers require `kind`; `timeout` defaults to 60s and `poll` to 100ms,
+both positive finite durations. Unknown and kind-specific foreign keys are
+refused with `invalid-progress-trigger`. `trigger` cannot coexist with `after`
+or `every`; the loader refuses either combination. Absolute thresholds require
+`times: 1`. A checkpoint trigger without `above` can repeat with an advancing
+per-cycle baseline; repeated recovery requires `expect_running: true`.
+
+| Kind | Required fields and constraints |
+|---|---|
+| `target-count` | `db`, `table`, nonnegative integer `above`, `below`; `below >= above + 2` leaves an integer inside the strict window |
+| `checkpoint` | Optional `field` (default `serialNo`), one ASCII identifier starting with a letter; optional nonnegative integer `above`, otherwise advance beyond the captured baseline |
+| `kafka-end` | `topic`, nonnegative integer `partition`, nonnegative integer `above` |
+| `kafka-consumer` | The Kafka end fields plus nonempty, token-rendered `group`; reads committed group offsets |
+| `postgres-slot` | Postgres `db`, token-rendered `slot` matching `[a-z0-9_]+` at runtime, and `above` as a Postgres LSN |
+
+Table, slot and topic reads require confirmed ownership in this attempt.
+Kafka triggers use framework-derived source/target topics acquired by a declared
+lifecycle, rather than an unclaimed custom topic. A slot must already be recorded
+as owned; naming a shared slot does not grant permission to observe it.
+Only target-count recovery has reported live qualification (sample 14);
+checkpoint, slot and Kafka position triggers have hermetic coverage.
+Every cycle writes an assertion of type `recovery` in `evidence.json` and the
+results sidecar. Its `spec.trigger` holds the trigger declaration. The actual row contains `cycle`, `baseline`,
+`windowOpened` (the first in-window value and monotonic/UTC time), the final
+pre-command `value`, `held`, monotonic `observedAt`/`issuedAt`, UTC `observedUtc`,
+`deadline` and `interrupted`. Timed recovery uses `trigger.kind: timed` and checks
+RUNNING at issuance. Progress recovery reads its precondition at the command boundary.
+
+A fresh progress read immediately before the command must still qualify.
+After interruption, another read has at most five seconds or the shorter trigger
+timeout; `afterInterrupt` retains its observations. A target count reaching
+`below` in that interval fails `fault-missed` even if the pre-command count held.
+These separate reads do not claim an atomic snapshot at the physical kill instant.
+
+A failure before issuance records `held: false`, `issuedAt: null` and
+`interrupted: false`; no command was issued. A closed window after interruption
+records the issue time, `interrupted: true` and the post-interruption value.
+A command failure retains its held precondition but cannot pass the interruption.
+`fault-missed` and `fault-interrupt-error` are framework recovery failures;
+`xfail` cannot absorb them. Inspect the suffix (`progress-deadline`,
+`progress-window-missed`, `progress-read-error`, `progress-app-not-running`) and
+the retained evidence. See [15-fault-evidence](../samples/live/15-fault-evidence/README.md).
+
+Kafka offsets describe the next record position; the trigger observes the named
+partition, never a sum across partitions. Checkpoint advances are measured anew
+in each cycle. See `samples/live/14-progress-recovery`.
 
 ## `action: service_outage` — take a required service down mid-run
 
@@ -1249,7 +1567,7 @@ or the shell, and a run without it is refused.
 - **`exclusive`**: the run starts a stack of its own, refuses to start when anything already answers
   on its Striim endpoint, and tears the stack down at the end unless `SLT_KEEP_SERVICES=1`.
 
-`recover: {mode: kill}` kills every Striim node container, so on a shared cluster it kills the other
+`recover: {mode: kill}` kills every app-node container when `node:` is absent, so on a shared cluster it kills the other
 tests running there too. Give such a test `disabled_parallel:`, and do not run it on a cluster others
 use.
 
@@ -1375,6 +1693,12 @@ assert:
   smoke: true
 ```
 No specs — just asserts the app reaches and stays RUNNING through a short settle window.
+
+### `placement` — live flow ownership
+
+Use a list of `{flow, node, timeout}` specs as defined under Single-node faults
+and flow placement. It is also an accepted `xfail.tiers` name; recovery failures
+remain framework failures regardless of that marker.
 
 ### `data` — database rows and Kafka records
 <!-- snippet: fragment -->
@@ -1747,6 +2071,13 @@ refs) is `${TOKEN}`-substituted before use. Tokens come from these places:
   and used by everything rendered after it.
 - **Placement tokens**: `${SOURCE_GROUP}` (= `Agents`, where a `cluster` topology's reader
   runs), `${APP_GROUP}` (= `default`, where the app runs).
+  Docker-only `${STRIIM_PRIMARY_SERVER}`, `${STRIIM_SECONDARY_SERVER}` and
+  `${STRIIM_AGENT_SERVER}` resolve to live server names from inspected framework
+  containers. They are reserved, cannot be overridden by `tokens:` or environment
+  values, and require readable node inventory. Use them in `deployment_groups`
+  instead of hard-coded runtime names. Tokens are populated when
+  `deployment_groups` is declared or the TQL references a server token; other
+  locations alone do not trigger inventory resolution.
 - **OP/UDF build tokens**: `${OP_JAR}`/`${OP_NAME}` for a single `op:` mapping,
   `${UDF_JAR}`/`${UDF_NAME}` for a single `udf:` mapping, or `${<TOKEN>_JAR}`/
   `${<TOKEN>_NAME}` per entry in either's list form.
@@ -1805,3 +2136,15 @@ Worked case: [12-snapshot-observer](../samples/live/12-snapshot-observer/README.
 Audit writer declarations accept an optional `VERSION` clause. KafkaWriter `Topic` must name the audited topic; the compatibility spelling `Topics` is also accepted, but specifying both is refused as ambiguous.
 
 Worked case: [13-append-only-audit](../samples/live/13-append-only-audit/README.md). Framework gallery: [framework-append-only-audit](../scripts/live/regression/framework/framework-append-only-audit/README.md).
+After an interruption takes effect, a fresh progress read has at most five seconds (or the shorter trigger timeout). A target count at or above `below`, or an unreadable count, fails `fault-missed`, even when the pre-command read held. Other trigger kinds retain a failed post-interruption read as diagnostic `error`/`errorTruncated` fields with observation times; they do not fail the fault merely because a whole-cluster kill removed the checkpoint API. Absolute triggers require `times: 1`; only a checkpoint trigger without `above` supports repeated cycles with an advancing baseline.
+
+Worked case: [14-progress-recovery](../samples/live/14-progress-recovery/README.md). Framework gallery: [framework-progress-recovery](../scripts/live/regression/framework/framework-progress-recovery/README.md).
+
+Fault evidence retains `windowOpened` (the first in-window value and time), the pre-command value, `issuedAt`, and the bounded `afterInterrupt` observation. When work finishes during STOP, the record is failed with `interrupted: true`; no command is retried. Timed recovery also requires RUNNING at issuance.
+
+Worked case: [15-fault-evidence](../samples/live/15-fault-evidence/README.md). Framework gallery: [framework-fault-evidence](../scripts/live/regression/framework/framework-fault-evidence/README.md).
+
+Worked case: [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.md). Framework gallery: [framework-recovery-sentinel](../scripts/live/regression/framework/framework-recovery-sentinel/README.md).
+A hosting-node fault resolves all owners before post-start seeds. At issuance it checks flow MON's single-owner count and the selected server's deployment and runtime STATUS once, outside progress polling, then re-reads progress. An unreadable, moved or multi-owner flow refuses the fault. Sample17 paces each target insert with a10ms table CHECK, leaving the exact expected rows unchanged.
+
+Worked case: [17-one-node-failover](../samples/live/17-one-node-failover/README.md). Framework gallery: [framework-one-node-failover](../scripts/live/regression/framework/framework-one-node-failover/README.md).

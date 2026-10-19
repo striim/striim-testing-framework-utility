@@ -31,8 +31,7 @@ lifecycle:
   mode: cdc
   sink: db
   readiness:
-    kind: source-progress
-    db: postgres-source
+    kind: sentinel
   completion:
     kind: row-count
     db: postgres-target
@@ -44,10 +43,26 @@ lifecycle:
     readiness: 90s
     completion: 120s
   reset: owned
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: postgres-target
+      table: ${PG_TARGET_SCHEMA}.${TID}marker_tgt
+      key: id
 recover:
   mode: stop
-  after: 0
   settle: 1
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: ${PG_TARGET_SCHEMA}.${TID}tgt
+    above: 0
+    below: 2
+    timeout: 90s
+    poll: 100ms
+  sentinel: true
 transactions:
 - session: a
   op: begin

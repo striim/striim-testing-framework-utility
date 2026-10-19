@@ -196,12 +196,16 @@ The run directory is `scripts/live/runs/<time>-<id>/`. Under `live/`:
 
 ```
 striim-test list                                   # every case a run would select
-striim-test run samples/live                       # every live sample
-striim-test run samples/live --parallel            # the same, three at a time
+striim-test run samples/live                       # includes recovery and node-fault cases; read prerequisites first
+striim-test run samples/live --parallel            # concurrent selection skips disabled_parallel cases
 striim-test run samples/live/04-lifecycle-check --dry-run   # the selection, without running
 ```
 
-The [README](../README.md) lists what each sample shows. `samples/code/` holds two more that build
+Read the [sample prerequisite table](../README.md) before selecting the whole directory.
+Sample 17 kills one shared app node and requires a two-node Docker cluster plus
+an agent and the survivor API port. Coordinate other stack users first;
+`disabled_parallel` excludes a concurrent case but provides no lock.
+Spanner and file samples need their listed service or Docker access. The README lists what each sample shows. `samples/code/` holds two more that build
 and load Java ([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md)).
 
 ## 8. Stop what the runs left up
