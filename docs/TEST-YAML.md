@@ -2154,8 +2154,9 @@ Worked case: [17-one-node-failover](../samples/live/17-one-node-failover/README.
 Disposable Postgres has no data-role idle-transaction budget by default, because Striim
 readers and writers use those same roles. If you opt in with
 `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=600000`, an idle transaction can terminate its session
-after ten minutes. For a seed deliberately held across recovery, use an explicit
-`SET LOCAL idle_in_transaction_session_timeout = '30min';` inside that transaction or
+after ten minutes. That includes a [`transactions:`](#transactions--overlapping-postgres-seed-sessions)
+session held across `recover:`. For one, put
+`SET LOCAL idle_in_transaction_session_timeout = '30min';` in the session's first `op: sql` file, or set
 `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000` before framework bring-up. Policy is reapplied
 to new connections even on kept services; existing connections retain their settings.
 Budget the full idle period including recovery; keep expected rows and lifecycle assertions.

@@ -68,3 +68,20 @@ def test_budget_is_loaded_from_dotenv(tmp_path, monkeypatch):
     values = service_env.values(paths, {'SLT_PROJECT_ROOT': str(tmp_path)})
     assert values['SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS'] == '1800000'
     assert values['INT_PG_IDLE_TRANSACTION_TIMEOUT_MS'] == '900000'
+
+
+def test_policy_connects_over_tcp_and_retries_until_postgres_answers():
+    from livetest.pgidle import apply_policy
+    calls, results = [], [SimpleNamespace(returncode=2, stderr='role "qasource" does not exist'),
+                          SimpleNamespace(returncode=0, stderr='')]
+    run = lambda argv, **kw: calls.append(argv) or results.pop(0)
+    apply_policy(Path('/service/compose.yaml'), {}, 'live', 'SELECT 1', run, sleep=lambda s: None)
+    assert len(calls) == 2
+    assert calls[0][calls[0].index('-h') + 1] == '127.0.0.1'
+
+
+def test_policy_failure_names_psql_stderr():
+    from livetest.pgidle import apply_policy
+    run = lambda argv, **kw: SimpleNamespace(returncode=2, stderr='FATAL:  the database system is starting up\n')
+    with pytest.raises(RuntimeError, match='postgres-idle-policy-failed: int-postgres: FATAL:  the database system is starting up'):
+        apply_policy(Path('/service/compose.yaml'), {}, 'integration', 'SELECT 1', run, attempts=3, sleep=lambda s: None)
