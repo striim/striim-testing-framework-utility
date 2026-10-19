@@ -3,4 +3,4 @@
 Importing this package imports neither engine. Provenance is checked
 (``striim_test._bootstrap``) before any engine module is imported.
 """
-__version__ = "0.1.0"
+__version__ = "0.2.0"

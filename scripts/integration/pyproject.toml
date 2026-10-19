@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "integrationtest"
-version = "0.1.0"
+version = "0.2.0"
 license = {file = "LICENSE"}
 description = "Integration Test framework for Striim operators"
 requires-python = ">=3.12"
