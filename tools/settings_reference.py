@@ -132,6 +132,10 @@ SECTIONS = (
          "A manifest of the Striim installers you already have, to skip the 6.3 GB download "
          "([RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md) has the format)."),
         ("SLT_STRIIM_MIN_FREE_GB", "`35`", "Free Docker disk, in GB, a first image build requires."),
+        ("SLT_TERADATA_JDBC", "unset",
+         "`1`: fetch Teradata's JDBC driver from Maven Central and build it into the Striim image, for "
+         "the `teradata` service. Teradata's licence for the driver applies "
+         "([SERVICES.md](SERVICES.md), Teradata)."),
         ("SLT_STRIIM_HTTP_HOST_PORT", None, "Host port of the console and REST API."),
         ("SLT_STRIIM_HTTPS_HOST_PORT", None, "Host port of HTTPS."),
         ("SLT_STRIIM_JMX_HOST_PORT", None, "Host port of the primary's JMX Prometheus exporter."),
@@ -206,6 +210,9 @@ FIELDS = {
                                                                           "database",
     "project": "the project id", "instance": "the instance", "gsql_db": "GoogleSQL-dialect database",
     "pg_db": "PostgreSQL-dialect database", "admin_port": "its REST admin port",
+    "credentials": "path of a service-account key file (in `.env`, relative to its folder); set, the "
+                   "tests use real Cloud Spanner, not the "
+                   "emulator ([SERVICES.md](SERVICES.md#real-cloud-spanner))",
     "src_bucket": "the bucket source objects go in", "tgt_bucket": "the bucket target objects go in",
     "src_topic": "the source topic", "tgt_topic": "the target topic",
     "broker_port": "the broker port Striim connects to", "registry_port": "schema registry port",

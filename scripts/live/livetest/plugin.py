@@ -2091,6 +2091,11 @@ class LiveItem(pytest.Item):
                     _prepare_service(defn, os.environ, ctx.mode)
                 except _prestart.PreUpError as e:
                     pytest.fail(f"service {svc}: {e}", pytrace=False)
+                _why = _sp.missing_service_jar(svc, ctx.mode)
+                if _why:
+                    if getattr(defn, "unavailable_policy", "skip") == "fail":
+                        pytest.fail(f"service {svc} unavailable: {_why}", pytrace=False)
+                    pytest.skip(f"service {svc} unavailable: {_why}")
                 try:
                     resolved = _slt_infra.resolve_service(  # shared-service adapter
                         _slt_infra.of(self.config), svc, os.environ, self.config._slt_started,
