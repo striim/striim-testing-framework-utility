@@ -337,6 +337,61 @@ other ports, so both tiers can run at once. Same accounts and passwords.
 
 Each one's settings are under `live_env` in `scripts/integration/services/<name>/service.yaml`.
 
+### Real Cloud Spanner
+
+The integration tier's `spanner` service can use a real Cloud Spanner instance instead of the
+emulator. You need a project, an instance, one GoogleSQL-dialect and one PostgreSQL-dialect
+database, all created already, and a service-account key file that can change their schemas.
+
+The key needs, on both databases: `spanner.instances.get`, `spanner.databases.get` and
+`spanner.databases.getDdl` (the existence and dialect check), `spanner.databases.updateDdl` and
+`spanner.databaseOperations.get` (`ddl:` and teardown), and `spanner.sessions.create`,
+`spanner.databases.select`, `spanner.databases.write` and
+`spanner.databases.beginOrRollbackReadWriteTransaction` (`seed:` and assertions; the module under
+test needs its own data permissions too). `roles/spanner.databaseAdmin` should cover all of
+them; this has not been checked against a narrower custom role. A permission refused during the
+check fails the case naming the first three.
+
+1. Set, in the shell or `.env`:
+
+   ```
+   INT_SPANNER_CREDENTIALS=/path/to/key.json
+   INT_SPANNER_PROJECT=my-project
+   INT_SPANNER_INSTANCE=my-instance
+   INT_SPANNER_GSQL_DB=my-gsql-db
+   INT_SPANNER_PG_DB=my-pg-db
+   ```
+
+2. Unset `INT_SPANNER_HOST`, `INT_SPANNER_PORT`, `INT_SPANNER_ADMIN_PORT` and
+   `SPANNER_EMULATOR_HOST`.
+3. Run with `SLT_PARALLEL=1`.
+
+What changes:
+
+- No emulator container starts. `${SPANNER_GSQL_URL}` and `${SPANNER_PG_URL}` become
+  `jdbc:cloudspanner:/projects/<project>/instances/<instance>/databases/<db>?credentials=<key path>`,
+  and `${SPANNER_CREDENTIALS}` is the key path. The module under test runs in a JVM on this
+  machine and reads the key from that path.
+- The framework creates and deletes no instance or database. It checks, once per test process,
+  that the instance and both databases exist with the right dialects, and fails naming the one
+  that does not.
+- Every statement the framework runs on Spanner (`ddl:`, `seed:`, `mid_run:`, teardown) must
+  name only objects that start with the case's `${TID}`, in the default schema: tables, indexes,
+  change streams, views and sequences; the tables they are created on, interleaved in, reference
+  or name as a synonym; the sequences a statement uses; and the tables after each `FROM` or
+  `JOIN` in a view. One statement per entry, with no `;` and no comment (`#`, `--`, `/*`) inside
+  it, and a `DROP` names one object. Anything else, `FOR ALL` change streams included, is
+  refused. Each entry is checked before any of its statements run; an earlier entry's objects
+  are already there and are kept, because the case then failed. A serial run has an empty
+  `${TID}`, so it is refused.
+- What the module under test writes is not checked: its settings must use `${TID}` names too.
+- A failed case keeps its tables, as on the emulator; drop them by hand. A passing case whose
+  teardown leaves any of its objects, cannot list one kind of them, or fails in any other way,
+  fails naming it.
+- A setting missing, or mixed with an emulator setting, fails the case naming the setting.
+- The `spanner_client` and `spanner_admins` pytest fixtures stay emulator-only and fail when
+  `INT_SPANNER_CREDENTIALS` is set.
+
 ## Connecting a SQL client
 
 With the hosts and ports above, from this machine:
