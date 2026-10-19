@@ -463,7 +463,8 @@ resumable uploads; GCS is not a dependency. A selected lane with missing prerequ
 exits nonzero (a skip is exit 3), never a passing empty run.
 
 The generated GCS/Spanner fake account key and the separate BigQuery key must reach every
-eligible application node. A failed key upload now stops setup immediately, including for
+eligible application node. A failed key upload names the node and key, includes stderr,
+and stops setup immediately, including for
 GCS and Spanner; it previously could continue with a missing key on one node. This is a
 deliberate authentication setup change, with existing GCS/Spanner round trips retained as
 regression controls.

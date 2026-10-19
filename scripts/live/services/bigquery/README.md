@@ -33,7 +33,11 @@ use direct resumable uploads, without GCS staging.
 (9051) to remap host ports. `SLT_BIGQUERY_PROJECT` (test-project) and
 `SLT_BIGQUERY_DATASET` (slt) configure both bootstrap and clients.
 `SLT_BIGQUERY_CPUS` (1) and `SLT_BIGQUERY_MEM_LIMIT` (1g) bound the emulator.
-The server's Go heap budget is 640 MiB, leaving headroom within the container cap.
+The framework derives the server's Go heap budget as 5/8 of the container limit
+(640 MiB at the default 1 GiB). It publishes `SLT_BIGQUERY_GOMEMLIMIT` for Compose;
+that derived value overrides any inherited value. Memory sizes accept positive Docker
+byte sizes with optional `b`, `k`, `m` or `g` suffixes (case-insensitive).
+For example, `512m` derives 320 MiB and `768m` derives 480 MiB.
 
 Docker Striim uses its documented `PrivateServiceConnectEndpoint` property with a
 reachable IPv4 HTTP address. The service uses a separate generated
@@ -162,14 +166,17 @@ before this exclusion is lifted. A skip is
 not a passing boundary test. The emulator may retain PENDING job metadata; no
 completed load job or target rows result from the omitted final request.
 
-The preceding bounded native API qualification used image `0.8.1-framework.7`, Linux amd64
+The historical bounded native API qualification used image `0.8.1-framework.7`, Linux amd64
 config SHA256 `721406bd82f405efefcd5e945831e771b614d4a2b3aa928a4c24d597bb87dd26`.
 The arm64 cross-build config is
 `a7e788395af8d7bb2f24ba7b973d9a589f16f0ffedbfaa985af279bfdffea421`;
 native ARM execution remains unqualified. The full feasible upstream Go suite,
 HTTP/TLS client controls, load job persistence and chunk replay controls pass.
 The exact-boundary client regression is an explicit skip, outside this bounded
-qualification. These API controls are separate from the actual writer fixtures.
+qualification. These API controls are separate from the actual writer fixtures. The current image gate
+requires `0.8.1-framework.8`; the recorded `.7` results do not qualify `.8`.
+No repeat of those native controls on `.8` is recorded here. Its supplier must retain
+the matching image ID and fresh qualification evidence before treating it as qualified.
 
 The CSV loader also recognizes gzip file bytes independently of HTTP headers,
 as required by the default writer upload. Both received and expanded CSV are
@@ -225,7 +232,11 @@ are refused. Properties outside the understood writer property list also fail
 closed; adding a property requires reviewing its route first. These guards do not
 claim that PSC routes an unqualified client through the REST emulator.
 `ALTER TARGET` and `alter_recompile` actions are also refused in BigQuery cases:
-post-creation writer property changes are outside the qualified scope.
+post-creation writer property changes are outside the qualified scope. Before deployment,
+the rendered writer must use the configured local HTTP `BIGQUERY_ENDPOINT`, the
+framework's `UploadedFiles/fake-bigquery-key.json`, and `BIGQUERY_PROJECT` for
+`ProjectId` and any explicit `BillingProjectId`. Missing required properties and
+foreign endpoint, key or project values are refused.
 
 The emulator has no streaming buffer. Real BigQuery restricts DML over recent
 legacy REST streaming inserts; a local DML success does not qualify that cloud
@@ -241,4 +252,6 @@ qualify every emulator literal conversion: a native probe of `'''q';r'''`
 stored `q'; r`. Triple-quoted literal value fidelity remains unqualified.
 
 Generated fake-key uploads fail immediately if a container copy fails, for BigQuery,
-GCS and Spanner alike. The upload remains retryable; a failed copy cannot mark it done.
+GCS and Spanner alike. The error names the app node and key and includes the copy command's stderr.
+The upload remains retryable; a failed copy cannot mark it done. Real Spanner
+credential handling uses its separate credential path.
