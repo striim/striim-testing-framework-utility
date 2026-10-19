@@ -105,7 +105,7 @@ SERVICE_KEYS = _LIVE_SERVICE_KEYS + _INT_SERVICE_KEYS + _SERVICE_EXTRA_KEYS
 _ALIASES = {"STRIIM_PASS": ("STRIIM_PASS", "STRIIM_PASSWORD")}
 # The KEYS that name locations; only these are made absolute against the .env's dir.
 _PATH_KEYS = ("SLT_FRAMEWORK_HOME", "SLT_PROJECT_ROOT", "SLT_LIVE_CASES", "SLT_INT_CASES",
-              "SLT_SERVICES_DIR", "SLT_INT_SERVICES_DIR", "SLT_STATE_DIR")
+              "SLT_SERVICES_DIR", "SLT_INT_SERVICES_DIR", "SLT_STATE_DIR", "INT_SPANNER_CREDENTIALS")
 # The path KEYS that may name several locations (an os.pathsep list).
 _LIST_PATH_KEYS = ("SLT_LIVE_CASES",)
 

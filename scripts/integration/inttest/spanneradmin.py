@@ -82,7 +82,8 @@ def real_config(env) -> dict | None:
     mixed = [n for n in _EMULATOR_SETTINGS if (env.get(n) or "").strip()]
     if mixed:
         problems.append(f"unset the emulator setting(s) {', '.join(mixed)}")
-    cfg = {"credentials": os.path.expanduser(key)}
+    # Absolute, since the module under test runs in a JVM whose working directory is the case's.
+    cfg = {"credentials": os.path.abspath(os.path.expanduser(key))}
     missing = []
     for field, name in _REAL_SETTINGS:
         cfg[field] = (env.get(name) or "").strip()

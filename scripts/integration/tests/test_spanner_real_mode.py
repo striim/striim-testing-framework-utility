@@ -19,6 +19,12 @@ _SERVICES = Path(__file__).resolve().parents[1] / "services"
 TID = "t0123abcde_"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_session_checks():
+    getattr(spanneradmin, "_CHECKED", set()).clear()   # ensure() checks each database once a session
+    yield
+
+
 @pytest.fixture
 def key(tmp_path):
     path = tmp_path / "sa-key-placeholder.json"
@@ -204,6 +210,11 @@ def _guarded(key, dialect="google_standard_sql"):
     'DROP TABLE "public"."t0123abcde_emp"',
     "DROP TABLE t0123abcde_emp;",
     "CREATE CHANGE STREAM t0123abcde_cs FOR t0123abcde_emp",
+    "CREATE INDEX t0123abcde_ix2 ON`t0123abcde_emp`(id)",
+    "CREATE TABLE t0123abcde_s (id INT64 DEFAULT (GET_NEXT_SEQUENCE_VALUE(SEQUENCE t0123abcde_seq))) PRIMARY KEY (id)",
+    "INSERT INTO t0123abcde_emp (id) VALUES (nextval('t0123abcde_seq'))",
+    "CREATE VIEW t0123abcde_v SQL SECURITY INVOKER AS SELECT e.id FROM t0123abcde_emp e, t0123abcde_kid k",
+    "CREATE VIEW t0123abcde_v SQL SECURITY INVOKER AS SELECT 1 FROM t0123abcde_emp AS e JOIN t0123abcde_kid k ON true",
     "ALTER TABLE t0123abcde_emp ADD COLUMN c STRING(10)",
     "ALTER TABLE t0123abcde_kid ADD FOREIGN KEY (k) REFERENCES t0123abcde_emp (id)",
     "DROP TABLE IF EXISTS t0123abcde_emp",
@@ -242,6 +253,29 @@ def test_guard_allows_this_tests_objects(key, stmt):
     "ALTER TABLE t0123abcde_emp ADD SYNONYM customers",
     'DROP TABLE "t0123abcde_emp"."customers"',
     "CREATE TABLE sales.t0123abcde_emp (id INT64) PRIMARY KEY (id)",  # teardown lists '' and public only
+    # a quoted name needs no space before it
+    "CREATE INDEX t0123abcde_ix ON`customers`(c)",
+    'CREATE INDEX t0123abcde_ix ON"customers"(c)',
+    "ALTER TABLE t0123abcde_kid ADD FOREIGN KEY (k) REFERENCES`customers`(id)",
+    'ALTER TABLE t0123abcde_kid ADD FOREIGN KEY (k) REFERENCES"customers"(id)',
+    "CREATE TABLE t0123abcde_k (id INT64) PRIMARY KEY (id), INTERLEAVE IN PARENT`customers`",
+    "CREATE CHANGE STREAM t0123abcde_cs FOR`customers`",
+    "ALTER TABLE t0123abcde_emp ADD SYNONYM`customers`",
+    # GoogleSQL # comments, which split_statements does not strip
+    "CREATE INDEX t0123abcde_ix ON #c\n customers(c)",
+    # comments split_statements strips, for a caller that did not split
+    "CREATE INDEX t0123abcde_ix ON/**/customers(c)",
+    "CREATE INDEX t0123abcde_ix ON --x\ncustomers(c)",
+    # a sequence or a view body reading another owner's object
+    "CREATE TABLE t0123abcde_s (id INT64 DEFAULT (GET_NEXT_SEQUENCE_VALUE(SEQUENCE seq))) PRIMARY KEY (id)",
+    "INSERT INTO t0123abcde_emp (id) VALUES (GET_NEXT_SEQUENCE_VALUE(SEQUENCE `seq`))",
+    "SELECT GET_INTERNAL_SEQUENCE_STATE(SEQUENCE seq)",
+    "INSERT INTO t0123abcde_emp (id) VALUES (nextval('seq'))",
+    "CREATE TABLE t0123abcde_s (id bigint DEFAULT nextval('public.seq') PRIMARY KEY)",
+    "CREATE VIEW t0123abcde_v SQL SECURITY INVOKER AS SELECT c.id FROM customers c",
+    "CREATE VIEW t0123abcde_v SQL SECURITY INVOKER AS SELECT 1 FROM t0123abcde_emp e JOIN customers c ON true",
+    "CREATE VIEW t0123abcde_v SQL SECURITY INVOKER AS SELECT 1 FROM t0123abcde_emp e, customers c",
+    "CREATE OR REPLACE VIEW t0123abcde_v SQL SECURITY INVOKER AS SELECT 1 FROM (SELECT * FROM customers)",
 ])
 def test_guard_refuses_anything_else_before_any_statement_runs(key, stmt):
     admin, db = _guarded(key)
@@ -510,3 +544,65 @@ def test_emulator_teardown_errors_stay_warnings(monkeypatch, capsys, item_class)
     monkeypatch.setattr(spanneradmin, "admins_for", lambda tokens: [(admin, "spanner-google")])
     getattr(plugin, item_class)._teardown_db_isolation(_teardown_item(), False)
     assert "WARNING" in capsys.readouterr().out
+
+
+# --- final review: teardown and settings in real mode ------------------------------------------
+
+def test_real_teardown_listing_failure_fails_the_case(key):
+    admin, db = _guarded(key)
+
+    def unavailable(sql):
+        raise RuntimeError("UNAVAILABLE: transient")
+    admin._query = unavailable
+    with pytest.raises(RealSpannerError, match="UNAVAILABLE"):
+        admin.drop_test_tables(TID)
+
+
+def test_real_admins_for_failure_is_a_real_spanner_error(tmp_path, real_env, monkeypatch):
+    client = MagicMock()
+    client.instance.return_value.exists.side_effect = PermissionError("403 PERMISSION_DENIED")
+    monkeypatch.setattr(SpannerAdmin, "_spanner_client", lambda self: client)
+    tok = {**_tokens(tmp_path, real_env), "TID": TID}
+    with pytest.raises(RealSpannerError, match="PERMISSION_DENIED"):
+        spanneradmin.admins_for(tok)
+
+
+def test_real_ensure_names_the_permission_it_lacks(key):
+    from google.api_core.exceptions import PermissionDenied
+    client, inst, db = _fake_client()
+    inst.exists.side_effect = PermissionDenied("no")
+    with pytest.raises(RealSpannerError, match="spanner.instances.get"):
+        SpannerAdmin(_real_dsn(key), client=client).ensure()
+
+
+def test_real_ensure_checks_each_database_once_per_session(key):
+    client, inst, db = _fake_client()
+    SpannerAdmin(_real_dsn(key), client=client).ensure()
+    SpannerAdmin(_real_dsn(key), client=client).ensure()
+    assert inst.exists.call_count == 1
+
+
+def test_real_teardown_guards_what_it_generates(key, monkeypatch):
+    # Defence in depth: should the owned() filter ever let another owner's name through, the guard
+    # still refuses before any DDL is sent.
+    admin, db = _guarded(key)
+    monkeypatch.setattr(admin, "_teardown_ddl", lambda prefix, unlisted: ["DROP TABLE `customers`"])
+    with pytest.raises(RealSpannerError, match="customers"):
+        admin.drop_test_tables(TID)
+    db.update_ddl.assert_not_called()
+
+
+def test_relative_key_path_in_dotenv_is_anchored_to_the_dotenv(tmp_path):
+    from inttest import paths as int_paths
+    (tmp_path / "keys").mkdir()
+    got = int_paths.effective_env({"SLT_PROJECT_ROOT": str(tmp_path)},
+                                  {"INT_SPANNER_CREDENTIALS": "keys/sa.json"})
+    assert got["INT_SPANNER_CREDENTIALS"] == str(tmp_path / "keys" / "sa.json")
+
+
+def test_real_config_makes_the_key_path_absolute(key, monkeypatch, tmp_path):
+    monkeypatch.chdir(Path(key).parent)
+    cfg = spanneradmin.real_config({"INT_SPANNER_CREDENTIALS": Path(key).name, "INT_SPANNER_PROJECT": "p",
+                                    "INT_SPANNER_INSTANCE": "i", "INT_SPANNER_GSQL_DB": "g",
+                                    "INT_SPANNER_PG_DB": "pg"})
+    assert cfg["credentials"] == key
