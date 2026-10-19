@@ -56,4 +56,15 @@ def test_default_removes_old_role_budget():
     from livetest.pgidle import policy_sql
     sql = policy_sql({}, 'SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS', 'sltdb')
     assert sql.count('RESET idle_in_transaction_session_timeout') == 2
-    assert 'SET idle_in_transaction_session_timeout' not in sql
+    assert ' SET idle_in_transaction_session_timeout' not in sql
+
+
+def test_budget_is_loaded_from_dotenv(tmp_path, monkeypatch):
+    from livetest import paths
+    from inttest import paths as int_paths
+    env = tmp_path / '.env'
+    env.write_text('SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000\nINT_PG_IDLE_TRANSACTION_TIMEOUT_MS=900000\n')
+    from livetest import service_env
+    values = service_env.values(paths, {'SLT_PROJECT_ROOT': str(tmp_path)})
+    assert values['SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS'] == '1800000'
+    assert values['INT_PG_IDLE_TRANSACTION_TIMEOUT_MS'] == '900000'
