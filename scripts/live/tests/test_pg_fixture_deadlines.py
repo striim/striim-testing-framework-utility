@@ -57,12 +57,11 @@ def admin_spy():
     return PgAdmin(dict(DSN), connect=connect), connections, calls, options
 
 
-def test_default_fixture_connection_has_server_and_connect_deadlines():
+def test_default_fixture_connection_preserves_server_timeout_policy():
     admin, connections, calls, options = admin_spy()
     admin.run_sql("CREATE TABLE t (id integer)")
     assert options[0]["connect_timeout"] == 5
-    assert "lock_timeout=15000" in options[0]["options"]
-    assert "statement_timeout=60000" in options[0]["options"]
+    assert "options" not in options[0]
     assert "search_path" in calls[0][0]
     assert all(conn.closed for conn in connections)
 
@@ -91,7 +90,7 @@ def test_slot_timeout_reports_actual_blocker_without_terminating_it(monkeypatch)
     monkeypatch.setattr(admin, "_exec_ddl", lambda *a, **k: pytest.fail("terminating DDL watcher used"))
     monkeypatch.setattr(admin, "_terminate_idle_blockers_of", lambda *a: pytest.fail("blocker killed"))
     with pytest.raises(RuntimeError, match="postgres-fixture-timeout") as failed:
-        admin.run_sql(SLOT_SQL, phase="ddl", run_id="run-current", owners={"SLT_sibling": "run-sibling"})
+        admin.run_sql(SLOT_SQL, phase="ddl", timeout=60, run_id="run-current", owners={"SLT_sibling": "run-sibling"})
     text = str(failed.value)
     for value in ("slot-setup", "postgres-source", "9001", "SLT_sibling.Target", "123.5", "run-sibling"):
         assert value in text

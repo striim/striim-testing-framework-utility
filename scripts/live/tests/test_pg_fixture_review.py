@@ -211,7 +211,102 @@ def test_lock_timeout_is_reported_and_fixture_connection_closed():
         connections.append(conn)
         return conn
     with pytest.raises(RuntimeError, match='postgres-fixture-timeout: phase=ddl route=postgres-source') as failed:
-        PgAdmin(dict(DSN), connect=connect).run_sql('SELECT locked')
+        PgAdmin(dict(DSN), connect=connect).run_sql('SELECT locked', timeout=60)
     assert failed.value.__cause__.pgcode == '55P03'
     assert 'lock_timeout_ms=15000' in str(failed.value)
     assert all(conn.closed for conn in connections)
+
+
+def _run_fixture_file(tmp_path, phase, connect, budget=None):
+    """Use the manifest, real file caller, dispatcher and PgAdmin together."""
+    from types import SimpleNamespace
+    from livetest.manifest import load_manifest
+    from livetest.plugin import _run_admin_sql
+    case = tmp_path / 'test.yaml'
+    field = '' if budget is None else f'fixture_timeout: {budget}\n'
+    case.write_text(f'name: bulk\ntql: app.tql\ntimeout: 7\n{field}assert: {{smoke: true}}\n')
+    m = load_manifest(case)
+    (tmp_path / 'bulk.sql').write_text('INSERT INTO t SELECT generate_series(1, 300000)')
+    admin = PgAdmin(dict(DSN), connect=connect)
+    run_files = _plugin_function('_run_files', dict(
+        m=m, admins={}, tokens={}, ledger=None, ident=SimpleNamespace(run_id='current'),
+        self=SimpleNamespace(_slt_inputs=SimpleNamespace(record=lambda *a, **kw: None)),
+        require_service_admin=lambda *a: {'admin': admin, 'schema': None},
+        render=lambda text, tokens: text, _run_admin_sql=_run_admin_sql))
+    run_files([('postgres-source', 'bulk.sql')], phase=phase)
+
+
+@pytest.mark.parametrize('phase', ['ddl', 'seed'])
+@pytest.mark.parametrize('wait_kind', ['statement', 'lock'])
+def test_omitted_budget_preserves_bulk_fixture_success(tmp_path, phase, wait_kind):
+    import re
+    options, connections, calls = [], [], []
+    # Model a successful 601-second load or 16-second lock wait without sleeping.
+    elapsed_ms = 601000 if phase == 'seed' else 61000
+    class BulkLoad(Connection):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if sql.startswith('INSERT'):
+                limits = dict(re.findall(r'(statement|lock)_timeout=(\d+)', options[-1].get('options', '')))
+                limit = int(limits.get(wait_kind, 0))
+                if limit and (elapsed_ms if wait_kind == 'statement' else 16000) > limit:
+                    exc = RuntimeError('otherwise successful fixture cancelled by a new deadline')
+                    exc.pgcode = '57014' if wait_kind == 'statement' else '55P03'
+                    raise exc
+    def connect(**kwargs):
+        options.append(kwargs)
+        conn = BulkLoad(calls)
+        connections.append(conn)
+        return conn
+    _run_fixture_file(tmp_path, phase, connect)
+    assert 'options' not in options[0]
+    assert any(sql.startswith('INSERT') for sql, _ in calls)
+    assert all(conn.closed for conn in connections)
+
+
+@pytest.mark.parametrize('phase', ['ddl', 'seed'])
+@pytest.mark.parametrize('budget,expected_ms', [(None, 1800000), (2400, 2400000)])
+def test_setting_budget_and_manifest_precedence_reach_fixture_caller(tmp_path, monkeypatch, phase, budget, expected_ms):
+    options = []
+    monkeypatch.setenv('SLT_PG_FIXTURE_TIMEOUT', '1800')
+    def connect(**kwargs):
+        options.append(kwargs)
+        return Connection([])
+    _run_fixture_file(tmp_path, phase, connect, budget)
+    assert f'statement_timeout={expected_ms}' in options[0]['options']
+    assert 'lock_timeout=15000' in options[0]['options']
+
+
+def test_fixture_setting_loads_from_dotenv(tmp_path, monkeypatch):
+    from livetest import paths, service_env
+    (tmp_path / '.env').write_text('SLT_PG_FIXTURE_TIMEOUT=1800\n')
+    monkeypatch.setenv('SLT_PROJECT_ROOT', str(tmp_path))
+    values = service_env.values(paths)
+    assert values['SLT_PG_FIXTURE_TIMEOUT'] == '1800'
+    monkeypatch.setattr(paths, 'dotenv_values', lambda env=None: values)
+    options = []
+    def connect(**kwargs):
+        options.append(kwargs)
+        return Connection([])
+    _run_fixture_file(tmp_path, 'ddl', connect)
+    assert 'statement_timeout=1800000' in options[0]['options']
+    assert 'lock_timeout=15000' in options[0]['options']
+
+
+@pytest.mark.parametrize('value', ['0', '-1', '10min', 'inf', 'nan', '2147484'])
+def test_invalid_fixture_setting_is_rejected_before_connect(monkeypatch, value):
+    monkeypatch.setenv('SLT_PG_FIXTURE_TIMEOUT', value)
+    def connect(**kwargs):
+        pytest.fail('invalid budget reached connect')
+    with pytest.raises(ValueError, match='invalid-postgres-fixture-budget: SLT_PG_FIXTURE_TIMEOUT'):
+        PgAdmin(dict(DSN), connect=connect).run_sql('SELECT 1')
+
+
+def test_manifest_budget_takes_precedence_over_invalid_setting(tmp_path, monkeypatch):
+    monkeypatch.setenv('SLT_PG_FIXTURE_TIMEOUT', '10min')
+    options = []
+    def connect(**kwargs):
+        options.append(kwargs)
+        return Connection([])
+    _run_fixture_file(tmp_path, 'ddl', connect, 1800)
+    assert 'statement_timeout=1800000' in options[0]['options']

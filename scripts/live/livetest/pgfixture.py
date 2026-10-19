@@ -18,15 +18,25 @@ DIAGNOSTIC_JOIN_S = 0.1
 def policy(sql, phase, timeout, run_id, owners, role):
     if phase not in ("ddl", "seed"):
         raise ValueError("invalid-postgres-fixture-phase: expected ddl or seed")
-    seconds = (600 if phase == "seed" else 60) if timeout is None else timeout
-    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+    seconds = timeout
+    source = "timeout"
+    if seconds is None:
+        from livetest import paths
+        value = (paths.effective_env().get("SLT_PG_FIXTURE_TIMEOUT") or "").strip()
+        if value:
+            source = "SLT_PG_FIXTURE_TIMEOUT"
+            try:
+                seconds = float(value)
+            except ValueError:
+                raise ValueError(f"invalid-postgres-fixture-budget: {source} must be positive finite seconds") from None
+    if seconds is not None and (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
             or not math.isfinite(seconds) or seconds <= 0 or seconds * 1000 > 2_147_483_647):
-        raise ValueError("invalid-postgres-fixture-budget: timeout must be positive finite seconds")
+        raise ValueError(f"invalid-postgres-fixture-budget: {source} must be positive finite seconds")
     if phase == "ddl" and re.search(r"\bpg_(?:create_logical_replication_slot|drop_replication_slot)\s*\(", sql, re.I):
         phase = "slot-setup"
-    statement_ms = max(1, int(seconds * 1000))
+    statement_ms = max(1, int(seconds * 1000)) if seconds is not None else None
     return {"phase": phase, "route": "postgres-" + role, "statement_ms": statement_ms,
-            "lock_ms": min(15_000, max(1, statement_ms // 2)),
+            "lock_ms": min(15_000, max(1, statement_ms // 2)) if statement_ms is not None else None,
             "run_id": run_id, "owners": owners or {}}
 
 
@@ -36,7 +46,8 @@ def _connect(admin, which, *, seconds, options, application_name, attempts=1):
         try:
             conn = admin._connect(host=admin.dsn["host"], port=int(admin.dsn["port"]),
                 dbname=admin.dsn["dbname"], user=user, password=password,
-                connect_timeout=seconds, options=options, application_name=application_name)
+                connect_timeout=seconds, application_name=application_name,
+                **({"options": options} if options is not None else {}))
             break
         except Exception:
             if attempt + 1 == attempts:
@@ -78,7 +89,8 @@ def _blockers(admin, pid, owners):
 
 def execute(admin, statements, which, spec):
     phase, route = spec["phase"], spec["route"]
-    options = f'-c lock_timeout={spec["lock_ms"]} -c statement_timeout={spec["statement_ms"]}'
+    options = (f'-c lock_timeout={spec["lock_ms"]} -c statement_timeout={spec["statement_ms"]}'
+               if spec["statement_ms"] is not None else None)
     tag = f'striim-test:{spec["run_id"] or "fixture"}:{phase}'[:63]
     try:
         conn = _connect(admin, which or admin.role, seconds=5, options=options, application_name=tag, attempts=30)
