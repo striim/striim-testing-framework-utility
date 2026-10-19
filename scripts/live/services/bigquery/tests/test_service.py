@@ -196,9 +196,9 @@ def test_failed_fake_key_copy_aborts_and_remains_retryable(monkeypatch, key_name
     monkeypatch.setattr(plugin.stack, 'app_nodes', lambda: ('primary',))
     def failed(*args, **kwargs):
         assert kwargs['check'] is True
-        raise subprocess.CalledProcessError(1, args[0])
+        raise subprocess.CalledProcessError(1, args[0], stderr='copy denied')
     monkeypatch.setattr(subprocess, 'run', failed)
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(RuntimeError, match=f'primary.*{key_name}.*copy denied'):
         plugin.ensure_fake_gcp_key(config, SimpleNamespace(mode='docker'), key_name=key_name)
     assert not getattr(config, flag, False)
 

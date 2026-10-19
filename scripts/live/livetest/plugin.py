@@ -1009,8 +1009,11 @@ def ensure_fake_gcp_key(config, ctx, *, key_name: str = _FAKE_KEY_NAME,
         if ctx.mode == "docker":
             # The single-topology apps deploy on the `default` group (primary + node).
             for node in stack.app_nodes():
-                subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{key_name}"],
-                               capture_output=True, text=True, check=True)
+                try:
+                    subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{key_name}"],
+                                   capture_output=True, text=True, check=True)
+                except subprocess.CalledProcessError as exc:
+                    raise RuntimeError(f"fake key upload to {node} ({key_name}) failed: {exc.stderr}") from exc
         else:  # native Striim
             home = _os.environ.get("STRIIM_HOME")
             if home:
