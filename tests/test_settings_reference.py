@@ -66,3 +66,23 @@ def test_where_follows_the_files_rules():
     assert rows["STRIIM_USER"].strip() == "shell, `.env`, machine"
     assert rows["LICENCE_KEY"].strip() == "shell, machine"             # never .env
     assert rows["SLT_PARALLEL"].strip() == "shell"
+
+
+def _page_rows():
+    return re.findall(r"^\| `([A-Z][A-Z0-9_<>a-z]*)` \| ([^|]*) \|", PAGE.read_text(), re.M)
+
+
+def test_env_example_names_every_setting_a_dotenv_can_hold():
+    example = (ROOT / ".env.example").read_text()
+    assigned = set(re.findall(r"^#? ?([A-Z][A-Z0-9_]*)=", example, re.M))
+    aliases = {"STRIIM_PASSWORD"}           # another name for STRIIM_PASS, which the file shows
+    missing = sorted(n for n, where in _page_rows()
+                     if ".env" in where and n not in assigned and n not in aliases)
+    assert not missing, f".env.example does not name: {missing}"
+
+
+def test_env_example_assigns_no_setting_a_dotenv_cannot_hold():
+    example = (ROOT / ".env.example").read_text()
+    assigned = set(re.findall(r"^#? ?([A-Z][A-Z0-9_]*)=", example, re.M))
+    shell_only = sorted(n for n, where in _page_rows() if ".env" not in where and n in assigned)
+    assert not shell_only, f".env.example assigns settings .env never reads: {shell_only}"

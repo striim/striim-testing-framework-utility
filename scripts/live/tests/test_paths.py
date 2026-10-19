@@ -189,7 +189,7 @@ def test_effective_env_makes_only_path_keys_absolute(tmp_path):
     assert got["SLT_INFRA_OWNERSHIP"] == "shared" and got["SLT_KEEP_SERVICES"] == "1"
     assert got["SLT_STATE_DIR"] == str(tmp_path / "state")
     assert set(paths._PATH_KEYS) == {k for k in paths.KEYS if k.startswith("SLT_")} - {
-        "SLT_INFRA_OWNERSHIP", "SLT_KEEP_SERVICES"}
+        "SLT_INFRA_OWNERSHIP", "SLT_KEEP_SERVICES"} | {"INT_SPANNER_CREDENTIALS"}
 
 
 # SLT_LIVE_CASES may name several case roots, an os.pathsep list; the first is the primary root.

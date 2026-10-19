@@ -5,6 +5,12 @@ import pytest
 from livetest import striim_provision as sp
 from livetest.topology import parse_deployment_groups  # noqa
 
+
+@pytest.fixture(autouse=True)
+def _no_teradata_opt_in(monkeypatch):
+    monkeypatch.delenv("SLT_TERADATA_JDBC", raising=False)
+
+
 def test_deps_present_false_when_missing(tmp_path):
     assert sp.deps_present(tmp_path) is False
 
