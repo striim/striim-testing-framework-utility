@@ -677,6 +677,7 @@ class Ledger:
                                      f"execution")
             if db == "bigquery-target":
                 self._bigquery_ddl(sql, db, fname, admins, tokens, record)
+                continue
             elif acquire_sinks and db in ("spanner-google", "spanner-postgres"):
                 admin = _lifecycle._admin(admins, db)
                 from livetest.spanneradmin import _check_table
