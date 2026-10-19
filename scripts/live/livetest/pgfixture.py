@@ -30,11 +30,18 @@ def policy(sql, phase, timeout, run_id, owners, role):
             "run_id": run_id, "owners": owners or {}}
 
 
-def _connect(admin, which, *, seconds, options, application_name):
+def _connect(admin, which, *, seconds, options, application_name, attempts=1):
     user, password = admin._creds(which)
-    conn = admin._connect(host=admin.dsn["host"], port=int(admin.dsn["port"]),
-        dbname=admin.dsn["dbname"], user=user, password=password,
-        connect_timeout=seconds, options=options, application_name=application_name)
+    for attempt in range(attempts):
+        try:
+            conn = admin._connect(host=admin.dsn["host"], port=int(admin.dsn["port"]),
+                dbname=admin.dsn["dbname"], user=user, password=password,
+                connect_timeout=seconds, options=options, application_name=application_name)
+            break
+        except Exception:
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(2.0)
     try:
         conn.autocommit = True
     except BaseException:
@@ -74,7 +81,7 @@ def execute(admin, statements, which, spec):
     options = f'-c lock_timeout={spec["lock_ms"]} -c statement_timeout={spec["statement_ms"]}'
     tag = f'striim-test:{spec["run_id"] or "fixture"}:{phase}'[:63]
     try:
-        conn = _connect(admin, which or admin.role, seconds=5, options=options, application_name=tag)
+        conn = _connect(admin, which or admin.role, seconds=5, options=options, application_name=tag, attempts=30)
     except Exception as exc:
         raise RuntimeError(f"postgres-fixture-connect-failed: phase={phase} route={route} "
                            f"connect_timeout_s=5 error={type(exc).__name__}") from exc

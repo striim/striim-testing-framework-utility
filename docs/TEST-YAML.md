@@ -398,7 +398,8 @@ explicit `after` replaces it.
 
 ### Postgres fixture SQL deadlines
 
-Postgres fixture connections set `connect_timeout` to five seconds. `ddl:` SQL, including
+Postgres fixture connections retain cold-start retry (up to 30 attempts, two seconds
+between attempts), with `connect_timeout` set to five seconds per attempt. `ddl:` SQL, including
 replication-slot setup, uses a 15-second `lock_timeout` and a 60-second `statement_timeout`.
 Seed SQL, including action seeds, defaults to a 600-second statement deadline. Set
 `fixture_timeout: 1800` at the top level for a bulk-load case: this overrides both DDL

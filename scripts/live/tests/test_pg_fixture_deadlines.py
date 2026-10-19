@@ -103,7 +103,7 @@ def test_slot_timeout_reports_actual_blocker_without_terminating_it(monkeypatch)
     assert all("statement_timeout=1000" in kw["options"] for kw in diagnostic)
 
 
-def test_fixture_connection_failure_is_one_bounded_attempt(monkeypatch):
+def test_fixture_connection_failure_retains_cold_start_retry(monkeypatch):
     attempts = []
 
     def fail(**kw):
@@ -114,7 +114,8 @@ def test_fixture_connection_failure_is_one_bounded_attempt(monkeypatch):
     admin = PgAdmin(dict(DSN), connect=fail)
     with pytest.raises(RuntimeError, match="postgres-fixture-connect-failed"):
         admin.run_sql("SELECT 1")
-    assert len(attempts) == 1 and attempts[0]["connect_timeout"] == 5
+    assert len(attempts) == 30
+    assert all(attempt["connect_timeout"] == 5 for attempt in attempts)
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), True])

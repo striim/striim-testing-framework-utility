@@ -181,3 +181,37 @@ def test_invalid_manifest_fixture_budget_is_rejected(tmp_path, value):
     case.write_text(f'name: bulk\ntql: app.tql\nfixture_timeout: {value}\nassert: {{smoke: true}}\n')
     with pytest.raises(ManifestError, match='fixture_timeout'):
         load_manifest(case)
+
+
+def test_fixture_retries_a_cold_connection_before_sql(monkeypatch):
+    attempts, sleeps, calls = [], [], []
+    monkeypatch.setattr(pgfixture.time, 'sleep', sleeps.append)
+    def connect(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) < 3:
+            raise OSError('not ready')
+        return Connection(calls)
+    PgAdmin(dict(DSN), connect=connect).run_sql('SELECT 1')
+    assert len(attempts) == 3
+    assert sleeps == [2.0, 2.0]
+    assert ('SELECT 1', None) in calls
+    assert all(a['connect_timeout'] == 5 for a in attempts)
+
+
+def test_lock_timeout_is_reported_and_fixture_connection_closed():
+    connections = []
+    class LockTimeout(Exception):
+        pgcode = '55P03'
+    class Locked(Connection):
+        def execute(self, sql, params=None):
+            if sql == 'SELECT locked':
+                raise LockTimeout('lock timeout')
+    def connect(**kwargs):
+        conn = Locked([])
+        connections.append(conn)
+        return conn
+    with pytest.raises(RuntimeError, match='postgres-fixture-timeout: phase=ddl route=postgres-source') as failed:
+        PgAdmin(dict(DSN), connect=connect).run_sql('SELECT locked')
+    assert failed.value.__cause__.pgcode == '55P03'
+    assert 'lock_timeout_ms=15000' in str(failed.value)
+    assert all(conn.closed for conn in connections)
