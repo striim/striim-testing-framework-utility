@@ -15,14 +15,17 @@ GRANT CONNECT ON DATABASE sltdb TO qasource, qatarget;
 CREATE SCHEMA qasource AUTHORIZATION qasource;
 CREATE SCHEMA qatarget AUTHORIZATION qatarget;
 
--- Scope the idle-transaction backstop to disposable data roles in this database.
--- The custom server input is read only during first initialization. An intentional
--- held transaction can use SET LOCAL with its own explicit, bounded budget.
+-- Optional idle-transaction policy for direct container initialization.
+-- Framework bring-up reconciles policy separately, including reused volumes.
+-- Unset by default: Striim reader/writer transactions may legitimately stay idle.
 DO $idle_budget$
 DECLARE
-    budget text := COALESCE(NULLIF(current_setting('slt.idle_transaction_timeout_ms', true), ''), '600000');
+    budget text := NULLIF(current_setting('slt.idle_transaction_timeout_ms', true), '');
     role_name text;
 BEGIN
+    IF budget IS NULL THEN
+        RETURN;
+    END IF;
     IF budget !~ '^[1-9][0-9]{0,9}$' THEN
         RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: expected positive milliseconds';
     END IF;

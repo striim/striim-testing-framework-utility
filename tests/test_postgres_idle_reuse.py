@@ -51,3 +51,9 @@ def test_invalid_budget_never_runs_compose(monkeypatch, tier, value):
         else:
             integration.compose_up('postgres', None)
     assert calls == []
+
+def test_default_removes_old_role_budget():
+    from livetest.pgidle import policy_sql
+    sql = policy_sql({}, 'SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS', 'sltdb')
+    assert sql.count('RESET idle_in_transaction_session_timeout') == 2
+    assert 'SET idle_in_transaction_session_timeout' not in sql

@@ -2151,11 +2151,13 @@ Worked case: [17-one-node-failover](../samples/live/17-one-node-failover/README.
 
 ## Intentional idle Postgres transactions
 
-The disposable Postgres service closes data-role transactions left idle for ten minutes.
-When a seed deliberately keeps a session open across a later step or recovery, set an
-explicit budget inside that transaction, for example
-`SET LOCAL idle_in_transaction_session_timeout = '30min';`, or set
-`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000` before initializing the disposable service.
-Budget the full idle period, including recovery; expected rows and lifecycle assertions
-remain unchanged. [SERVICES.md](SERVICES.md#postgres-postgres) describes the service scope
-and the integration equivalent. External databases retain their own policy.
+Disposable Postgres has no data-role idle-transaction budget by default, because Striim
+readers and writers use those same roles. If you opt in with
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=600000`, an idle transaction can terminate its session
+after ten minutes. For a seed deliberately held across recovery, use an explicit
+`SET LOCAL idle_in_transaction_session_timeout = '30min';` inside that transaction or
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000` before framework bring-up. Policy is reapplied
+to new connections even on kept services; existing connections retain their settings.
+Budget the full idle period including recovery; keep expected rows and lifecycle assertions.
+[SERVICES.md](SERVICES.md#postgres-postgres) describes the scope and integration setting.
+External databases retain their own policy.

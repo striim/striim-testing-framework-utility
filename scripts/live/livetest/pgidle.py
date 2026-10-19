@@ -3,12 +3,13 @@ import re
 
 
 def policy_sql(env, setting, database):
-    value = env.get(setting) or '600000'
-    if not re.fullmatch(r'[1-9][0-9]{0,9}', value) or int(value) > 2147483647:
+    value = env.get(setting) or ''
+    if value and (not re.fullmatch(r'[1-9][0-9]{0,9}', value) or int(value) > 2147483647):
         raise ValueError(f'invalid-postgres-idle-transaction-budget: {setting}: '
                          'expected positive integer milliseconds, at most 2147483647')
+    action = f"SET idle_in_transaction_session_timeout = '{value}ms'" if value else 'RESET idle_in_transaction_session_timeout'
     return '; '.join(
-        f'ALTER ROLE {role} IN DATABASE {database} SET idle_in_transaction_session_timeout = \'{value}ms\''
+        f'ALTER ROLE {role} IN DATABASE {database} {action}'
         for role in ('qasource', 'qatarget'))
 
 

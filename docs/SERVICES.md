@@ -112,19 +112,23 @@ The default service; the samples use it. `postgres:16` with the `wal2json` plugi
   with `${PG_SLOT}` as its name (`samples/live/04-lifecycle-check/slot.sql`): Postgres cannot
   create a slot after a write in the same transaction. The framework drops the slot at the end of
   the test; an inactive slot left behind holds WAL and fills the disk.
-- Disposable Postgres gives `qasource` and `qatarget` an
-  `idle_in_transaction_session_timeout` of ten minutes in their test database only.
-  It closes an abandoned transaction; it does not limit active statements. Before first
-  initialization, set `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS` (live service) or
-  `INT_PG_IDLE_TRANSACTION_TIMEOUT_MS` (integration service) to a positive millisecond
-  budget, at most `2147483647`. Changing it requires recreating the owned service.
-  External databases, admin connections and other databases keep their existing settings.
-- A case that deliberately holds a transaction across later steps or recovery must give
-  that transaction an explicit budget. For example, use
-  `SET LOCAL idle_in_transaction_session_timeout = '30min';` inside the held transaction,
-  or set the disposable service's budget to `1800000` for that run. Keep the budget
-  longer than the planned idle period, including recovery. This applies to held-session
-  seeds and lifecycle cases alike; it does not change their expected rows.
+- Disposable Postgres leaves the data-role idle-transaction timeout unset by default.
+  Striim readers and writers use `qasource` and `qatarget`, so a role timeout also
+  reaches their connections, including legitimate long idle periods during recovery.
+  To opt in on a dedicated run, set `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS` (live) or
+  `INT_PG_IDLE_TRANSACTION_TIMEOUT_MS` (integration) to positive integer milliseconds,
+  at most `2147483647` (for example `600000` for ten minutes). Explicit `0` is refused;
+  unset the setting to remove this policy. Values are validated before compose runs.
+  Each framework bring-up applies the policy to both roles in their test database,
+  including kept volumes, without changing the compose command or restarting Postgres.
+  Role changes affect new connections; existing sessions retain their current setting.
+  External databases, admin connections and other databases retain their own policy.
+- An enabled `idle_in_transaction_session_timeout` **terminates the session** left idle
+  inside a transaction beyond the budget (`FATAL`, SQLSTATE `25P03`); it does not limit
+  active statements. For a deliberate held transaction use
+  `SET LOCAL idle_in_transaction_session_timeout = '30min';` inside that transaction,
+  or a service budget longer than the full idle and recovery period. A service role
+  override also reaches new Striim sessions; it does not change expected rows.
 - **Your own Postgres for CDC** needs `wal_level=logical`, the `wal2json` plugin installed and
   allowed as an output plugin, and the `REPLICATION` attribute on the source user.
 - Postgres supports typed `exact:` and lifecycle witnesses. Exact comparison also supports

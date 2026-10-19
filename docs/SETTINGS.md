@@ -222,9 +222,9 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_PG_TARGET_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |
 | `SLT_PG_TARGET_SCHEMA` | shell, `.env`, machine | `qatarget` | Your own instance: the schema target tables are made in. |
 | `SLT_PG_HOST_PORT` | shell, `.env` | `5432` | Host port the container publishes; change it when the port is in use. |
-| `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell, `.env`, machine | `600000` | First initialization of disposable Postgres: idle-transaction deadline in milliseconds for qasource/qatarget in sltdb only. Positive integer, at most 2147483647. Recreate the owned service to change it; external databases are unchanged. |
 | `SLT_POSTGRES_CPUS` | shell, `.env`, machine | `2` | CPUs the container may use. |
 | `SLT_POSTGRES_MEM_LIMIT` | shell, `.env`, machine | `4g` | Memory limit of the container. |
+| `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell |  | Optional disposable Postgres idle-transaction deadline for qasource/qatarget in sltdb, including Striim sessions. Positive integer milliseconds, at most 2147483647; unset removes the policy. Validated before compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged. |
 | `SLT_POSTGRES_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
 ### ServiceNow (`servicenow`)
@@ -374,9 +374,9 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_PG_TARGET_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |
 | `INT_PG_TARGET_SCHEMA` | shell, `.env`, machine | `qatarget` | Your own instance: the schema target tables are made in. |
 | `INT_PG_HOST_PORT` | shell, `.env` | `15432` | Host port the container publishes; change it when the port is in use. |
-| `INT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell, `.env`, machine | `600000` | First initialization of disposable integration Postgres: idle-transaction deadline in milliseconds for qasource/qatarget in intdb only. Positive integer, at most 2147483647. Recreate the owned service to change it; external databases are unchanged. |
 | `INT_POSTGRES_CPUS` | shell, `.env`, machine | `0.5` | CPUs the container may use. |
 | `INT_POSTGRES_MEM_LIMIT` | shell, `.env`, machine | `512m` | Memory limit of the container. |
+| `INT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell |  | Optional disposable integration Postgres idle-transaction deadline for qasource/qatarget in intdb. Positive integer milliseconds, at most 2147483647; unset removes the policy. Validated before compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged. |
 
 ### ServiceNow, integration (`servicenow`)
 

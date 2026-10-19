@@ -24,7 +24,7 @@ def test_compose_policy_changes_do_not_restart_kept_service(tier, setting, servi
 def test_init_sets_only_data_role_database_defaults(file):
     text = (ROOT / 'scripts' / file).read_text()
     assert "current_setting('slt.idle_transaction_timeout_ms', true)" in text
-    assert "'600000'" in text
+    assert "IF budget IS NULL THEN" in text
     assert "ARRAY['qasource', 'qatarget']" in text
     assert 'ALTER ROLE %I IN DATABASE %I SET idle_in_transaction_session_timeout = %L' in text
     assert 'current_database()' in text
