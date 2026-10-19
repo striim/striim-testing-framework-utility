@@ -296,3 +296,25 @@ def test_rendered_writer_also_checks_configured_endpoint_is_local(tmp_path):
         plugin._rendered_tql(_writer_case(tmp_path, WRITER_PROPERTIES), tokens, {})
 
 
+@pytest.mark.parametrize('limit,expected', [('512m', 320 * 1024**2), ('768m', 480 * 1024**2),
+    ('1g', 640 * 1024**2), ('1.5g', 960 * 1024**2), ('1073741824', 640 * 1024**2)])
+def test_go_memory_budget_tracks_container_limit(limit, expected):
+    assert driver.compose_env({'SLT_BIGQUERY_MEM_LIMIT': limit})['SLT_BIGQUERY_GOMEMLIMIT'] == f'{expected}B'
+
+
+@pytest.mark.parametrize('limit', ['0', '-1g', 'unlimited', '512MiB'])
+def test_invalid_container_memory_limit_is_refused(limit):
+    with pytest.raises(ValueError, match='SLT_BIGQUERY_MEM_LIMIT'):
+        driver.compose_env({'SLT_BIGQUERY_MEM_LIMIT': limit})
+
+
+def test_selected_service_publishes_derived_memory_budget(monkeypatch):
+    from livetest import prestart
+    monkeypatch.setattr(prestart, 'prepare', lambda *a, **kw: None)
+    monkeypatch.setenv('SLT_BIGQUERY_GOMEMLIMIT', '999999999B')
+    monkeypatch.setenv('SLT_BIGQUERY_MEM_LIMIT', '512m')
+    env = {'SLT_BIGQUERY_MEM_LIMIT': '512m'}
+    prestart.prepare_selected(registry.load_service('bigquery'), env)
+    assert env['SLT_BIGQUERY_GOMEMLIMIT'] == '335544320B'
+    import os
+    assert os.environ['SLT_BIGQUERY_GOMEMLIMIT'] == env['SLT_BIGQUERY_GOMEMLIMIT']

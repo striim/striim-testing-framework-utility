@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import re
+from decimal import Decimal
 import json
 import subprocess
 import time
@@ -61,7 +63,15 @@ def build_required(env):
 
 def compose_env(env):
     identifiers(env.get("SLT_BIGQUERY_PROJECT") or "test-project", env.get("SLT_BIGQUERY_DATASET") or "slt")
-    return {}
+    limit = env.get("SLT_BIGQUERY_MEM_LIMIT") or "1g"
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([bkmg]?)", limit, re.I)
+    if not match:
+        raise ValueError("SLT_BIGQUERY_MEM_LIMIT must be a positive Docker byte size (b/k/m/g)")
+    size = int(Decimal(match[1]) * 1024 ** ("bkmg".index(match[2].lower() or "b")))
+    if size <= 0:
+        raise ValueError("SLT_BIGQUERY_MEM_LIMIT must be positive")
+    # Same 5/8 ratio as the default 640 MiB heap within a 1 GiB cgroup.
+    return {"SLT_BIGQUERY_GOMEMLIMIT": f"{size * 5 // 8}B"}
 
 
 def admins(base, defn):
