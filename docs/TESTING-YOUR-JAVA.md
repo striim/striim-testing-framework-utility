@@ -63,6 +63,14 @@ udf:
   (`MyOp-<tag>-5.4.jar`). The UDF sample calls its functions by their full names. With
   several modules, give each a `token:` (`token: MAP` gives `${MAP_NAME}`, `${MAP_JAR}`).
 
+Jar filenames normally end in the Striim series, such as `ReferenceOpV1-5.4.jar`. When
+configured or installed releases share that series, both engines use the shortest unique version
+prefix: 5.4.2 and 5.4.4.0 use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four
+parts. The existing `STRIIM_BUILD_<version>` build matrix and installed siblings of `STRIIM_HOME`
+supply the release set automatically. If it cannot be determined, naming stays at the series.
+Builds on machines with multiple known releases keep separate Maven output directories, so
+building or cleaning one release preserves the others' jars, including across different series. The deployed operator name stays the same.
+
 [TEST-YAML.md](TEST-YAML.md), "`op:` / `udf:`", has every key.
 
 ## Showing what your code did
@@ -92,8 +100,8 @@ An editor started from a desktop launcher does not inherit your shell's environm
 
 To test the exact jar you ship, rather than one the run builds from your sources, point the run at
 it. The case still names its module with `jar:`; the run uses your file instead of running
-`mvn package`, in live and integration cases alike. Build the jar once per Striim series and test
-that file on each release of the series.
+`mvn package`, in live and integration cases alike. Use the filename suffix selected above for
+the release being tested, including when supplying a prebuilt jar.
 
 | Variable | Selects |
 |---|---|
@@ -104,10 +112,10 @@ that file on each release of the series.
 The first one set wins, in that order. Set them in the shell; `.env` does not hold them.
 
 - **A folder**, which any of the three may name, must hold exactly one jar for the module and the
-  release's series, named `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`),
+  release's selected suffix, named `<module>[V<version>]-<suffix>.jar` (for example `ReferenceOpV1-5.4.jar`),
   in it or below it. No match, or more than one, is an error and the case does not run; another
   module's jar is never used.
-- **A named file** must end in `-<series>.jar` for the release's series (for example
+- **A named file** must end in `-<suffix>.jar` for the release's selected suffix (for example
   `ReferenceOpV1-5.4.jar`); otherwise the case does not run.
 - **A shared named file** selected by `SLT_PREBUILT_JAR` is refused if its `Striim-Module-Name`
   manifest entry names another module. The entry must match the module folder's name, optionally
