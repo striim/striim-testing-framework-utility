@@ -2327,7 +2327,7 @@ class LiveItem(pytest.Item):
                     entry = require_service_admin(admins, db, m.name, f"file {fname!r}")
                     _slt_sql = render(m.file_path(fname).read_text(), tokens)
                     _run_admin_sql(entry, _slt_sql, phase=phase,
-                                   timeout=m.timeout if phase == "seed" else None,
+                                   timeout=m.fixture_timeout,
                                    run_id=ident.run_id, ledger=ledger)
                     # C4: the SQL exactly as sent
                     self._slt_inputs.record("ddl" if any(_f == fname for _d, _f in m.ddl_files) else "seed", fname,
@@ -3091,7 +3091,8 @@ class LiveItem(pytest.Item):
                                         try:
                                             # ${TOKEN} form, like every other SQL file; str.format
                                             # cannot see it, which is why three cases hardcoded a schema.
-                                            _op_admin.run_sql(render(_op_sql, tokens))
+                                            _run_admin_sql(_op_admin_entry, render(_op_sql, tokens),
+                                                           phase="action", run_id=ident.run_id)
                                             _report(m.name, f"action: concurrent {_op_file} executed")
                                         except Exception as e:
                                             # Log but don't fail: concurrent ops are best-effort

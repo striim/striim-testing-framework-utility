@@ -104,3 +104,80 @@ def test_long_statement_has_a_bounded_observation_count(monkeypatch):
 
     PgAdmin(dict(DSN), connect=lambda **kw: LongStatement([])).run_sql('SELECT work')
     assert 1 <= len(calls) <= 3
+
+
+def _plugin_function(name, namespace):
+    """Execute the real nested caller without provisioning a live app."""
+    import ast
+    import inspect
+    from livetest import plugin
+    node = next(n for n in ast.walk(ast.parse(inspect.getsource(plugin)))
+                if isinstance(n, ast.FunctionDef) and n.name == name)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), '<plugin caller>', 'exec'), namespace)
+    return namespace[name]
+
+
+def test_fixture_budget_is_independent_of_assert_timeout(tmp_path):
+    from types import SimpleNamespace
+    from livetest.manifest import load_manifest
+    case = tmp_path / 'test.yaml'
+    case.write_text('name: bulk\ntql: app.tql\ntimeout: 7\nfixture_timeout: 1800\nassert: {smoke: true}\n')
+    m = load_manifest(case)
+    (tmp_path / 'bulk.sql').write_text('SELECT 1')
+    calls = []
+    env = dict(m=m, admins={}, tokens={}, ledger=None,
+               ident=SimpleNamespace(run_id='current'),
+               self=SimpleNamespace(_slt_inputs=SimpleNamespace(record=lambda *a, **kw: None)),
+               require_service_admin=lambda *a: {}, render=lambda text, tokens: text,
+               _run_admin_sql=lambda *a, **kw: calls.append(kw))
+    run_files = _plugin_function('_run_files', env)
+    run_files([('postgres-source', 'bulk.sql')], phase='ddl')
+    run_files([('postgres-source', 'bulk.sql')], phase='seed')
+    assert [c['timeout'] for c in calls] == [1800, 1800]
+    assert [c['phase'] for c in calls] == ['ddl', 'seed']
+
+
+def test_default_fixture_budget_does_not_borrow_assert_timeout(tmp_path):
+    from livetest.manifest import load_manifest
+    case = tmp_path / 'test.yaml'
+    case.write_text('name: bulk\ntql: app.tql\ntimeout: 7\nassert: {smoke: true}\n')
+    assert load_manifest(case).fixture_timeout is None
+
+
+def test_concurrent_action_caller_keeps_dml_unbounded(tmp_path):
+    from types import SimpleNamespace
+    from livetest.plugin import _run_admin_sql
+    calls = []
+    options = []
+    def connect(**kwargs):
+        options.append(kwargs)
+        return Connection(calls)
+    admin = PgAdmin(dict(DSN), connect=connect)
+    (tmp_path / 'op.sql').write_text('INSERT INTO t VALUES (1)')
+    stop = threading.Event()
+    class OneIteration:
+        is_set = stop.is_set
+        def wait(self, timeout):
+            stop.set()
+            return True
+    caller = _plugin_function('_run_concurrent_op', dict(
+        m=SimpleNamespace(source_dir=tmp_path, name='bulk'),
+        admins={'postgres-source': {'admin': admin, 'schema': None}},
+        tokens={}, ident=SimpleNamespace(run_id='current'), ledger=None,
+        _action_stop_flag=OneIteration(), _report=lambda *args: None,
+        render=lambda text, tokens: text, _run_admin_sql=_run_admin_sql))
+    caller({'db': 'postgres-source', 'file': 'op.sql', 'loop_interval': 0.01})
+    assert ('INSERT INTO t VALUES (1)', None) in calls
+    assert len(options) == 1
+    assert 'options' not in options[0]  # no fixture statement/lock deadlines or observer
+
+
+import pytest
+
+@pytest.mark.parametrize('value', ['0', '-1', 'true', '.inf', '2147484', '"10min"'])
+def test_invalid_manifest_fixture_budget_is_rejected(tmp_path, value):
+    from livetest.manifest import load_manifest, ManifestError
+    case = tmp_path / 'test.yaml'
+    case.write_text(f'name: bulk\ntql: app.tql\nfixture_timeout: {value}\nassert: {{smoke: true}}\n')
+    with pytest.raises(ManifestError, match='fixture_timeout'):
+        load_manifest(case)

@@ -28,7 +28,7 @@ VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # means seeding before the reader starts, so it fails for a reason the manifest does not show.
 VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
-    "op", "udf", "server_files", "generate", "timeout", "diff_poll", "tags", "disabled",
+    "op", "udf", "server_files", "generate", "timeout", "fixture_timeout", "diff_poll", "tags", "disabled",
     "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
     "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit", "deployment_groups",
     "lifecycle",   # C7.2
@@ -957,6 +957,7 @@ class TestManifest:
     action_specs: list = field(default_factory=list)  # [{type, cycles, delay_before_stop, stop_duration}, ...]
     assert_: dict = field(default_factory=dict)
     timeout: int = 120
+    fixture_timeout: float | None = None
     # §85.3. Seconds between diff polls. The default 2.0 is right for a convergence check and
     # WRONG for a measurement: `elapsed_s` can only be as precise as this, so two writers finishing
     # seconds apart are indistinguishable unless a case lowers it (§127.2). Costs one SELECT per
@@ -1008,6 +1009,16 @@ def xfail_for_release(xfail: dict, version: str) -> dict:
     if xfail.get("releases") and not release_matches(version, xfail["releases"]):
         return {}
     return xfail
+
+def _fixture_timeout(raw, path):
+    value = raw.get("fixture_timeout")
+    if value is not None:
+        import math
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value <= 0 or value > 2147483.647):
+            raise ManifestError(f"{path}: fixture_timeout must be positive finite seconds, at most 2147483.647")
+    return value
+
 
 def load_manifest(path: Path) -> TestManifest:
     path = Path(path)
@@ -1540,6 +1551,7 @@ def load_manifest(path: Path) -> TestManifest:
         action_specs=action_specs,
         assert_=dict(raw.get("assert", {})),
         timeout=int(raw.get("timeout", 120)),
+        fixture_timeout=_fixture_timeout(raw, path),
         diff_poll=_diff_poll(raw, path),
         tags=list(tags),
         disabled=disabled,

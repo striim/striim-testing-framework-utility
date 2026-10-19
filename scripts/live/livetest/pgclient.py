@@ -336,6 +336,10 @@ class PgAdmin:
         # Run DDL/seed as this instance's data role, in that role's schema. The schema is
         # fixed per role (qasource/qatarget), so — unlike the old per-test-schema model —
         # there is no schema argument (mirrors OraAdmin.run_sql(sql)).
+        if phase == "action":
+            # Concurrent action DML retains its previous unbounded execution path.
+            self._exec([f'SET search_path TO "{self._schema()}"', sql])
+            return
         from livetest.pgfixture import policy
         spec = policy(sql, phase, timeout, run_id, owners, self.role)
         self._exec([f'SET search_path TO "{self._schema()}"', sql], fixture=spec)
