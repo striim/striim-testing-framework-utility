@@ -137,14 +137,16 @@ class OraAdmin:
 
     def run_sql(self, sql: str) -> None:
         statements = _split_statements(sql)
-        # Only views/triggers need the new scope rule; ordinary table DDL keeps
-        # its existing route contract. Qualified observer objects must be owned
+        # The privileged route accepts only observer creates/drops. Ordinary
+        # data-user SQL keeps its existing contract. Observer objects must be owned
         # by the connected user, so cleanup can find them in USER_OBJECTS.
         for stmt in statements:
             if self.prefix is not None and re.match(
                     r'\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?|ALTER\s+|DROP\s+)MATERIALIZED\s+VIEW\b', stmt, re.I):
                 raise ValueError("oracle-observer-ddl-unsupported: materialized views are unsupported on oracle-admin")
             match = _OBSERVER_DDL.match(stmt)
+            if self.prefix is not None and (not match or match["operation"].upper().startswith("ALTER")):
+                raise ValueError("oracle-observer-ddl-unsupported: oracle-admin accepts only view/trigger CREATE and DROP")
             if match and self.prefix is not None:
                 parts = [p[1:-1].replace('""', '"') if p.startswith('"') else p
                          for p in re.findall(_SQL_IDENT, match["name"])]

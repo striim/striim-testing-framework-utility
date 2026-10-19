@@ -170,3 +170,19 @@ def test_compilation_warning_keeps_a_ledger_record_until_verified_drop(tmp_path)
     assert not state and ledger.entries[0]['state']=='confirmed'
     assert not teardown_oracle_observers(admins,{'TID_ORACLE':ident.tid_oracle})['failed']
     assert ledger.entries[0]['state']=='verified-absent'
+
+
+@pytest.mark.parametrize('sql', [
+    'DROP TABLE QASOURCE.OTHER_CASE_TABLE;',
+    'DROP USER QATARGET CASCADE;',
+    'ALTER SYSTEM SET open_cursors=10;',
+    'CREATE TABLE TCASE_LOG(id NUMBER);',
+    'GRANT SELECT ON TCASE_V TO PUBLIC;',
+    'ALTER TRIGGER TCASE_TR RENAME TO OTHER_TR;',
+    'CREATE VIEW TCASE_V AS SELECT 1 id FROM dual; DROP USER QATARGET CASCADE;',
+])
+def test_admin_refuses_non_observer_sql_before_connect(sql):
+    admin = _oracle_admins(BASE, 'TCASE_')['oracle-admin']['admin']
+    admin._open = lambda: pytest.fail('refused script must not connect')
+    with pytest.raises(ValueError, match='oracle-observer-ddl-unsupported'):
+        admin.run_sql(sql)

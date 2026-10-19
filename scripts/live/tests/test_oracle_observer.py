@@ -159,7 +159,9 @@ def test_documented_observer_scripts_keep_the_trigger_body_and_case_scope():
         class Cursor:
             def execute(self, sql): sent.append(sql)
             def close(self): pass
-        admin = oraadmin.OraAdmin({**BASE, 'source_user': user}, prefix='TCASE_')
+        admin = oraadmin.OraAdmin({**BASE, 'source_user': user},
+                                  prefix='TCASE_' if user == 'SYSTEM' else None)
+        admin.observer_prefix = 'TCASE_'
         admin._open = lambda: SimpleNamespace(cursor=Cursor, close=lambda: None)
         admin.run_sql(block)
         assert len(sent) == expected

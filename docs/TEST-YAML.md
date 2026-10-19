@@ -372,7 +372,10 @@ ddl:
 
 The same routes are accepted in `seed` entries with the normal `when` and `after`
 keys. Put tables, views and grants before the trigger that uses them. Use `${TID_ORACLE}` for
-observer view and trigger names. On `oracle-admin`, observer objects
+observer view and trigger names. The `oracle-admin` route accepts only view/trigger
+CREATE and DROP statements; other SQL fails `oracle-observer-ddl-unsupported`
+before the script opens a connection. Run tables, seeds and grants on the data-user
+routes. On `oracle-admin`, observer objects
 must belong to that route user and carry this case's prefix; foreign names fail
 `oracle-observer-ddl-scope` before execution. `DROP VIEW IF EXISTS` checks the
 actual object name. Materialized views on this observer route are refused with
