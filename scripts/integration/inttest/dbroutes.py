@@ -253,7 +253,14 @@ def connection_params(route: str, tokens: Mapping[str, str]) -> dict:
         params["port"] = int(params["port"])
     if params["driver"] == "spanner":
         # SpannerAdmin's dsn shape: {project, instance, database, dialect, emulator_host}.
-        params["emulator_host"] = f'{params["host"]}:{params["port"]}'
+        credentials = tokens.get("SPANNER_CREDENTIALS")
+        if credentials:
+            # Real Spanner (spanneradmin.real_tokens): the key authenticates, there is no
+            # emulator, and the test's ${TID} is the only prefix the admin's guard allows.
+            params["credentials"] = credentials
+            params["tid"] = tokens.get("TID", "")
+        else:
+            params["emulator_host"] = f'{params["host"]}:{params["port"]}'
     return params
 
 

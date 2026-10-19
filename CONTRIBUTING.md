@@ -51,6 +51,9 @@ unset PYTHONPATH PYTHONHOME
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 DOCKER_HOST=unix:///nonexistent
 ```
 
+If reusing an environment after updating the checkout, run
+`python3 tools/prepare-recovery-goldens.py` to prepare the shared recovery CSV copies.
+
 Run the suites for whatever you touch. These framework tests use pytest directly; use `striim-test` when running app cases.
 
 ```

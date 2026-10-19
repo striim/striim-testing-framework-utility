@@ -75,6 +75,11 @@ fetch "https://download.microsoft.com/download/0/2/A/02AAE597-3865-456C-AE7F-613
 fetch "https://cdn.mysql.com/archives/mysql-connector-java-8.0/mysql-connector-java-8.0.30.zip" "mysql-connector-java-8.0.30.zip"
 # Vertica: the same release as services/vertica's server.
 fetch "https://repo1.maven.org/maven2/com/vertica/jdbc/vertica-jdbc/25.3.0-0/vertica-jdbc-25.3.0-0.jar" "vertica-jdbc-25.3.0-0.jar"
+# Teradata, opt-in: SLT_TERADATA_JDBC=1. Teradata's licence for the driver applies; it allows use
+# only with your own Teradata-authorized platform licence, so it is never fetched by default.
+if [ "${SLT_TERADATA_JDBC:-}" = "1" ]; then
+  fetch "https://repo1.maven.org/maven2/com/teradata/jdbc/terajdbc/20.00.00.46/terajdbc-20.00.00.46.jar" "terajdbc-20.00.00.46.jar"
+fi
 
 # JMX exporter
 fetch "https://repo1.maven.org/maven2/io/prometheus/jmx/jmx_prometheus_javaagent/0.16.1/jmx_prometheus_javaagent-0.16.1.jar" "jmx_prometheus_javaagent-0.16.1.jar"

@@ -1,0 +1,5 @@
+# Optional survivor API for dedicated node-fault stacks.
+services:
+  slt-node:
+    ports:
+      - "${SLT_STRIIM_NODE_HTTP_HOST_PORT:-9082}:9080"

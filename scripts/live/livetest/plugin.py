@@ -193,11 +193,15 @@ def _cluster_provision_lock() -> Path:
 
 
 def _restore_then_post_recover(restore, run_files, seeds, settle, last,
-                                sleep=time.sleep, now=time.monotonic, hb=None, report=None):
+                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None, after_restore=None):
     """Restore one recovery cycle and seed after the last restore when configured."""
     _post_rec = seeds if last else []
-    restore(0.0 if (_post_rec or not last) else settle)
-    if not _post_rec:
+    restore(0.0 if (_post_rec or not last or post_restore or after_restore) else settle)
+    if after_restore is not None:
+        after_restore()
+    if post_restore is not None and last:
+        post_restore()
+    if not _post_rec and not (post_restore is not None and last) and not (after_restore is not None and last):
         return
 
     if report is not None:
@@ -745,7 +749,22 @@ def _resolve_striim(config):
             # so it reads as "hung" with zero output rather than "cluster is broken".
             report, _clear_progress = _make_progress(config)
             try:
+                join_deadline = time.monotonic() + 300
                 _sp.wait_cluster_ready(client, progress=report)
+                # Registration can regress while node join settles. Cache only a fresh
+                # full-membership observation, within the original join + settle budget.
+                settle = float(os.environ.get("SLT_CLUSTER_SETTLE", "20"))
+                if provisioned:
+                    report("cluster", "settling (node join)")
+                time.sleep(settle)
+                try:
+                    client.api.post_tungsten_line("ALTER CLUSTER DISABLE RESOURCE_LIMIT_POLICY;")
+                except Exception:
+                    pass
+                topo = _sp.wait_cluster_ready(client,
+                    timeout=max(0, join_deadline + settle - time.monotonic()), progress=report)
+                report("cluster", f"membership confirmed after settle: default={len(topo.groups['default'])}, "
+                                  f"Agents={len(topo.groups['Agents'])}")
             except Exception as e:
                 _clear_progress()
                 _, node_c, agent_c = stack.cluster_containers()
@@ -756,18 +775,9 @@ def _resolve_striim(config):
                 return _fail(f"Striim cluster is not fully formed (2nd node/agent never joined): {e} "
                              f"— check `docker logs {node_c}` / `docker logs {agent_c}`, "
                              f"or re-provision the cluster from the console's Settings page{where}")
-            # A cluster that JUST reached full membership isn't deploy-ready yet
-            # (node join settles asynchronously); a brief settle avoids a flaky
-            # first deploy. Once per session (resolution is cached).
-            if provisioned:
-                report("cluster", "settling (node join)")
-            time.sleep(float(os.environ.get("SLT_CLUSTER_SETTLE", "20")))
-            try:
-                client.api.post_tungsten_line("ALTER CLUSTER DISABLE RESOURCE_LIMIT_POLICY;")
-            except Exception:
-                pass
+        else:
+            topo = parse_deployment_groups(client.list_deployment_groups())
         _clear_progress()
-        topo = parse_deployment_groups(client.list_deployment_groups())
     except Exception as e:
         _clear_progress()
         return _fail(f"could not read Striim topology: {e}")
@@ -1104,7 +1114,7 @@ def _kafka_endpoints(base: dict) -> tuple[str, str]:
     return f"{base['host']}:{base['port']}", f"http://{base['host']}:{base['registry_port']}"
 
 
-def _kafka_admin(base):
+def _kafka_admin(base, ledger=None, audit=False):
     # One admin against the broker + registry; seeds go to the source topic, the diff
     # reads both topics.
     broker, registry_url = _kafka_endpoints(base)
@@ -1113,8 +1123,12 @@ def _kafka_admin(base):
         "registry_url": registry_url,
         "seed_topic": base["src_topic"],
     })
-    _kafka_clear(admin, base["src_topic"])
-    _kafka_clear(admin, base["tgt_topic"])
+    for topic in (base["src_topic"], base["tgt_topic"]):
+        if ledger is None:
+            _kafka_clear(admin, topic)
+        else:
+            config = {"cleanup.policy": "delete", "retention.ms": "-1", "retention.bytes": "-1"} if audit and topic == base["tgt_topic"] else None
+            ledger.acquire_topic(admin, topic, lambda topic=topic: admin.ensure_topic(topic, config=config))
     return admin
 
 def _spec_route(s) -> str:
@@ -1918,6 +1932,12 @@ def _prepare_service(defn, env, mode):
         pytest.skip(f"service {defn.name} unavailable: {why}")
 
 
+def _abandon_snapshot(observer, records, reason):
+    record = observer.abandon(reason)
+    if record is not None:
+        records.append(record)
+
+
 class LiveItem(pytest.Item):
     def __init__(self, *, manifest_path, services=(), depth=None, tags=(), **kw):
         super().__init__(**kw)
@@ -1961,6 +1981,8 @@ class LiveItem(pytest.Item):
         if m.disabled_parallel and _parallel(os.environ) and not os.environ.get("SLT_RUN_DISABLED"):
             pytest.skip(f"disabled_parallel: {m.disabled_parallel if isinstance(m.disabled_parallel, str) else 'disabled_parallel'}"
                         " (set SLT_RUN_DISABLED=1 to force-run)")
+        if getattr(m, "recover", None) and m.recover.get("node") and os.environ.get("SLT_ENABLE_NODE_FAULTS") != "1":
+            pytest.skip("node faults require SLT_ENABLE_NODE_FAULTS=1 on a dedicated disposable stack")
         # C8.3: every referenced input is read once, after the disabled skips and
         # before any provisioning; exact assertions parse these bytes and never re-read a golden.
         self._slt_data = []             # slt-canon/1 comparison records
@@ -2066,6 +2088,10 @@ class LiveItem(pytest.Item):
         gcs_cleanup = []     # (admin, bucket) to delete on teardown (spec §A.4)
         kafka_cleanup = []   # (admin, topic) to delete on teardown (spec §A.4)
         client = None
+        _tx_pool = None
+        _snapshot_observer = None
+        _fault_target = None
+        _placement_nodes = None
         deployed = False
         deploy_attempted = False
         in_use_held = False
@@ -2095,6 +2121,11 @@ class LiveItem(pytest.Item):
                     _prepare_service(defn, os.environ, ctx.mode)
                 except _prestart.PreUpError as e:
                     pytest.fail(f"service {svc}: {e}", pytrace=False)
+                _why = _sp.missing_service_jar(svc, ctx.mode)
+                if _why:
+                    if getattr(defn, "unavailable_policy", "skip") == "fail":
+                        pytest.fail(f"service {svc} unavailable: {_why}", pytrace=False)
+                    pytest.skip(f"service {svc} unavailable: {_why}")
                 try:
                     resolved = _slt_infra.resolve_service(  # shared-service adapter
                         _slt_infra.of(self.config), svc, os.environ, self.config._slt_started,
@@ -2188,7 +2219,8 @@ class LiveItem(pytest.Item):
                     gcs_cleanup += [(_gcs, resolved.base["src_bucket"]),
                                     (_gcs, resolved.base["tgt_bucket"])]
                 elif svc == "kafka":
-                    _kafka = _kafka_admin(resolved.base)
+                    _kafka = (_kafka_admin(resolved.base, ledger=ledger, audit=bool(m.audit_specs)) if m.lifecycle is not None
+                              else _kafka_admin(resolved.base))
                     admins["kafka"] = {"admin": _kafka, "schema": None}
                     kafka_cleanup += [(_kafka, resolved.base["src_topic"]),
                                       (_kafka, resolved.base["tgt_topic"])]
@@ -2314,6 +2346,19 @@ class LiveItem(pytest.Item):
             _report(m.name, "resetting this identity's recorded resources")
             ledger.reset(client=client, admins=admins, ctx=ctx, tokens=tokens)
             ledger.acquire_namespace(client)
+            _server_tokens = {"STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
+            for _key in _server_tokens:
+                tokens.pop(_key, None)
+            if m.deployment_groups or any("${" + _key + "}" in m.file_path(m.tql).read_text() for _key in _server_tokens):
+                if ctx.mode != "docker":
+                    pytest.skip("deployment-groups-docker-required: server placement needs Docker inventory")
+                from livetest.node_fault import inventory as _node_inventory
+                _placement_nodes = _node_inventory(client, ctx, timeout=m.timeout)
+                tokens.update({"STRIIM_" + role.upper() + "_SERVER": node["server"]
+                               for role, node in _placement_nodes.items()})
+            for _group in m.deployment_groups:
+                ledger.acquire_deployment_group(client, render(_group["name"], tokens),
+                    [render(v, tokens) for v in _group["servers"]])
             # Also drop any OP resume checkpoint this namespace left on the server. Dropping
             # the app and namespace does NOT remove them -- they are plain files in Striim's
             # working dir -- so without this the next run's same-named app resumes from the
@@ -2335,7 +2380,13 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)]))
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)]), acquire_sinks=m.lifecycle is not None)
+            if m.transaction_steps:
+                from livetest.transactions import Pool
+                _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),
+                                timeout=m.timeout, record=self._slt_inputs.record,
+                                trace=self._slt_records.append, report=lambda msg: _report(m.name, msg), owned=ledger.owns)
+                _tx_pool.run_phase(m.transaction_steps, "pre_deploy")
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
                 _report(m.name, "seeding data")
@@ -2348,6 +2399,9 @@ class LiveItem(pytest.Item):
                 # C7.2: the positive source baseline, recorded after the seed.
                 _slt_lifecycle.record_baseline(self._slt_lc, m.lifecycle, admins, tokens, owned=ledger.owns)
 
+            if m.audit_specs:
+                from livetest.audit import prepare as prepare_audit
+                prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
             # op:/udf: modules: build the OpenProcessor/UDF jar(s) against the resolved
             # release (once, if missing/stale) and upload them + their shared config
             # JSON(s) into UploadedFiles so `LOAD OPEN PROCESSOR` / `ConfigFile` resolve
@@ -2696,6 +2750,17 @@ class LiveItem(pytest.Item):
                     if expect_halt_early is None:
                         raise
 
+            if m.deployment_groups:
+                client.await_running(app, timeout=m.timeout)
+                from livetest.node_fault import initial_placement as _initial_placement
+                for _group in m.deployment_groups:
+                    _flow = render(_group["flow"], tokens)
+                    _initial = {render(v, tokens) for v in _group["servers"]}
+                    _initial_placement(client=client, flow=_flow, servers=_initial, timeout=m.timeout,
+                                       record=self._slt_records.append)
+                    ledger.expand_deployment_group(client, render(_group["name"], tokens),
+                        [render(v, tokens) for v in _group.get("add_after_deploy", [])])
+
             if expect_halt_early is not None:
                 self._slt_records += expect_halt_early
                 _report(m.name, "expect_halt: refused at deploy/startup as expected")
@@ -2801,6 +2866,35 @@ class LiveItem(pytest.Item):
                     # CDC sources capture only post-start commits: seed after RUNNING. Each
                     # entry's `after` is an offset from the moment RUNNING was reached (not
                     # from the previous file), so entries at 10s and 30s fire 10s and 30s in.
+                    if m.snapshot_spec is not None and _await_running_for_seed():
+                        from livetest.snapshot_observer import Observer
+                        _snapshot_observer = Observer(m.snapshot_spec, admins=admins, tokens=tokens,
+                            case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout,
+                            report=lambda msg: _report(m.name, msg))
+                        _snapshot_observer.start()
+                    if m.recover and m.recover.get("node") is not None and not skip_verify:
+                        from livetest.node_fault import Target as _NodeTarget
+                        _ok, _why = recovery.supported(m.recover["mode"], ctx, node=m.recover["node"])
+                        if not _ok:
+                            pytest.skip(_why)
+                        _selection = m.recover["node"]
+                        if isinstance(_selection, dict):
+                            _flow = render(_selection["hosting"], tokens)
+                            if not _flow.startswith(ns + "."):
+                                raise recovery.RecoveryError("invalid-node-fault: hosting flow must belong to this case")
+                            _selection = {"hosting": _flow}
+                        client.await_running(app, timeout=m.timeout)
+                        _fault_target = _NodeTarget(client, ctx, _selection, app=app, nodes=_placement_nodes, refresh=True,
+                            record=self._slt_records.append, timeout=recovery._restore_budget())
+                    _progress_read = None
+                    _progress_baseline = 0
+                    if m.recover and "trigger" in m.recover and not skip_verify:
+                        from livetest import progress as _fault_progress
+                        _progress_read = _fault_progress.reader(m.recover["trigger"], admins=admins,
+                            tokens=tokens, client=client, app=app, owned=ledger.owns)
+                        if m.recover["trigger"]["kind"] == "checkpoint" and "above" not in m.recover["trigger"]:
+                            _progress_baseline = _progress_read(m.recover["trigger"]["timeout"])
+
                     _post_seed = [(db, f, a) for db, f, when, a in m.seed_files
                                   if when == "post_start"]
                     if _post_seed and _await_running_for_seed():
@@ -2835,6 +2929,8 @@ class LiveItem(pytest.Item):
                                     _hb_wait(_elapsed, _after)
                                     time.sleep(min(2.0, _left))
                             _run_files([(_db, _f)])
+                    if _tx_pool is not None and _await_running_for_seed():
+                        _tx_pool.run_phase(m.transaction_steps, "post_start")
                     # Generate post_start data once RUNNING, before the post_start
                     # server_files drop (same no-race ordering as the pre_deploy phase).
                     if (any(g["when"] == "post_start" for g in m.generate_specs)
@@ -2863,7 +2959,8 @@ class LiveItem(pytest.Item):
                     # one nobody trusts. `recover.after` tunes the window explicitly instead.
                     if m.recover and not skip_verify:
                         _rc = m.recover
-                        _ok, _why = recovery.supported(_rc["mode"], ctx)
+                        from livetest.recovery_sentinel import run as _post_recovery_sentinel
+                        _ok, _why = recovery.supported(_rc["mode"], ctx, node=_rc.get("node"))
                         if not _ok:
                             pytest.skip(_why)
                         # One interruption is often not enough to observe anything: the field
@@ -2873,6 +2970,9 @@ class LiveItem(pytest.Item):
                         # settling between interruptions would just wait out the very in-flight
                         # window the next interruption needs.
                         for _i in range(_rc["times"]):
+                            if _i and _fault_target is not None:
+                                _fault_target = _NodeTarget(client, ctx, _selection, app=app,
+                                    record=self._slt_records.append, timeout=recovery._restore_budget())
                             _wait = _rc["after"] if _i == 0 else _rc["every"]
                             _last = (_i == _rc["times"] - 1)
                             _tag = "" if _rc["times"] == 1 else f" [{_i + 1}/{_rc['times']}]"
@@ -2892,24 +2992,66 @@ class LiveItem(pytest.Item):
                             # the default would report a WORKING stop as "not interrupted".
                             # Floored at the default so a short-timeout manifest cannot make
                             # verification stricter than the library intends.
-                            recovery.interrupt(client, ctx, app, _rc["mode"],
-                                               verify_timeout=max(120.0, float(m.timeout) / 2.0),
-                                               report=lambda msg: _report(m.name, msg))
+                            from livetest import progress as _fault_progress
+                            def _read_at_fault(left):
+                                began = time.monotonic()
+                                status = client.current_status(app, timeout=min(5.0, left))
+                                if _progress_read is None:
+                                    return status
+                                if status != "RUNNING":
+                                    raise _fault_progress.ProgressError("progress-app-not-running")
+                                left -= time.monotonic() - began
+                                if left <= 0:
+                                    raise _fault_progress.ProgressError("progress-deadline during status read")
+                                return _progress_read(left)
+                            def _before_fault(left):
+                                began = time.monotonic()
+                                if _tx_pool is not None:
+                                    _tx_pool.observe_recovery("pre_interrupt", remaining=min(2.0, left))
+                                left -= time.monotonic() - began
+                                if left <= 0:
+                                    raise _fault_progress.ProgressError("progress-deadline during source observations")
+                                if _fault_target is not None:
+                                    _fault_target.check_owner(left)
+                            _progress_observed = _fault_progress.at_fault(
+                                _rc.get("trigger"), _read_at_fault,
+                                lambda: _fault_target.interrupt(_rc["mode"]) if _fault_target is not None else recovery.interrupt(client, ctx, app, _rc["mode"],
+                                    verify_timeout=max(120.0, float(m.timeout) / 2.0),
+                                    report=lambda msg: _report(m.name, msg)),
+                                record=self._slt_records.append, cycle=_i + 1,
+                                baseline=_progress_baseline, after_read=_progress_read,
+                                before_issue=_before_fault)
+                            if _rc.get("trigger", {}).get("kind") == "checkpoint" and "above" not in _rc["trigger"]:
+                                _progress_baseline = _progress_observed["value"]
                             _report(m.name, f"recover: restoring app{_tag}")
                             # `when: post_recover` seeds: after the LAST
                             # restore reaches RUNNING, before the settle -- a parent that
                             # arrives only after the restart. Their `after` counts from RUNNING.
                             _post_rec = [(db, f, a) for db, f, when, a in m.seed_files
                                          if when == "post_recover"]
-                            _restore_then_post_recover(
-                                restore=lambda _settle: recovery.restore(
+                            def _restore_cycle(_settle):
+                                status = _fault_target.restore(expect_running=_rc["expect_running"], settle=_settle) \
+                                    if _fault_target is not None else recovery.restore(
                                     client, ctx, app, _rc["mode"], timeout=m.timeout,
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
                                     report=lambda msg: _report(m.name, msg),
-                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}")),
+                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}"))
+                                if _tx_pool is not None:
+                                    _tx_pool.observe_recovery("post_restore")
+                                return status
+                            _restore_then_post_recover(
+                                restore=_restore_cycle,
                                 run_files=_run_files,
                                 seeds=_post_rec,
+                                after_restore=(lambda: _post_recovery_sentinel(
+                                    self._slt_lc, m.lifecycle, client=client, app=app, admins=admins,
+                                    tokens=tokens, ident=ident,
+                                    read_files=lambda _p, **_k: read_server_files(ctx, _p, **_k),
+                                    owned=ledger.owns, source_dir=m.source_dir, cycle=_i + 1,
+                                    record=self._slt_records.append)) if _rc.get("sentinel") else None,
+                                post_restore=(lambda: _tx_pool.run_phase(m.transaction_steps, "post_recover"))
+                                    if _tx_pool is not None and any(s["when"] == "post_recover" for s in m.transaction_steps) else None,
                                 settle=_rc["settle"],
                                 last=_last,
                                 hb=_hb,
@@ -3243,6 +3385,34 @@ class LiveItem(pytest.Item):
                             tokens=tokens, ident=ident, owned=ledger.owns,
                             read_files=lambda _p, **_k: read_server_files(ctx, _p, **_k),
                             source_dir=m.source_dir)
+                    if _snapshot_observer is not None:
+                        self._slt_records += _snapshot_observer.finish()
+                    if m.assert_.get("placement"):
+                        from livetest.node_fault import assert_placement
+                        self._slt_records += assert_placement(m.assert_["placement"], client=client,
+                            ctx=ctx, tokens=tokens, timeout=m.timeout, target=_fault_target)
+                        ran = True
+                    if m.audit_specs:
+                        from livetest.audit import prepare as prepare_audit
+                        prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
+                    from livetest.nothing import assert_nothing
+                    from livetest.sinkprobe import rows as sink_rows
+                    for _kind in ("data", "file"):
+                        _nothing_specs = [s for s in m.assert_.get(_kind, []) if "nothing" in s]
+                        if _nothing_specs:
+                            def _nothing_read(spec, remaining):
+                                if _kind == "file":
+                                    ref = {"path": spec["path"]}
+                                else:
+                                    route = spec.get("target_db", spec.get("db", "postgres-source"))
+                                    ref = {"db": route, "topic" if route == "kafka" else "table": spec["target"]}
+                                    if route == "kafka":
+                                        ref["payload"] = spec.get("payload", "avro")
+                                return sink_rows(ref, admins, tokens, remaining,
+                                    read_files=lambda p, **kw: read_server_files(ctx, p, **kw))
+                            self._slt_records += assert_nothing(_nothing_specs, kind=_kind, tokens=tokens,
+                                completion=self._slt_lc.completion, read=_nothing_read, status_probe=_terminal_probe)
+                            ran = True
                     if m.assert_.get("data"):
                         _report(m.name, "asserting: data")
                         # C8: exact specs compare slt-canon/1 rows; the rest stay legacy.
@@ -3252,7 +3422,7 @@ class LiveItem(pytest.Item):
                                 admins, _slt_exact_specs, m, tokens=tokens, owned=ledger.owns,
                                 lifecycle=m.lifecycle is not None, inputs=self._slt_inputs,
                                 collector=self._slt_data, status_probe=_terminal_probe)
-                        specs = substitute_targets(parse_data_specs(_slt_raw), tokens)
+                        specs = substitute_targets(parse_data_specs([s for s in _slt_raw if "nothing" not in s]), tokens)
                         for admin, group in admin_groups(admins, specs, m.name, "data"):
                             self._slt_records += assert_data(
                                 admin, group, m.dir, timeout=m.timeout, poll=m.diff_poll,
@@ -3284,7 +3454,13 @@ class LiveItem(pytest.Item):
                                 _slt_exact_specs, m, tokens=tokens, owned=ledger.owns,
                                 lifecycle=m.lifecycle is not None, inputs=self._slt_inputs, mode=ctx.mode,
                                 collector=self._slt_data, status_probe=_terminal_probe)
-                        fspecs = parse_file_specs(_slt_raw)
+                        from livetest.rawfile import assert_raw_files
+                        raw_specs = [s for s in _slt_raw if "raw" in s]
+                        if raw_specs:
+                            self._slt_records += assert_raw_files(raw_specs, timeout=m.timeout,
+                                tokens=tokens, mode=ctx.mode, owned=ledger.owns,
+                                lifecycle=m.lifecycle is not None, status_probe=_terminal_probe)
+                        fspecs = parse_file_specs([s for s in _slt_raw if "raw" not in s and "nothing" not in s])
                         for _fs in fspecs:
                             _fs["path"] = render(_fs["path"], tokens)
                         self._slt_records += assert_file(
@@ -3354,6 +3530,26 @@ class LiveItem(pytest.Item):
                 pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, monitor, checkpoint_history, jmx)")
             succeeded = True
         finally:
+            _tx_cleanup_error = None
+            if _fault_target is not None:
+                try:
+                    _fault_target.close()
+                except Exception as e:
+                    _tx_cleanup_error = e
+                finally:
+                    client.configure_failover([])
+            if _snapshot_observer is not None:
+                try:
+                    import sys
+                    _abandon_snapshot(_snapshot_observer, self._slt_records,
+                        str(sys.exc_info()[1] or "case ended before snapshot assertions"))
+                except Exception as e:
+                    _tx_cleanup_error = e
+            if _tx_pool is not None:
+                try:
+                    _tx_pool.close()
+                except Exception as e:
+                    _tx_cleanup_error = e
             self._slt_cleanup_active = True
             # Stop the run-level progress line before teardown emits its own output.
             _clear_progress()
@@ -3443,6 +3639,8 @@ class LiveItem(pytest.Item):
             # C7.4: a cleanup failure fails a run that had nothing else in
             # flight; an exception already propagating is never replaced.
             import sys as _slt_sys
+            if _slt_sys.exc_info()[0] is None and _tx_cleanup_error is not None:
+                raise _tx_cleanup_error
             if _slt_sys.exc_info()[0] is None and cleanup is not None and cleanup.status == "failed":
                 raise _slt_ownership.CleanupError(f"{m.name}: cleanup failed: {cleanup.detail}")
 

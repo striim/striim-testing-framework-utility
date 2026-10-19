@@ -229,3 +229,29 @@ def test_running_phase_halt_is_unchanged_by_the_startup_rule():
     # without expect_halt_contains passes as before.
     records = assert_halt(StubClient("HALT"), "app", timeout=5, poll=0)
     assert records[0]["status"] == "passed"
+
+
+def test_startup_halt_record_names_every_skipped_transaction_step(tmp_path):
+    from livetest.assertions.halt import skipped_by_startup_halt
+    from livetest.manifest import TestManifest
+    m = TestManifest(name='txn-halt', tql='app.tql', dir=tmp_path,
+        lifecycle=object(), transaction_steps=[
+            {'session':'setup', 'op':'begin', 'when':'pre_deploy'},
+            {'session':'first', 'op':'begin', 'when':'post_start'},
+            {'session':'first', 'op':'sql', 'file':'changes.sql', 'when':'post_start'},
+            {'session':'first', 'op':'commit', 'when':'post_start'},
+            {'session':'held', 'op':'commit', 'when':'post_recover'},
+        ])
+    skipped = skipped_by_startup_halt(m)
+    assert skipped == [
+        'transaction first begin (post_start)',
+        'transaction first sql changes.sql (post_start)',
+        'transaction first commit (post_start)',
+        'transaction held commit (post_recover)',
+        'lifecycle',
+    ]
+    record = accept_expected_halt(True, RuntimeError('startup failure'),
+        contains=('startup failure',), skipped=tuple(skipped))[0]
+    for item in skipped[:-1]:
+        assert item in record['detail']
+    assert 'transaction setup' not in record['detail']

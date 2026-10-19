@@ -1,0 +1,61 @@
+name: framework-append-only-audit
+purpose: An append-only audit target exposes a replayed duplicate as an extra counted
+  row.
+tql: app.tql
+topology: single
+requires:
+- postgres
+timeout: 180
+tags:
+- framework
+- audit
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: postgres-target
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+exact:
+  version: 1
+  max_rows: 10
+assert:
+  data:
+  - target: ${PG_TARGET_SCHEMA}.${TID}audit
+    db: postgres-target
+    match: expected/rows.csv
+    exact:
+      columns:
+        id: integer
+        msg: text
+    audit:
+      writer: ${TID}writer
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source:
+      db: postgres-source
+      table: ${PG_SOURCE_SCHEMA}.${TID}src
+    target:
+      db: postgres-target
+      table: ${PG_TARGET_SCHEMA}.${TID}audit
+  completion:
+    kind: source-count
+    source:
+      db: postgres-source
+      table: ${PG_SOURCE_SCHEMA}.${TID}src
+    target:
+      db: postgres-target
+      table: ${PG_TARGET_SCHEMA}.${TID}audit
+  stability: 2s
+  deadlines:
+    readiness: 90s
+    completion: 120s
+  reset: owned
+audit:
+  version: 1

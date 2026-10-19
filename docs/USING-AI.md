@@ -144,8 +144,9 @@ Choose the nearest sample after reading the support matrix:
 - **File target:** `samples/live/03-file-output`. Specify expected file content and formatting;
   check the support matrix for access to files on the Striim nodes.
 
-Database `exact:` and `lifecycle:` are supported on PostgreSQL routes only. For other routes,
-choose the documented `data`, `diff` or `file` assertions. If the TQL is not written yet, say
+Typed `exact:` supports PostgreSQL, both Spanner routes and Kafka `project: kafka_record`;
+exact files require Docker mode. Choose lifecycle witnesses using the
+[route matrix](WHAT-IS-SUPPORTED.md#check-routes), and use documented assertions on other routes. If the TQL is not written yet, say
 “I want a Striim application” in the first line and add “Create the TQL there first” after
 the TQL path. Describe the adapters and transformations you want before the fixture details.
 For apps using your own Open Processor or UDF, also read `docs/TESTING-YOUR-JAVA.md` and
@@ -155,8 +156,8 @@ use template 7 for the module loading and observable effects.
 
 - The golden follows from the input row by row; NULL cells use `<null>`, never a copied run output.
 - Every object carries its documented prefix, and connections use service tokens.
-- PostgreSQL `exact.columns` types every non-text column, and lifecycle checks prove completion.
-- CDC changes run after startup; other routes use supported assertions without PostgreSQL-only keys.
+- `exact.columns` declares each intended non-text type; Kafka paths include `key.` or `value.`.
+- CDC changes run after startup, and supported lifecycle witnesses prove completion.
 
 ### 3. Add or change a service
 
@@ -350,7 +351,7 @@ a producer and a consumer; related tables share one writer.
 | `assert: {rowcount: …}` or another made-up tier | Unknown tiers are ignored: the test checks less than it says | Tier names from [TEST-YAML.md](TEST-YAML.md) only |
 | CDC data seeded before deploy | The reader never sees it | `when: post_start` |
 | A numeric or date column without a type under `exact.columns` | The run stops with `undeclared-conversion` | Type every non-text column |
-| `lifecycle:` or `exact:` on Oracle, SQL Server or MySQL routes | Postgres only; refused at load | `diff` or `data` with `rows:`, and `timeout` |
+| `lifecycle:` or `exact:` on Oracle, SQL Server or MySQL routes | those database routes are not supported by these checks; see the route matrix | `diff` or `data` with `rows:`, and `timeout` |
 | Runs `pytest` directly instead of `striim-test` | Ignores `.env`; refused without `SLT_INFRA_OWNERSHIP` | `striim-test run` |
 | Calls a skipped run "passed" | Exit 3 means nothing was checked | Report the exit code and the skip reason |
 | Raises `timeout` to fix a flaky test | Hides an app that has not finished | A `lifecycle:` block, then find out why it is slow |

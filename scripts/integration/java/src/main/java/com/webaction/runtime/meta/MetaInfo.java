@@ -141,4 +141,12 @@ public class MetaInfo {
     public static class Stream extends MetaObject {
         public UUID dataType;
     }
+
+    /**
+     * ⚠ ADDED for {@code components.Flow.flowInfo}, which {@code RetriableWriter.getOwnerFlow()}
+     * hands back. Real shape: {@code MetaInfo$Flow extends MetaInfo$MetaObject}. No members are
+     * reproduced: this tier never sets an owner flow, so a writer never reads one.
+     */
+    public static class Flow extends MetaObject {
+    }
 }

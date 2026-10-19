@@ -89,13 +89,17 @@ def assert_halt(client, app, timeout: int, poll: float = 2.0,
 
 def skipped_by_startup_halt(m) -> list[str]:
     """What manifest ``m`` declares to run after the app starts -- post_start seeds, generate
-    specs and server files, `lifecycle:`, and every `assert:` tier -- none of which runs once a
+    specs, server files and transaction steps, `lifecycle:`, and every `assert:` tier -- none of which runs once a
     deploy/startup failure is accepted as the expected halt."""
     out = [f"seed {f} (post_start)" for _db, f, when, _a in m.seed_files if when == "post_start"]
     out += [f"generate {g.get('kind')} (post_start)" for g in m.generate_specs
             if g.get("when") == "post_start"]
     out += [f"server_files {f} (post_start)" for f, _d, when, _l in m.server_files
             if when == "post_start"]
+    out += [f"transaction {step['session']} {step['op']}"
+            + (f" {step['file']}" if step.get("file") else "")
+            + f" ({step['when']})"
+            for step in m.transaction_steps if step["when"] != "pre_deploy"]
     if m.lifecycle is not None:
         out.append("lifecycle")
     out += [f"assert: {tier}" for tier in m.assert_]
