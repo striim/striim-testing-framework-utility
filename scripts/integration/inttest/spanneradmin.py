@@ -56,6 +56,12 @@ class RealSpannerError(RuntimeError):
     """A real-Spanner setting, check or guard refused; the message names what to fix."""
 
 
+#: (project, instance, database, dialect) already checked by `SpannerAdmin.ensure` this session.
+_CHECKED: set = set()
+#: What the existence and dialect check calls need.
+_CHECK_PERMISSIONS = "spanner.instances.get, spanner.databases.get and spanner.databases.getDdl"
+
+
 #: The shape `tokens.isolation_tokens` gives ${TID} in a parallel run.
 _TID = re.compile(r"^t[0-9a-f]{9}_$")
 REAL_HOST, REAL_PORT = "spanner.googleapis.com", "443"
@@ -260,7 +266,19 @@ class SpannerAdmin:
     def ensure(self) -> None:
         # Create the emulator instance (idempotent) and this database with its dialect.
         if self.real:
-            self._check_real()
+            key = (self.dsn["project"], self.dsn["instance"], self.dsn["database"], self.dsn["dialect"])
+            if key in _CHECKED:  # a real database does not vanish mid-session: check it once
+                return
+            try:
+                self._check_real()
+            except RealSpannerError:
+                raise
+            except Exception as e:  # noqa: BLE001 -- named, so the case fails saying what to fix
+                denied = type(e).__name__ in ("PermissionDenied", "Forbidden") or "403" in str(e)
+                hint = (f"; the key needs {_CHECK_PERMISSIONS}" if denied else "")
+                raise RealSpannerError(f"real Spanner: checking database {self.dsn['database']!r} "
+                                       f"failed: {e!r}{hint}") from e
+            _CHECKED.add(key)
             return
         client = self._spanner_client()
         cfg = f"projects/{self.dsn['project']}/instanceConfigs/emulator-config"
@@ -415,6 +433,19 @@ class SpannerAdmin:
         return [list(row) for row in rows]
 
     def drop_test_tables(self, prefix: str = "") -> None:
+        """See `_drop_test_tables`. Real Spanner: any failure is a RealSpannerError, which fails
+        the case (inttest.plugin re-raises it), since objects may be left in a shared database."""
+        if not self.real:
+            return self._drop_test_tables(prefix)
+        try:
+            return self._drop_test_tables(prefix)
+        except RealSpannerError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise RealSpannerError(f"real Spanner teardown of {prefix!r} in {self.dsn['database']} "
+                                   f"failed: {e!r}") from e
+
+    def _drop_test_tables(self, prefix: str = "") -> None:
         """Teardown cleanup: drop this test's objects in this admin's database. prefix ""
         drops ALL user objects (serial runs); a non-empty prefix (the per-test ${TID})
         drops only this test's so a concurrent sibling's survive. Filters to the user
