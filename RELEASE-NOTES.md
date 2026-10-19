@@ -15,6 +15,9 @@ fresh marker after restore. Named-node Docker faults also check live placement.
 stacks publish the secondary API (`SLT_STRIIM_NODE_HTTP_HOST_PORT`, default 9082).
 See [UPGRADING.md](docs/UPGRADING.md) before changing an older stack.
 
+**Tags select tests:** each manifest tag becomes a pytest marker, `tag_<name>` (`-m tag_p1`).
+`-k` now also matches tags, so a `-k` expression can select more cases than before.
+
 **Breaking change — timed recovery:** timed recovery now requires the app to be
 RUNNING at the fault boundary. A completed or halted app fails `fault-missed`
 instead of counting as an interruption. Consumers updating their framework pin

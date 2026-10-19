@@ -9,7 +9,7 @@ from pathlib import Path
 
 from filelock import FileLock
 
-from livetest import paths, service_healing
+from livetest import paths, service_healing, pgidle
 from livetest import lockdir, stack
 from livetest import striim_provision
 from livetest.registry import load_service, ServiceDef
@@ -319,6 +319,7 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
     _preflight_profile(defn)
     compose = defn.dir / defn.compose
     cenv = _compose_env()   # os.environ + any STRIIM_HOME-derived license vars (striim bring-up)
+    idle_sql = pgidle.policy_sql(cenv, "SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "sltdb") if defn.name == "postgres" else None
     if not os.environ.get("SLT_KEEP_SERVICES") and not (context and defn.name == "kafka"):
         # Wipe stale volumes so a fresh bring-up starts from clean state. Under SLT_KEEP_SERVICES
         # (parallel runs / fast re-runs, spec §C.6) we must NOT `down -v` first — that destroys the
@@ -364,6 +365,8 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
                 subprocess.run(["docker", "compose", "-f", str(compose), "down", "-v"],
                                capture_output=True, text=True, env=cenv)
             raise ServiceError(f"docker compose up failed for {defn.name}: {r.stderr.strip()}")
+        if idle_sql:
+            pgidle.apply_policy(compose, cenv, "live", idle_sql, subprocess.run)
         return
     # Streaming variant: surface live phase feedback while `up --wait` blocks (cold start).
     try:
@@ -388,6 +391,8 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
             subprocess.run(["docker", "compose", "-f", str(compose), "down", "-v"],
                            capture_output=True, text=True, env=cenv)
         raise ServiceError(f"docker compose up failed for {defn.name}: {''.join(tail).strip()[-500:]}")
+    if idle_sql:
+        pgidle.apply_policy(compose, cenv, "live", idle_sql, subprocess.run)
 
 def _run_preflight_compose(argv, env, context, name, progress):
     """Bound the initial Kafka attempt, with the same failure path in both APIs."""

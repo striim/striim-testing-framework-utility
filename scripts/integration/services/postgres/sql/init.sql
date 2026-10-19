@@ -1,15 +1,7 @@
 -- Postgres role/schema setup for the integration test tier.
 --
--- This is the canonical/shared copy of the qasource/qatarget setup — the
--- actual copy wired into Docker at container-init time is
--- services/postgres/init.sql (mounted read-only into
--- /docker-entrypoint-initdb.d/ by services/postgres/compose.yaml and run
--- against POSTGRES_DB=intdb). Keep the two in sync; this one exists under
--- sql/ so the harness can also (re-)apply it directly via a plain client
--- (e.g. psql) against a reused/live Postgres that the framework didn't
--- provision — see services/postgres/service.yaml's live_override_env
--- (INT_PG_HOST) — where there is no docker-entrypoint-initdb.d to mount
--- into.
+-- This is the canonical copy mounted directly into /docker-entrypoint-initdb.d
+-- by compose.yaml, and can also be applied with a plain SQL client.
 --
 -- Mirrors scripts/live/services/postgres/init-qausers.sql (the live-tier
 -- container-init script) but simplified for integration use: no REPLICATION
@@ -40,3 +32,27 @@ CREATE SCHEMA qatarget AUTHORIZATION qatarget;
 -- tables at test-setup and teardown time) without needing superuser.
 GRANT ALL ON SCHEMA qasource TO qasource;
 GRANT ALL ON SCHEMA qatarget TO qatarget;
+
+-- Optional idle-transaction policy for direct container initialization.
+-- Framework bring-up reconciles policy separately, including reused volumes.
+-- Unset by default: Striim reader/writer transactions may legitimately stay idle.
+DO $idle_budget$
+DECLARE
+    budget text := NULLIF(current_setting('slt.idle_transaction_timeout_ms', true), '');
+    role_name text;
+BEGIN
+    IF budget IS NULL THEN
+        RETURN;
+    END IF;
+    IF budget !~ '^[1-9][0-9]{0,9}$' THEN
+        RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: expected positive milliseconds';
+    END IF;
+    IF budget::bigint > 2147483647 THEN
+        RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: exceeds server limit';
+    END IF;
+    FOREACH role_name IN ARRAY ARRAY['qasource', 'qatarget'] LOOP
+        EXECUTE format('ALTER ROLE %I IN DATABASE %I SET idle_in_transaction_session_timeout = %L',
+                       role_name, current_database(), budget || 'ms');
+    END LOOP;
+END;
+$idle_budget$;
