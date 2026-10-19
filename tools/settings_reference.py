@@ -171,6 +171,11 @@ SECTIONS = (
 )
 # Service settings no service.yaml field explains.
 SERVICE_EXTRAS = {
+    "SLT_PG_FIXTURE_TIMEOUT": (None,
+        "Optional live-engine Postgres fixture statement deadline in positive finite seconds, at most "
+        "2147483.647. Also opts into a lock deadline of min(15 seconds, half the statement budget). "
+        "Manifest fixture_timeout takes precedence. Unset: no new statement/lock policy for DDL or seed; "
+        "existing bulk-load fixtures retain server defaults. Passive diagnostics stay enabled."),
     "SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS": (None,
         "Optional disposable Postgres idle-transaction deadline for qasource/qatarget in sltdb, "
         "including Striim sessions. Positive integer milliseconds, at most 2147483647; unset removes "

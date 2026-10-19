@@ -1,4 +1,6 @@
 name: framework-action
+# Fixture SQL has its own budget, separate from assertion polling.
+fixture_timeout: 600
 depth: smoke
 purpose: The action phase really stops and restarts a running app N times, a concurrent SQL script really runs on its own thread throughout (its rows are counted, since its failures only log), and rows committed before the first stop survive both cycles
 

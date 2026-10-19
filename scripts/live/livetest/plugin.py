@@ -918,12 +918,38 @@ def substitute_targets(specs, tokens) -> list:
         out.append(c)
     return out
 
-def _run_admin_sql(entry, sql) -> None:
+def _pg_fixture_owners(ledger):
+    """Correlate recorded namespaces with run IDs for diagnostics, never deletion authority."""
+    import json
+    owners, ambiguous = {}, set()
+    for path in ledger.path.parent.glob("*.json"):
+        try:
+            identity = json.loads(path.read_text()).get("identity", {})
+            namespace, run_id = identity.get("namespace"), identity.get("runId")
+            if not isinstance(namespace, str) or not namespace or not isinstance(run_id, str) or not run_id:
+                continue
+            if namespace in owners and owners[namespace] != run_id:
+                ambiguous.add(namespace)
+            owners[namespace] = run_id
+        except (OSError, ValueError, AttributeError):
+            continue
+    return {ns: run_id for ns, run_id in owners.items() if ns not in ambiguous}
+
+
+def _run_admin_sql(entry, sql, *, phase="ddl", timeout=None, run_id=None, owners=None, ledger=None) -> None:
     # Every admin now runs DDL/seed in its own FIXED schema — Oracle QASOURCE/QATARGET,
     # Postgres/MSSQL qasource/qatarget via the source/target role's connection — so
     # run_sql takes just the SQL (no per-test schema argument). entry["schema"] is kept
     # in the dict for shape compatibility but is always None.
-    entry["admin"].run_sql(sql)
+    from livetest.pgclient import PgAdmin
+    if isinstance(entry["admin"], PgAdmin):
+        if owners is None and ledger is not None:
+            cache = []
+            # read only if a fixture blocks: every ledger in the state dir is parsed
+            owners = lambda: (cache or cache.append(_pg_fixture_owners(ledger)) or cache)[0]
+        entry["admin"].run_sql(sql, phase=phase, timeout=timeout, run_id=run_id, owners=owners)
+    else:
+        entry["admin"].run_sql(sql)
 
 def _oracle_admins(base, prefix, ledger=None):
     routes = {}
@@ -2331,11 +2357,13 @@ class LiveItem(pytest.Item):
                     # rejects host.docker.internal); GcsAdmin still uses base host:port.
                     tokens["GCS_ENDPOINT"] = f"http://{gcs_ip}:{resolved.base['port']}"
 
-            def _run_files(items):
+            def _run_files(items, phase="seed"):
                 for db, fname in items:
                     entry = require_service_admin(admins, db, m.name, f"file {fname!r}")
                     _slt_sql = render(m.file_path(fname).read_text(), tokens)
-                    _run_admin_sql(entry, _slt_sql)
+                    _run_admin_sql(entry, _slt_sql, phase=phase,
+                                   timeout=m.fixture_timeout,
+                                   run_id=ident.run_id, ledger=ledger)
                     # C4: the SQL exactly as sent
                     self._slt_inputs.record("ddl" if any(_f == fname for _d, _f in m.ddl_files) else "seed", fname,
                                             _slt_sql, path=m.file_path(fname))
@@ -2395,7 +2423,7 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)]), acquire_sinks=m.lifecycle is not None)
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)], phase="ddl"), acquire_sinks=m.lifecycle is not None)
             if m.transaction_steps:
                 from livetest.transactions import Pool
                 _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),
@@ -3092,13 +3120,13 @@ class LiveItem(pytest.Item):
                                 if not _op_admin_entry:
                                     _report(m.name, f"action: concurrent op db {_op_db} not found")
                                     return
-                                _op_admin = _op_admin_entry["admin"]
                                 try:
                                     while not _action_stop_flag.is_set():
                                         try:
                                             # ${TOKEN} form, like every other SQL file; str.format
                                             # cannot see it, which is why three cases hardcoded a schema.
-                                            _op_admin.run_sql(render(_op_sql, tokens))
+                                            _run_admin_sql(_op_admin_entry, render(_op_sql, tokens),
+                                                           phase="action", run_id=ident.run_id)
                                             _report(m.name, f"action: concurrent {_op_file} executed")
                                         except Exception as e:
                                             # Log but don't fail: concurrent ops are best-effort

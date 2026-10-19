@@ -82,7 +82,11 @@ class PgAdmin:
         raise last
 
     def _exec(self, statements: list[str], which: str | None = None,
-              lock_timeout_ms: int | None = None) -> None:
+              lock_timeout_ms: int | None = None, fixture: dict | None = None) -> None:
+        if fixture is not None:
+            from livetest.pgfixture import execute
+            execute(self, statements, which, fixture)
+            return
         if lock_timeout_ms:
             self._exec_ddl(statements, which, lock_timeout_ms)
             return
@@ -328,11 +332,17 @@ class PgAdmin:
             if dropped:
                 log(f"postgres: dropped stale replication slot {name}")
 
-    def run_sql(self, sql: str) -> None:
+    def run_sql(self, sql: str, *, phase="ddl", timeout=None, run_id=None, owners=None) -> None:
         # Run DDL/seed as this instance's data role, in that role's schema. The schema is
         # fixed per role (qasource/qatarget), so — unlike the old per-test-schema model —
         # there is no schema argument (mirrors OraAdmin.run_sql(sql)).
-        self._exec([f'SET search_path TO "{self._schema()}"', sql])
+        if phase == "action":
+            # Concurrent action DML retains its previous unbounded execution path.
+            self._exec([f'SET search_path TO "{self._schema()}"', sql])
+            return
+        from livetest.pgfixture import policy
+        spec = policy(sql, phase, timeout, run_id, owners, self.role)
+        self._exec([f'SET search_path TO "{self._schema()}"', sql], fixture=spec)
 
     def _qualified(self, table: str) -> str:
         parts = table.split(".")

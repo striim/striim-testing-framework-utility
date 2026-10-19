@@ -30,6 +30,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
 | `server_files` | list | no | `[]` | place test-dir files onto the Striim server before deploy or after RUNNING, or upload and register a prebuilt jar (`load:`, from the test dir or outside it) — see below |
 | `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing |
+| `fixture_timeout` | number | no | unset | Opt-in Postgres fixture statement deadline in seconds, independent of assertion `timeout`; positive finite value up to `2147483.647`, applies to DDL/slot setup and seed SQL including action seeds. Overrides `SLT_PG_FIXTURE_TIMEOUT`; if both are unset, server statement/lock policy is retained. An enabled budget also sets the lock deadline to min(15 seconds, half the statement budget). Concurrent action DML retains its previous unbounded behavior. |
 | `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, p1]`); `-k p1` uses case-insensitive substring matching against paths, tags and markers, while `-m tag_p1` selects the exact tag marker (case is preserved). Markers are registered automatically as `tag_<name>`, replacing each character outside ASCII letters, digits and `_` with `_` (e.g. `slow-path` becomes `tag_slow_path`); tags that sanitise to the same name share a marker |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
@@ -486,6 +487,41 @@ when the source's reader cannot report that it is reading and no `lifecycle:` pr
 RUNNING is not reading, and an Oracle seed committed 1 s after RUNNING was measured missed. A
 source whose driver waits for its reader, or a `lifecycle:` case, seeds without the floor; an
 explicit `after` replaces it.
+
+### Postgres fixture SQL deadlines
+
+Postgres fixture connections retain cold-start retry (up to 30 attempts, two seconds
+between attempts), with `connect_timeout` set to five seconds per attempt.
+Statement and lock deadlines are **opt-in** for both `ddl:` (including replication-slot
+setup) and seed SQL, including action seeds. With neither a manifest budget nor a
+setting, the framework sends no statement/lock timeout options and preserves server
+policy. Existing bulk-load fixtures therefore do not acquire new cancellation limits.
+
+Set `fixture_timeout: 1800` at the top level to opt in for one case, or set
+`SLT_PG_FIXTURE_TIMEOUT=1800` in the shell, `.env` or machine settings for a host-wide
+live-engine default. Precedence is manifest > setting > none. Values are positive,
+finite seconds, at most `2147483.647`, independently of assertion `timeout`. An enabled
+budget sets the statement deadline and a lock deadline of min(15 seconds, half the
+statement budget); leave both inputs unset to retain longer legitimate lock waits.
+Concurrent `action:` DML loops keep their previous unbounded SQL path and do not start
+fixture observers.
+
+`postgres-fixture-timeout` reports the phase, route, and observed blockers: backend PID,
+application name, transaction age, and the owning run when its namespace is recorded in a
+ledger, with the observation time. Passive diagnostics stay enabled even without a
+fixture deadline. Observation starts after two seconds and is limited
+to three snapshots, five seconds apart. Each diagnostic has a two-second connection limit
+and a one-second statement deadline. If a diagnostic outlives successful SQL, a
+`postgres-fixture-diagnostic-gap` warning records the missing observation; committed SQL
+remains successful. The fixture
+disconnects its own SQL session; the blocker remains running. Run correlation is diagnostic
+information, not cleanup authority.
+
+The [PostgreSQL 16 statement deadline](https://www.postgresql.org/docs/16/runtime-config-client.html#GUC-STATEMENT-TIMEOUT)
+applies separately to each statement in a multi-statement SQL file. It does not replace the
+whole-case watchdog. Explicit transaction statements are sent as written.
+Connection limits apply per address, as specified by
+[libpq](https://www.postgresql.org/docs/16/libpq-connect.html#LIBPQ-CONNECT-CONNECT-TIMEOUT).
 
 ## `local: true` — test-only files beside an `example:`
 

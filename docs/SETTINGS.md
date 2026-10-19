@@ -226,6 +226,7 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_PG_HOST_PORT` | shell, `.env` | `5432` | Host port the container publishes; change it when the port is in use. |
 | `SLT_POSTGRES_CPUS` | shell, `.env`, machine | `2` | CPUs the container may use. |
 | `SLT_POSTGRES_MEM_LIMIT` | shell, `.env`, machine | `4g` | Memory limit of the container. |
+| `SLT_PG_FIXTURE_TIMEOUT` | shell, `.env`, machine |  | Optional live-engine Postgres fixture statement deadline in positive finite seconds, at most 2147483.647. Also opts into a lock deadline of min(15 seconds, half the statement budget). Manifest fixture_timeout takes precedence. Unset: no new statement/lock policy for DDL or seed; existing bulk-load fixtures retain server defaults. Passive diagnostics stay enabled. |
 | `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell, `.env`, machine |  | Optional disposable Postgres idle-transaction deadline for qasource/qatarget in sltdb, including Striim sessions. Positive integer milliseconds, at most 2147483647; unset removes the policy. Validated before compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged. |
 | `SLT_POSTGRES_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
