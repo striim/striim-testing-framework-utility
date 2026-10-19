@@ -361,8 +361,8 @@ What changes:
 
 - No emulator container starts. `${SPANNER_GSQL_URL}` and `${SPANNER_PG_URL}` become
   `jdbc:cloudspanner:/projects/<project>/instances/<instance>/databases/<db>?credentials=<key path>`,
-  and `${SPANNER_CREDENTIALS}` is the key path. The Striim server reads the key from that same
-  path, so on a Docker cluster the file must be at that path inside the container too.
+  and `${SPANNER_CREDENTIALS}` is the key path. The module under test runs in a JVM on this
+  machine and reads the key from that path.
 - The framework creates and deletes no instance or database. It checks that the instance and both
   databases exist with the right dialects, and fails naming the one that does not.
 - Every statement the framework runs on Spanner (`ddl:`, `seed:`, teardown) must name only
@@ -371,7 +371,7 @@ What changes:
   in the default schema. One statement per entry, with no `;` inside it, and a `DROP` names one
   object. Anything else, `FOR ALL` change streams included, fails the case before any statement
   runs. A serial run has an empty `${TID}`, so it is refused.
-- The app under test is not checked: its TQL must use `${TID}` names too.
+- What the module under test writes is not checked: its settings must use `${TID}` names too.
 - A failed case keeps its tables, as on the emulator; drop them by hand.
 - A setting missing, or mixed with an emulator setting, fails the case naming the setting.
 - The `spanner_client` and `spanner_admins` pytest fixtures stay emulator-only and fail when
