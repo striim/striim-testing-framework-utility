@@ -223,7 +223,9 @@ trigger or block logins. On `oracle-admin`, observer compilation warnings fail i
 Created observer triggers have persisted intended/confirmed ledger entries with
 their database identity, PDB, user and endpoint. Cleanup and ownership replay use
 exact names and refuse foreign or changed targets; passwords are read from current
-settings, never recorded. A pre-existing unacquired trigger is preserved.
+settings, never recorded. An intended entry also authorizes deletion: absence was
+checked before CREATE, which may commit before its response is lost. A pre-existing
+unacquired trigger is preserved.
 
 The framework removes the case's owned observer triggers before views and
 ordinary tables, including failed cases and resource-retained runs. Existing

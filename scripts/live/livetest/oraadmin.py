@@ -208,8 +208,7 @@ class OraAdmin:
                     and _IDENT.fullmatch(name)}
         objects = owned()
         from livetest.oracle_ownership import authorise_catalog_drop
-        authorise_catalog_drop(self, objects)
-        errors = []
+        objects, errors = authorise_catalog_drop(self, objects)
         if objects:
             conn = self._open()
             try:

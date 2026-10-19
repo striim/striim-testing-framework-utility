@@ -393,9 +393,12 @@ A case without observers does not read their catalogs or fail on such a read.
 
 Created observer triggers are persisted in the ownership ledger: an absence check
 and intended entry precede CREATE, and successful CREATE confirms the entry.
-Cleanup and `python -m livetest.ownership replay <ledger.json>` delete confirmed
-triggers by exact name on the recorded user, endpoint, database identity and PDB.
-An existing trigger without confirmed ownership is preserved and refused with
+Cleanup and `python -m livetest.ownership replay <ledger.json>` delete triggers
+with intended or confirmed ownership by exact name on the recorded user, endpoint,
+database identity and PDB. An intended trigger is eligible because absence was
+checked before CREATE: Oracle may commit DDL and then lose the response. Old
+`unresolved-intent` trigger entries are also replayable with these checks.
+An existing trigger without a matching ownership entry is preserved and refused with
 `oracle-observer-not-owned`; an unreadable or changed target is not deletion
 authority. Passwords come from current settings and are never stored in the ledger.
 

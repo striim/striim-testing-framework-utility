@@ -103,14 +103,26 @@ def replay_admins(doc, env):
 def authorise_catalog_drop(admin, found):
     ledger = getattr(admin, 'observer_ledger', None)
     if ledger is None:
-        return
+        return found, []
+    allowed, errors = set(), []
     for name, kind in found:
         if kind != 'TRIGGER':
+            allowed.add((name, kind))
             continue
         entries = ledger.find('oracle-trigger', name, admin.observer_route,
-                              states=('confirmed', 'delete-failed'))
+                              states=('intended', 'unresolved-intent', 'confirmed', 'delete-failed'))
         if not entries:
-            raise RuntimeError('oracle-observer-not-owned: prefixed trigger has no confirmed ledger entry')
-        identity = target(admin)
-        if not any(entry.get('oracleTarget') == identity for entry in entries):
-            raise RuntimeError('oracle-observer-target-changed: trigger belongs to a different recorded database')
+            errors.append(f'oracle-observer-not-owned: {name} has no ledger entry')
+            continue
+        try:
+            # An intent follows the absence check in before_create. Oracle can
+            # commit CREATE and then lose its response; confirmation is not needed
+            # to remove that exact object on the unchanged recorded target.
+            identity = target(admin)
+            entry = next((e for e in entries if e.get('oracleTarget') == identity), entries[-1])
+            check_target(admin, entry)
+        except Exception as exc:
+            errors.append(f'{name}: {exc}')
+        else:
+            allowed.add((name, kind))
+    return allowed, errors

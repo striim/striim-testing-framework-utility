@@ -214,3 +214,90 @@ def test_admin_force_view_warning_drops_the_invalid_observer():
     with pytest.raises(RuntimeError, match='oracle-ddl-compilation-error'):
         admin.run_sql('CREATE OR REPLACE FORCE VIEW TCASE_REPORT_V AS SELECT * FROM NOT_YET_CREATED;')
     assert sent[-1] == 'DROP VIEW "TCASE_REPORT_V"'
+
+
+def create_trigger_then_disconnect(admin, name):
+    cursor_type = type(admin._open().cursor())
+    class DisconnectCursor(cursor_type):
+        def execute(self, sql):
+            super().execute(sql)
+            if sql.startswith('CREATE'):
+                raise RuntimeError('DPY-4011: connection closed after DDL commit')
+    admin._open = lambda: SimpleNamespace(cursor=DisconnectCursor, close=lambda: None)
+    with pytest.raises(RuntimeError, match='DPY-4011'):
+        admin.run_sql(f'CREATE TRIGGER {name} AFTER LOGON ON DATABASE BEGIN NULL; END;\n/')
+
+
+@pytest.mark.parametrize('cleanup', ['teardown', 'cleanup', 'replay', 'replay-unresolved'])
+def test_trigger_committed_before_execute_raised_is_removed(tmp_path, cleanup):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    name = ident.tid_oracle + 'LOGON'
+    create_trigger_then_disconnect(admin, name)
+    assert (name, 'TRIGGER') in state
+    assert ledger.entries[0]['state'] == 'intended'
+    if cleanup == 'teardown':
+        assert not teardown_oracle_observers(admins, {'TID_ORACLE': ident.tid_oracle})['failed']
+    elif cleanup == 'cleanup':
+        result = ledger.cleanup(client=None, admins=admins, ctx=ctx, tokens={})
+        assert result.status == 'ok' and result.verified
+    else:
+        if cleanup == 'replay-unresolved':
+            ledger._set(ledger.entries[0], 'unresolved-intent')
+        result = ownership.replay(ledger.path, admins=admins, ctx=ctx, client=None, env={})
+        assert result.status == 'ok' and result.verified
+    assert not state
+    assert json.loads(ledger.path.read_text())['entries'][0]['state'] == 'verified-absent'
+
+
+@pytest.mark.parametrize('field,value', [('dbid', '999'), ('pdb', 'OTHER'),
+                                       ('user', 'OTHER'), ('host', 'other.example')])
+@pytest.mark.parametrize('cleanup', ['teardown', 'replay'])
+def test_intended_trigger_on_changed_target_is_preserved(tmp_path, field, value, cleanup):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    name = ident.tid_oracle + 'LOGON'
+    create_trigger_then_disconnect(admin, name)
+    ledger.entries[0]['oracleTarget'][field] = value
+    ledger.persist()
+    if cleanup == 'teardown':
+        assert teardown_oracle_observers(admins, {'TID_ORACLE': ident.tid_oracle})['failed']
+    else:
+        result = ownership.replay(ledger.path, admins=admins, ctx=ctx, client=None, env={})
+        assert not result.verified
+    assert state == {(name, 'TRIGGER')}
+
+
+def test_unowned_trigger_does_not_prevent_view_cleanup(tmp_path):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    trigger, view = ident.tid_oracle + 'FOREIGN', ident.tid_oracle + 'V'
+    state.update({(trigger, 'TRIGGER'), (view, 'VIEW')})
+    cursor_type = type(admin._open().cursor())
+    class ViewCursor(cursor_type):
+        def execute(self, sql):
+            super().execute(sql)
+            if sql == f'DROP VIEW "{view}"':
+                state.discard((view, 'VIEW'))
+    admin._open = lambda: SimpleNamespace(cursor=ViewCursor, close=lambda: None)
+    admin.touched = True
+    outcome = teardown_oracle_observers(admins, {'TID_ORACLE': ident.tid_oracle})
+    assert outcome['failed']
+    assert 'oracle-observer-not-owned' in str(outcome)
+    assert state == {(trigger, 'TRIGGER')}
+
+
+def test_intended_trigger_is_reported_as_replayable_leftover(tmp_path):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    create_trigger_then_disconnect(admin, ident.tid_oracle + 'LOGON')
+    leftovers = ownership.leftover_ledgers(tmp_path, pid_alive=lambda pid: False)
+    assert len(leftovers) == 1 and leftovers[0][0] == ledger.path
+
+
+def test_intended_trigger_reset_checks_recorded_target_and_removes_exact_name(tmp_path):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    name = ident.tid_oracle + 'LOGON'
+    create_trigger_then_disconnect(admin, name)
+    retry_ident = runident.derive(ident.case, {'SLT_RUN_EPOCH': ident.run_id})
+    retry = ownership.Ledger.open(retry_ident, state_dir=tmp_path, env={})
+    state.add(('OTHER_LOGON', 'TRIGGER'))
+    retry.reset(client=None, admins=admins, ctx=ctx, tokens={})
+    assert state == {('OTHER_LOGON', 'TRIGGER')}
+    assert retry.entries[0]['state'] == 'deleted'
