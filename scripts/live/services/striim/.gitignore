@@ -2,3 +2,5 @@
 !.env
 # Written by the Striim deps gate when SLT_STRIIM_DEPS_MANIFEST is set; never committed.
 images/striim/files/slt-installer-identity.json
+# Written by ensure_image: digests of the optional jars the build copies; never committed.
+images/striim/files/slt-optional-jars.json

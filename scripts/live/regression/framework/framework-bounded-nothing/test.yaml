@@ -1,0 +1,46 @@
+name: framework-bounded-nothing
+purpose: A rolled-back source insert produces no file event after a delivery sentinel.
+tql: app.tql
+requires:
+- postgres
+timeout: 120
+tags:
+- framework
+- nothing
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: slot.sql
+  db: postgres-source
+seed:
+- file: rollback.sql
+  db: postgres-source
+  when: post_start
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: file
+  readiness:
+    kind: sentinel
+  completion:
+    kind: sentinel
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      path: ${OWNED_DIR}/${TID}rows.json
+      key: data.id
+      deletion:
+        metadata.OperationName: DELETE
+  stability: 1s
+  deadlines:
+    readiness: 60s
+    completion: 60s
+assert:
+  file:
+  - path: ${OWNED_DIR}/${TID}rows.json
+    nothing:
+      window: 3s
+      where:
+        data.id: 1

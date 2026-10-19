@@ -71,7 +71,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + list(BIGQUERY)
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel", "17-one-node-failover", "18-kafka-nothing"] + list(BIGQUERY)
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL) + list(BIGQUERY))
@@ -265,3 +265,197 @@ def test_bigquery_merge_golden_follows_declared_changes_and_sentinel():
     assert "SET msg='new' WHERE id=1" in changes and "WHERE id=2" in changes and "(3, 'fresh')" in changes
     tql = (SAMPLES / name / "app.tql").read_text()
     assert "Mode: 'MERGE'" in tql and "OptimizedMerge: false" in tql
+def test_spanner_exact_sample():
+    name = "07-spanner-exact"
+    raw = _raw(name)
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.requires == ["spanner"]
+    assert canon.check_manifest(raw)["specs"][0][0] == "data"
+    _header, rows = _golden(name)
+    seed = (SAMPLES / name / "seed.sql").read_text()
+    pairs = re.findall(r"\((\d+), '([^']*)'\)", seed)
+    assert [(r["id"], r["msg"]) for r in rows] == pairs
+    assert {p.relative_to(SAMPLES / name).as_posix() for p in (SAMPLES / name).rglob("*") if p.is_file()} == COMMON | {"ddl.sql", "seed.sql"}
+
+
+def test_strict_json_sample_declares_every_field():
+    name = "08-strict-json"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.exact["specs"][0][2].strict_json
+    header, rows = _golden(name)
+    assert set(header) == set(m.exact["specs"][0][2].columns)
+    seed = (SAMPLES / name / "seed.sql").read_text()
+    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", seed)
+    assert [(r["id"], r["name"]) for r in rows] == pairs
+
+
+def test_raw_file_sample_digest_follows_seed():
+    import hashlib
+    name = "09-raw-file"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    pairs = re.findall(r"\(\s*(\d+)\s*,\s*'([^']*)'\s*\)", (SAMPLES / name / "seed.sql").read_text())
+    data = "".join(f"{i},{name}\r\n" for i, name in pairs).encode()
+    expected = m.assert_["file"][0]["raw"]["files"]["rows.00.csv"]
+    assert expected == {"bytes": len(data), "records": len(pairs), "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+    assert m.lifecycle.completion["lines"] == len(pairs)
+
+
+def test_bounded_nothing_sample_is_gated_by_file_sentinel():
+    name = "10-bounded-nothing"
+    m = load_manifest(SAMPLES / name / "test.yaml")
+    assert m.lifecycle.sink == "file" and m.lifecycle.completion["kind"] == "sentinel"
+    s = m.assert_["file"][0]
+    assert s["path"] == m.lifecycle.sentinel["observe"]["path"]
+    assert s["nothing"] == {"window": "3s", "where": {"data.id": 1}}
+    sql = (SAMPLES / name / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and sql.endswith("ROLLBACK;\n")
+
+
+def test_transaction_sample_keeps_only_committed_input():
+    m = load_manifest(SAMPLES / "11-transaction-seeds/test.yaml")
+    assert [s["session"] for s in m.transaction_steps if s["op"] == "commit"] == ["b", "a"]
+    assert m.transaction_steps[-1]["when"] == "post_recover"
+    assert any(s["op"] == "rollback_to" for s in m.transaction_steps)
+    assert _golden("11-transaction-seeds")[1] == [{"id": "1", "msg": "first"}, {"id": "2", "msg": "second"}]
+
+
+def test_snapshot_sample_declares_atomic_two_table_prefixes():
+    m = load_manifest(SAMPLES / "12-snapshot-observer/test.yaml")
+    s = m.snapshot_spec
+    assert set(s["tables"]) == {"a", "b"}
+    assert all(prefix["a"] == prefix["b"] for prefix in s["prefixes"])
+    assert len(s["prefixes"]) == 3
+    assert (SAMPLES / "12-snapshot-observer/expected/empty.csv").read_text() == "id,msg\n"
+    assert (SAMPLES / "12-snapshot-observer/expected/b.csv").read_text() == "id,msg\n2,second\n"
+
+
+def test_audit_sample_is_keyless_with_hand_derived_rows():
+    root = SAMPLES / "13-append-only-audit"
+    m = load_manifest(root / "test.yaml")
+    assert len(m.audit_specs) == 1
+    assert "PRIMARY KEY" not in (root / "ddl_target.sql").read_text()
+    assert _golden("13-append-only-audit")[1] == [{"id": "1", "msg": "alpha"}, {"id": "2", "msg": "beta"}]
+    assert "ExecuteInsertAsUpdate: false" in (root / "app.tql").read_text()
+
+
+def test_progress_sample_golden_is_derived_from_its_series():
+    root = SAMPLES / "14-progress-recovery"
+    m = load_manifest(root / "test.yaml")
+    assert m.recover["trigger"]["below"] == 2500
+    assert "generate_series(1,5000)" in (root / "changes.sql").read_text()
+    assert _golden("14-progress-recovery")[1] == [
+        {"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
+
+
+def test_progress_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '14-progress-recovery'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('14-progress-recovery')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_fault_evidence_sample_declares_a_nonfinal_window():
+    m = load_manifest(SAMPLES / "15-fault-evidence/test.yaml")
+    assert m.recover["trigger"]["above"] == 100
+    assert _golden("15-fault-evidence")[1] == _golden("14-progress-recovery")[1]
+
+
+def test_fault_evidence_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '15-fault-evidence'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('15-fault-evidence')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_recovery_sentinel_sample_reuses_its_declared_marker():
+    m = load_manifest(SAMPLES / "16-recovery-sentinel/test.yaml")
+    assert m.recover["sentinel"] is True and m.lifecycle.sentinel is not None
+    assert _golden("16-recovery-sentinel")[1] == _golden("14-progress-recovery")[1]
+
+
+@pytest.mark.parametrize('name', ['11-transaction-seeds','12-snapshot-observer'])
+def test_transaction_recovery_samples_prove_b_landed_and_reader_resumed(name):
+    m = load_manifest(SAMPLES / name / 'test.yaml')
+    trigger = m.recover['trigger']
+    assert trigger['kind'] == 'target-count' and (trigger['above'],trigger['below']) == (0,2)
+    assert m.recover['sentinel'] is True
+    assert m.lifecycle.readiness['kind'] == 'sentinel'
+    assert 'RECOVERY 1 SECOND INTERVAL' in (SAMPLES / name / 'app.tql').read_text()
+    assert m.lifecycle.completion['key'] == 'id'
+    assert _golden(name)[1] == [{'id':'1','msg':'first'},{'id':'2','msg':'second'}]
+    if name == '12-snapshot-observer':
+        assert m.lifecycle.sentinel['observe']['table'] not in {t['target'] for t in m.snapshot_spec['tables'].values()}
+
+
+def test_recovery_sentinel_stop_sample_keeps_the_fault_window_open():
+    root = SAMPLES / '16-recovery-sentinel'
+    manifest = load_manifest(root / 'test.yaml')
+    trigger = manifest.recover['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
+    assert manifest.recover['mode'] == 'stop'
+    assert (trigger['above'], trigger['below']) == (100, 2500)
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('16-recovery-sentinel')[1] == [
+        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+
+
+def test_failover_sample_declares_single_flow_owner_and_complete_golden():
+    root = SAMPLES / "17-one-node-failover"
+    m = load_manifest(root / "test.yaml")
+    assert m.topology == "cluster"
+    assert m.recover["mode"] == "kill"
+    assert m.recover["node"] == {"hosting": "${NS}.${TID}flow"}
+    assert m.assert_["placement"] == [{"flow": "${NS}.${TID}flow", "node": "survivor", "timeout": "90s"}]
+    assert "WITH ${TID}flow ON ONE IN ${TID}workers" in (root / "app.tql").read_text()
+    assert m.deployment_groups == [{"name": "${TID}workers", "flow": "${NS}.${TID}flow",
+        "servers": ["${STRIIM_SECONDARY_SERVER}"], "add_after_deploy": ["${STRIIM_PRIMARY_SERVER}"]}]
+    assert _golden("17-one-node-failover")[1] == [{"id": str(n), "msg": f"row-{n}"} for n in range(1,5001)]
+
+
+
+def test_node_fault_sample_keeps_a_window_open_without_changing_the_golden():
+    root = SAMPLES / '17-one-node-failover'
+    trigger = _raw('17-one-node-failover')['recover']['trigger']
+    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
+                      (root / 'ddl_target.sql').read_text(), re.I)
+    assert delay is not None, 'a per-row target delay is needed before the progress fault'
+    assert trigger['below'] < 5000
+    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
+    assert _golden('17-one-node-failover')[1] == [
+        {'id':str(n),'msg':f'row-{n}'} for n in range(1,5001)]
+
+
+def test_kafka_nothing_sample_and_regression_share_the_delivery_contract():
+    name = "18-kafka-nothing"
+    root = SAMPLES / name
+    m = load_manifest(root / "test.yaml")
+    assert m.lifecycle.sink == "kafka" and m.requires == ["postgres", "kafka"]
+    observe = m.lifecycle.sentinel["observe"]
+    assert observe == {"db": "kafka", "topic": "${KAFKA_TGT_TOPIC}", "payload": "json",
+                       "key": "value.data.id", "deletion": {"value.metadata.OperationName": "DELETE"}}
+    check = m.assert_["data"][0]
+    assert check["target"] == observe["topic"] and check["db"] == "kafka"
+    assert check["nothing"] == {"window": "3s", "where": {"value.data.id": 1}}
+    sql = (root / "rollback.sql").read_text()
+    assert sql.startswith("BEGIN;") and "VALUES (1, 'rolled back')" in sql and sql.endswith("ROLLBACK;\n")
+    twin = SAMPLES.parents[1] / "scripts/live/regression/framework/framework-kafka-nothing"
+    for filename in ["app.tql", "ddl_source.sql", "slot.sql", "rollback.sql", "sentinel_insert.sql", "sentinel_delete.sql"]:
+        assert (root / filename).read_bytes() == (twin / filename).read_bytes()
+    tql = (root / "app.tql").read_text()
+    assert "${KAFKA_TGT_TOPIC}" in tql and "Global.KafkaWriter" in tql and "Global.JSONFormatter" in tql

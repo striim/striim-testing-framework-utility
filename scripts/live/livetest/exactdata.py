@@ -21,6 +21,7 @@ a v1 record (types data/diff/file, both hashes in the detail) and a comparison r
 """
 from __future__ import annotations
 
+import base64
 import json
 import posixpath
 import subprocess
@@ -99,6 +100,81 @@ def _run(argv, timeout: float):
     return subprocess.run(argv, capture_output=True, timeout=timeout)
 
 
+def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining, *, snapshot=None):
+    """Stream a limited, typed Spanner snapshot; never use the legacy text reader."""
+    from livetest.spanneradmin import _check_table, _IDENT
+    table = _check_table(table)
+    if any(not _IDENT.fullmatch(c) for c in (order_by or [])):
+        raise canon.CanonError("invalid-declaration", "order_by needs plain column names")
+    sql = f"SELECT * FROM {table}"
+    if order_by:
+        sql += " ORDER BY " + ", ".join(order_by)
+    sql += f" LIMIT {max_rows + 1}"
+    rows, size = [], 0
+    from contextlib import nullcontext
+    with (nullcontext(snapshot) if snapshot is not None else admin._db().snapshot()) as snap:
+        result = snap.execute_sql(sql, timeout=max(0.05, remaining))
+        names = None
+        for values in result:
+            if names is None:
+                names = [f.name for f in result.fields]
+                if len(set(names)) != len(names):
+                    raise canon.CanonError("duplicate-column", table)
+            row = {}
+            for field, name, value in zip(result.fields, names, values):
+                from google.cloud.spanner_v1.types import TypeCode
+                if value is not None and getattr(getattr(field, "type_", None), "code", None) == TypeCode.BYTES:
+                    try:
+                        value = base64.b64decode(value, validate=True)
+                    except (ValueError, TypeError) as e:
+                        raise canon.CanonError("invalid-value", f"Spanner BYTES {name}: invalid base64") from e
+                # Spanner JSON wrappers may wrap scalars or arrays, too.
+                serialize = getattr(value, "serialize", None)
+                if callable(serialize):
+                    text = serialize()
+                    row[name] = None if text is None else canon.JsonText(text)
+                else:
+                    row[name] = value
+                size += len(value) if isinstance(value, bytes) else len(str(value).encode("utf-8"))
+            rows.append(row)
+            if len(rows) > max_rows or size > TRANSFER_FACTOR * max_bytes:
+                raise canon.CanonError("canonical-limit-exceeded", table)
+    return rows
+
+
+def project_records(records, paths):
+    """Project nested Kafka fields without inventing NULL for an absent field."""
+    out = []
+    for record in records:
+        row = {}
+        for path in paths:
+            value = record
+            for segment in path.split("."):
+                if not isinstance(value, dict) or segment not in value:
+                    break
+                value = value[segment]
+            else:
+                row[path] = value
+        out.append(row)
+    return out
+
+
+def _route_ref(tokens, table, route):
+    if route.startswith("postgres-"):
+        rendered, sql, name = _pg_ref(tokens, table)
+        return rendered, sql, name, "pg-table"
+    from livetest.spanneradmin import _check_table
+    rendered = render(table, tokens)
+    return rendered, _check_table(rendered), rendered, "spanner-table"
+
+
+def _read_route(admin, route, table, decl, max_rows, max_bytes, remaining):
+    if route == "bigquery-target":
+        return _read_db(admin, route, table, decl.order_by, max_rows, max_bytes, remaining)
+    reader = read_spanner if route.startswith("spanner-") else read_pg
+    return reader(admin, table, decl.order_by, max_rows, max_bytes, remaining)
+
+
 def head_file(node: str, path: str, max_bytes: int, remaining: float, run=None) -> bytes:
     argv = ["docker", "exec", node, "head", "-c", str(max_bytes + 1), "--", path]
     try:
@@ -114,8 +190,14 @@ def head_file(node: str, path: str, max_bytes: int, remaining: float, run=None) 
     return out if isinstance(out, bytes) else str(out).encode("utf-8")
 
 
-def parse_events(text: str, where: str) -> list[dict]:
+def parse_events(text: str, where: str, *, strict=False) -> list[dict]:
     """``assertions.file.parse_json_events`` semantics with JSON numbers as Decimal (no float enters)."""
+    if strict:
+        from livetest import strictjson
+        try:
+            return strictjson.events(text)
+        except ValueError as e:
+            raise canon.CanonError("invalid-json", f"{where}: {e}") from None
     dec = json.JSONDecoder(parse_float=Decimal)
     out, i, n = [], 0, len(text)
     while i < n:
@@ -291,9 +373,9 @@ def _pg_ref(tokens, table: str):
 
 def _db_ref(admins, route, tokens, raw):
     if route != "bigquery-target":
-        return _pg_ref(tokens, raw)
+        return _route_ref(tokens, raw, route)
     name = _admin(admins, route).ref(render(raw, tokens))
-    return name, name, name
+    return name, name, name, "bigquery-table"
 
 
 def _read_db(admin, route, table, order_by, max_rows, max_bytes, remaining):
@@ -339,19 +421,31 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
     max_rows, max_bytes = canon.limits(m.exact["block"])
     prepared = []
     for index, spec, decl in exact_specs:
-        route = spec.get("target_db", spec.get("db", "postgres-source"))
+        route = spec.get("target_db", spec.get("db", "kafka" if spec.get("project") == "kafka_record"
+                                             else "postgres-source"))
         target = render(str(spec["target"]), tokens)
 
         def build(kw, spec=spec, decl=decl, route=route):
-            golden = _golden(kw, spec, m, inputs, tokens, db_route=True)
-            _rendered, table_sql, name = _db_ref(admins, route, tokens, str(spec["target"]))
+            kafka = spec.get("project") == "kafka_record"
+            golden = _golden(kw, spec, m, inputs, tokens, db_route=not kafka)
+            if kafka:
+                _rendered = table_sql = name = render(str(spec["target"]), tokens)
+                resource_kind = "topic"
+            else:
+                _rendered, table_sql, name, resource_kind = _db_ref(admins, route, tokens, str(spec["target"]))
             admin = _admin(admins, route)
 
             def evaluate(remaining):
-                if lifecycle and not owned(_table_kind(route), route, name):
+                if lifecycle and not owned(resource_kind, route, name):
                     raise ExactReadError("exact-target-not-owned", f"{route}:{name} is not a confirmed table of this "
                                                                    f"attempt; nothing was read")
-                actual = _read_db(admin, route, table_sql, decl.order_by, max_rows, max_bytes, remaining)
+                if kafka:
+                    options = {"strict_json": True, "payload": spec.get("payload", "avro")} if decl.strict_json else {}
+                    records = admin.select_records(table_sql, poll_budget=remaining, strict=True,
+                                                   max_rows=max_rows, max_bytes=max_bytes, **options)
+                    actual = project_records(records, spec["keys"])
+                else:
+                    actual = _read_route(admin, route, table_sql, decl, max_rows, max_bytes, remaining)
                 comp = canon.compare(golden, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens))
                 if route == "bigquery-target":
@@ -374,25 +468,26 @@ def assert_exact_diff(admins: dict, exact_specs: list, m, *, tokens: dict, owned
         target = render(str(spec["target"]), tokens)
 
         def build(kw, spec=spec, decl=decl, src_route=src_route, tgt_route=tgt_route):
-            src_render, src_sql, src_name = _db_ref(admins, src_route, tokens, str(spec["source"]))
-            _t, tgt_sql, tgt_name = _db_ref(admins, tgt_route, tokens, str(spec["target"]))
+            src_render, src_sql, src_name, src_kind = _db_ref(admins, src_route, tokens, str(spec["source"]))
+            _t, tgt_sql, tgt_name, tgt_kind = _db_ref(admins, tgt_route, tokens, str(spec["target"]))
             kw["source"], kw["spec_source"] = f"{src_route}:{src_render}", src_render
             src_admin, tgt_admin = _admin(admins, src_route), _admin(admins, tgt_route)
             clock_ = clock or _lifecycle.Clock
 
             def evaluate(remaining):
                 if lifecycle:
-                    for route, name, what in ((src_route, src_name, "source"), (tgt_route, tgt_name, "target")):
-                        if not owned(_table_kind(route), route, name):
+                    for route, name, kind, what in ((src_route, src_name, src_kind, "source"),
+                                                    (tgt_route, tgt_name, tgt_kind, "target")):
+                        if not owned(kind, route, name):
                             raise ExactReadError("exact-target-not-owned",
                                                  f"diff {what} {route}:{name} is not a confirmed table of this "
                                                  f"attempt; nothing was read")
                 started = clock_.monotonic()
-                source = _read_db(src_admin, src_route, src_sql, decl.order_by, max_rows, max_bytes, remaining)
+                source = _read_route(src_admin, src_route, src_sql, decl, max_rows, max_bytes, remaining)
                 source_operation = dict(src_admin.last_operation) if src_route == "bigquery-target" else {}
                 if not source:
                     raise ExactReadError("exact-source-empty", f"source {src_render} is empty; nothing to propagate")
-                actual = _read_db(tgt_admin, tgt_route, tgt_sql, decl.order_by, max_rows, max_bytes,
+                actual = _read_route(tgt_admin, tgt_route, tgt_sql, decl, max_rows, max_bytes,
                                  max(0.05, remaining - (clock_.monotonic() - started)))
                 comp = canon.compare(source, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens), expected_observed=True)
@@ -458,7 +553,7 @@ def assert_exact_file(exact_specs: list, m, *, tokens: dict, owned, lifecycle: b
                         text = data.decode("utf-8")
                     except UnicodeDecodeError as e:
                         raise canon.CanonError(f"invalid-value:actual:{f}", str(e)) from None
-                    events += parse_events(text, f)
+                    events += parse_events(text, f, strict=decl.strict_json)
                 rows = [_file._project(e, "data", spec.get("metadata") or [], None) for e in events]
                 return canon.compare(golden, rows, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens))

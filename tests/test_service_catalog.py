@@ -122,7 +122,9 @@ def test_the_catalog_ships_only_the_public_services():
     # Teradata's VM image and disks are private too. Both tiers keep a
     # connection-only teradata definition (service.yaml, no compose) for your own instance.
     assert not [k for k in keys if k.split("/")[1] == "teradata"], keys
-    assert len(keys) == 18, sorted(keys)
+    fault_overlay = "live/striim/compose.node-fault.yaml"
+    assert fault_overlay in keys
+    assert len(keys - {fault_overlay}) == 18, sorted(keys)
 
 
 @pytest.mark.parametrize("path", COMPOSE_FILES, ids=_key)

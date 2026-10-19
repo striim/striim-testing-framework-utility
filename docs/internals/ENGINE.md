@@ -236,3 +236,47 @@ waits 60 s and then fails naming the open transactions.
 - [design/c8-exact-data.md](design/c8-exact-data.md): exact comparison.
 - [PERF_SPEC.md](PERF_SPEC.md): the integration tier's performance extension.
 - [RELEASING.md](RELEASING.md): cutting a tagged release.
+
+### Check typed, counted Spanner rows
+
+The live engine modules `exactdata`, `canon` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [07-spanner-exact fixture](../../samples/live/07-spanner-exact/README.md).
+
+### Keep JSON token types in payload comparisons
+
+The live engine modules `strictjson` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [08-strict-json fixture](../../samples/live/08-strict-json/README.md).
+
+### Check file bytes, hashes and the exact rolled inventory
+
+The live engine modules `rawfile` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [09-raw-file fixture](../../samples/live/09-raw-file/README.md).
+
+### Prove no matching data arrived after a sentinel
+
+The live engine modules `sinkprobe`, `nothing` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [10-bounded-nothing fixture](../../samples/live/10-bounded-nothing/README.md).
+
+### Control overlapping seed transactions and recovery commits
+
+The live engine modules `transactions`, `diagnostics` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [11-transaction-seeds fixture](../../samples/live/11-transaction-seeds/README.md).
+
+### Check consistent target snapshots against committed prefixes
+
+The live engine modules `snapshot_observer` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [12-snapshot-observer fixture](../../samples/live/12-snapshot-observer/README.md).
+
+### Reject replay duplicates with an append-only audit
+
+The live engine modules `audit` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [13-append-only-audit fixture](../../samples/live/13-append-only-audit/README.md).
+
+### Interrupt inside an observed progress window
+
+The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [14-progress-recovery fixture](../../samples/live/14-progress-recovery/README.md).
+
+### Prove the fault was issued while its precondition held
+
+The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [15-fault-evidence fixture](../../samples/live/15-fault-evidence/README.md).
+
+### Prove the route transports a fresh marker after recovery
+
+The live engine modules `recovery_sentinel` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [16-recovery-sentinel fixture](../../samples/live/16-recovery-sentinel/README.md).
+
+### Interrupt one named node and check flow placement
+
+The live engine modules `node_fault` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [17-one-node-failover fixture](../../samples/live/17-one-node-failover/README.md).

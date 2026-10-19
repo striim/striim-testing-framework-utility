@@ -1,0 +1,25 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE ${TID}source USING Global.PostgreSQLReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src',
+  ReplicationSlotName: '${PG_SLOT}'
+) OUTPUT TO ${TID}stream;
+
+CREATE OR REPLACE TARGET ${TID}writer USING Global.FileWriter (
+  FileName: '${OWNED_DIR}/${TID}rows.json',
+  FlushPolicy: 'EventCount:1,Interval:1s'
+) FORMAT USING Global.JSONFormatter (
+  EventsAsArrayOfJsonObjects: 'false',
+  JsonMemberDelimiter: ' '
+) INPUT FROM ${TID}stream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

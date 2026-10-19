@@ -35,13 +35,13 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 MAX_MAX_BYTES = 512 * 1024 * 1024
 SAMPLE_ROWS = 20
 SAMPLE_BYTES = 64 * 1024
-DB_ROUTES = ("postgres-source", "postgres-target", "bigquery-target")
+DB_ROUTES = ("postgres-source", "postgres-target", "spanner-google", "spanner-postgres", "bigquery-target")
 BINDING_TOKENS = ("TID", "TID_UPPER", "TID_ORACLE", "NS", "APP", "APP_BARE", "PG_SLOT", "OWNED_DIR",
                   "RUN_ID", "WORKER", "ATTEMPT")          # plus every SENTINEL_* token
-_SPEC_KEYS = {"columns", "ignore", "order", "order_by"}
+_SPEC_KEYS = {"columns", "ignore", "order", "order_by", "strict_json"}
 _BLOCK_KEYS = {"version", "max_rows", "max_bytes"}
 _INCOMPATIBLE = ("rows", "min_rows", "ordered", "project")
-_TYPE = re.compile(r"^(integer|boolean|timestamptz|timestamp|date|json|binary:hex|binary:base64|decimal:(0|[1-9][0-9]?))$")
+_TYPE = re.compile(r"^(text|number|integer|boolean|timestamptz|timestamp|date|json|binary:hex|binary:base64|decimal:(0|[1-9][0-9]?))$")
 _INT = re.compile(r"^-?[0-9]+$")
 _DEC = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$")
 _TS = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?(?P<tz>Z|[+-][0-9]{2}:[0-9]{2})?$")
@@ -78,17 +78,19 @@ def canonical_json(value) -> bytes:
 class Declaration:
     """The resolved normalization of one comparison (C8.2). Copied verbatim into evidence."""
 
-    def __init__(self, columns=None, ignore=None, keys=None, order="any", order_by=None, profile=PROFILE):
+    def __init__(self, columns=None, ignore=None, keys=None, order="any", order_by=None, profile=PROFILE, strict_json=False):
         self.columns = dict(columns or {})
         self.ignore = list(ignore or [])
         self.keys = list(keys) if keys is not None else None
+        self.strict_json = strict_json
         self.order = order
         self.order_by = list(order_by) if order_by is not None else None
         self.profile = profile
 
     def to_dict(self) -> dict:
         return {"columns": dict(self.columns), "ignore": list(self.ignore), "keys": self.keys,
-                "order": self.order, "order_by": self.order_by, "profile": self.profile}
+                "order": self.order, "order_by": self.order_by, "profile": self.profile,
+                **({"strict_json": True} if self.strict_json else {})}
 
     @property
     def sha256(self) -> str:
@@ -116,6 +118,9 @@ def declaration(exact, keys=None, *, db_route: bool) -> Declaration:
     unknown = set(exact) - _SPEC_KEYS
     if unknown:
         raise CanonError("invalid-declaration", f"unknown exact keys {sorted(unknown)}")
+    strict_json = exact.get("strict_json", False)
+    if not isinstance(strict_json, bool) or (strict_json and db_route):
+        raise CanonError("invalid-declaration", "exact.strict_json is boolean and requires a file or Kafka record route")
     columns = exact.get("columns", {})
     if not isinstance(columns, dict):
         raise CanonError("invalid-declaration", "exact.columns must be a mapping of column to type")
@@ -141,7 +146,7 @@ def declaration(exact, keys=None, *, db_route: bool) -> Declaration:
         raise CanonError("invalid-declaration", "a column cannot be both typed and ignored")
     if keys is not None:
         keys = _str_list(keys, "keys")
-    return Declaration(columns=columns, ignore=ignore, keys=keys, order=order, order_by=order_by)
+    return Declaration(columns=columns, ignore=ignore, keys=keys, order=order, order_by=order_by, strict_json=strict_json)
 
 
 # ---------------------------------------------------------------- C8.1 manifest document checks
@@ -194,7 +199,9 @@ def check_manifest(raw: dict, case_dir=None) -> dict:
         if kind in ("data", "file"):
             if "match" not in spec:
                 raise CanonError("invalid-exact-spec", f"{where}: exact requires match")
-            bad = [k for k in _INCOMPATIBLE if k in spec]
+            bad = [k for k in _INCOMPATIBLE if k in spec and not
+                   (k == "project" and kind == "data" and spec[k] == "kafka_record"
+                    and spec.get("target_db", spec.get("db", "kafka")) == "kafka")]
             if bad:
                 raise CanonError("invalid-exact-spec", f"{where}: exact cannot be combined with {bad}")
             if case_dir is not None:
@@ -203,18 +210,30 @@ def check_manifest(raw: dict, case_dir=None) -> dict:
                 if target != base and base not in target.parents:
                     raise CanonError("invalid-exact-spec", f"{where}: match {spec['match']!r} escapes the case dir")
         if kind == "data":
-            route = spec.get("target_db", spec.get("db", "postgres-source"))
-            if route not in DB_ROUTES:
-                raise CanonError("exact-route-unsupported", f"{where}: route {route!r} (supported exact database routes)")
+            kafka = spec.get("project") == "kafka_record"
+            route = spec.get("target_db", spec.get("db", "kafka" if kafka else "postgres-source"))
+            if "payload" in spec and (not kafka or spec["payload"] not in ("avro", "json")
+                                       or not isinstance(spec.get("exact"), dict)
+                                       or spec["exact"].get("strict_json") is not True):
+                raise CanonError("invalid-exact-spec", f"{where}: payload needs Kafka records with strict_json and avro or json")
+            if kafka:
+                from livetest.assertions.data import parse_data_specs, DataSpecError
+                try:
+                    parse_data_specs([spec])
+                except DataSpecError as e:
+                    raise CanonError("invalid-exact-spec", f"{where}: {e}") from None
+            if route not in DB_ROUTES and not (route == "kafka" and spec.get("project") == "kafka_record"):
+                raise CanonError("exact-route-unsupported", f"{where}: route {route!r}")
         elif kind == "diff":
             for end in ("source", "target"):
                 route = spec.get(f"{end}_db", spec.get("db", "postgres-source"))
                 if route not in DB_ROUTES:
-                    raise CanonError("exact-route-unsupported", f"{where}: {end} route {route!r} (supported exact database routes)")
+                    raise CanonError("exact-route-unsupported", f"{where}: {end} route {route!r}")
         elif spec.get("native"):
             raise CanonError("exact-route-unsupported", f"{where}: native-mode file reads are not exact routes")
         try:
-            decl = declaration(spec["exact"], spec.get("keys"), db_route=kind != "file")
+            decl = declaration(spec["exact"], spec.get("keys"),
+                               db_route=kind != "file" and spec.get("project") != "kafka_record")
         except CanonError as e:
             raise CanonError(e.code, f"{where}: {e}") from None
         resolved.append((kind, i, decl))
@@ -293,8 +312,25 @@ def _typed(typ: str, value, side: str, col: str, observed: bool = False) -> str:
         raise _invalid(side, col, f"a json value needs exact.columns.{col}: json, not {typ}")
     if expected and not isinstance(value, str):
         raise _invalid(side, col, "golden cells are text")
-    if expected and value == "":
+    if expected and value == "" and typ != "text":
         raise _invalid(side, col, f"empty cell in a {typ} column (write {NULL_MARKER} for NULL)")
+    if typ == "text":
+        if not isinstance(value, str):
+            raise _invalid(side, col, "text needs a string token")
+        return value
+    if typ == "number":
+        if expected:
+            if not _DEC.fullmatch(value):
+                raise _invalid(side, col, "number needs a JSON number")
+            value = decimal.Decimal(value)
+        if isinstance(value, bool) or not isinstance(value, (int, float, decimal.Decimal)):
+            raise _invalid(side, col, "number needs a numeric token")
+        value = decimal.Decimal(str(value))
+        if not value.is_finite():
+            raise _invalid(side, col, "non-finite number")
+        with decimal.localcontext() as ctx:
+            ctx.prec = max(28, len(value.as_tuple().digits))
+            return format(value.normalize(), "f")
     if typ == "integer":
         if expected:
             if not _INT.match(value):
@@ -405,10 +441,16 @@ def canon_row(row: dict, decl: Declaration, side: str, observed: bool = False) -
             raise _invalid(side, str(name), "column names are text")
         if name in decl.ignore:
             continue
+        if decl.strict_json and name not in decl.columns:
+            raise CanonError("undeclared-column", f"{side}:{name}: strict_json requires exact.columns.{name}")
         if value is None:
             cells.append([name, None])
         elif name in decl.columns:
-            cells.append([name, decl.columns[name], _typed(decl.columns[name], value, side, name, observed)])
+            if decl.strict_json and decl.columns[name] == "json" and (side == "actual" or observed):
+                text = _json_text(value, side, name)
+            else:
+                text = _typed(decl.columns[name], value, side, name, observed)
+            cells.append([name, decl.columns[name], text])
         else:
             cells.append([name, "text", _undeclared(value, side, name, observed)])
     cells.sort(key=lambda c: c[0])

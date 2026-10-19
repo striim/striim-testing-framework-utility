@@ -118,8 +118,10 @@ This is a controlled initial load followed by CDC, not a handoff under concurren
 The baseline reader can finish while the CDC reader keeps the application running; the
 readiness and completion checks exercise both phases in this single application.
 
-Exact comparison and lifecycle witnesses support PostgreSQL routes only. The MySQL and Kafka
-cases therefore poll documented assertions until `timeout: 180`, with a documented ten-second
+The MySQL case uses legacy comparisons; typed exact does not support MySQL. The Kafka
+case keeps its existing string projection, although typed `project: kafka_record` is supported
+([route matrix](../../docs/WHAT-IS-SUPPORTED.md#check-routes)). Both cases poll
+their documented assertions until `timeout: 180`, with a documented ten-second
 `post_start` delay for reader startup. The event log is append-only; this case does not claim
 update/delete envelopes or global Kafka ordering. The terminal record prevents an incomplete
 prefix from matching. The string projection keeps the comparison portable and easy to inspect;

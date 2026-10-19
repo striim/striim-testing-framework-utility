@@ -9,7 +9,7 @@ and `DatabaseWriter` applies every insert, update and delete to a copy.
 - `changes.sql` inserts orders 1001 to 1003, ships 1003 and deletes 1002, so the copy must end with
   exactly two rows. `expected/rows.csv` is written by hand from it.
 - `rows: 2` pins the count and `match:` compares the values as text. The check is repeated until
-  it passes or `timeout` runs out. `exact:` and `lifecycle:` read Postgres only.
+  it passes or `timeout` runs out. `exact:` and `lifecycle:` do not support the MySQL database route.
 
 The framework's MySQL container has binary logging in `ROW` format and a `qasource` user with
 replication privileges. Your own MySQL needs the same ([docs/SERVICES.md](../../../docs/SERVICES.md)).
