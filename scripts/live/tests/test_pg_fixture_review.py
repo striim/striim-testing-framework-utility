@@ -3,6 +3,8 @@ import logging
 import threading
 import time
 
+import pytest
+
 from livetest import pgfixture
 from livetest.pgclient import PgAdmin
 DSN = {"host": "db", "port": 5432, "dbname": "tests",
@@ -171,8 +173,6 @@ def test_concurrent_action_caller_keeps_dml_unbounded(tmp_path):
     assert len(options) == 1
     assert 'options' not in options[0]  # no fixture statement/lock deadlines or observer
 
-
-import pytest
 
 @pytest.mark.parametrize('value', ['0', '-1', 'true', '.inf', '2147484', '"10min"'])
 def test_invalid_manifest_fixture_budget_is_rejected(tmp_path, value):

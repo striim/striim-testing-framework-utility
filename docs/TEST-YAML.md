@@ -29,7 +29,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `op` | mapping \| list | no | none | build + upload OpenProcessor jar(s), registered via `LOAD OPEN PROCESSOR` — single mapping or a list, see below |
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
 | `server_files` | list | no | `[]` | place test-dir files onto the Striim server before deploy or after RUNNING, or upload and register a prebuilt jar (`load:`, from the test dir or outside it) — see below |
-| `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing; also the Postgres seed SQL statement deadline |
+| `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing |
 | `fixture_timeout` | number | no | DDL: `60`, seed: `600` | Postgres fixture statement deadline in seconds, independent of assertion `timeout`; positive finite value up to `2147483.647`, applies to both DDL/slot setup and seed SQL including action seeds. Concurrent action DML retains its previous unbounded behavior. |
 | `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, regression]`) for `-k`/reporting; not matched against anything in the manifest itself |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |

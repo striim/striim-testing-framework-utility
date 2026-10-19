@@ -3085,7 +3085,6 @@ class LiveItem(pytest.Item):
                                 if not _op_admin_entry:
                                     _report(m.name, f"action: concurrent op db {_op_db} not found")
                                     return
-                                _op_admin = _op_admin_entry["admin"]
                                 try:
                                     while not _action_stop_flag.is_set():
                                         try:
