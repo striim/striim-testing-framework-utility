@@ -184,6 +184,7 @@ SERVICE_EXTRAS = {
 }
 # Set by the framework for its own processes: (names, what they carry).
 FRAMEWORK_SET = (
+    (("SLT_BIGQUERY_GOMEMLIMIT",), "BigQuery Go memory budget, derived as 5/8 of SLT_BIGQUERY_MEM_LIMIT before Compose starts"),
     (("SLT_FRAMEWORK_MODE",), "how `striim-test` started the engine"),
     (("SLT_RUN_EPOCH", "SLT_RUN_IDENTITY"), "the run's id and its `identity.json`, shared by every engine "
                                             "process of one run"),
@@ -198,7 +199,7 @@ FRAMEWORK_SET = (
 )
 RETIRED = {"SLT_MODE": "SLT_FRAMEWORK_MODE", "SLT_FRAMEWORK": "SLT_FRAMEWORK_HOME"}
 # Names the code holds that are not settings: tokens it fills in itself.
-NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID",
+NOT_SETTINGS = {"SLT_BIGQUERY_GOMEMLIMIT", "STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID",
                 "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",

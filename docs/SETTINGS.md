@@ -483,6 +483,7 @@ The framework sets these for its own processes. Do not set them.
 
 | Names | What they carry |
 |---|---|
+| `SLT_BIGQUERY_GOMEMLIMIT` | BigQuery Go memory budget, derived as 5/8 of SLT_BIGQUERY_MEM_LIMIT before Compose starts |
 | `SLT_FRAMEWORK_MODE` | how `striim-test` started the engine |
 | `SLT_RUN_EPOCH`, `SLT_RUN_IDENTITY` | the run's id and its `identity.json`, shared by every engine process of one run |
 | `SLT_INVOCATION_ID` | the id of one engine process, recorded in its evidence |
