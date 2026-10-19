@@ -29,6 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from livetest import canon
+from livetest.bigqueryadmin import BigQueryError
 from livetest import lifecycle as _lifecycle
 from livetest import ownership as _ownership
 from livetest.assertions import AssertionFailed
@@ -168,6 +169,8 @@ def _route_ref(tokens, table, route):
 
 
 def _read_route(admin, route, table, decl, max_rows, max_bytes, remaining):
+    if route == "bigquery-target":
+        return _read_db(admin, route, table, decl.order_by, max_rows, max_bytes, remaining)
     reader = read_spanner if route.startswith("spanner-") else read_pg
     return reader(admin, table, decl.order_by, max_rows, max_bytes, remaining)
 
@@ -282,6 +285,7 @@ class _Prepared:
         self.result = None
 
     def done(self, comp: dict):
+        read_detail = comp.pop("_read_detail", None)
         entry = dict(comp)
         entry.update(index=self.index, type=self.kind, target=self.target, route=self.route)
         entry["expected"] = {**comp["expected"], "source": self.source, "templateSha256": self.template_sha}
@@ -292,6 +296,8 @@ class _Prepared:
         else:
             detail = (f"{canon.PROFILE} {comp['order']}: {self.target} expected {e['sha256']} ({e['rowCount']} rows) "
                       f"!= actual {a['sha256']} ({a['rowCount']} rows); samples {_sample_text(comp['samples'])}")
+        if read_detail:
+            detail += "; " + read_detail
         self.result = (comp["equal"], detail, entry,
                        {"kind": "count", "count": e["rowCount"]}, {"kind": "count", "count": a["rowCount"]})
 
@@ -365,6 +371,26 @@ def _pg_ref(tokens, table: str):
     return rendered, _lifecycle._table(rendered), f"{match.group(1)}.{match.group(2)}".lower()
 
 
+def _db_ref(admins, route, tokens, raw):
+    if route != "bigquery-target":
+        return _route_ref(tokens, raw, route)
+    name = _admin(admins, route).ref(render(raw, tokens))
+    return name, name, name, "bigquery-table"
+
+
+def _read_db(admin, route, table, order_by, max_rows, max_bytes, remaining):
+    if route != "bigquery-target":
+        return read_pg(admin, table, order_by, max_rows, max_bytes, remaining)
+    try:
+        return admin.select_rows(table, order_by, max_rows, max_bytes, remaining)
+    except BigQueryError as e:
+        raise ExactReadError(e.code, str(e)) from None
+
+
+def _table_kind(route):
+    return "bigquery-table" if route == "bigquery-target" else "pg-table"
+
+
 def _admin(admins: dict, route: str):
     entry = admins.get(route)
     if entry is None:
@@ -406,7 +432,7 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                 _rendered = table_sql = name = render(str(spec["target"]), tokens)
                 resource_kind = "topic"
             else:
-                _rendered, table_sql, name, resource_kind = _route_ref(tokens, str(spec["target"]), route)
+                _rendered, table_sql, name, resource_kind = _db_ref(admins, route, tokens, str(spec["target"]))
             admin = _admin(admins, route)
 
             def evaluate(remaining):
@@ -420,8 +446,12 @@ def assert_exact_data(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                     actual = project_records(records, spec["keys"])
                 else:
                     actual = _read_route(admin, route, table_sql, decl, max_rows, max_bytes, remaining)
-                return canon.compare(golden, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
+                comp = canon.compare(golden, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens))
+                if route == "bigquery-target":
+                    comp["_read_detail"] = f"BigQuery job {admin.last_operation['jobId']} at {admin.endpoint}; " \
+                                           f"job deletion {admin.last_operation.get('jobDelete', 'unobserved')}"
+                return comp
             return evaluate
         prepared.append(_prepare("data", index, spec, decl, target, route, bool(lifecycle), build))
     return _drive("data", prepared, m, lifecycle=lifecycle, collector=collector, status_probe=status_probe,
@@ -438,8 +468,8 @@ def assert_exact_diff(admins: dict, exact_specs: list, m, *, tokens: dict, owned
         target = render(str(spec["target"]), tokens)
 
         def build(kw, spec=spec, decl=decl, src_route=src_route, tgt_route=tgt_route):
-            src_render, src_sql, src_name, src_kind = _route_ref(tokens, str(spec["source"]), src_route)
-            _t, tgt_sql, tgt_name, tgt_kind = _route_ref(tokens, str(spec["target"]), tgt_route)
+            src_render, src_sql, src_name, src_kind = _db_ref(admins, src_route, tokens, str(spec["source"]))
+            _t, tgt_sql, tgt_name, tgt_kind = _db_ref(admins, tgt_route, tokens, str(spec["target"]))
             kw["source"], kw["spec_source"] = f"{src_route}:{src_render}", src_render
             src_admin, tgt_admin = _admin(admins, src_route), _admin(admins, tgt_route)
             clock_ = clock or _lifecycle.Clock
@@ -454,12 +484,22 @@ def assert_exact_diff(admins: dict, exact_specs: list, m, *, tokens: dict, owned
                                                  f"attempt; nothing was read")
                 started = clock_.monotonic()
                 source = _read_route(src_admin, src_route, src_sql, decl, max_rows, max_bytes, remaining)
+                source_operation = dict(src_admin.last_operation) if src_route == "bigquery-target" else {}
                 if not source:
                     raise ExactReadError("exact-source-empty", f"source {src_render} is empty; nothing to propagate")
                 actual = _read_route(tgt_admin, tgt_route, tgt_sql, decl, max_rows, max_bytes,
                                  max(0.05, remaining - (clock_.monotonic() - started)))
-                return canon.compare(source, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
+                comp = canon.compare(source, actual, decl, max_rows=max_rows, max_bytes=max_bytes,
                                      bindings=_bindings(tokens), expected_observed=True)
+                jobs = [f"{side} {route} job {operation['jobId']} at {admin.endpoint}"
+                        for side, route, admin, operation in (
+                            ("source", src_route, src_admin, source_operation),
+                            ("target", tgt_route, tgt_admin,
+                             tgt_admin.last_operation if tgt_route == "bigquery-target" else {}))
+                        if route == "bigquery-target"]
+                if jobs:
+                    comp["_read_detail"] = "; ".join(jobs)
+                return comp
             return evaluate
         prepared.append(_prepare("diff", index, spec, decl, target, tgt_route, bool(lifecycle), build))
     return _drive("diff", prepared, m, lifecycle=lifecycle, collector=collector, status_probe=status_probe,

@@ -1,0 +1,19 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+CREATE OR REPLACE APPLICATION ${APP};
+CREATE OR REPLACE SOURCE ${TID}src USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}', Username: '${PG_SOURCE_USER}', Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
+) OUTPUT TO ${TID}rows;
+CREATE OR REPLACE TARGET ${TID}tgt USING Global.BigQueryWriter (
+  ProjectId: '${BIGQUERY_PROJECT}', BillingProjectId: '${BIGQUERY_PROJECT}',
+  ServiceAccountKey: '${BIGQUERY_SERVICE_ACCOUNT_KEY}',
+  PrivateServiceConnectEndpoint: '${BIGQUERY_ENDPOINT}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${BIGQUERY_DATASET}.${TID}tgt',
+  Mode: 'APPENDONLY', StreamingUpload: true,
+  StreamingConfiguration: 'UseLegacyStreamingAPI=true',
+  BatchPolicy: 'EventCount:2,Interval:1'
+) INPUT FROM ${TID}rows;
+END APPLICATION ${APP};
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

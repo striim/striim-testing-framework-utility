@@ -1,0 +1,1 @@
+INSERT INTO ${PG_SOURCE_SCHEMA}.${TID}src VALUES (1, 'control');

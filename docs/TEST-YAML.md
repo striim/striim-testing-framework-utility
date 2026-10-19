@@ -30,7 +30,8 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
 | `server_files` | list | no | `[]` | place test-dir files onto the Striim server before deploy or after RUNNING, or upload and register a prebuilt jar (`load:`, from the test dir or outside it) — see below |
 | `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing |
-| `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, regression]`) for `-k`/reporting; not matched against anything in the manifest itself |
+| `fixture_timeout` | number | no | unset | Opt-in Postgres fixture statement deadline in seconds, independent of assertion `timeout`; positive finite value up to `2147483.647`, applies to DDL/slot setup and seed SQL including action seeds. Overrides `SLT_PG_FIXTURE_TIMEOUT`; if both are unset, server statement/lock policy is retained. An enabled budget also sets the lock deadline to min(15 seconds, half the statement budget). Concurrent action DML retains its previous unbounded behavior. |
+| `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, p1]`); `-k p1` uses case-insensitive substring matching against paths, tags and markers, while `-m tag_p1` selects the exact tag marker (case is preserved). Markers are registered automatically as `tag_<name>`, replacing each character outside ASCII letters, digits and `_` with `_` (e.g. `slow-path` becomes `tag_slow_path`); tags that sanitise to the same name share a marker |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
 | `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
@@ -352,6 +353,98 @@ alongside the original failure. Lifecycle evidence keeps the first 10 and last
 40 observations within its existing 50-observation cap.
 
 
+### Oracle observer DDL and seeds
+
+With `requires: [oracle]`, use `db: oracle-source` or `oracle-target` for the
+corresponding data user, and `db: oracle-admin` for a privileged observer trigger
+owner. The admin route uses `SLT_ORA_ADMIN_USER` / `SLT_ORA_ADMIN_PASSWORD`
+(default `system` / `striim`) and the same data PDB, `SLT_ORA_SERVICE`.
+It never uses the CDC root service. An unused admin route opens no connection.
+
+<!-- snippet: fragment -->
+```yaml
+requires: [oracle]
+ddl:
+- file: observer_tables.sql
+  db: oracle-target
+- file: observer_trigger.sql
+  db: oracle-admin
+```
+
+The same routes are accepted in `seed` entries with the normal `when` and `after`
+keys. Put tables, views and grants before the trigger that uses them. Use `${TID_ORACLE}` for
+observer view and trigger names. The `oracle-admin` route accepts only view/trigger
+CREATE and DROP statements; other SQL fails `oracle-observer-ddl-unsupported`
+before the script opens a connection. Run tables, seeds and grants on the data-user
+routes. On `oracle-admin`, observer objects
+must belong to that route user and carry this case's prefix; foreign names fail
+`oracle-observer-ddl-scope` before execution. `DROP VIEW IF EXISTS` checks the
+actual object name. Materialized views on this observer route are refused with
+`oracle-observer-ddl-unsupported`. Ordinary `oracle-source`/`oracle-target` SQL,
+including existing unprefixed views, keeps its existing naming contract. Trigger bodies keep their internal
+semicolons and end with a slash on a line by itself, as in SQL*Plus; a missing
+slash fails `oracle-plsql-terminator`. Plain SQL keeps its existing semicolon
+format. Alternative `q'...'` quoting is refused with `oracle-sql-quoting`; use
+doubled single quotes instead. This extension supports trigger definitions,
+not general anonymous PL/SQL scripts.
+
+Ordinary data-user DDL and seeds create no observer cleanup obligation. Observer
+cleanup runs only after case-prefixed views/triggers or use of `oracle-admin`.
+A case without observers does not read their catalogs or fail on such a read.
+
+Created observer triggers are persisted in the ownership ledger: an absence check
+and intended entry precede CREATE, and successful CREATE confirms the entry.
+Cleanup and `python -m livetest.ownership replay <ledger.json>` delete triggers
+with intended or confirmed ownership by exact name on the recorded user, endpoint,
+CDB DBID, PDB name, PDB DBID and GUID. The PDB identifiers come from
+`SYS.V_$CONTAINERS` for the current `USERENV.CON_ID` and are checked before every
+drop and absence verification. A same-name replacement PDB is refused.
+An intended trigger is eligible because absence was
+checked before CREATE: Oracle may commit DDL and then lose the response. Old
+`unresolved-intent` trigger entries are also replayable with these checks, only
+when they already record both PDB identifiers. Missing identity fields fail
+`oracle-observer-pdb-identity-missing`, with manual cleanup instructions: an
+administrator must verify the original PDB and ownership before running the
+reported `DROP TRIGGER "owner"."name"` there. Never infer missing fields from the
+current same-name PDB.
+An existing trigger without a matching ownership entry is preserved and refused with
+`oracle-observer-not-owned`; an unreadable or changed target is not deletion
+authority. Passwords come from current settings and are never stored in the ledger.
+
+After a case, the framework removes its owned database triggers first,
+then its prefixed views, before ordinary Oracle table cleanup. This also runs
+after DDL, deploy or assertion failure, for seed-only routes, and with either
+resource-retention flag: retained apps/tables do not retain observer hooks.
+This also removes existing case-prefixed observer views when resources are kept;
+unprefixed ordinary data-user views are outside this observer cleanup.
+Oracle observer views use the case prefix as deletion authority, including a
+pre-existing view carrying that prefix; they are not recorded in the ledger. This
+differs from Postgres views, which require an exact ownership-ledger entry. Keep
+Oracle observer prefixes reserved for this run and case.
+Catalog readback verifies absence. A failed drop or unreadable catalog fails
+cleanup as `oracle-observer-cleanup-failed`, preserves Oracle tables and records
+verification gaps for their skipped cleanup, keeping any original case failure
+visible. Observer teardown runs before app cleanup so a slow undeploy cannot skip
+it when an interrupt teardown deadline expires. An admin-route observer compilation warning fails as
+`oracle-ddl-compilation-error` after an attempt to drop the just-created object. An empty cleanup prefix is refused as
+`oracle-observer-cleanup-scope`; unrelated objects are untouched.
+
+Probe connections identify themselves as `PROGRAM = 'striim-test-observer'`
+during login, including data assertions and admin DDL. Observer queries/triggers
+must exclude that program while filtering the writer's username. Do not filter
+on MODULE set after connect: an AFTER LOGON trigger has already run by then.
+The supported Thin-mode driver minimum is python-oracledb 2.5.
+
+Observer views and triggers see every session of the data user in the PDB,
+including other cases and runs. Exact counts are valid only in a serial run on an
+unshared service. Use `disabled_parallel` with that reason; this guard does not
+isolate separate runs that share a service. The shipped regression records all
+target logons and checks PROBES and WRITERS with `min_rows: 1`, proving both that
+the framework tag reaches Oracle and that the writer remains visible.
+
+See [Oracle observer setup and SQL](SERVICES.md#oracle-observers) for direct
+grants, a filtered view/logon trigger, and the required image rebuild.
+
 ## `seed:` — `when` and `after`
 
 Each `seed` entry chooses its own lifecycle point, so one test can lay down a baseline before
@@ -394,6 +487,41 @@ when the source's reader cannot report that it is reading and no `lifecycle:` pr
 RUNNING is not reading, and an Oracle seed committed 1 s after RUNNING was measured missed. A
 source whose driver waits for its reader, or a `lifecycle:` case, seeds without the floor; an
 explicit `after` replaces it.
+
+### Postgres fixture SQL deadlines
+
+Postgres fixture connections retain cold-start retry (up to 30 attempts, two seconds
+between attempts), with `connect_timeout` set to five seconds per attempt.
+Statement and lock deadlines are **opt-in** for both `ddl:` (including replication-slot
+setup) and seed SQL, including action seeds. With neither a manifest budget nor a
+setting, the framework sends no statement/lock timeout options and preserves server
+policy. Existing bulk-load fixtures therefore do not acquire new cancellation limits.
+
+Set `fixture_timeout: 1800` at the top level to opt in for one case, or set
+`SLT_PG_FIXTURE_TIMEOUT=1800` in the shell, `.env` or machine settings for a host-wide
+live-engine default. Precedence is manifest > setting > none. Values are positive,
+finite seconds, at most `2147483.647`, independently of assertion `timeout`. An enabled
+budget sets the statement deadline and a lock deadline of min(15 seconds, half the
+statement budget); leave both inputs unset to retain longer legitimate lock waits.
+Concurrent `action:` DML loops keep their previous unbounded SQL path and do not start
+fixture observers.
+
+`postgres-fixture-timeout` reports the phase, route, and observed blockers: backend PID,
+application name, transaction age, and the owning run when its namespace is recorded in a
+ledger, with the observation time. Passive diagnostics stay enabled even without a
+fixture deadline. Observation starts after two seconds and is limited
+to three snapshots, five seconds apart. Each diagnostic has a two-second connection limit
+and a one-second statement deadline. If a diagnostic outlives successful SQL, a
+`postgres-fixture-diagnostic-gap` warning records the missing observation; committed SQL
+remains successful. The fixture
+disconnects its own SQL session; the blocker remains running. Run correlation is diagnostic
+information, not cleanup authority.
+
+The [PostgreSQL 16 statement deadline](https://www.postgresql.org/docs/16/runtime-config-client.html#GUC-STATEMENT-TIMEOUT)
+applies separately to each statement in a multi-statement SQL file. It does not replace the
+whole-case watchdog. Explicit transaction statements are sent as written.
+Connection limits apply per address, as specified by
+[libpq](https://www.postgresql.org/docs/16/libpq-connect.html#LIBPQ-CONNECT-CONNECT-TIMEOUT).
 
 ## `local: true` — test-only files beside an `example:`
 
@@ -1160,6 +1288,17 @@ assert:
 Nothing is truncated: a side over either limit fails with `canonical-limit-exceeded`. Set the limits
 near your data's size, so a runaway target fails fast.
 
+The local BigQuery service also supports `bigquery-target` reads. Use a fully qualified
+`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}table` and require `bigquery`.
+The reader preserves case and scalar INT64, NUMERIC, TIMESTAMP, DATETIME, DATE, BYTES,
+BOOL and STRING values. Nested/repeated fields, JSON, GEOGRAPHY and floating point fields
+are refused, including on empty tables. Its REST transport caps response bytes before JSON
+parsing, reads at most `max_rows + 1`, and stops after 128 result pages. Raw row bytes also
+have a conservative transfer cap of twice `max_bytes`; canonical bytes retain the exact
+`max_bytes` limit. A disposable reader process enforces the total deadline even when a server
+trickles bytes. Assertion details retain query job identifiers. Cancellation is bounded and
+best effort; it does not prove server rollback.
+
 ### `exact:` on a spec
 
 `exact: true` takes every default. The mapping form:
@@ -1417,6 +1556,11 @@ file gives: fill any `NOT NULL` columns there.
   a freshly owned Kafka topic, or an owned file.
   File sinks require Docker. Kafka completion must be sentinel, with sentinel
   or source-progress readiness. See the output references below.
+  BigQuery targets additionally support finite `initial-load` counts and bounded batch MERGE CDC sentinels.
+  BigQuery CDC requires Postgres source injection and sentinel readiness/completion; row-count completion is refused.
+  The framework allocates a fresh ledger-owned per-test dataset before DDL/TQL to contain generated staging.
+  Pre-existing datasets are refused and the shared bootstrap dataset is preserved. Use MERGE: APPENDONLY
+  cannot satisfy an insert/delete witness. See [the MERGE sample](../samples/live/bigquery-batch-merge/).
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
   `dest`, and the block's own `path`s start with `${OWNED_DIR}/`, with no `.`, `..` or empty parts.
   `${OWNED_DIR}` is a directory on the Striim nodes that the run creates for itself and removes at
@@ -1431,7 +1575,7 @@ file gives: fill any `NOT NULL` columns there.
   observations.
 
 **Clean-up (`reset: owned`).** The run records each object before it creates it, and removes only
-those, by exact name: Postgres tables and replication slots, acquired Spanner sink tables and Kafka topics, the namespace, and `${OWNED_DIR}`. An
+those, by exact name: Postgres tables and replication slots, BigQuery tables, acquired Spanner sink tables and Kafka topics, the namespace, and `${OWNED_DIR}`. An
 object with the same name that the run did not create is left alone and fails the run
 (`collision:<kind>:<name>`). Tables on other database engines are not tracked and are reported as unverified.
 With `--keep-resources` nothing is removed. Replay can remove the saved Postgres/file
@@ -2148,3 +2292,17 @@ Worked case: [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.
 A hosting-node fault resolves all owners before post-start seeds. At issuance it checks flow MON's single-owner count and the selected server's deployment and runtime STATUS once, outside progress polling, then re-reads progress. An unreadable, moved or multi-owner flow refuses the fault. Sample17 paces each target insert with a10ms table CHECK, leaving the exact expected rows unchanged.
 
 Worked case: [17-one-node-failover](../samples/live/17-one-node-failover/README.md). Framework gallery: [framework-one-node-failover](../scripts/live/regression/framework/framework-one-node-failover/README.md).
+
+## Intentional idle Postgres transactions
+
+Disposable Postgres has no data-role idle-transaction budget by default, because Striim
+readers and writers use those same roles. If you opt in with
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=600000`, an idle transaction can terminate its session
+after ten minutes. That includes a [`transactions:`](#transactions--overlapping-postgres-seed-sessions)
+session held across `recover:`. For one, put
+`SET LOCAL idle_in_transaction_session_timeout = '30min';` in the session's first `op: sql` file, or set
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000` before framework bring-up. Policy is reapplied
+to new connections even on kept services; existing connections retain their settings.
+Budget the full idle period including recovery; keep expected rows and lifecycle assertions.
+[SERVICES.md](SERVICES.md#postgres-postgres) describes the scope and integration setting.
+External databases retain their own policy.

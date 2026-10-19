@@ -145,3 +145,39 @@ def test_exact_diff_record_carries_the_source_it_rendered(run_case):
     source = doc["data"]["comparisons"][0]["expected"]["source"]
     assert "${" not in rec["spec"]["source"] and source == "postgres-source:" + rec["spec"]["source"], (rec["spec"], source)
     assert evidence.read(_envelope(tier)).qualifies
+
+
+@pytest.mark.parametrize('source', ['${TID}src', '${BIGQUERY_DATASET}.${TID}src',
+    '${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}src'])
+@pytest.mark.parametrize('project,dataset', [('test-project', 'slt'), ('other-project', 'slt_attempt_123')])
+def test_bigquery_diff_recorder_binds_qualified_source(good, monkeypatch, source, project, dataset):
+    from types import SimpleNamespace
+    from livetest import canon, exactdata
+    from livetest.bigqueryadmin import BigQueryAdmin
+    tid = doc_of(good)['inputs']['bindings']['TID']
+    tokens = {'TID': tid, 'BIGQUERY_PROJECT': project, 'BIGQUERY_DATASET': dataset}
+    admin = BigQueryAdmin({'host': '127.0.0.1', 'port': 9050, 'project': project, 'dataset': dataset})
+    def read(*args, **kwargs):
+        admin.last_operation = {'jobId': 'test-job'}
+        return [{'id': 1}, {'id': 2}]
+    monkeypatch.setattr(admin, 'select_rows', read)
+    manifest = SimpleNamespace(timeout=5, exact={'block': {'version': 1}})
+    decl = canon.declaration({'columns': {'id': 'integer'}}, db_route=True)
+    spec = {'source': source, 'target': '${TID}tgt', 'db': 'bigquery-target'}
+    owned = [{'kind': 'bigquery-table', 'db': 'bigquery-target', 'name': f'{project}.{dataset}.{tid}{name}',
+              'state': 'verified-absent'} for name in ('src', 'tgt', 'other')]
+    comparisons = []
+    good._slt_records = exactdata.assert_exact_diff({'bigquery-target': {'admin': admin}},
+        [(0, spec, decl)], manifest, tokens=tokens, owned=lambda kind, route, name: any(
+            r['kind'] == kind and r['db'] == route and r['name'] == name for r in owned),
+        lifecycle=True, collector=comparisons)
+    good._slt_data = comparisons
+    good._slt_resources['owned'] = owned
+    doc = doc_of(good)
+    # The normal recorder resolves route tokens; evidence needs only identity bindings.
+    assert 'BIGQUERY_PROJECT' not in doc['inputs']['bindings']
+    assert doc['assertions'][0]['spec']['source'] == f'{project}.{dataset}.{tid}src'
+    evidence.validate_case(doc)
+    assert doc['run']['qualifies'] is True
+    doc['data']['comparisons'][0]['expected']['source'] = f'bigquery-target:{project}.{dataset}.{tid}other'
+    _refused(doc)

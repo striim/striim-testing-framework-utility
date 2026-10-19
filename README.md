@@ -58,6 +58,9 @@ step in detail, with the output to expect and what to do when something fails.
 | `16-recovery-sentinel` | fresh route proof after recovery and before assertions | Postgres CDC; STOP/restore |
 | `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data | Postgres CDC; Docker cluster, two app nodes and agent; published survivor API; **kills one shared app node** |
 | `18-kafka-nothing` | no output in a bounded window after a Kafka sentinel; fresh owned topics | Postgres CDC; Kafka |
+| `bigquery-legacy-append` | finite legacy REST streaming into the local BigQuery emulator, with exact values and multiplicity | BigQuery emulator |
+| `bigquery-batch-load` | finite direct CSV batch loads with default writer settings and typed exact rows; installed-client exact-boundary exclusion applies | BigQuery emulator |
+| `bigquery-batch-merge` | bounded batch CDC MERGE with same-writer insert/delete witnesses and owned staging dataset | BigQuery emulator |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.

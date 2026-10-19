@@ -1,0 +1,26 @@
+name: bigquery-queue-cdc-size-2
+purpose: A PostgreSQL CDC writer reaches RUNNING with valid queue capacity two
+tql: app.tql
+topology: single
+requires:
+- postgres
+- bigquery
+timeout: 180
+tags:
+- bigquery
+- regression
+- startup
+- batch-load
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: bigquery-target
+- file: slot.sql
+  db: postgres-source
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+assert:
+  smoke: true

@@ -1,0 +1,65 @@
+name: bigquery-batch-merge
+purpose: Batch MERGE applies updates and deletes with a same-writer terminal sentinel
+tql: app.tql
+topology: single
+requires:
+- postgres
+- bigquery
+timeout: 180
+tags:
+- sample
+- bigquery
+- cdc
+- merge
+- exact
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: bigquery-target
+- file: slot.sql
+  db: postgres-source
+seed:
+- file: seed_target.sql
+  db: bigquery-target
+  when: pre_deploy
+- file: seed.sql
+  db: postgres-source
+  when: post_start
+- file: changes.sql
+  db: postgres-source
+  when: post_start
+  after: 10s
+exact:
+  version: 1
+  max_rows: 10
+assert:
+  smoke: true
+  data:
+  - target: ${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt
+    target_db: bigquery-target
+    match: expected/rows.csv
+    exact:
+      columns:
+        id: integer
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness:
+    kind: sentinel
+  completion:
+    kind: sentinel
+  stability: 2s
+  deadlines:
+    readiness: 90s
+    completion: 120s
+  reset: owned
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: bigquery-target
+      table: ${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt
+      key: id

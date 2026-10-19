@@ -114,7 +114,7 @@ ServiceNow.
 | `gcs` | stock: `fsouza/fake-gcs-server:1.54.0`, plus a fake token server | not applicable | 4443, 4444 token | `SLT_GCS_HOST` and `SLT_GCS_*` | **supported, not exercised here** (`scripts/live/regression/services/gcs`) |
 | `teradata` | **none: bring your own instance.** The framework ships no Teradata container; its definition holds only the connection settings | not applicable | 1025 (`SLT_TERADATA_PORT`) | `SLT_TERADATA_HOST` and `SLT_TERADATA_*`, in `.env` or the shell (below) | **supported, not exercised here**. With `SLT_TERADATA_HOST` unset, its tests skip, naming the setting. A service of your own named `teradata` with a container (`servicesRoots`, [YOUR-OWN-SERVICES.md](YOUR-OWN-SERVICES.md)) replaces the definition |
 | `servicenow` | **none: bring your own instance.** ServiceNow is hosted: no container runs an instance. Its definition holds only the connection settings | not applicable | 443 (`SLT_SERVICENOW_PORT`) | `SLT_SERVICENOW_HOST` and `SLT_SERVICENOW_*`, in `.env` or the shell | **supported, not exercised here**. With `SLT_SERVICENOW_HOST` unset, its tests skip, naming the setting. The framework does not read or write ServiceNow: assert on where a reader's data lands, or on Striim's own figures ([SERVICENOW.md](SERVICENOW.md)) |
-| BigQuery | **not shipped**: Google publishes no official emulator | | | | **not supported as a service.** Test against a real GCP project: create a dataset for tests, put the service-account key on the Striim server with `server_files:`, pass the project and dataset to the TQL through `tokens:`, and assert on what the app writes elsewhere, since the framework cannot read BigQuery |
+| `bigquery` | user-supplied qualified emulator image (`SLT_BIGQUERY_IMAGE`), plus a dedicated fake token server | bounded REST streaming / CSV batch | 9050, 9051 token | `SLT_BIGQUERY_HOST` and `SLT_BIGQUERY_*` | **tested**: Linux x86-64 API/query bootstrap, two isolated stacks, local OAuth refresh and independent integer/text readback. Striim 5.4.2 legacy streaming and bounded direct CSV batch fixtures pass with scalar exact assertions and finite initial-load counts. The installed Java 2.59.0 exact-chunk boundary is excluded. Unicode CSV requires the documented UTF-8 JVM setting. The qualified image has amd64 and arm64 variants; native ARM, Storage Write, recovery and cloud equivalence remain unqualified |
 
 "Recipe" means the framework builds the image from a public base; "stock" means it uses a public image
 as it is. Any service can move to another host port through the variable shown, when the default is
@@ -175,6 +175,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 |---|---|
 | `exact:` on `data` (Postgres) and `file` (Docker mode) | **tested**: samples 01 to 04 |
 | `exact:` on Spanner data/diff and Kafka records | GoogleSQL Spanner data: **tested**, sample 07 on Striim 5.4.2. PostgreSQL-dialect Spanner, typed diff and Kafka `kafka_record`: **supported, not exercised here**, hermetic coverage. Oracle, SQL Server and MySQL exact remain unsupported |
+| `exact:` on local BigQuery data/diff | bounded qualified scalar reads; other databases remain unsupported |
 | `lifecycle:` `initial-load` with a table (`baseline-landed`, `source-count`) | **tested**: samples 01 and 02 |
 | `lifecycle:` `initial-load` with a file (`baseline-landed`, `file-lines`) | **tested**: sample 03 (Docker mode) |
 | `lifecycle:` `cdc` with `sentinel` | **tested**: sample 04 |
@@ -188,6 +189,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Progress-triggered recovery | **tested**: sample 14 target-count STOP reported passing on Striim 5.4.2; checkpoint, slot and Kafka position triggers have hermetic coverage only |
 | Fault-boundary recovery evidence | **tested**: sample 15 reported passing on Striim 5.4.2; hermetic pre-command and post-interruption missed-window checks |
 | Fresh post-recovery sentinel | **tested**: sample 16 reported passing on Striim 5.4.2, including evidence validation |
+| BigQuery lifecycle | finite initial-load counts and bounded non-optimized batch MERGE sentinels with Postgres injection and an owned per-test dataset; APPENDONLY CDC and recovery remain unsupported |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
