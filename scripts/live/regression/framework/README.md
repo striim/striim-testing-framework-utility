@@ -32,14 +32,14 @@ export SLT_INFRA_OWNERSHIP=shared SLT_KEEP_SERVICES=1
 STRIIM_PASS=striim python -m pytest -m live -k framework
 ```
 
-Postgres only, by design — it is the cheapest service to provision, and a gallery that needs
-five emulators to demonstrate `when:` is a gallery nobody runs. Features that need another
-backend (`json` needs Spanner, `gcs` needs the GCS emulator) are listed as exemptions.
+Most cases use Postgres to keep provisioning small. Cases requiring other services
+name them in `requires:`; read each README before selecting the gallery. Features
+without a runnable example remain on the coverage test's exemption list.
 
 One exemption is not about cost. `generate:` has no example of its own here: `ggtrail` is the
 only registered generator kind, and its user (`services/ggtrail/ggtrail-cdc-file-diff`) runs it
 end to end, decoding every generated operation, so that case is the demonstration. The hook
-itself is covered hermetically (`tests/test_generate_hook.py`, 12 cases over placement, phase
+itself is covered hermetically (`scripts/live/tests/test_generate_hook.py`, 12 cases over placement, phase
 filtering, dest rendering and unknown-kind failure).
 
 ## What is here
@@ -60,6 +60,17 @@ filtering, dest rendering and unknown-kind failure).
 | `framework-action` | `action:` — `stop_start_cycle` stops and restarts the app N times while a `concurrent:` SQL script runs on its own thread throughout. `data: rows` proves the script ran (its failures only log); the diff proves its rows survived both stops. Rows written WHILE stopped are not exercised — no assert tier expresses "at least N". The script is rendered with the same token substitution as every other SQL file — it was `str.format`, which is why three databasewriter cases had hardcoded a schema |
 | `framework-diff-poll` | `diff_poll` — the `diff` tier's polling interval |
 | `framework-xfail` | `xfail:` — a manifest that documents a defect, reported as expected-fail rather than red |
+| `framework-drop-recreate` | drop and recreate the app while checking its final data |
+| `framework-kafka-cleanup` | named Kafka topics are cleaned up |
+| [framework-raw-file](framework-raw-file/README.md) | Check file bytes, hashes and the exact rolled inventory |
+| [framework-bounded-nothing](framework-bounded-nothing/README.md) | Prove no matching data arrived after a sentinel |
+| [framework-transaction-seeds](framework-transaction-seeds/README.md) | Control overlapping seed transactions and recovery commits |
+| [framework-snapshot-observer](framework-snapshot-observer/README.md) | Check consistent target snapshots against committed prefixes |
+| [framework-append-only-audit](framework-append-only-audit/README.md) | Reject replay duplicates with an append-only audit |
+| [framework-progress-recovery](framework-progress-recovery/README.md) | Interrupt inside an observed progress window |
+| [framework-fault-evidence](framework-fault-evidence/README.md) | Prove the fault was issued while its precondition held |
+| [framework-recovery-sentinel](framework-recovery-sentinel/README.md) | Prove the route transports a fresh marker after recovery |
+| [framework-one-node-failover](framework-one-node-failover/README.md) | Interrupt one named node and check flow placement |
 
 ## The gate
 
@@ -77,3 +88,6 @@ The exemption list is the tier's to-do list; shrinking it to empty is what finis
 - `purpose:` is the caption — it names the single behaviour on display.
 - Comment the manifest generously. These files are read far more than they are run, and the
   comment explaining *why* a phase is chosen is the part a reader came for.
+
+`framework-kafka-nothing` exercises fresh topic ownership, Kafka insert/delete
+sentinels and bounded absence for a rolled-back PostgreSQL transaction (sample 18).

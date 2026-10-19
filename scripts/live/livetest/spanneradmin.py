@@ -215,9 +215,50 @@ class SpannerAdmin:
             cols = [f.name for f in rs.fields]
             return cols, rows
 
+    def check_audit_table(self, table, key):
+        from livetest.lifecycle import bounded
+        table = _check_table(table).split(".")[-1]
+        if not _IDENT.fullmatch(key):
+            raise ValueError("audit-target-not-append-only: invalid delivery key")
+        def query(sql):
+            return bounded(lambda: self._query(sql), 10)[1]
+        keys = query("SELECT k.column_name FROM information_schema.key_column_usage k "
+                     "JOIN information_schema.table_constraints t ON k.constraint_name=t.constraint_name "
+                     "AND k.constraint_schema=t.constraint_schema "
+                     f"WHERE t.table_name='{table}' AND t.table_schema IN ('','public') "
+                     "AND t.constraint_type='PRIMARY KEY' ORDER BY k.ordinal_position")
+        defaults = query("SELECT column_default FROM information_schema.columns "
+                         f"WHERE table_name='{table}' AND column_name='{key}'")
+        default = str(defaults[0][0]).lower().replace(" ", "") if defaults else ""
+        if [tuple(row) for row in keys] != [(key,)] or not re.fullmatch(
+                r"\(?(?:spanner\.)?generate_uuid\(\)\)?(?:::(?:text|varchar|charactervarying)(?:\([0-9]+\))?)?", default):
+            raise ValueError("audit-target-not-append-only: Spanner needs a sole UUID-default delivery primary key")
+
+    def list_owned_tables(self):
+        from livetest.lifecycle import bounded
+        _cols, rows = bounded(lambda: self._query(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema IN ('', 'public')"), 30)
+        return {r[0] for r in rows}
+
+    def drop_owned_table(self, table):
+        self._db().update_ddl([f"DROP TABLE {_check_table(table)}"]).result(30)
+
     def count_rows(self, table: str) -> int:
         _, rows = self._query(f"SELECT count(*) FROM {_check_table(table)}")
         return int(rows[0][0])
+
+    def count_key(self, table: str, key: str, value, remaining: float) -> int:
+        """Count one sentinel key without scanning materialized application rows."""
+        from google.cloud.spanner_v1 import param_types
+        if not _IDENT.fullmatch(key):
+            raise ValueError("sentinel key must be a plain column identifier")
+        postgres = self.dsn["dialect"] == "postgresql"
+        name, placeholder, cast = ("p1", "$1", "text") if postgres else ("sentinel_id", "@sentinel_id", "STRING")
+        sql = f"SELECT count(*) FROM {_check_table(table)} WHERE CAST({key} AS {cast}) = {placeholder}"
+        with self._db().snapshot() as snap:
+            rows = snap.execute_sql(sql, params={name: str(value)}, param_types={name: param_types.STRING},
+                                    timeout=max(0.05, remaining))
+            return int(next(iter(rows))[0])
 
     def select_rows(self, table: str) -> list[dict]:
         cols, rows = self._query(f"SELECT * FROM {_check_table(table)}")

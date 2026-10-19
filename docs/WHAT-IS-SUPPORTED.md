@@ -13,18 +13,27 @@ not exercised here.
 
 ## Run modes
 
+The **original qualification set** in the rows below means those Postgres samples and
+the two code samples. It does not qualify later samples or additional routes.
+Sample 07 has also been reported passing live on Striim 5.4.2; Kafka exact has
+hermetic coverage, with no live qualification recorded here.
+
+
 | | Status | Notes |
 |---|---|---|
-| **Docker mode**: the framework builds a Striim image and starts a cluster (`STRIIM_URL` unset) | **tested**: every sample on the Linux host, serially and with `--parallel`; sample 01 on the Mac | two Striim nodes and an agent. The first run downloads 6.3 GB and builds a 22 GB image |
-| **Native mode**: your own Striim at `STRIIM_URL` | **tested**: every sample but 03 (which needs Docker mode), on the Linux host, against a native 5.4.2 install | the differences are below |
+| **Docker mode**: the framework builds a Striim image and starts a cluster (`STRIIM_URL` unset) | **tested**: the original qualification set on the Linux host, serially and with `--parallel`; sample 01 on the Mac | two Striim nodes and an agent. The first run downloads 6.3 GB and builds a 22 GB image |
+| **Native mode**: your own Striim at `STRIIM_URL` | **tested**: the original qualification set but 03 (which needs Docker mode), on the Linux host, against a native 5.4.2 install | the differences are below |
 
 What differs in native mode:
 
 | | Docker mode | Native mode |
 |---|---|---|
 | file assertions with `exact:`, and `lifecycle:` with `sink: file` | yes | **not supported**: the framework reads output files on the cluster's nodes. `samples/live/03-file-output` is Docker-only for this reason |
+| `assert.file` with `raw:` | yes | skipped: raw inventory requires Docker access to the owned output directory |
+| File `nothing:` / file sentinel | yes | skipped: requires Docker access to owned output; Kafka sentinel/absence can use native services |
 | plain `assert.file` (without `exact:`) | yes | yes, when Striim runs on the same machine as `striim-test`: the file is read from the local disk. The two code samples do this |
 | `op:` / `udf:` jars | copied into the cluster | `STRIIM_HOME` must be the running server's own install, on this machine: the jars are copied into `$STRIIM_HOME/UploadedFiles`. `striim-test doctor --case` checks it |
+| Named-node faults and `placement` | yes, framework cluster and published survivor API | named-node recovery skips; no framework Docker role mapping |
 | `recover: {mode: kill}` | yes | **not supported**: there is no container to kill. The test is skipped, never downgraded to `stop` |
 | `expect_halt_contains` on a halt while running | checked against the server log | the test passes without the check, and its record says `halt reason not checked (native mode)` |
 | `assert.jmx` | yes | **not supported**: it fails at once, since there are no exporters to read |
@@ -35,7 +44,7 @@ What differs in native mode:
 
 | Platform | Status | Notes |
 |---|---|---|
-| Linux x86-64 | **tested** (the Linux host: every sample, both modes) | |
+| Linux x86-64 | **tested** (the Linux host: the original qualification set, both modes) | |
 | macOS on Apple Silicon | **tested** (the Mac: sample 01, Docker mode) | the Striim image is amd64 and runs under emulation. Sample 01 took 6 min 7 s on the Mac, including an image rebuild from cache, against about 95 s on the Linux host including cluster start. The first image build takes longer. Docker Desktop's disk is inside its VM: it needs 35 GB free for the first build and 5 GB to run ([RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md), "Docker mode"). SQL Server also runs under emulation; Oracle runs natively on arm64 |
 | Linux on arm64 | **supported, not exercised here** | the Striim and SQL Server images are amd64, so they need emulation as on the Mac |
 | Windows | **not supported** | the framework assumes a POSIX shell and filesystem (its lock directory defaults to `/tmp/slt-locks`, the Striim recipe runs bash scripts). Run it inside WSL 2 or a Linux VM; that is untested |
@@ -95,7 +104,7 @@ ServiceNow.
 
 | Service | Image | CDC | Host ports | Your own instance | Status |
 |---|---|---|---|---|---|
-| **`postgres`** | recipe: `postgres:16` plus `wal2json` | yes: `wal_level=logical`, `wal2json` | 5432 (`SLT_PG_HOST_PORT`) | `SLT_PG_HOST` and `SLT_PG_*` | **tested**: every sample, the Linux host and the Mac |
+| **`postgres`** | recipe: `postgres:16` plus `wal2json` | yes: `wal_level=logical`, `wal2json` | 5432 (`SLT_PG_HOST_PORT`) | `SLT_PG_HOST` and `SLT_PG_*` | **tested**: the original qualification set, the Linux host and the Mac |
 | **`spanner`** | **Google's official Cloud Spanner emulator**, `gcr.io/cloud-spanner-emulator/emulator:1.5.55` (stock, amd64) | change streams, as the emulator provides them | 9010 gRPC, 9020 REST | `SLT_SPANNER_HOST` and `SLT_SPANNER_*` (another emulator) | **supported, not exercised here**. On by default, no opt-in, in both tiers. No credentials: the framework uploads a throwaway service-account key |
 | `oracle` | recipe: `gvenzl/oracle-free:23.26.2-slim-faststart`, ARCHIVELOG and the LogMiner user baked in | yes: LogMiner (`c##striim`) | 1521 (`SLT_ORA_HOST_PORT`) | `SLT_ORA_HOST` and `SLT_ORA_*` | **supported, not exercised here**. The image follows the host's architecture: amd64 on Linux, arm64 on the Mac |
 | `mssql` (SQL Server) | recipe: SQL Server 2022 Developer (amd64) | enabled: CDC and SQL Server Agent | 1433 (`SLT_MSSQL_HOST_PORT`) | `SLT_MSSQL_HOST` and `SLT_MSSQL_*` | **supported, not exercised here** |
@@ -143,10 +152,11 @@ The reference for each is [TEST-YAML.md](TEST-YAML.md).
 
 | Tier | Status |
 |---|---|
-| `smoke`: the app reaches RUNNING and stays there | **tested**: every sample |
+| `smoke`: the app reaches RUNNING and stays there | **tested**: the original qualification set |
 | `data`: a target table's rows, count or golden (Postgres, Oracle, SQL Server, MySQL, Teradata, Vertica, Spanner, Kafka) | **tested**: samples 01, 02 and 04 (Postgres), the code samples |
 | `diff`: the target's rows equal the source's | **supported, not exercised here** (`scripts/live/regression/services/postgres/postgres-diff`) |
 | `file`: what a `FileWriter` wrote | **tested**: sample 03 (with `exact:`), the code samples (without) |
+| `placement`: live flow owner against a named node or survivor | **supported and live-qualified**: sample 17 killed its secondary worker in-window, proved primary takeover while it was down, and passed lifecycle, sentinel and strict 5000-row equality checks |
 | `gcs`: an object's bytes, size or hash in the GCS emulator | **supported, not exercised here** |
 | `json`: a JSON column, compared by meaning | **supported, not exercised here** |
 | `monitor`: what Striim's monitor shows for a target | **supported, not exercised here** (`scripts/live/regression/framework/framework-assert-monitor`) |
@@ -164,16 +174,24 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Feature | Status |
 |---|---|
 | `exact:` on `data` (Postgres) and `file` (Docker mode) | **tested**: samples 01 to 04 |
-| `exact:` on `diff`, and on other databases | `diff`: **supported, not exercised here**. Other databases: **not supported**; compare without `exact:`, or copy the rows to Postgres |
+| `exact:` on Spanner data/diff and Kafka records | GoogleSQL Spanner data: **tested**, sample 07 on Striim 5.4.2. PostgreSQL-dialect Spanner, typed diff and Kafka `kafka_record`: **supported, not exercised here**, hermetic coverage. Oracle, SQL Server and MySQL exact remain unsupported |
 | `lifecycle:` `initial-load` with a table (`baseline-landed`, `source-count`) | **tested**: samples 01 and 02 |
 | `lifecycle:` `initial-load` with a file (`baseline-landed`, `file-lines`) | **tested**: sample 03 (Docker mode) |
 | `lifecycle:` `cdc` with `sentinel` | **tested**: sample 04 |
 | `lifecycle:` `source-progress`, `row-count` | **supported, not exercised here** |
-| `lifecycle:` on a database other than Postgres | **not supported**: witnesses read Postgres only. Use no `lifecycle:` block (the test then polls its assertions until `timeout`) |
+| File/Kafka/Spanner lifecycle sentinel and bounded absence | File: **tested**, sample 10 reported passing on Striim 5.4.2. Kafka/Spanner: **supported, not exercised here**, hermetic coverage. The sentinel SQL source remains Postgres; Spanner counts additionally require the append-only audit contract |
+| Strict JSON file payload | **tested**: sample 08 reported passing on Striim 5.4.2. Kafka JSON/Avro strict mode: **supported, not exercised here**, hermetic coverage |
+| Raw file bytes/inventory | **tested**: sample 09 reported passing on Striim 5.4.2, Docker mode; extra empty files fail |
+| Overlapping Postgres seed sessions and held-open recovery commit | **tested**: sample 11 reported passing on Striim 5.4.2 with explicit RECOVERY, progress-triggered STOP and fresh recovery sentinel; expected rows unchanged |
+| Transaction snapshot observer | **supported, not exercised here** with the corrected PSTB sample; hermetic multi-table consistency/failure-history coverage. A prior live run detected an expected partial transaction without preservation |
+| Append-only delivery audit | **supported, not exercised here**: hermetic duplicate checks on every exact route; sample 13 has no reported live qualification |
+| Progress-triggered recovery | **tested**: sample 14 target-count STOP reported passing on Striim 5.4.2; checkpoint, slot and Kafka position triggers have hermetic coverage only |
+| Fault-boundary recovery evidence | **tested**: sample 15 reported passing on Striim 5.4.2; hermetic pre-command and post-interruption missed-window checks |
+| Fresh post-recovery sentinel | **tested**: sample 16 reported passing on Striim 5.4.2, including evidence validation |
 | `seed:` `pre_deploy` and `post_start` | **tested**: samples 01 to 04 |
 | `seed:` `after:` delays, `post_recover` | **supported, not exercised here** (`framework-seed-after`, `framework-seed-phases`) |
 | `recover:` `stop`, `quiesce` | **supported, not exercised here** (`framework-recover`, `framework-recover-quiesce`) |
-| `recover:` `kill` | **supported, not exercised here**, Docker mode only (`framework-recover-kill`). It kills every Striim node container, so every other test on that cluster fails with it |
+| `recover:` `kill` | **supported, not exercised here**, Docker mode only (`framework-recover-kill`). Without `node:` it kills all app-node containers; with `node:` it selects one. Other apps on affected nodes are interrupted |
 | `xfail:` | **supported, not exercised here** |
 | `disabled:` | **supported, not exercised here** |
 | `action:` (`stop_start_cycle`, `drop_recreate_app`) | **supported, not exercised here** |
@@ -189,7 +207,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 
 | Feature | Status |
 |---|---|
-| `striim-test run --parallel` (3 workers) | **tested**: every sample on the Linux host |
+| `striim-test run --parallel` (3 workers) | **tested**: the original qualification set on the Linux host |
 | `SLT_INFRA_OWNERSHIP=shared` with `SLT_KEEP_SERVICES=1` | **tested**: every Linux-host and Mac run above |
 | `SLT_INFRA_OWNERSHIP=exclusive` | **tested** on the Linux host: each run started its own prefixed stack and tore it down |
 | leftover clean-up: `--keep-resources`, then `python -m livetest.ownership replay <ledger>` (doctor names it) | **tested**: two ledgers left by a failed clean-up were replayed on the Linux host |
@@ -207,8 +225,34 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | Docker disk, Docker mode | 35 GB free for the first image build, 5 GB to run | `SLT_STRIIM_MIN_FREE_GB` lowers the build floor; doctor reports free space |
 | download, first Docker run | about 6.3 GB, or none with `SLT_STRIIM_DEPS_MANIFEST` | |
 | `exact:` | 1,000,000 rows and 512 MiB per side at most (defaults 100,000 and 64 MiB) | nothing is truncated; over the limit the comparison fails |
-| `lifecycle:` and `exact:` routes | `postgres-source` and `postgres-target` | the other databases have no bounded reader yet |
+| Typed exact routes | Postgres, both Spanner dialects, Kafka `kafka_record`, Docker files | bounded readers retain types and counted rows; see the matrix below |
 | lifecycle zero | `expect: 0`, `lines: 0` refused; a zero source count fails | zero proves nothing; use the sentinel kinds for an empty result |
 | `--parallel` | 3 workers | |
+| `raw.max_bytes` | 64 MiB by default; at most 512 MiB | All files in the exact inventory share this total read budget |
+| `recover.trigger.timeout` / `poll` | 60s / 100ms by default; both positive finite durations | The final pre-command read must finish inside its deadline |
 | `diff_poll` | above 0 | a zero poll would spin against the database |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:`/`udf:`, `exact:`, `lifecycle:`, `recover:`, `xfail:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
+| `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
+| Snapshot rows/bytes | 100000 rows and 64 MiB by default; at most 1000000 and 512 MiB | Row budget covers all tables; byte budget applies per table |
+| `snapshot_observer.max_snapshots` | 10000 by default; at most 100000 | Exhaustion fails instead of truncating history |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
+
+## Check routes
+
+This matrix describes implemented checks, not live qualification. See each feature
+row above for recorded runs; a skip is never a pass.
+
+| Check | Postgres | Spanner | Kafka | File | Mode and prerequisites |
+|---|---|---|---|---|---|
+| Typed `exact:` data | yes | both dialects | `project: kafka_record` | yes | Database/Kafka: native or Docker; exact files: Docker only |
+| Typed `exact:` diff | yes | both dialects | no typed diff; use record goldens | use file assertions | Both database sides must use supported exact routes |
+| Strict JSON payload | refused | refused | JSON or decoded Avro | JSON | Kafka: native or Docker; owned file reads: Docker |
+| Raw bytes and exact inventory | — | — | — | yes | Docker owned output directory; every empty/hidden rolled file counts |
+| Lifecycle sentinel | yes | both dialects | yes | yes | Postgres source; fresh owned sinks; file requires Docker; Kafka can use native |
+| Bounded `nothing:` | yes | both dialects | yes | yes | Only after the completion sentinel proves this route; file requires Docker |
+| Transaction seeds | source or target | — | — | — | Native or Docker Postgres; post-start requires lifecycle readiness |
+| Snapshot observer | repeatable read/read only | multi-use read-only transaction | — | — | Native or Docker; declared lifecycle and owned target tables |
+| Append-only audit | yes | both dialects | kafka_record | yes | Native or Docker database/Kafka; Docker file; append writer and fresh owned target |
+| Progress trigger | target-count or slot | target-count | end or consumer offset | — | Native or Docker with confirmed current-attempt ownership; checkpoint reads Striim |
+| Fault-boundary evidence | any supported case | any supported case | any supported case | any supported case | Timed or progress recovery; no issued fault is a failure |
+| Fresh recovery sentinel | yes | both dialects | yes | yes | Same lifecycle sentinel route, fresh per-cycle marker; file requires Docker |
+| Named node fault and role placement | route independent | route independent | route independent | route independent | Framework Docker cluster with two app nodes and agent; published survivor API; disabled_parallel |

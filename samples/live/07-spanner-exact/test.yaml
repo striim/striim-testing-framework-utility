@@ -1,0 +1,18 @@
+name: spanner-exact
+purpose: Spanner copies every source row with an integer id and counted multiplicity.
+tql: app.tql
+requires: [spanner]
+ddl:
+  - {file: ddl.sql, db: spanner-google}
+seed:
+  - {file: seed.sql, db: spanner-google}
+exact: {version: 1, max_rows: 10}
+assert:
+  data:
+    - target: ${TID}tgt
+      db: spanner-google
+      match: expected/rows.csv
+      exact:
+        columns: {id: integer}
+timeout: 180
+tags: [spanner, exact]

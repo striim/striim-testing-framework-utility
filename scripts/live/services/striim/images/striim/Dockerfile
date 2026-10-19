@@ -96,6 +96,14 @@ RUN --mount=type=bind,source=deps,target=/deps \
     cp /deps/vertica-jdbc-25.3.0-0.jar /opt/striim/lib/ && \
     cp /deps/vertica-jdbc-25.3.0-0.jar /opt/striim/agent/lib/
 
+# Teradata, only when deps/ holds it (download-dependencies.sh fetches it with SLT_TERADATA_JDBC=1).
+# Teradata's licence for the driver applies.
+RUN --mount=type=bind,source=deps,target=/deps \
+    if [ -s /deps/terajdbc-20.00.00.46.jar ]; then \
+      cp /deps/terajdbc-20.00.00.46.jar /opt/striim/lib/ && \
+      cp /deps/terajdbc-20.00.00.46.jar /opt/striim/agent/lib/; \
+    fi
+
 # Your own JDBC drivers: every jar in deps/extra-lib/ goes onto the classpath, as for Vertica.
 RUN --mount=type=bind,source=deps,target=/deps \
     for j in /deps/extra-lib/*.jar; do \

@@ -253,11 +253,20 @@ def _service_tokens(name: str, env: Mapping[str, str], services_dir: Path) -> di
     base = _resolve_service_base(name, raw, env)
     provides = raw.get("provides") or {}
     try:
-        return {token: str(template).format(**base) for token, template in provides.items()}
+        tokens = {token: str(template).format(**base) for token, template in provides.items()}
     except (KeyError, IndexError) as e:
         raise ServiceConfigError(
             f"service {name!r}: provides template references unknown key: {e}"
         ) from e
+    if name == "spanner":
+        # INT_SPANNER_CREDENTIALS switches it to real Cloud Spanner, whose URLs no single
+        # `provides:` template can express alongside the emulator's.
+        from inttest import spanneradmin
+        try:
+            tokens = spanneradmin.real_tokens(tokens, env)
+        except spanneradmin.RealSpannerError as e:
+            raise ServiceConfigError(f"service {name!r}: {e}") from e
+    return tokens
 
 
 # ============================================================================

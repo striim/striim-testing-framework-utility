@@ -1,0 +1,129 @@
+name: framework-snapshot-observer
+purpose: Every observed pair of target tables equals one complete committed source
+  prefix.
+tql: app.tql
+topology: single
+requires:
+- postgres
+timeout: 180
+tags:
+- framework
+- snapshot
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: postgres-target
+- file: slot.sql
+  db: postgres-source
+exact:
+  version: 1
+assert:
+  data:
+  - target: ${PG_TARGET_SCHEMA}.${TID}tgt
+    db: postgres-target
+    match: expected/rows.csv
+    exact:
+      columns:
+        id: integer
+lifecycle:
+  version: 1
+  mode: cdc
+  sink: db
+  readiness:
+    kind: sentinel
+  completion:
+    kind: row-count
+    db: postgres-target
+    table: ${PG_TARGET_SCHEMA}.${TID}tgt
+    expect: 2
+    key: id
+  stability: 5s
+  deadlines:
+    readiness: 90s
+    completion: 120s
+  reset: owned
+  sentinel:
+    db: postgres-source
+    insert: sentinel_insert.sql
+    delete: sentinel_delete.sql
+    observe:
+      db: postgres-target
+      table: ${PG_TARGET_SCHEMA}.${TID}marker_tgt
+      key: id
+recover:
+  mode: stop
+  settle: 1
+  trigger:
+    kind: target-count
+    db: postgres-target
+    table: ${PG_TARGET_SCHEMA}.${TID}tgt
+    above: 0
+    below: 2
+    timeout: 90s
+    poll: 100ms
+  sentinel: true
+transactions:
+- session: a
+  op: begin
+  db: postgres-source
+  observe:
+    tables:
+    - table: ${PG_SOURCE_SCHEMA}.${TID}src
+      key: id
+    - table: ${PG_SOURCE_SCHEMA}.${TID}src_aux
+      key: id
+    slot: ${PG_SLOT}
+- session: b
+  op: begin
+  db: postgres-source
+  observe:
+    tables:
+    - table: ${PG_SOURCE_SCHEMA}.${TID}src
+      key: id
+    - table: ${PG_SOURCE_SCHEMA}.${TID}src_aux
+      key: id
+    slot: ${PG_SLOT}
+- session: a
+  op: sql
+  file: a.sql
+- session: a
+  op: savepoint
+  name: keep
+- session: a
+  op: sql
+  file: discard.sql
+- session: a
+  op: rollback_to
+  name: keep
+- session: b
+  op: sql
+  file: b.sql
+- session: b
+  op: commit
+- session: a
+  op: commit
+  when: post_recover
+snapshot_observer:
+  db: postgres-target
+  tables:
+    a:
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt
+      keys: [id]
+      columns:
+        id: integer
+        msg: text
+    b:
+      target: ${PG_TARGET_SCHEMA}.${TID}tgt_aux
+      keys: [id]
+      columns:
+        id: integer
+        msg: text
+  prefixes:
+  - a: expected/empty.csv
+    b: expected/empty.csv
+  - a: expected/b.csv
+    b: expected/b.csv
+  - a: expected/rows.csv
+    b: expected/rows.csv
+  interval: 50ms

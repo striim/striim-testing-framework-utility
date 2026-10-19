@@ -81,7 +81,7 @@ def _sh(argv, run=None):
     return run(argv)
 
 
-def supported(mode: str, ctx) -> tuple[bool, str]:
+def supported(mode: str, ctx, node=None) -> tuple[bool, str]:
     """Whether `mode` can run against this context. Returns (ok, reason).
 
     `kill` needs containers to kill. A native Striim (ctx.mode != "docker") has none, and
@@ -89,6 +89,8 @@ def supported(mode: str, ctx) -> tuple[bool, str]:
     by this harness -- so the test SKIPS rather than silently downgrading to `stop`, which
     exercises a different code path and would report a pass for a case never run.
     """
+    if node is not None and getattr(ctx, "mode", None) != "docker":
+        return False, "recover.node needs the Docker cluster"
     if mode == "kill" and getattr(ctx, "mode", None) != "docker":
         return False, ("recover.mode 'kill' needs the Docker cluster (it SIGKILLs the app "
                        f"node container); this run is mode={getattr(ctx, 'mode', None)!r}")

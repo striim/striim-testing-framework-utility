@@ -82,6 +82,20 @@ SLT_PG_ADMIN_PASSWORD=...
 - On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds) before it
   exits non-zero.
 
+## Striim peer API for node faults
+
+Named-node recovery uses the framework's two-app-node Docker cluster plus agent.
+Sample 17 faults the secondary worker and keeps the primary API (default 9080).
+The second-node REST mapping `SLT_STRIIM_NODE_HTTP_HOST_PORT` (default 9082) is
+needed only when the secondary is the survivor; the bundled metadata-primary
+fault is refused.
+Shared-mode reuse does not add missing port mappings. If the secondary must
+serve fallback reads and its mapping is missing, coordinate stack users and
+follow [UPGRADING.md](UPGRADING.md). Sample 17 needs no such recreation.
+The primary API host determines the peer host; Docker inspection supplies its
+published port. Native services can still support database/Kafka checks, but
+named-node Docker recovery is skipped against native Striim.
+
 ## Postgres (`postgres`)
 
 The default service; the samples use it. `postgres:16` with the `wal2json` plugin, started with
@@ -113,7 +127,8 @@ The default service; the samples use it. `postgres:16` with the `wal2json` plugi
   seeds and lifecycle cases alike; it does not change their expected rows.
 - **Your own Postgres for CDC** needs `wal_level=logical`, the `wal2json` plugin installed and
   allowed as an output plugin, and the `REPLICATION` attribute on the source user.
-- `exact:` comparisons and `lifecycle:` blocks read Postgres routes only.
+- Postgres supports typed `exact:` and lifecycle witnesses. Exact comparison also supports
+  both Spanner dialects and Kafka records; see the [route matrix](WHAT-IS-SUPPORTED.md#check-routes).
 
 ## Oracle (`oracle`)
 
@@ -224,6 +239,10 @@ Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `Kaf
 - A topic your app creates that the framework does not know about (a persisted stream's topic, for
   example) goes in `kafka_cleanup_topics:` so it is removed at the end.
 
+Kafka sentinel/absence cases require freshly acquired framework source/target topics,
+not a reused or custom unclaimed topic. See [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md)
+for the file counterpart, and [TEST-YAML.md](TEST-YAML.md) for Kafka/Spanner references.
+
 ## Spanner (`spanner`)
 
 Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (GoogleSQL) and `pgdb`
@@ -243,6 +262,10 @@ Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (Goo
   it as `ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json'`.
 - GoogleSQL targets are `<database>.<table>` (`gsql.emp`); PostgreSQL-dialect targets are
   `public.<table>`.
+- Assertion `target:` is the table name, such as `${TID}tgt`; the selected route
+  already chooses the database. A two-part name is passed to SQL as written, not
+  interpreted as a database override. Writer `Tables` uses its adapter-specific form above.
+  Start with [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
 - The emulator runs one read-write transaction at a time: run Spanner tests serially.
 
 ## GCS (`gcs`)
@@ -271,9 +294,15 @@ your instance, or skips naming the setting to set.
 
 1. Install the driver, an optional extra: `pip install -e ".[teradata]"` in the framework's
    environment, or `pip install teradatasql`.
-2. Give Striim the Teradata JDBC driver. The framework's Striim image does not include it: put the
-   jar in `scripts/live/services/striim/images/striim/deps/extra-lib/` (Docker mode), or in your
-   Striim install's `lib/` (native mode).
+2. Give Striim the Teradata JDBC driver. Docker mode: set `SLT_TERADATA_JDBC=1` (`.env` or the
+   shell). The run then fetches `terajdbc-20.00.00.46.jar` from Maven Central and builds it into
+   the Striim image; with `SLT_STRIIM_DEPS_MANIFEST` set, the manifest must name it. It is off by
+   default because Teradata's licence allows the driver only with a licensed Teradata platform.
+   Stop a kept cluster after setting it, so it is re-created from the new image; until then its
+   tests skip, naming the setting (or fail, for a service with `unavailable_policy: fail`).
+   Without a manifest, unsetting it stops the fetch but not the copy: to build without the driver,
+   also delete `scripts/live/services/striim/images/striim/deps/terajdbc-20.00.00.46.jar`. Native
+   mode: put the jar in your Striim install's `lib/`.
 3. Set your instance, in `.env` or the shell:
 
 | Setting | Live tier | Integration tier | Default |
@@ -343,6 +372,61 @@ other ports, so both tiers can run at once. Same accounts and passwords.
 | `servicenow` | your instance | `INT_SERVICENOW_HOST` and `INT_SERVICENOW_*` |
 
 Each one's settings are under `live_env` in `scripts/integration/services/<name>/service.yaml`.
+
+### Real Cloud Spanner
+
+The integration tier's `spanner` service can use a real Cloud Spanner instance instead of the
+emulator. You need a project, an instance, one GoogleSQL-dialect and one PostgreSQL-dialect
+database, all created already, and a service-account key file that can change their schemas.
+
+The key needs, on both databases: `spanner.instances.get`, `spanner.databases.get` and
+`spanner.databases.getDdl` (the existence and dialect check), `spanner.databases.updateDdl` and
+`spanner.databaseOperations.get` (`ddl:` and teardown), and `spanner.sessions.create`,
+`spanner.databases.select`, `spanner.databases.write` and
+`spanner.databases.beginOrRollbackReadWriteTransaction` (`seed:` and assertions; the module under
+test needs its own data permissions too). `roles/spanner.databaseAdmin` should cover all of
+them; this has not been checked against a narrower custom role. A permission refused during the
+check fails the case naming the first three.
+
+1. Set, in the shell or `.env`:
+
+   ```
+   INT_SPANNER_CREDENTIALS=/path/to/key.json
+   INT_SPANNER_PROJECT=my-project
+   INT_SPANNER_INSTANCE=my-instance
+   INT_SPANNER_GSQL_DB=my-gsql-db
+   INT_SPANNER_PG_DB=my-pg-db
+   ```
+
+2. Unset `INT_SPANNER_HOST`, `INT_SPANNER_PORT`, `INT_SPANNER_ADMIN_PORT` and
+   `SPANNER_EMULATOR_HOST`.
+3. Run with `SLT_PARALLEL=1`.
+
+What changes:
+
+- No emulator container starts. `${SPANNER_GSQL_URL}` and `${SPANNER_PG_URL}` become
+  `jdbc:cloudspanner:/projects/<project>/instances/<instance>/databases/<db>?credentials=<key path>`,
+  and `${SPANNER_CREDENTIALS}` is the key path. The module under test runs in a JVM on this
+  machine and reads the key from that path.
+- The framework creates and deletes no instance or database. It checks, once per test process,
+  that the instance and both databases exist with the right dialects, and fails naming the one
+  that does not.
+- Every statement the framework runs on Spanner (`ddl:`, `seed:`, `mid_run:`, teardown) must
+  name only objects that start with the case's `${TID}`, in the default schema: tables, indexes,
+  change streams, views and sequences; the tables they are created on, interleaved in, reference
+  or name as a synonym; the sequences a statement uses; and the tables after each `FROM` or
+  `JOIN` in a view. One statement per entry, with no `;` and no comment (`#`, `--`, `/*`) inside
+  it, and a `DROP` names one object. Anything else, `FOR ALL` change streams included, is
+  refused. Each entry is checked before any of its statements run; an earlier entry's objects
+  are already there and are kept, because the case then failed. A serial run has an empty
+  `${TID}`, so it is refused.
+- What the module under test writes is not checked: its settings must use `${TID}` names too.
+- A failed case keeps its tables, as on the emulator; drop them by hand. A passing case whose
+  teardown leaves any of its objects, cannot list one kind of them, or fails in any other way,
+  fails naming it.
+- A setting missing, or mixed with an emulator setting, fails the case naming the setting.
+- The `spanner_client` and `spanner_admins` pytest fixtures stay emulator-only and fail when
+  `INT_SPANNER_CREDENTIALS` is set.
 
 ## Connecting a SQL client
 
