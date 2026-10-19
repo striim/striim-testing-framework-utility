@@ -1872,59 +1872,44 @@ def pytest_collect_file(parent, file_path):
         return None
     return LiveYamlFile.from_parent(parent, path=file_path)
 
-def _declared_services(path) -> list:
-    """`requires:` read at COLLECTION time, for the per-service markers.
-
-    Deliberately a raw yaml read rather than load_manifest: collection must not fail on a
-    manifest that the loader would reject, because a broken manifest's error belongs at RUN
-    time where it names the file and the reason. A file we cannot parse simply gets no service
-    markers, which makes it run in the default (serial-safe) bucket rather than vanish.
-    """
+def _collection_manifest(path):
+    """Read once for collection; invalid manifests still get their error at run time."""
     try:
-        raw = yaml.safe_load(path.read_text()) or {}
+        raw = yaml.safe_load(path.read_text())
     except (OSError, yaml.YAMLError):
-        # Narrow on purpose. A broad `except Exception` here silently swallowed a missing
-        # import while writing this, leaving every test unmarked and the selector matching
-        # nothing -- a bug that looks exactly like "no spanner tests exist". Unparseable YAML
-        # and unreadable files are the two conditions worth tolerating; anything else is a
-        # defect and should surface.
-        return []
-    if not isinstance(raw, dict):
-        return []
+        # Keep this narrow: programming errors must surface instead of silently
+        # leaving every test unmarked.
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _declared_services(path, raw=None) -> list:
+    """Collection-time service markers, without run-time manifest validation."""
+    raw = _collection_manifest(path) if raw is None else raw
     return [s for s in (raw.get("requires") or []) if isinstance(s, str)]
 
-def _declared_depth(path):
-    """`depth:` read at COLLECTION time, mirroring `_declared_services` above.
 
-    Same rationale: collection must not fail on a manifest `load_manifest` would reject. A
-    file we cannot parse, or that omits/misspells `depth`, simply gets no depth marker rather
-    than vanishing or crashing collection -- L1's lint gate is where a missing/invalid depth
-    is a hard error, not here.
-    """
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except (OSError, yaml.YAMLError):
-        return None
-    if not isinstance(raw, dict):
-        return None
+def _declared_depth(path, raw=None):
+    """Missing or invalid depth gets no marker; lint owns validation."""
+    raw = _collection_manifest(path) if raw is None else raw
     depth = raw.get("depth")
     return depth if isinstance(depth, str) else None
 
-def _declared_tags(path):
+
+def _declared_tags(path, raw=None):
     """Read collection labels without moving manifest validation out of run time."""
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except (OSError, yaml.YAMLError):
-        return []
-    tags = raw.get("tags") if isinstance(raw, dict) else None
+    raw = _collection_manifest(path) if raw is None else raw
+    tags = raw.get("tags")
     return [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
 
 
 class LiveYamlFile(pytest.File):
     def collect(self):
+        raw = _collection_manifest(self.path)
         yield LiveItem.from_parent(self, name=self.path.parent.name, manifest_path=self.path,
-                                   services=_declared_services(self.path),
-                                   depth=_declared_depth(self.path), tags=_declared_tags(self.path))
+                                   services=_declared_services(self.path, raw),
+                                   depth=_declared_depth(self.path, raw),
+                                   tags=_declared_tags(self.path, raw))
 
 def _prepare_service(defn, env, mode):
     why = _prestart.prepare_selected(defn, env, mode)
