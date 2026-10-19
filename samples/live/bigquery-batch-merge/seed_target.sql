@@ -1,0 +1,1 @@
+INSERT INTO `${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt` VALUES (1, 'old'), (2, 'keep');

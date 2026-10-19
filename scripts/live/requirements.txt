@@ -8,6 +8,7 @@ psycopg2-binary>=2.9
 oracledb>=2.5
 google-cloud-spanner>=3.40
 google-cloud-storage>=2
+google-cloud-bigquery>=3.27,<4
 confluent-kafka>=2
 fastavro>=1
 pymssql>=2.3

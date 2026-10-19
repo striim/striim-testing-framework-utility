@@ -14,6 +14,9 @@ object by the same name. Every hook is optional; the framework calls the ones th
     checks (``registry.unavailable``) pass.
 ``compose_env(env) -> dict``
     Settings to publish to compose (and this process) before the service is brought up.
+``build_required(env) -> bool``
+    Whether Compose should rebuild the service recipe (default True). Return False only
+    for an explicitly supplied prebuilt image; validate that prerequisite in unavailable.
 ``admins(base, defn) -> dict``
     The connections a test routes ``ddl:``/``data:``/``seed:`` to, keyed ``<service>-<role>``.
     ``base`` is the resolved connection; the driver may complete it in place.

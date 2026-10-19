@@ -246,7 +246,7 @@ def _striim_dir():
 # bare fake config in seven hermetic tests, and marker registration is static configuration
 # anyway -- it does not belong in a hook.
 _SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "gcs", "kafka", "mysql", "teradata",
-                    "vertica", "servicenow")
+                    "vertica", "servicenow", "bigquery")
 
 
 def _registered_markers(config) -> set:
@@ -1011,7 +1011,7 @@ def _spanner_admins(base) -> list:
 
 _FAKE_KEY_NAME = "fake-gcp-key.json"
 
-def _make_fake_gcp_key(token_uri: str) -> str:
+def _make_fake_gcp_key(token_uri: str, project_id: str = "test-project") -> str:
     # A throwaway service-account JSON with a locally-generated, structurally-valid
     # RSA key that authenticates to nothing. Spanner needs only a *parseable* key
     # (SPANNER_EMULATOR_HOST skips auth). GCS always fetches a token from `token_uri`,
@@ -1029,23 +1029,27 @@ def _make_fake_gcp_key(token_uri: str) -> str:
             f"openssl genpkey failed (rc={r.returncode}, stderr={r.stderr.strip()!r}); "
             "cannot build the throwaway GCP service-account key. Ensure 'openssl' is on PATH.")
     return json.dumps({
-        "type": "service_account", "project_id": "test-project",
+        "type": "service_account", "project_id": project_id,
         "private_key_id": "0000000000000000000000000000000000000000",
         "private_key": pem,
-        "client_email": "fake-sa@test-project.iam.gserviceaccount.com",
+        "client_email": f"fake-sa@{project_id}.iam.gserviceaccount.com",
         "client_id": "000000000000000000000",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": token_uri,
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/fake-sa%40test-project.iam.gserviceaccount.com",
+        "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/fake-sa%40{project_id}.iam.gserviceaccount.com",
         "universe_domain": "googleapis.com"}, indent=2)
 
-def ensure_fake_gcp_key(config, ctx) -> None:
+def ensure_fake_gcp_key(config, ctx, *, key_name: str = _FAKE_KEY_NAME,
+                        token_uri: str | None = None, project_id: str = "test-project") -> None:
     # Upload the throwaway GCP key into the Striim server's UploadedFiles so the
     # spanner/gcs tests' `ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json'`
     # resolves — no manual make-fake-key.sh step. Once per session.
-    if getattr(config, "_slt_gcp_key_done", False):
+    done_flag = "_slt_gcp_key_done" if key_name == _FAKE_KEY_NAME else "_slt_bigquery_key_done"
+    if getattr(config, done_flag, False):
         return
+    if not re.fullmatch(r"[A-Za-z0-9_-]+\.json", key_name):
+        raise ValueError("fake service-account key must be a JSON basename")
     import tempfile, subprocess, os as _os
     # token_uri -> the services/gcs fake token server, reachable from the Striim
     # server (host.docker.internal for the Docker cluster, localhost for native).
@@ -1054,7 +1058,7 @@ def ensure_fake_gcp_key(config, ctx) -> None:
     # remapping a busy 4444 moved the token server and left this key pointing at the old port --
     # the same "container moves, client does not" bug docker_env fixes elsewhere.
     token_port = _os.environ.get("SLT_GCS_TOKEN_HOST_PORT", "").strip() or "4444"
-    content = _make_fake_gcp_key(f"http://{token_host}:{token_port}/token")
+    content = _make_fake_gcp_key(token_uri or f"http://{token_host}:{token_port}/token", project_id)
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         f.write(content)
         path = f.name
@@ -1063,16 +1067,19 @@ def ensure_fake_gcp_key(config, ctx) -> None:
         if ctx.mode == "docker":
             # The single-topology apps deploy on the `default` group (primary + node).
             for node in stack.app_nodes():
-                subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{_FAKE_KEY_NAME}"],
-                               capture_output=True, text=True)
+                try:
+                    subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{key_name}"],
+                                   capture_output=True, text=True, check=True)
+                except subprocess.CalledProcessError as exc:
+                    raise RuntimeError(f"fake key upload to {node} ({key_name}) failed: {exc.stderr}") from exc
         else:  # native Striim
             home = _os.environ.get("STRIIM_HOME")
             if home:
                 import shutil
-                shutil.copy(path, _os.path.join(home, "UploadedFiles", _FAKE_KEY_NAME))
+                shutil.copy(path, _os.path.join(home, "UploadedFiles", key_name))
     finally:
         _os.unlink(path)
-    config._slt_gcp_key_done = True
+    setattr(config, done_flag, True)
 
 def _gcs_ensure(admin, bucket, attempts: int = 20, delay: float = 1.5) -> None:
     # fake-gcs-server has no healthcheck and needs a moment after the container starts;
@@ -1864,7 +1871,10 @@ def _rendered_tql(m: TestManifest, tokens: dict, upload_renames: dict) -> str:
     # the usual ${...} token render (upload_renames' values are already fully rendered,
     # so re-rendering them here is a harmless no-op).
     text = appactions.apply_upload_renames((m.source_dir / m.tql).read_text(), upload_renames)
+    from livetest.bigquerycase import validate_writer
+    validate_writer(m, text)
     _slt_out = render(text, tokens)
+    validate_writer(m, _slt_out, tokens)
     _slt_inputs.record_on(m, "tql", m.tql, _slt_out, path=m.source_dir / m.tql)   # the TQL as sent
     return _slt_out
 
@@ -2037,6 +2047,9 @@ class LiveItem(pytest.Item):
         # A case without an exact: block keeps its old outcome for a missing input: the send fails, or it skips first.
         self._slt_inputs = _slt_inputs.snapshot(m, self.manifest_path, strict=m.exact is not None)
         m._slt_inputs = self._slt_inputs   # send sites that hold only the manifest record through it
+        from livetest.bigquerycase import validate_writer
+        if "bigquery" in m.requires:
+            validate_writer(m, (m.source_dir / m.tql).read_text())
         ctx = _resolve_striim(self.config)
         if ctx is None:
             self._slt_infra_skip = "cluster"   # see pytest_runtest_makereport
@@ -2350,12 +2363,29 @@ class LiveItem(pytest.Item):
                         else:
                             _drv_prepare()
                     for _key, _admin in _drv_admins.items():
-                        admins[_key] = {"admin": _admin, "schema": None}
+                        admins[_key] = (_admin if isinstance(_admin, dict) and "admin" in _admin
+                                        else {"admin": _admin, "schema": None})
                 tokens.update(build_service_tokens(defn, resolved, schema))
                 if svc == "gcs" and gcs_ip:
                     # Override the host in the setHost() endpoint with the IP (UrlValidator
                     # rejects host.docker.internal); GcsAdmin still uses base host:port.
                     tokens["GCS_ENDPOINT"] = f"http://{gcs_ip}:{resolved.base['port']}"
+
+                if svc == "bigquery":
+                    endpoints_explicit = all(os.environ.get(k) for k in (
+                        "SLT_BIGQUERY_WRITER_ENDPOINT", "SLT_BIGQUERY_TOKEN_URI"))
+                    endpoint_ip = None if endpoints_explicit else _gcs_endpoint_ip(ctx)
+                    tokens["BIGQUERY_ENDPOINT"] = os.environ.get("SLT_BIGQUERY_WRITER_ENDPOINT") or f"http://{endpoint_ip}:{resolved.base['port']}"
+                    from urllib.parse import urlsplit
+                    from livetest.bigqueryadmin import local_http
+                    local_http(tokens["BIGQUERY_ENDPOINT"])
+                    token_uri = os.environ.get("SLT_BIGQUERY_TOKEN_URI") or f"http://{endpoint_ip}:{resolved.base['token_port']}/token"
+                    token_url = urlsplit(token_uri)
+                    if token_url.path != "/token":
+                        raise ValueError("SLT_BIGQUERY_TOKEN_URI must use the dedicated /token path")
+                    local_http(token_url._replace(path="").geturl())
+                    ensure_fake_gcp_key(self.config, ctx, key_name="fake-bigquery-key.json",
+                                        token_uri=token_uri, project_id=resolved.base["project"])
 
             def _run_files(items, phase="seed"):
                 for db, fname in items:
@@ -2386,9 +2416,18 @@ class LiveItem(pytest.Item):
             # — a no-op on a clean slate.
             # C7.6: reset only what a prior attempt of this identity recorded,
             # by exact name, then acquire the run-scoped namespace (refused if it already exists).
+            if m.lifecycle is not None and m.lifecycle.uses_bigquery_cdc():
+                # Generated stage names are not predictable. Contain them in a fresh,
+                # ledger-owned dataset, before allowing any writer or fixture DDL.
+                _bq_entry = require_service_admin(admins, "bigquery-target", m.name, "CDC lifecycle")
+                _bq = _bq_entry["admin"].for_cdc(ident)
+                admins["bigquery-target"] = {"admin": _bq, "schema": _bq.dataset}
+                tokens["BIGQUERY_DATASET"] = _bq.dataset
             _report(m.name, "resetting this identity's recorded resources")
             ledger.reset(client=client, admins=admins, ctx=ctx, tokens=tokens)
             ledger.acquire_namespace(client)
+            if m.lifecycle is not None and m.lifecycle.uses_bigquery_cdc():
+                ledger.acquire_bigquery_dataset(admins)
             _server_tokens = {"STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
             for _key in _server_tokens:
                 tokens.pop(_key, None)
@@ -2423,7 +2462,9 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)], phase="ddl"), acquire_sinks=m.lifecycle is not None)
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)], phase="ddl"),
+                                 record=lambda _db, _f, _sql: self._slt_inputs.record(
+                                     "ddl", _f, _sql, path=m.file_path(_f)), acquire_sinks=m.lifecycle is not None)
             if m.transaction_steps:
                 from livetest.transactions import Pool
                 _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),

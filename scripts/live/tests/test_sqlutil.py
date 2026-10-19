@@ -228,3 +228,18 @@ def test_mysql_unterminated_block_comment_raises_instead_of_dropping_the_rest():
 def test_shared_splitter_keeps_its_block_comment_behaviour():
     # Oracle/MSSQL/Spanner callers: unchanged by the MySQL rules.
     assert split_sql_statements("SELECT 1; /* open") == ["SELECT 1"]
+
+
+@pytest.mark.parametrize('literal', [r"'x\'; y'", '"a;b"', '`a;b`',
+    "'''a';b'''", '"""a";b"""', r"r'a\';b'", r'b"a\";b"', r"br'a\';b'"])
+def test_bigquery_quoting_and_comments(literal):
+    from livetest.sqlutil import split_bigquery_statements
+    assert split_bigquery_statements(f'SELECT {literal}; # ignored ;\nSELECT/* ; */ 2;') == [
+        f'SELECT {literal}', 'SELECT  2']
+
+
+@pytest.mark.parametrize('sql', ["SELECT 'unfinished", 'SELECT `unfinished', 'SELECT /* unfinished'])
+def test_bigquery_unterminated_text_fails_loudly(sql):
+    from livetest.sqlutil import split_bigquery_statements
+    with pytest.raises(ValueError, match='unterminated GoogleSQL'):
+        split_bigquery_statements(sql)

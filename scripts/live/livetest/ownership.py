@@ -18,6 +18,10 @@ computed name or an unresolved intent:
 * **Unsupported kinds are never deleted.** Tables of other engines, Kafka topics, GCS buckets and OP
   uploads cannot be acquired by the ledger (unsupported resource type): they are left in place and recorded as
   verification gaps, so such a run never qualifies.
+* **BigQuery.** Fixture tables use exact-name acquisition. CDC uses a fresh per-test dataset,
+  refused if it already exists and confirmed before any writer starts. That explicit dataset scope
+  includes generated staging objects. Cleanup stops the app, removes fixture tables, deletes only
+  the confirmed dataset with its contents and verifies absence. The shared bootstrap is never acquired.
 * **Identity and target binding.** A ledger file is imported only for the same full identity and
   ledger version. Every attempt records its targets (Postgres endpoint and system identifier, the
   Striim URL, the docker app-node containers and their ids). A prior attempt's entry is reset or
@@ -75,7 +79,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("oracle-trigger", "namespace", "deployment-group", "pg-view", "pg-table", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("oracle-trigger", "namespace", "deployment-group", "pg-view", "pg-table", "bigquery-table", "bigquery-dataset", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -342,6 +346,8 @@ def snapshot_targets(admins, ctx, nodes=None, env=None) -> dict:
     routes = {}
     for route, e in (admins or {}).items():
         admin = (e or {}).get("admin")
+        if route == "bigquery-target":
+            routes[route] = {"endpoint": admin.endpoint, "project": admin.project, "dataset": admin.dataset}
         dsn = getattr(admin, "dsn", None)
         if route in PG_ROUTES and isinstance(dsn, dict):
             rec = {k: v for k, v in dsn.items() if "password" not in k}
@@ -481,7 +487,7 @@ class Ledger:
         """Witness ownership: a confirmed resource of this attempt on ``db``, or a normalized path
         inside a confirmed owned directory of this attempt."""
         mine = self.ident.attempt
-        if kind in ("pg-table", "pg-slot"):
+        if kind in ("pg-table", "pg-slot", "bigquery-table"):
             return any(e["kind"] == kind and e["name"] == name and e.get("db") == db and e["attempt"] == mine
                        and e["state"] == "confirmed" for e in self.entries)
         if kind in ("spanner-table", "topic"):
@@ -531,6 +537,11 @@ class Ledger:
             if not was.get("systemIdentifier") or was.get("systemIdentifier") != cur.get("systemIdentifier"):
                 return (f"{entry.get('db')} backend identity changed or unreadable ({was.get('systemIdentifier')!r} "
                         f"-> {cur.get('systemIdentifier')!r})")
+        elif kind in ("bigquery-table", "bigquery-dataset"):
+            was = (rec.get("routes") or {}).get(entry.get("db"))
+            cur = (now.get("routes") or {}).get(entry.get("db"))
+            if not was or not cur or was != cur:
+                return "BigQuery endpoint/project/dataset binding changed or unreadable"
         elif kind in ("spanner-table", "kafka-topic"):
             # These backends expose no immutable incarnation id. Never replay a prior
             # attempt's delete using only a matching endpoint configuration.
@@ -651,7 +662,21 @@ class Ledger:
                                  f"created; it is left untouched")
         return self.add("namespace", ns, None, "confirmed", "absent before this attempt; created by its TQL")
 
-    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one, acquire_sinks=False) -> None:
+    def acquire_bigquery_dataset(self, admins) -> dict:
+        admin = _lifecycle._admin(admins, "bigquery-target")
+        if not admin.dataset.endswith("_" + self.ident.per_test):
+            raise OwnershipError("BigQuery CDC requires a per-test dataset; shared bootstrap is never acquired")
+        name = admin.project + "." + admin.dataset
+        if admin.dataset_present():
+            raise OwnershipError(f"collision:bigquery-dataset:{name}; refused, left untouched")
+        entry = self.add("bigquery-dataset", name, "bigquery-target")
+        admin.create_dataset()
+        if not admin.dataset_present():
+            raise OwnershipError(f"BigQuery dataset creation could not be confirmed: {name}")
+        self._set(entry, "confirmed")
+        return entry
+
+    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one, record=None, acquire_sinks=False) -> None:
         """DDL one file at a time: refuse unsupported resources, acquire (pre-existence check), run,
         confirm from the catalog. The original exception of a failed file always propagates."""
         for db, fname in files:
@@ -661,7 +686,10 @@ class Ledger:
                 raise OwnershipError(f"unsupported-resource: {fname} runs CREATE {bad.group(1).upper()}, which the "
                                      f"ownership ledger does not support; refused before "
                                      f"execution")
-            if acquire_sinks and db in ("spanner-google", "spanner-postgres"):
+            if db == "bigquery-target":
+                self._bigquery_ddl(sql, db, fname, admins, tokens, record)
+                continue
+            elif acquire_sinks and db in ("spanner-google", "spanner-postgres"):
                 admin = _lifecycle._admin(admins, db)
                 from livetest.spanneradmin import _check_table
                 raw_tables = _CREATE_TABLE.findall(sql)
@@ -734,6 +762,34 @@ class Ledger:
                 except Exception as exc:    # noqa: BLE001 - never mask the file's own exception
                     self.gaps.append(f"{db}: could not confirm objects of {fname} from the catalog: {exc}")
 
+    def _bigquery_ddl(self, sql, db, fname, admins, tokens, record=None):
+        from livetest.sqlutil import split_bigquery_statements
+        admin = _lifecycle._admin(admins, db)
+        statements = split_bigquery_statements(sql)
+        parsed = []
+        for stmt in statements:
+            # No IF NOT EXISTS / OR REPLACE: concurrent CREATE must fail rather than adopt a table.
+            match = re.match(r"CREATE\s+TABLE\s+(`[^`]+`|[A-Za-z_][A-Za-z0-9_.-]*)\s*\(", stmt, re.I)
+            if not match:
+                raise OwnershipError(f"unsupported-resource: {fname}: owned BigQuery DDL accepts CREATE TABLE only")
+            name = admin.ref(match[1].strip("`"))
+            if not name.split(".")[-1].startswith(tokens.get("TID") or "\0"):
+                raise OwnershipError(f"unsupported-resource: BigQuery table {name} must start with this attempt's TID")
+            if name in [n for _, n in parsed]:
+                raise OwnershipError(f"unsupported-resource: duplicate CREATE TABLE {name} in {fname}")
+            if admin.table_present(name):
+                self._foreign("bigquery-table", name, "pre-existing table; never acquired or deleted")
+                raise OwnershipError(f"collision:bigquery-table:{name} already exists; refused, left untouched")
+            parsed.append((stmt, name))
+        if parsed and record is not None:
+            record(db, fname, sql)
+        for stmt, name in parsed:
+            intent = self.add("bigquery-table", name, db)
+            # An ambiguous failure retains an unconfirmed intent; never acquire an unknown table.
+            admin.run_sql(stmt)
+            if not admin.table_present(name):
+                raise OwnershipError(f"BigQuery CREATE did not produce {name}")
+            self._set(intent, "confirmed")
     def acquire_topic(self, admin, topic, create):
         if admin.topic_exists(topic):
             raise OwnershipError(f"collision:kafka-topic:{topic} already exists; left untouched")
@@ -863,6 +919,13 @@ class Ledger:
                 raise RuntimeError(f"not-owned-dependent: {name} is left in place; an object that depends on it "
                                    f"is not in this run's ledger or was not dropped before it, and nothing is "
                                    f"dropped with CASCADE ({str(exc).strip()})") from None
+        elif kind == "bigquery-table":
+            _lifecycle._admin(admins, db).drop_table(name)
+        elif kind == "bigquery-dataset":
+            admin = _lifecycle._admin(admins, db)
+            if name != admin.project + "." + admin.dataset:
+                raise OwnershipError("BigQuery dataset binding differs from the confirmed entry")
+            admin.drop_dataset()
         elif kind == "pg-slot":
             admin = _lifecycle._admin(admins, db)
             if slot_on_active is None:
@@ -893,6 +956,10 @@ class Ledger:
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
+        if kind == "bigquery-table":
+            return not _lifecycle._admin(admins, db).table_present(name)
+        if kind == "bigquery-dataset":
+            return not _lifecycle._admin(admins, db).dataset_present()
         if kind == "deployment-group":
             return name not in deployment_groups(client)
         if kind == "pg-function":
@@ -924,7 +991,7 @@ class Ledger:
                     deadline=None, slot_on_active=None) -> None:
         for kind in CLEANUP_ORDER:
             of_kind = [x for x in entries if x["kind"] == kind]
-            for e in (of_kind[::-1] if kind in ("pg-view", "pg-table") else of_kind):
+            for e in (of_kind[::-1] if kind in ("pg-view", "pg-table", "bigquery-table") else of_kind):
                 if deadline is not None and deadline.expired():
                     self._set(e, "delete-failed", "cleanup-deadline: not attempted")
                     if result is not None:
@@ -1277,6 +1344,10 @@ def replay(ledger_path, *, admins=None, client=None, ctx=None, env=None, pid_ali
                 full[f"{which}_password"] = (_service_setting(f"SLT_PG_{which.upper()}_PASSWORD", env)
                                              or defaults.get(f"{which}_password"))
             admins[route] = {"admin": PgAdmin(full, role=full.pop("role", "source")), "schema": None}
+        bq = _latest_binding(doc, lambda b: (b.get("routes") or {}).get("bigquery-target"))
+        if bq:
+            from livetest.bigqueryadmin import BigQueryAdmin
+            admins["bigquery-target"] = {"admin": BigQueryAdmin(bq), "schema": bq["dataset"]}
         if any(entry["kind"] == "oracle-trigger" for entry in doc["entries"]):
             from livetest.oracle_ownership import replay_admins
             admins.update(replay_admins(doc, env))

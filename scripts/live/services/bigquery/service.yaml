@@ -1,0 +1,39 @@
+name: bigquery
+compose: compose.yaml
+container: slt-bigquery
+driver: bigquery_driver
+isolation: none
+live_override_env: SLT_BIGQUERY_HOST
+python_module: google.cloud.bigquery
+python_module_hint: Install the live engine dependencies, including google-cloud-bigquery.
+docker_defaults:
+  host: localhost
+  port: 9050
+  token_port: 9051
+  project: test-project
+  dataset: slt
+docker_env:
+  writer_endpoint: SLT_BIGQUERY_WRITER_ENDPOINT
+  token_uri: SLT_BIGQUERY_TOKEN_URI
+  port: SLT_BIGQUERY_REST_HOST_PORT
+  token_port: SLT_BIGQUERY_TOKEN_HOST_PORT
+  project: SLT_BIGQUERY_PROJECT
+  dataset: SLT_BIGQUERY_DATASET
+live_env:
+  writer_endpoint: SLT_BIGQUERY_WRITER_ENDPOINT
+  token_uri: SLT_BIGQUERY_TOKEN_URI
+  host: SLT_BIGQUERY_HOST
+  port: SLT_BIGQUERY_PORT
+  token_port: SLT_BIGQUERY_TOKEN_HOST_PORT
+  project: SLT_BIGQUERY_PROJECT
+  dataset: SLT_BIGQUERY_DATASET
+live_defaults:
+  port: 9050
+  token_port: 9051
+  project: test-project
+  dataset: slt
+provides:
+  BIGQUERY_PROJECT: "{project}"
+  BIGQUERY_DATASET: "{dataset}"
+  BIGQUERY_ENDPOINT: "http://{view_host}:{port}"
+  BIGQUERY_SERVICE_ACCOUNT_KEY: UploadedFiles/fake-bigquery-key.json

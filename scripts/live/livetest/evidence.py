@@ -873,18 +873,21 @@ def _diff_source_bound(c: dict, record: dict, bindings, owned) -> bool:
         return False
     if "error" in c or (c.get("actual") or {}).get("owned") is not True:
         return True
-    return any(isinstance(r, dict) and r.get("kind") == ("spanner-table" if route.startswith("spanner-") else "pg-table") and r.get("db") == route
-               and r.get("name") == (table if route.startswith("spanner-") else table.lower()) and r.get("state") in _CREATED_STATES for r in (owned or []))
+    kind = "bigquery-table" if route == "bigquery-target" else "spanner-table" if route.startswith("spanner-") else "pg-table"
+    name = table if (route == "bigquery-target" or route.startswith("spanner-")) else table.lower()
+    return any(isinstance(r, dict) and r.get("kind") == kind and r.get("db") == route
+               and r.get("name") == name and r.get("state") in _CREATED_STATES for r in (owned or []))
 
 
 @functools.lru_cache(maxsize=1)
 def _diff_source():
     """The route-bound source table witness; Spanner also permits an unqualified table."""
     from livetest import canon
-    routes = "|".join(re.escape(r) for r in canon.DB_ROUTES)
+    pg_routes = "|".join(re.escape(r) for r in canon.DB_ROUTES if r != "bigquery-target")
     ident = r"[A-Za-z_][A-Za-z0-9_]*"
+    project = r"[a-z][a-z0-9-]{4,61}[a-z0-9]"
     spanner = "|".join(re.escape(r) for r in canon.DB_ROUTES if r.startswith("spanner-"))
-    return re.compile(rf"^(?:(?:{routes}):{ident}\.{ident}|(?:{spanner}):{ident})$")
+    return re.compile(rf"^(?:(?:{pg_routes}):{ident}\.{ident}|(?:{spanner}):{ident}|bigquery-target:{project}\.{ident}\.{ident})$")
 
 
 _DECLARATION_KEYS = {"columns", "ignore", "keys", "order", "order_by", "profile"}

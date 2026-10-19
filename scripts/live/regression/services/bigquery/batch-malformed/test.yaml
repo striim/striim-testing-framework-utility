@@ -1,0 +1,26 @@
+name: bigquery-batch-malformed
+purpose: Malformed numeric input fails the direct batch load with a numeric diagnostic
+tql: app.tql
+topology: single
+requires:
+- postgres
+- bigquery
+timeout: 180
+tags:
+- sample
+- bigquery
+- initial-load
+- exact
+- batch-load
+ddl:
+- file: ddl_source.sql
+  db: postgres-source
+- file: ddl_target.sql
+  db: bigquery-target
+seed:
+- file: seed.sql
+  db: postgres-source
+  when: pre_deploy
+expect_halt: true
+expect_halt_contains:
+- invalid INT64 CSV value

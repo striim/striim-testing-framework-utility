@@ -170,3 +170,34 @@ def test_insert_failure_is_recorded_not_masked(pipe):
     s, reason, watch = _run(pipe)
     assert reason.startswith("error:sentinel insert failed: permission denied")
     assert any("permission denied" in str(o["value"]) for o in watch.observations)
+
+
+@pytest.mark.parametrize('fault', ['none', 'drop-delete', 'wrong-table'])
+def test_bigquery_same_writer_sentinel_requires_both_steps(pipe, fault):
+    spec = _spec(sentinel={'db': 'postgres-source', 'insert': 'i.sql', 'delete': 'd.sql',
+                          'observe': {'db': 'bigquery-target', 'table': '${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}tgt', 'key': 'id'}})
+    assert spec.uses_bigquery_cdc() and not _spec().uses_bigquery_cdc()
+    writer = pipe.writer()
+    def run(sql, remaining):
+        if fault == 'drop-delete' and sql.startswith('DELETE'): return
+        writer.run(sql, remaining)
+    def count(table, key, value, remaining):
+        assert table == 'test-project.slt.t123456789_tgt' and key == 'id'
+        return int(value in pipe.target) if fault != 'wrong-table' else 0
+    admin = SimpleNamespace(ref=lambda t: t, count_key=count)
+    admins = {'postgres-source': {'admin': SimpleNamespace(probe=SimpleNamespace(run=run))},
+              'bigquery-target': {'admin': admin}}
+    tokens = {**TOKENS, 'BIGQUERY_PROJECT': 'test-project', 'BIGQUERY_DATASET': 'slt'}
+    s = lifecycle.Sentinel(spec, admins, tokens, IDENT, 'done', {}, SQL.__getitem__, lambda: 4242)
+    watch = lifecycle.Watch('sentinel', 'c', lifecycle.Deadline(3, FakeClock()))
+    assert s.run(watch) == ('satisfied' if fault == 'none' else 'deadline')
+    if fault == 'wrong-table': assert not any(x[0] == 'delete' for x in pipe.log)
+
+
+def test_file_sentinel_does_not_allocate_a_bigquery_dataset():
+    from livetest.manifest import load_manifest
+    from pathlib import Path
+    sample = Path(__file__).resolve().parents[4] / 'samples/live/10-bounded-nothing/test.yaml'
+    manifest = load_manifest(sample)
+    assert manifest.lifecycle.sink == 'file'
+    assert manifest.lifecycle.uses_bigquery_cdc() is False

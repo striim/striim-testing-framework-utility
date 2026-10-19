@@ -1288,6 +1288,17 @@ assert:
 Nothing is truncated: a side over either limit fails with `canonical-limit-exceeded`. Set the limits
 near your data's size, so a runaway target fails fast.
 
+The local BigQuery service also supports `bigquery-target` reads. Use a fully qualified
+`${BIGQUERY_PROJECT}.${BIGQUERY_DATASET}.${TID}table` and require `bigquery`.
+The reader preserves case and scalar INT64, NUMERIC, TIMESTAMP, DATETIME, DATE, BYTES,
+BOOL and STRING values. Nested/repeated fields, JSON, GEOGRAPHY and floating point fields
+are refused, including on empty tables. Its REST transport caps response bytes before JSON
+parsing, reads at most `max_rows + 1`, and stops after 128 result pages. Raw row bytes also
+have a conservative transfer cap of twice `max_bytes`; canonical bytes retain the exact
+`max_bytes` limit. A disposable reader process enforces the total deadline even when a server
+trickles bytes. Assertion details retain query job identifiers. Cancellation is bounded and
+best effort; it does not prove server rollback.
+
 ### `exact:` on a spec
 
 `exact: true` takes every default. The mapping form:
@@ -1545,6 +1556,11 @@ file gives: fill any `NOT NULL` columns there.
   a freshly owned Kafka topic, or an owned file.
   File sinks require Docker. Kafka completion must be sentinel, with sentinel
   or source-progress readiness. See the output references below.
+  BigQuery targets additionally support finite `initial-load` counts and bounded batch MERGE CDC sentinels.
+  BigQuery CDC requires Postgres source injection and sentinel readiness/completion; row-count completion is refused.
+  The framework allocates a fresh ledger-owned per-test dataset before DDL/TQL to contain generated staging.
+  Pre-existing datasets are refused and the shared bootstrap dataset is preserved. Use MERGE: APPENDONLY
+  cannot satisfy an insert/delete witness. See [the MERGE sample](../samples/live/bigquery-batch-merge/).
 - **Paths.** In a test with a `lifecycle:` block, every `assert.file` path, every `server_files`
   `dest`, and the block's own `path`s start with `${OWNED_DIR}/`, with no `.`, `..` or empty parts.
   `${OWNED_DIR}` is a directory on the Striim nodes that the run creates for itself and removes at
@@ -1559,7 +1575,7 @@ file gives: fill any `NOT NULL` columns there.
   observations.
 
 **Clean-up (`reset: owned`).** The run records each object before it creates it, and removes only
-those, by exact name: Postgres tables and replication slots, acquired Spanner sink tables and Kafka topics, the namespace, and `${OWNED_DIR}`. An
+those, by exact name: Postgres tables and replication slots, BigQuery tables, acquired Spanner sink tables and Kafka topics, the namespace, and `${OWNED_DIR}`. An
 object with the same name that the run did not create is left alone and fails the run
 (`collision:<kind>:<name>`). Tables on other database engines are not tracked and are reported as unverified.
 With `--keep-resources` nothing is removed. Replay can remove the saved Postgres/file

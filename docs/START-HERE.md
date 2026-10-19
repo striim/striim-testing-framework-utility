@@ -50,7 +50,7 @@ Both run the same tests. [WHAT-IS-SUPPORTED.md](WHAT-IS-SUPPORTED.md) has the de
 ## Services
 
 A test lists the databases and systems it needs under `requires:` (`postgres`, `oracle`, `mssql`,
-`mysql`, `vertica`, `kafka`, `spanner`, `gcs`). The framework starts each one in Docker with
+`mysql`, `vertica`, `kafka`, `spanner`, `gcs`, `bigquery`). The framework starts each one in Docker with
 test-only accounts, or reuses it if it is running. Set a service's host and it uses your instance
 instead. Teradata and ServiceNow are always your own instance. [SERVICES.md](SERVICES.md).
 

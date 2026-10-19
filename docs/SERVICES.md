@@ -45,6 +45,7 @@ the setting when the port is busy.
 | `kafka` | Confluent 7.6.1: Kafka, ZooKeeper, Schema Registry | n/a | 9092, 19092, 8081 | `kafka` | `SLT_KAFKA_HOST` |
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
+| `bigquery` | user-supplied BigQuery emulator image + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -133,6 +134,7 @@ The default service; the samples use it. `postgres:16` with the `wal2json` plugi
   allowed as an output plugin, and the `REPLICATION` attribute on the source user.
 - Postgres supports typed `exact:` and lifecycle witnesses. Exact comparison also supports
   both Spanner dialects and Kafka records; see the [route matrix](WHAT-IS-SUPPORTED.md#check-routes).
+- Local `bigquery-target` supports bounded scalar exact reads, finite initial loads and batch MERGE sentinels with Postgres source probes.
 
 ## Oracle (`oracle`)
 
@@ -574,3 +576,40 @@ With the hosts and ports above, from this machine:
    with "Cannot generate database URL with empty sample URL template".
 4. Use port 9010 (gRPC), not 9020, and keep `autoConfigEmulator=true`: it points the driver at the
    emulator and turns off TLS and credentials.
+
+## BigQuery emulator (`bigquery`)
+
+Supply a qualified local emulator image through `SLT_BIGQUERY_IMAGE`, as described in
+[the service README](../scripts/live/services/bigquery/README.md). This experimental
+service uses anonymous REST administration and generated local-only writer credentials.
+Set `SLT_BIGQUERY_REST_HOST_PORT` and `SLT_BIGQUERY_TOKEN_HOST_PORT` to remap ports;
+`SLT_BIGQUERY_PROJECT` and `SLT_BIGQUERY_DATASET` configure bootstrap and clients together.
+The app uses `BIGQUERY_PROJECT`, `BIGQUERY_DATASET`, `BIGQUERY_ENDPOINT` and
+`BIGQUERY_SERVICE_ACCOUNT_KEY`. The writer's documented PSC property accepts the local
+IPv4 HTTP endpoint, so no machine DNS or trust changes are needed.
+
+Bounded scalar assertions and actual Striim 5.4.2 legacy streaming / CSV batch fixtures
+are qualified on Linux amd64. The installed Java client exact-chunk-boundary case
+is explicitly excluded; a client regression with a one-row oracle must pass before
+this exclusion is lifted.
+Non-ASCII batch text requires the documented per-stack UTF-8 JVM setting in the
+service README. Storage Write, recovery, IAM, billing and cloud equivalence remain
+unqualified. BigQueryWriter batch uploads are direct
+resumable uploads; GCS is not a dependency. A selected lane with missing prerequisites
+exits nonzero (a skip is exit 3), never a passing empty run.
+
+The generated GCS/Spanner fake account key and the separate BigQuery key must reach every
+eligible application node. A failed key upload names the node and key, includes stderr,
+and stops setup immediately, including for
+GCS and Spanner; it previously could continue with a missing key on one node. This is a
+deliberate authentication setup change, with existing GCS/Spanner round trips retained as
+regression controls.
+
+
+The [BigQuery MERGE sample](../samples/live/bigquery-batch-merge/) qualifies bounded
+insert/update/delete propagation with same-writer readiness and terminal sentinels.
+Its CDC lifecycle allocates a fresh per-test dataset for the target and generated
+staging objects, records exact ownership and endpoint/project/dataset bindings,
+and removes that dataset only after app cleanup. The shared bootstrap dataset is
+preserved. Kept resources use the same ledger for replay. This is not a recovery,
+operation-order or replay-multiplicity qualification.

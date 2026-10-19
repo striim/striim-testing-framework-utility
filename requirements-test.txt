@@ -20,6 +20,7 @@ filelock==4.0.12
     # via -r requirements-test.in
 google-api-core==2.41.0
     # via
+    #   google-cloud-bigquery
     #   google-cloud-core
     #   google-cloud-monitoring
     #   google-cloud-spanner
@@ -27,12 +28,16 @@ google-api-core==2.41.0
 google-auth==2.60.0
     # via
     #   google-api-core
+    #   google-cloud-bigquery
     #   google-cloud-core
     #   google-cloud-monitoring
     #   google-cloud-spanner
     #   google-cloud-storage
+google-cloud-bigquery==3.46.1
+    # via -r requirements-test.in
 google-cloud-core==2.8.0
     # via
+    #   google-cloud-bigquery
     #   google-cloud-spanner
     #   google-cloud-storage
 google-cloud-monitoring==2.32.0
@@ -46,7 +51,9 @@ google-crc32c==1.9.0
     #   google-cloud-storage
     #   google-resumable-media
 google-resumable-media==2.11.0
-    # via google-cloud-storage
+    # via
+    #   google-cloud-bigquery
+    #   google-cloud-storage
 googleapis-common-protos==1.75.5
     # via
     #   google-api-core
@@ -94,6 +101,7 @@ oracledb==26.0.1
     # via -r requirements-test.in
 packaging==26.3
     # via
+    #   google-cloud-bigquery
     #   pytest
     #   wheel
 pluggy==1.6.0
@@ -138,13 +146,16 @@ pytest-mock==3.16.0
 pytest-xdist==3.8.0
     # via -r requirements-test.in
 python-dateutil==2.9.0.post0
-    # via vertica-python
+    # via
+    #   google-cloud-bigquery
+    #   vertica-python
 pyyaml==6.0.3
     # via -r requirements-test.in
 requests==2.34.2
     # via
     #   -r requirements-test.in
     #   google-api-core
+    #   google-cloud-bigquery
     #   google-cloud-storage
     #   opentelemetry-resourcedetector-gcp
 setuptools==84.0.0

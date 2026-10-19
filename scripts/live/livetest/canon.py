@@ -35,7 +35,7 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 MAX_MAX_BYTES = 512 * 1024 * 1024
 SAMPLE_ROWS = 20
 SAMPLE_BYTES = 64 * 1024
-DB_ROUTES = ("postgres-source", "postgres-target", "spanner-google", "spanner-postgres")
+DB_ROUTES = ("postgres-source", "postgres-target", "spanner-google", "spanner-postgres", "bigquery-target")
 BINDING_TOKENS = ("TID", "TID_UPPER", "TID_ORACLE", "NS", "APP", "APP_BARE", "PG_SLOT", "OWNED_DIR",
                   "RUN_ID", "WORKER", "ATTEMPT")          # plus every SENTINEL_* token
 _SPEC_KEYS = {"columns", "ignore", "order", "order_by", "strict_json"}

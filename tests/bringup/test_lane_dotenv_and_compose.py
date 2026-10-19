@@ -163,3 +163,17 @@ def test_pre_up_env_rejects_untyped_or_invalid_declarations(entry):
     from livetest.service_env import pre_up_env, RegistryError
     with pytest.raises(RegistryError, match='pre_up_env'):
         pre_up_env(yaml.safe_load(f'[{entry}]'), Path('service.yaml'))
+
+
+@pytest.mark.parametrize('prefix', ['', 'one', 'two'])
+def test_bigquery_supplied_image_is_required_and_preserved(prefix):
+    services = yaml.safe_load((ROOT / 'scripts/live/services/bigquery/compose.yaml').read_text())['services']
+    assert all('build' not in service for service in services.values())
+    expression = services['slt-bigquery']['image']
+    command = ['bash', '-c', 'printf "%s" "' + expression + '"']
+    env = {'SLT_STACK_PREFIX': prefix, 'SLT_BIGQUERY_IMAGE': 'example:qualified'}
+    assert subprocess.check_output(command, env=env, text=True) == 'example:qualified'
+    del env['SLT_BIGQUERY_IMAGE']
+    missing = subprocess.run(command, env=env, text=True, capture_output=True)
+    assert missing.returncode != 0
+    assert 'Set SLT_BIGQUERY_IMAGE' in missing.stderr
