@@ -2,10 +2,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
 import time
+
+
+OBSERVE_AFTER_S = 2.0
+OBSERVE_INTERVAL_S = 5.0
+MAX_OBSERVATIONS = 3
+DIAGNOSTIC_JOIN_S = 0.1
 
 
 def policy(sql, phase, timeout, run_id, owners, role):
@@ -78,13 +85,19 @@ def execute(admin, statements, which, spec):
         pid = getattr(conn, "get_backend_pid", lambda: None)()
         if isinstance(pid, int) and pid > 0:
             def observe():
-                while not stop.wait(0.2):
+                if stop.wait(OBSERVE_AFTER_S):
+                    return
+                for attempt in range(MAX_OBSERVATIONS):
+                    if stop.is_set():
+                        return
                     try:
                         found = _blockers(admin, pid, spec["owners"])
                         if found:
                             observed[:] = found
                     except Exception as exc:
                         diagnostic_errors[:] = [type(exc).__name__]
+                    if attempt + 1 < MAX_OBSERVATIONS and stop.wait(OBSERVE_INTERVAL_S):
+                        return
 
             # Read only: neither this observer nor the timeout terminates a blocker.
             watcher = threading.Thread(target=observe, name="slt-pg-fixture-observer", daemon=True)
@@ -98,7 +111,7 @@ def execute(admin, statements, which, spec):
     except Exception as exc:
         stop.set()
         if watcher:
-            watcher.join(4)
+            watcher.join(DIAGNOSTIC_JOIN_S)
         if getattr(exc, "pgcode", None) in ("55P03", "57014"):
             detail = json.dumps(observed, sort_keys=True)
             raise RuntimeError(f"postgres-fixture-timeout: phase={phase} route={route} "
@@ -108,7 +121,8 @@ def execute(admin, statements, which, spec):
     finally:
         stop.set()
         if watcher:
-            watcher.join(4)
+            watcher.join(DIAGNOSTIC_JOIN_S)
         conn.close()
     if watcher and watcher.is_alive():
-        raise RuntimeError(f"postgres-fixture-diagnostic-timeout: phase={phase} route={route}")
+        logging.getLogger(__name__).warning(
+            "postgres-fixture-diagnostic-gap: phase=%s route=%s observer still running", phase, route)
