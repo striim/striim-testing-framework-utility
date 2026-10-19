@@ -13,6 +13,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from livetest import opjarrelease
+
 from livetest import paths, stack
 
 # OP artifact provisioning: build an OpenProcessor's (or UDF's) jar AGAINST A GIVEN
@@ -641,6 +643,9 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     for `mvn clean`); a jar with no stamp (built before the entries existed / by another toolchain)
     is accepted so long as the builder-agnostic bytecode guard confirms the right Java level.
 
+    When configured releases share a series, opjarrelease extends the file suffix
+    and isolates Maven output; STRIIM_SERIES and the deployed OP name stay unchanged.
+
     When a jar is (re)built, `report` (a callable taking one string) is invoked once with a
     human-readable trigger — the reason the automatic rebuild fired (source changed / no jar
     for this series / stale target-classes cleared). It is NOT called when an up-to-date jar
@@ -650,6 +655,9 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     series = release.get("STRIIM_SERIES")
     if not series:
         raise OpArtifactError(f"release is missing STRIIM_SERIES: {release!r}")
+    # File identity may extend the series; the build environment keeps the real series.
+    versions = opjarrelease.configured_versions(_root())
+    series = opjarrelease.jar_suffix(release, versions)
     fingerprint = _build_fingerprint(release)
     java_release = release.get("JAVA_RELEASE")
     chosen = _prebuilt_jar(module_ref, series)
@@ -737,6 +745,8 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
                   if clean else f"no *-{series}.jar found -> initial build")
 
     run = run or _default_run
+    if series != release["STRIIM_SERIES"] or len(versions) > 1:
+        run = opjarrelease.release_runner(run, module_dir, release, series)
     build_env = {**os.environ, **{k: str(v) for k, v in release.items() if v is not None}}
     if "STRIIM_HOME" not in build_env:
         candidate_home = Path.home() / ".striim" / str(release.get("STRIIM_VERSION", ""))
