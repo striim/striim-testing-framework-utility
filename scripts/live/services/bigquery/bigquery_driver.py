@@ -66,7 +66,7 @@ def compose_env(env):
     limit = env.get("SLT_BIGQUERY_MEM_LIMIT") or "1g"
     match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([bkmg]?)", limit, re.I)
     if not match:
-        raise ValueError("SLT_BIGQUERY_MEM_LIMIT must be a positive Docker byte size (b/k/m/g)")
+        raise ValueError("SLT_BIGQUERY_MEM_LIMIT must be a positive number with an optional b, k, m or g suffix (for example 1g)")
     size = int(Decimal(match[1]) * 1024 ** ("bkmg".index(match[2].lower() or "b")))
     if size <= 0:
         raise ValueError("SLT_BIGQUERY_MEM_LIMIT must be positive")

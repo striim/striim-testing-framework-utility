@@ -318,3 +318,10 @@ def test_selected_service_publishes_derived_memory_budget(monkeypatch):
     assert env['SLT_BIGQUERY_GOMEMLIMIT'] == '335544320B'
     import os
     assert os.environ['SLT_BIGQUERY_GOMEMLIMIT'] == env['SLT_BIGQUERY_GOMEMLIMIT']
+
+
+def test_fake_key_names_its_project_throughout():
+    key = json.loads(plugin._make_fake_gcp_key('http://localhost:1/token', 'lane-project'))
+    assert key['project_id'] == 'lane-project'
+    assert key['client_email'] == 'fake-sa@lane-project.iam.gserviceaccount.com'
+    assert key['client_x509_cert_url'].endswith('/fake-sa%40lane-project.iam.gserviceaccount.com')
