@@ -241,3 +241,58 @@ def test_writer_property_changes_cannot_bypass_preflight(action, text):
     manifest = SimpleNamespace(requires=['bigquery'], lifecycle=None, action_specs=action)
     with pytest.raises(ValueError, match='writer property changes are unqualified'):
         validate_writer(manifest, text)
+
+
+WRITER_TOKENS = {'BIGQUERY_ENDPOINT': 'http://127.0.0.1:19050',
+                 'BIGQUERY_PROJECT': 'other-project',
+                 'BIGQUERY_SERVICE_ACCOUNT_KEY': 'UploadedFiles/fake-bigquery-key.json'}
+WRITER_PROPERTIES = {'ProjectId': "'${BIGQUERY_PROJECT}'",
+                     'BillingProjectId': "'${BIGQUERY_PROJECT}'",
+                     'ServiceAccountKey': "'${BIGQUERY_SERVICE_ACCOUNT_KEY}'",
+                     'PrivateServiceConnectEndpoint': "'${BIGQUERY_ENDPOINT}'"}
+
+
+def _writer_case(tmp_path, properties):
+    text = ', '.join(f'{key}: {value}' for key, value in properties.items())
+    (tmp_path / 'app.tql').write_text(f'CREATE TARGET t USING Global.BigQueryWriter ({text});')
+    return SimpleNamespace(source_dir=tmp_path, tql='app.tql', requires=['bigquery'], lifecycle=None)
+
+
+@pytest.mark.parametrize('key,value', [
+    ('PrivateServiceConnectEndpoint', None),
+    ('PrivateServiceConnectEndpoint', "'https://bigquery.googleapis.com'"),
+    ('PrivateServiceConnectEndpoint', "'http://127.0.0.1:9050'"),
+    ('ServiceAccountKey', None),
+    ('ServiceAccountKey', "'UploadedFiles/cloud-key.json'"),
+    ('ProjectId', None),
+    ('ProjectId', "'cloud-project'"),
+    ('BillingProjectId', "'cloud-project'"),
+])
+def test_rendered_writer_refuses_foreign_or_missing_binding(tmp_path, key, value):
+    properties = dict(WRITER_PROPERTIES)
+    if value is None:
+        del properties[key]
+    else:
+        properties[key] = value
+    manifest = _writer_case(tmp_path, properties)
+    with pytest.raises(ValueError, match=key.lower()):
+        plugin._rendered_tql(manifest, WRITER_TOKENS, {})
+
+
+@pytest.mark.parametrize('billing', [True, False])
+def test_rendered_writer_accepts_configured_emulator(tmp_path, billing):
+    properties = dict(WRITER_PROPERTIES)
+    if not billing:
+        del properties['BillingProjectId']
+    text = plugin._rendered_tql(_writer_case(tmp_path, properties), WRITER_TOKENS, {})
+    assert WRITER_TOKENS['BIGQUERY_PROJECT'] in text
+    assert WRITER_TOKENS['BIGQUERY_ENDPOINT'] in text
+    assert '${' not in text
+
+
+def test_rendered_writer_also_checks_configured_endpoint_is_local(tmp_path):
+    tokens = {**WRITER_TOKENS, 'BIGQUERY_ENDPOINT': 'https://bigquery.googleapis.com'}
+    with pytest.raises(ValueError, match='plain HTTP'):
+        plugin._rendered_tql(_writer_case(tmp_path, WRITER_PROPERTIES), tokens, {})
+
+

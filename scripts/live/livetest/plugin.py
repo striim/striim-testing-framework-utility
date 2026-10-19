@@ -1808,7 +1808,7 @@ def _rendered_tql(m: TestManifest, tokens: dict, upload_renames: dict) -> str:
     from livetest.bigquerycase import validate_writer
     validate_writer(m, text)
     _slt_out = render(text, tokens)
-    validate_writer(m, _slt_out)
+    validate_writer(m, _slt_out, tokens)
     _slt_inputs.record_on(m, "tql", m.tql, _slt_out, path=m.source_dir / m.tql)   # the TQL as sent
     return _slt_out
 
