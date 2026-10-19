@@ -31,7 +31,7 @@ python -m pytest -m 'live and not spanner'               # by service: every liv
                                                          # with the services its manifest requires
 ```
 
-Use `-m` (markers), not `-k`, to select by service: `-k "not spanner"` matches names and paths,
+Use `-m` (markers), not `-k`, to select by service: `-k "not spanner"` matches names, paths and tags,
 and misses a test that reaches Spanner from a folder not named after it.
 
 ## A skipped run
