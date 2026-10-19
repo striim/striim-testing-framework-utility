@@ -224,6 +224,7 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_PG_HOST_PORT` | shell, `.env` | `5432` | Host port the container publishes; change it when the port is in use. |
 | `SLT_POSTGRES_CPUS` | shell, `.env`, machine | `2` | CPUs the container may use. |
 | `SLT_POSTGRES_MEM_LIMIT` | shell, `.env`, machine | `4g` | Memory limit of the container. |
+| `SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell, `.env`, machine |  | Optional disposable Postgres idle-transaction deadline for qasource/qatarget in sltdb, including Striim sessions. Positive integer milliseconds, at most 2147483647; unset removes the policy. Validated before compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged. |
 | `SLT_POSTGRES_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
 ### ServiceNow (`servicenow`)
@@ -375,6 +376,7 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_PG_HOST_PORT` | shell, `.env` | `15432` | Host port the container publishes; change it when the port is in use. |
 | `INT_POSTGRES_CPUS` | shell, `.env`, machine | `0.5` | CPUs the container may use. |
 | `INT_POSTGRES_MEM_LIMIT` | shell, `.env`, machine | `512m` | Memory limit of the container. |
+| `INT_PG_IDLE_TRANSACTION_TIMEOUT_MS` | shell, `.env`, machine |  | Optional disposable integration Postgres idle-transaction deadline for qasource/qatarget in intdb. Positive integer milliseconds, at most 2147483647; unset removes the policy. Validated before compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged. |
 
 ### ServiceNow, integration (`servicenow`)
 

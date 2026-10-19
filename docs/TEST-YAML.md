@@ -2148,3 +2148,17 @@ Worked case: [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.
 A hosting-node fault resolves all owners before post-start seeds. At issuance it checks flow MON's single-owner count and the selected server's deployment and runtime STATUS once, outside progress polling, then re-reads progress. An unreadable, moved or multi-owner flow refuses the fault. Sample17 paces each target insert with a10ms table CHECK, leaving the exact expected rows unchanged.
 
 Worked case: [17-one-node-failover](../samples/live/17-one-node-failover/README.md). Framework gallery: [framework-one-node-failover](../scripts/live/regression/framework/framework-one-node-failover/README.md).
+
+## Intentional idle Postgres transactions
+
+Disposable Postgres has no data-role idle-transaction budget by default, because Striim
+readers and writers use those same roles. If you opt in with
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=600000`, an idle transaction can terminate its session
+after ten minutes. That includes a [`transactions:`](#transactions--overlapping-postgres-seed-sessions)
+session held across `recover:`. For one, put
+`SET LOCAL idle_in_transaction_session_timeout = '30min';` in the session's first `op: sql` file, or set
+`SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS=1800000` before framework bring-up. Policy is reapplied
+to new connections even on kept services; existing connections retain their settings.
+Budget the full idle period including recovery; keep expected rows and lifecycle assertions.
+[SERVICES.md](SERVICES.md#postgres-postgres) describes the scope and integration setting.
+External databases retain their own policy.

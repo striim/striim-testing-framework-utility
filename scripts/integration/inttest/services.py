@@ -152,10 +152,17 @@ def compose_up(service_name: str, lock: FileLock) -> None:
         CalledProcessError: if `docker compose up` fails
         FileNotFoundError: if docker is not available
     """
+    from livetest import pgidle
+    env = _compose_up_env(service_name)
+    sql = pgidle.policy_sql(env, "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "intdb") if service_name == "postgres" else None
+    compose = _checked_compose_file(service_name)
     subprocess.run(
-        ["docker", "compose", "-f", str(_checked_compose_file(service_name)), "up", "-d", "--wait"],
-        check=True, env=_compose_up_env(service_name),
+        ["docker", "compose", "-f", str(compose), "up", "-d", "--wait"],
+        check=True, env=env,
     )
+    if sql:
+        pgidle.apply_policy(compose, env, "integration", sql, subprocess.run)
+
 
 
 def _service_spec(service_name: str) -> dict:
