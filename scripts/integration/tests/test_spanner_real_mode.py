@@ -310,40 +310,61 @@ _SCHEMA = {
                ["t0123abcde_v"], ["cust_v"]],
 }
 
-_TEARDOWN = [
-    "DROP CHANGE STREAM t0123abcde_cs",
-    "DROP VIEW t0123abcde_v",
-    "ALTER TABLE t0123abcde_parent DROP SYNONYM t0123abcde_syn",
-    "ALTER TABLE t0123abcde_grand DROP CONSTRAINT FK_t0123abcde_grand_t0123abcde_parent_1",
-    "DROP INDEX t0123abcde_ix",
-    "DROP SEARCH INDEX t0123abcde_six",
-    "DROP TABLE t0123abcde_grand",      # interleaved children before their parents
-    "DROP TABLE t0123abcde_child",
-    "DROP TABLE t0123abcde_parent",
-    "DROP SEQUENCE t0123abcde_seq",     # after the tables whose defaults may use it
-]
+def _teardown(q="`"):
+    """The batch teardown should send, with names quoted `q` (backticks GoogleSQL, " PostgreSQL)."""
+    return [
+        f"DROP CHANGE STREAM {q}t0123abcde_cs{q}",
+        f"DROP VIEW {q}t0123abcde_v{q}",
+        f"ALTER TABLE {q}t0123abcde_parent{q} DROP SYNONYM {q}t0123abcde_syn{q}",
+        f"ALTER TABLE {q}t0123abcde_grand{q} DROP CONSTRAINT {q}FK_t0123abcde_grand_t0123abcde_parent_1{q}",
+        f"DROP INDEX {q}t0123abcde_ix{q}",
+        f"DROP SEARCH INDEX {q}t0123abcde_six{q}",
+        f"DROP TABLE {q}t0123abcde_grand{q}",      # interleaved children before their parents
+        f"DROP TABLE {q}t0123abcde_child{q}",
+        f"DROP TABLE {q}t0123abcde_parent{q}",
+        f"DROP SEQUENCE {q}t0123abcde_seq{q}",     # after the tables whose defaults may use it
+    ]
 
 
-def _fake_schema(admin, monkeypatch, failing=()):
+def _fake_schema(admin, monkeypatch, failing=(), schema=None):
+    """A fake INFORMATION_SCHEMA that loses an object when a DROP of it succeeds."""
+    schema = {k: [list(r) for r in v] for k, v in (schema or _SCHEMA).items()}
+
     def query(sql):
         low = sql.lower()
-        kind = next(k for k in _SCHEMA if k in low)
+        kind = next(k for k in schema if k in low)
         if kind in failing:
             raise RuntimeError(f"no {kind} here")
-        return [], _SCHEMA[kind]
+        return [], [list(r) for r in schema[kind]]
+
+    def update_ddl(statements):
+        for stmt in statements:
+            gone = stmt.rsplit(" ", 1)[-1].strip('"`')
+            for k, rows in schema.items():
+                rows[:] = [r for r in rows if gone not in (r[0], r[1] if k == "table_synonyms" else None)]
+        return MagicMock()
+
     monkeypatch.setattr(admin, "_query", query)
     admin._ddl_lock = MagicMock()
+    admin._database.update_ddl.side_effect = update_ddl
+    return schema
 
 
 def _ddl_calls(db):
     return [c.args[0] for c in db.update_ddl.call_args_list]
 
 
+def _emulator_admin(dialect="postgresql"):
+    db = MagicMock()
+    return SpannerAdmin({"project": "p", "instance": "i", "database": "d", "dialect": dialect,
+                         "emulator_host": "localhost:19010"}, database=db, client=object()), db
+
+
 def test_real_teardown_drops_every_blocking_kind_in_order_in_one_batch(key, monkeypatch):
     admin, db = _guarded(key)
     _fake_schema(admin, monkeypatch)
     admin.drop_test_tables(TID)
-    assert _ddl_calls(db) == [_TEARDOWN]
+    assert _ddl_calls(db) == [_teardown("`")]
 
 
 def test_real_teardown_never_names_another_owners_object(key, monkeypatch):
@@ -356,28 +377,75 @@ def test_real_teardown_never_names_another_owners_object(key, monkeypatch):
         assert other not in named
 
 
-def test_emulator_teardown_uses_the_same_order(monkeypatch):
-    db = MagicMock()
-    admin = SpannerAdmin({"project": "p", "instance": "i", "database": "d", "dialect": "postgresql",
-                          "emulator_host": "localhost:19010"}, database=db, client=object())
+def test_emulator_teardown_uses_the_same_order_quoted_for_postgresql(monkeypatch):
+    admin, db = _emulator_admin("postgresql")
     _fake_schema(admin, monkeypatch)
     admin.drop_test_tables(TID)
-    assert _ddl_calls(db) == [_TEARDOWN]
+    assert _ddl_calls(db) == [_teardown('"')]
 
 
-def test_teardown_still_drops_the_rest_when_one_kind_cannot_be_listed(key, monkeypatch):
+def test_postgresql_teardown_keeps_the_case_of_a_stored_name(key, monkeypatch):
+    # PostgreSQL folds an unquoted name to lower case, so T0123ABCDE_Parent must be quoted to be found.
+    admin, db = _guarded(key, dialect="postgresql")
+    _fake_schema(admin, monkeypatch, schema={**{k: [] for k in _SCHEMA}, "tables": [["T0123ABCDE_Parent"]]})
+    admin.drop_test_tables(TID)
+    assert _ddl_calls(db) == [['DROP TABLE "T0123ABCDE_Parent"']]
+
+
+def test_real_teardown_drops_the_rest_then_refuses_to_pass_over_a_kind_it_cannot_list(key, monkeypatch):
     admin, db = _guarded(key)
     _fake_schema(admin, monkeypatch, failing=("table_synonyms",))
+    with pytest.raises(RealSpannerError, match="synonyms.*no table_synonyms here"):
+        admin.drop_test_tables(TID)
+    assert _ddl_calls(db) == [[s for s in _teardown() if "SYNONYM" not in s]]
+
+
+def test_emulator_teardown_warns_about_a_kind_it_cannot_list(monkeypatch, capsys):
+    admin, db = _emulator_admin()
+    _fake_schema(admin, monkeypatch, failing=("table_synonyms",))
     admin.drop_test_tables(TID)
-    assert _ddl_calls(db) == [[s for s in _TEARDOWN if "SYNONYM" not in s]]
+    assert _ddl_calls(db) == [[s for s in _teardown('"') if "SYNONYM" not in s]]
+    assert "WARNING" in capsys.readouterr().out
 
 
 def test_teardown_falls_back_to_one_statement_at_a_time(key, monkeypatch):
     admin, db = _guarded(key)
     _fake_schema(admin, monkeypatch)
-    db.update_ddl.side_effect = [RuntimeError("batch refused")] + [MagicMock()] * len(_TEARDOWN)
+    fake = db.update_ddl.side_effect
+    calls = []
+
+    def batch_refused(statements):
+        calls.append(statements)
+        if len(calls) == 1:
+            raise RuntimeError("batch refused")
+        return fake(statements)
+    db.update_ddl.side_effect = batch_refused
+    admin.drop_test_tables(TID)               # nothing left, so nothing to report
+    assert calls == [_teardown()] + [[s] for s in _teardown()]
+
+
+def test_real_teardown_names_what_it_could_not_drop(key, monkeypatch):
+    admin, db = _guarded(key)
+    _fake_schema(admin, monkeypatch)
+    fake = db.update_ddl.side_effect
+
+    def stuck(statements):
+        if len(statements) > 1 or "t0123abcde_parent" in statements[0].split()[-1]:
+            raise RuntimeError("still referenced")
+        return fake(statements)
+    db.update_ddl.side_effect = stuck
+    with pytest.raises(RealSpannerError, match="DROP TABLE `t0123abcde_parent`") as e:
+        admin.drop_test_tables(TID)
+    assert "DROP TABLE `t0123abcde_child`" not in str(e.value)
+
+
+def test_emulator_teardown_warns_naming_what_it_could_not_drop(monkeypatch, capsys):
+    admin, db = _emulator_admin()
+    _fake_schema(admin, monkeypatch)
+    db.update_ddl.side_effect = RuntimeError("nothing drops")
     admin.drop_test_tables(TID)
-    assert _ddl_calls(db) == [_TEARDOWN] + [[s] for s in _TEARDOWN]
+    out = capsys.readouterr().out
+    assert "WARNING" in out and 'DROP TABLE "t0123abcde_parent"' in out
 
 
 # --- the plugin ---------------------------------------------------------------------------------
@@ -407,3 +475,31 @@ def test_provision_requires_fails_a_mixed_real_and_emulator_config(monkeypatch, 
     with pytest.raises(pytest.fail.Exception, match="INT_SPANNER_HOST"):
         plugin._provision_requires("case-x", ["spanner"], lock=MagicMock())
     docker.ensure_up.assert_not_called()
+
+
+def _teardown_item(**kw):
+    from types import SimpleNamespace
+    config = SimpleNamespace(getoption=lambda *a, **k: False)
+    return SimpleNamespace(config=config, _pg_admin=None, _oracle_prefix=None, _spanner_prefix=TID,
+                           tokens={"TID": TID, "TID_ORACLE": ""},
+                           manifest=SimpleNamespace(name="case-x", requires=["spanner"]), **kw)
+
+
+@pytest.mark.parametrize("item_class", ["IntYamlItem", "PerfYamlItem"])
+def test_real_teardown_leftovers_fail_the_case(monkeypatch, item_class):
+    monkeypatch.delenv("INT_KEEP_RESOURCES", raising=False)
+    admin = MagicMock()
+    admin.drop_test_tables.side_effect = RealSpannerError("real Spanner teardown: still there: DROP TABLE x")
+    monkeypatch.setattr(spanneradmin, "admins_for", lambda tokens: [(admin, "spanner-google")])
+    with pytest.raises(RealSpannerError, match="still there"):
+        getattr(plugin, item_class)._teardown_db_isolation(_teardown_item(), False)
+
+
+@pytest.mark.parametrize("item_class", ["IntYamlItem", "PerfYamlItem"])
+def test_emulator_teardown_errors_stay_warnings(monkeypatch, capsys, item_class):
+    monkeypatch.delenv("INT_KEEP_RESOURCES", raising=False)
+    admin = MagicMock()
+    admin.drop_test_tables.side_effect = RuntimeError("emulator went away")
+    monkeypatch.setattr(spanneradmin, "admins_for", lambda tokens: [(admin, "spanner-google")])
+    getattr(plugin, item_class)._teardown_db_isolation(_teardown_item(), False)
+    assert "WARNING" in capsys.readouterr().out

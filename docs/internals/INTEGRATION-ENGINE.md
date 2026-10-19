@@ -64,6 +64,7 @@ After each test:
   run is refused, and `SpannerAdmin` refuses any statement or teardown prefix that is not this
   test's `${TID}`. In both modes teardown also drops the prefix's change streams, views,
   synonyms, foreign keys, indexes and sequences, since each blocks `DROP TABLE` or outlives it.
+  Whatever it cannot list or drop is named: a failure with real Spanner, a warning on the emulator.
 
 Cleanup is skipped if a test fails, allowing manual debugging.
 

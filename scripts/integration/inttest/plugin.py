@@ -2210,11 +2210,13 @@ class IntYamlItem(pytest.Item):
             # user table in a long-lived INT_KEEP_SERVICES emulator is a footgun with
             # no upside here. Accepted consequence: a serial run drops nothing, so
             # spanner DDL fixtures must be self-healing (DROP TABLE IF EXISTS).
-            try:
-                from . import spanneradmin as spanneradmin_mod
+            from . import spanneradmin as spanneradmin_mod
 
+            try:
                 for admin, _route in spanneradmin_mod.admins_for(self.tokens):
                     admin.drop_test_tables(self._spanner_prefix)
+            except spanneradmin_mod.RealSpannerError:
+                raise  # real Spanner: objects left in a shared database fail the case
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
                 print(f"[integration] WARNING: failed to drop Spanner tables prefixed "
                       f"{self._spanner_prefix!r}: {e!r}")
@@ -2663,11 +2665,13 @@ class PerfYamlItem(pytest.Item):
             # and wiping every user table in a long-lived INT_KEEP_SERVICES emulator is a
             # footgun. Accepted consequence, same as the regression tier's: a serial run drops
             # nothing, so Spanner DDL must stay self-healing (DROP TABLE IF EXISTS).
-            try:
-                from . import spanneradmin as spanneradmin_mod
+            from . import spanneradmin as spanneradmin_mod
 
+            try:
                 for admin, _route in spanneradmin_mod.admins_for(self.tokens):
                     admin.drop_test_tables(self.tokens["TID"])
+            except spanneradmin_mod.RealSpannerError:
+                raise  # real Spanner: objects left in a shared database fail the case
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
                 print(f"[integration] WARNING: failed to drop Spanner tables prefixed "
                       f"{self.tokens['TID']!r} for {m.name}: {e!r}")

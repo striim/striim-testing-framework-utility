@@ -372,7 +372,8 @@ What changes:
   object. Anything else, `FOR ALL` change streams included, fails the case before any statement
   runs. A serial run has an empty `${TID}`, so it is refused.
 - What the module under test writes is not checked: its settings must use `${TID}` names too.
-- A failed case keeps its tables, as on the emulator; drop them by hand.
+- A failed case keeps its tables, as on the emulator; drop them by hand. A passing case whose
+  teardown leaves any of its objects, or cannot list one kind of them, fails naming them.
 - A setting missing, or mixed with an emulator setting, fails the case naming the setting.
 - The `spanner_client` and `spanner_admins` pytest fixtures stay emulator-only and fail when
   `INT_SPANNER_CREDENTIALS` is set.

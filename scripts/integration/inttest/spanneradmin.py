@@ -395,15 +395,29 @@ class SpannerAdmin:
             if not (_TID.match(prefix or "") and prefix.lower() == tid.lower()):
                 raise RealSpannerError(f"real Spanner: refused to drop tables with prefix {prefix!r}: "
                                        f"only this test's ${{TID}} ({tid!r}) may be dropped")
-        statements = self._teardown_ddl(prefix)
-        if not statements:
-            return
-        if self.real:
-            self._guard(statements)
+        unlisted: dict = {}
+        statements = self._teardown_ddl(prefix, unlisted)
+        left = []
+        if statements:
+            if self.real:
+                self._guard(statements)
+            if not self._apply_teardown(statements):
+                left = self._teardown_ddl(prefix, unlisted)  # what the fallback could not drop
+        problems = [f"could not list {kind}: {err!r}" for kind, err in unlisted.items()]
+        if left:
+            problems.append("still there: " + "; ".join(left))
+        if problems:
+            msg = f"Spanner teardown of {prefix!r} in {self.dsn['database']}: " + "; ".join(problems)
+            if self.real:  # a shared database: leftovers fail the case rather than pass quietly
+                raise RealSpannerError(f"real {msg}")
+            print(f"[integration] WARNING: {msg}")
+
+    def _apply_teardown(self, statements: list[str]) -> bool:
+        """One batch, True if it applied; else one statement at a time, multi-pass."""
         try:
             with self._ddl_lock():  # a sibling's CREATE must not collide
                 self._update_ddl(statements, budget_s=30.0)
-            return
+            return True
         except Exception:  # noqa: BLE001 -- an order this listing missed; one at a time below
             pass
         remaining = statements
@@ -416,23 +430,30 @@ class SpannerAdmin:
                 except Exception:  # noqa: BLE001 -- dependency ordering; retried below
                     failed.append(stmt)
             if len(failed) == len(remaining):
-                break  # no progress -- leave the rest (best-effort)
+                break  # no progress -- the caller re-lists and reports what is left
             remaining = failed
+        return False
 
     _USER_SCHEMA = "table_schema IN ('', 'public')"
 
-    def _teardown_ddl(self, prefix: str) -> list[str]:
-        """The DROP statements for every object `prefix` owns, in an order Spanner accepts."""
+    def _teardown_ddl(self, prefix: str, unlisted: dict) -> list[str]:
+        """The DROP statements for every object `prefix` owns, in an order Spanner accepts. Names
+        are quoted, since PostgreSQL folds an unquoted one to lower case. A kind that cannot be
+        listed is recorded in `unlisted` and skipped."""
         low = prefix.lower()
+        mark = '"' if self.dsn.get("dialect") == "postgresql" else "`"
+
+        def q(name) -> str:
+            return f"{mark}{name}{mark}"
 
         def owned(name) -> bool:
             return bool(name) and bool(_IDENT.match(name)) and name.lower().startswith(low)
 
         def rows(sql) -> list:
-            # A kind this database (or the emulator) does not list is skipped, not fatal.
             try:
                 return self._query(sql)[1]
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001 -- reported by drop_test_tables
+                unlisted[sql.split(" FROM ", 1)[1].split()[0]] = e
                 return []
 
         _, listed = self._query(f"SELECT table_name FROM information_schema.tables WHERE {self._USER_SCHEMA}")
@@ -446,14 +467,14 @@ class SpannerAdmin:
             p = parent.get(t)
             return 0 if not p or p in seen else 1 + depth(p, (*seen, t))
 
-        out = [f"DROP CHANGE STREAM {r[0]}"
+        out = [f"DROP CHANGE STREAM {q(r[0])}"
                for r in rows("SELECT change_stream_name FROM information_schema.change_streams") if owned(r[0])]
-        out += [f"DROP VIEW {v}" for v in views]
-        out += [f"ALTER TABLE {r[0]} DROP SYNONYM {r[1]}"
+        out += [f"DROP VIEW {q(v)}" for v in views]
+        out += [f"ALTER TABLE {q(r[0])} DROP SYNONYM {q(r[1])}"
                 for r in rows("SELECT table_name, synonym_table_name FROM information_schema.table_synonyms "
                               f"WHERE {self._USER_SCHEMA}") if owned(r[0]) and owned(r[1])]
         # A foreign key is named by Spanner (FK_...) unless the DDL named it; it belongs to its table.
-        out += [f"ALTER TABLE {r[1]} DROP CONSTRAINT {r[0]}"
+        out += [f"ALTER TABLE {q(r[1])} DROP CONSTRAINT {q(r[0])}"
                 for r in rows("SELECT constraint_name, table_name FROM information_schema.table_constraints "
                               f"WHERE constraint_type = 'FOREIGN KEY' AND {self._USER_SCHEMA}")
                 if owned(r[1]) and _IDENT.match(r[0] or "")]
@@ -464,12 +485,12 @@ class SpannerAdmin:
             # Managed indexes (a foreign key's own) go with their key; the primary key with its table.
             if (str(kind).upper() in drop_index and not (managed is True or str(managed).upper() == "YES")
                     and owned(name) and owned(table)):
-                out.append(f"{drop_index[str(kind).upper()]} {name}")
-        out += [f"DROP TABLE {t}" for t in sorted(tables, key=depth, reverse=True)]
+                out.append(f"{drop_index[str(kind).upper()]} {q(name)}")
+        out += [f"DROP TABLE {q(t)}" for t in sorted(tables, key=depth, reverse=True)]
         sequences = ("SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = 'public'"
                      if self.dsn.get("dialect") == "postgresql" else
                      "SELECT name FROM information_schema.sequences WHERE schema = ''")
-        out += [f"DROP SEQUENCE {r[0]}" for r in rows(sequences) if owned(r[0])]
+        out += [f"DROP SEQUENCE {q(r[0])}" for r in rows(sequences) if owned(r[0])]
         return out
 
     def _query(self, sql: str):
