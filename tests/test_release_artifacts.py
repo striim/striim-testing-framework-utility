@@ -192,3 +192,94 @@ def test_release_helpers_are_identical_between_engines():
     scripts = Path(__file__).resolve().parents[1] / 'scripts'
     assert (scripts / 'live/livetest/opjarrelease.py').read_bytes() == (
         scripts / 'integration/inttest/opjarrelease.py').read_bytes()
+
+
+def test_version_bump_publishes_new_jar_and_preserves_other_release(engine, tmp_path, monkeypatch):
+    import shutil
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    pom = module / 'pom.xml'
+    pom.write_text('<project><build><finalName>ExampleOpV1</finalName></build></project>')
+    calls = []
+
+    def run(argv, cwd, env):
+        tree = ET.parse(argv[argv.index('-f') + 1])
+        output = Path(tree.findtext('build/directory'))
+        if 'clean' in argv and output.exists():
+            shutil.rmtree(output)
+        name = tree.findtext('build/finalName')
+        calls.append((env['STRIIM_VERSION'], name, 'clean' in argv))
+        _jar(output / f'{name}-5.4.jar', env['STRIIM_VERSION'])
+        return SimpleNamespace(returncode=0)
+
+    selected = {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4', 'JAVA_RELEASE': '17'}
+    old = engine.build_jar('ExampleOp', selected, run=run)
+    other = engine.build_jar('ExampleOp', {**selected, 'STRIIM_VERSION': '5.4.4.0'}, run=run)
+    other_bytes = other.path.read_bytes()
+    pom.write_text('<project><build><finalName>ExampleOpV2</finalName></build></project>')
+    monkeypatch.setattr(engine, '_stale_trigger', lambda *a: pom)
+    built = engine.build_jar('ExampleOp', selected, run=run)
+    assert built.name == 'ExampleOpV2-5.4.2.jar'
+    assert built.op_name == 'ExampleOpV2'
+    assert not old.path.exists()
+    assert other.path.read_bytes() == other_bytes
+    assert len(calls) <= 4  # initial two builds, bump, at most one clean retry
+    assert calls[-1] == ('5.4.2', 'ExampleOpV2', True)
+
+
+@pytest.mark.parametrize('failure', ['missing', 'ambiguous', 'unchanged', 'retry-failed'])
+def test_private_output_failure_never_returns_stale_public(engine, tmp_path, monkeypatch, failure):
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    pom = module / 'pom.xml'
+    pom.write_text('<project><build/></project>')
+    old = module / 'target/ExampleOpV1-5.4.2.jar'
+    private = module / 'target/.releases/5.4.2'
+    _jar(old, '5.4.2')
+    _jar(private / 'ExampleOpV1-5.4.jar', '5.4.2')
+    monkeypatch.setattr(engine, '_stale_trigger', lambda *a: pom)
+    calls = []
+
+    def run(argv, cwd, env):
+        calls.append(argv)
+        if failure == 'ambiguous' or (failure == 'retry-failed' and len(calls) == 1):
+            for version in ['V1', 'V2']:
+                _jar(private / f'ExampleOp{version}-5.4.jar', '5.4.2')
+        elif failure == 'missing':
+            for jar in private.glob('*.jar'):
+                jar.unlink()
+        return SimpleNamespace(returncode=1 if failure == 'retry-failed' and len(calls) == 2 else 0,
+                               stderr='retry failed')
+
+    with pytest.raises(engine.OpArtifactError, match='(?i)(artifact|jar|retry failed)'):
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4',
+                                     'JAVA_RELEASE': '17'}, run=run)
+    assert len(calls) == 2
+    assert 'clean' in calls[-1]
+    assert not list(module.glob('.release-build-*.xml'))
+
+
+def test_build_then_prebuilt_lookup_ignores_private_cache(engine, tmp_path, monkeypatch):
+    (tmp_path / '.env').write_text('STRIIM_BUILD_5_4_2=one\nSTRIIM_BUILD_5_2_0_8=two\n')
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    (module / 'pom.xml').write_text('<project><build/></project>')
+
+    def run(argv, cwd, env):
+        output = Path(ET.parse(argv[argv.index('-f') + 1]).findtext('build/directory'))
+        _jar(output / 'ExampleOpV1-5.4.jar', '5.4.2')
+        return SimpleNamespace(returncode=0)
+
+    release = {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4', 'JAVA_RELEASE': '17'}
+    built = engine.build_jar('ExampleOp', release, run=run)
+    assert (module / 'target/.releases/5.4.2/ExampleOpV1-5.4.jar').is_file()
+    for folder in [module / 'target', tmp_path]:
+        monkeypatch.setenv('SLT_PREBUILT_DIR', str(folder))
+        prebuilt = engine.build_jar('ExampleOp', release,
+                                    run=lambda *a: pytest.fail('must use prebuilt'))
+        assert (prebuilt.path, prebuilt.op_name) == (built.path, built.op_name)
+        import hashlib
+        assert prebuilt.sha256 == hashlib.sha256(built.path.read_bytes()).hexdigest()
+    _jar(module / 'target/published/ExampleOpV2-5.4.jar', '5.4.2')
+    with pytest.raises(engine.OpArtifactError, match='multiple candidates'):
+        engine.build_jar('ExampleOp', release, run=run)

@@ -607,7 +607,8 @@ def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
     if path.is_dir():
         mod = module_name(module_ref)
         own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(series)}\.jar", re.IGNORECASE)
-        matches = sorted(p for p in path.rglob("*.jar") if own.fullmatch(p.name))
+        matches = sorted(p for p in path.rglob("*.jar")
+                         if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
         if not matches:
             raise OpArtifactError(f"{var}: no {mod} jar for series {series} in {path}")
         if len(matches) > 1:

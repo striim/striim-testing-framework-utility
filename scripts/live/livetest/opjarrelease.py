@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import tempfile
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 
@@ -118,27 +119,52 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
             pom = Path(f.name)
         try:
             tree.write(pom, encoding='utf-8', xml_declaration=True)
-            result = run([*argv, '-f', str(pom)], cwd, env)
-            if getattr(result, 'returncode', 1) == 0:
+            command = [*argv, '-f', str(pom)]
+            for attempt in range(2):
+                before = {p: p.stat() for p in output.glob(f'*-{series}.jar')}
+                result = run(command, cwd, env)
+                if getattr(result, 'returncode', 1) != 0:
+                    return result
                 jars = sorted(p for p in output.glob(f'*-{series}.jar')
-                              if not p.name.startswith('original-'))
-                if len(jars) == 1:
-                    jar = jars[0]
-                    name = jar.name[:-len(f'-{series}.jar')] + f'-{suffix}.jar'
-                    target = module_dir / 'target'
-                    with tempfile.NamedTemporaryFile(dir=target, delete=False) as f:
-                        staged = Path(f.name)
-                    try:
-                        shutil.copy2(jar, staged)
-                        staged.replace(target / name)
-                    finally:
-                        staged.unlink(missing_ok=True)
-                    # A module version bump may leave a second candidate for THIS release.
-                    for old in target.glob(f'*-{suffix}.jar'):
-                        if old.name != name and not old.name.startswith('original-'):
-                            old.unlink()
+                              if p.is_file() and not p.name.startswith('original-'))
+                # A successful Maven command alone does not prove it produced a jar.
+                if len(jars) == 1 and (jars[0] not in before or
+                                      jars[0].stat() != before[jars[0]]):
+                    break
+                if attempt == 1:
+                    return SimpleNamespace(
+                        returncode=1, stderr=(
+                            f"No newly built unambiguous jar artifact in {output} after clean retry "
+                            f"(found: {[p.name for p in jars]})"))
+                # Incremental packaging can leave V1 beside V2 after a module bump.
+                # Discard only this release's cache; a retry cannot reuse a stale jar.
+                if output.exists():
+                    shutil.rmtree(output)
+                command = [*argv, '-f', str(pom)]
+                if 'clean' not in command:
+                    command.insert(1, 'clean')
+            jar = jars[0]
+            name = jar.name[:-len(f'-{series}.jar')] + f'-{suffix}.jar'
+            target = module_dir / 'target'
+            with tempfile.NamedTemporaryFile(dir=target, delete=False) as f:
+                staged = Path(f.name)
+            try:
+                shutil.copy2(jar, staged)
+                staged.replace(target / name)
+            finally:
+                staged.unlink(missing_ok=True)
+            # A module version bump may leave a second candidate for THIS release.
+            for old in target.glob(f'*-{suffix}.jar'):
+                if old.name != name and not old.name.startswith('original-'):
+                    old.unlink()
             return result
         finally:
             pom.unlink(missing_ok=True)
 
     return invoke
+
+
+def is_private_cache(path: Path) -> bool:
+    """Whether a jar belongs to a framework-owned target/.releases build cache."""
+    return any(parent.name == '.releases' and parent.parent.name == 'target'
+               for parent in path.parents)
