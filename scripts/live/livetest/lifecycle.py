@@ -119,7 +119,7 @@ class LifecycleSpec:
 
     def uses_bigquery_cdc(self) -> bool:
         return bool(self.mode == "cdc" and self.sentinel
-                    and self.sentinel["observe"]["db"] == "bigquery-target")
+                    and self.sentinel["observe"].get("db") == "bigquery-target")
 
 
 def parse_duration(value, what: str, path) -> float:

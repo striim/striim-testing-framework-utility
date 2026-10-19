@@ -192,3 +192,12 @@ def test_bigquery_same_writer_sentinel_requires_both_steps(pipe, fault):
     watch = lifecycle.Watch('sentinel', 'c', lifecycle.Deadline(3, FakeClock()))
     assert s.run(watch) == ('satisfied' if fault == 'none' else 'deadline')
     if fault == 'wrong-table': assert not any(x[0] == 'delete' for x in pipe.log)
+
+
+def test_file_sentinel_does_not_allocate_a_bigquery_dataset():
+    from livetest.manifest import load_manifest
+    from pathlib import Path
+    sample = Path(__file__).resolve().parents[4] / 'samples/live/10-bounded-nothing/test.yaml'
+    manifest = load_manifest(sample)
+    assert manifest.lifecycle.sink == 'file'
+    assert manifest.lifecycle.uses_bigquery_cdc() is False
