@@ -193,11 +193,13 @@ def _cluster_provision_lock() -> Path:
 
 
 def _restore_then_post_recover(restore, run_files, seeds, settle, last,
-                                sleep=time.sleep, now=time.monotonic, hb=None, report=None):
+                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None):
     """Restore one recovery cycle and seed after the last restore when configured."""
     _post_rec = seeds if last else []
-    restore(0.0 if (_post_rec or not last) else settle)
-    if not _post_rec:
+    restore(0.0 if (_post_rec or not last or post_restore) else settle)
+    if post_restore is not None and last:
+        post_restore()
+    if not _post_rec and not (post_restore is not None and last):
         return
 
     if report is not None:
@@ -1104,7 +1106,7 @@ def _kafka_endpoints(base: dict) -> tuple[str, str]:
     return f"{base['host']}:{base['port']}", f"http://{base['host']}:{base['registry_port']}"
 
 
-def _kafka_admin(base, ledger=None):
+def _kafka_admin(base, ledger=None, audit=False):
     # One admin against the broker + registry; seeds go to the source topic, the diff
     # reads both topics.
     broker, registry_url = _kafka_endpoints(base)
@@ -1117,7 +1119,8 @@ def _kafka_admin(base, ledger=None):
         if ledger is None:
             _kafka_clear(admin, topic)
         else:
-            ledger.acquire_topic(admin, topic, lambda topic=topic: admin.ensure_topic(topic))
+            config = {"cleanup.policy": "delete", "retention.ms": "-1", "retention.bytes": "-1"} if audit and topic == base["tgt_topic"] else None
+            ledger.acquire_topic(admin, topic, lambda topic=topic: admin.ensure_topic(topic, config=config))
     return admin
 
 def _spec_route(s) -> str:
@@ -1911,6 +1914,12 @@ def _prepare_service(defn, env, mode):
         pytest.skip(f"service {defn.name} unavailable: {why}")
 
 
+def _abandon_snapshot(observer, records, reason):
+    record = observer.abandon(reason)
+    if record is not None:
+        records.append(record)
+
+
 class LiveItem(pytest.Item):
     def __init__(self, *, manifest_path, services=(), depth=None, **kw):
         super().__init__(**kw)
@@ -2051,6 +2060,8 @@ class LiveItem(pytest.Item):
         gcs_cleanup = []     # (admin, bucket) to delete on teardown (spec §A.4)
         kafka_cleanup = []   # (admin, topic) to delete on teardown (spec §A.4)
         client = None
+        _tx_pool = None
+        _snapshot_observer = None
         deployed = False
         deploy_attempted = False
         in_use_held = False
@@ -2178,7 +2189,7 @@ class LiveItem(pytest.Item):
                     gcs_cleanup += [(_gcs, resolved.base["src_bucket"]),
                                     (_gcs, resolved.base["tgt_bucket"])]
                 elif svc == "kafka":
-                    _kafka = (_kafka_admin(resolved.base, ledger=ledger) if m.lifecycle is not None
+                    _kafka = (_kafka_admin(resolved.base, ledger=ledger, audit=bool(m.audit_specs)) if m.lifecycle is not None
                               else _kafka_admin(resolved.base))
                     admins["kafka"] = {"admin": _kafka, "schema": None}
                     kafka_cleanup += [(_kafka, resolved.base["src_topic"]),
@@ -2327,6 +2338,12 @@ class LiveItem(pytest.Item):
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
                                  run_one=lambda _db, _f: _run_files([(_db, _f)]), acquire_sinks=m.lifecycle is not None)
+            if m.transaction_steps:
+                from livetest.transactions import Pool
+                _tx_pool = Pool(admins, tokens, source_sql=lambda f: m.file_path(f).read_text(),
+                                timeout=m.timeout, record=self._slt_inputs.record,
+                                trace=self._slt_records.append, report=lambda msg: _report(m.name, msg), owned=ledger.owns)
+                _tx_pool.run_phase(m.transaction_steps, "pre_deploy")
             _pre_seed = [(db, f) for db, f, when, _a in m.seed_files if when == "pre_deploy"]
             if _pre_seed:
                 _report(m.name, "seeding data")
@@ -2339,6 +2356,9 @@ class LiveItem(pytest.Item):
                 # C7.2: the positive source baseline, recorded after the seed.
                 _slt_lifecycle.record_baseline(self._slt_lc, m.lifecycle, admins, tokens, owned=ledger.owns)
 
+            if m.audit_specs:
+                from livetest.audit import prepare as prepare_audit
+                prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
             # op:/udf: modules: build the OpenProcessor/UDF jar(s) against the resolved
             # release (once, if missing/stale) and upload them + their shared config
             # JSON(s) into UploadedFiles so `LOAD OPEN PROCESSOR` / `ConfigFile` resolve
@@ -2792,6 +2812,12 @@ class LiveItem(pytest.Item):
                     # CDC sources capture only post-start commits: seed after RUNNING. Each
                     # entry's `after` is an offset from the moment RUNNING was reached (not
                     # from the previous file), so entries at 10s and 30s fire 10s and 30s in.
+                    if m.snapshot_spec is not None and _await_running_for_seed():
+                        from livetest.snapshot_observer import Observer
+                        _snapshot_observer = Observer(m.snapshot_spec, admins=admins, tokens=tokens,
+                            case_dir=m.dir, inputs=self._slt_inputs, owned=ledger.owns, timeout=m.timeout,
+                            report=lambda msg: _report(m.name, msg))
+                        _snapshot_observer.start()
                     _post_seed = [(db, f, a) for db, f, when, a in m.seed_files
                                   if when == "post_start"]
                     if _post_seed and _await_running_for_seed():
@@ -2826,6 +2852,8 @@ class LiveItem(pytest.Item):
                                     _hb_wait(_elapsed, _after)
                                     time.sleep(min(2.0, _left))
                             _run_files([(_db, _f)])
+                    if _tx_pool is not None and _await_running_for_seed():
+                        _tx_pool.run_phase(m.transaction_steps, "post_start")
                     # Generate post_start data once RUNNING, before the post_start
                     # server_files drop (same no-race ordering as the pre_deploy phase).
                     if (any(g["when"] == "post_start" for g in m.generate_specs)
@@ -2883,6 +2911,8 @@ class LiveItem(pytest.Item):
                             # the default would report a WORKING stop as "not interrupted".
                             # Floored at the default so a short-timeout manifest cannot make
                             # verification stricter than the library intends.
+                            if _tx_pool is not None:
+                                _tx_pool.observe_recovery("pre_interrupt")
                             recovery.interrupt(client, ctx, app, _rc["mode"],
                                                verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                                report=lambda msg: _report(m.name, msg))
@@ -2892,15 +2922,22 @@ class LiveItem(pytest.Item):
                             # arrives only after the restart. Their `after` counts from RUNNING.
                             _post_rec = [(db, f, a) for db, f, when, a in m.seed_files
                                          if when == "post_recover"]
-                            _restore_then_post_recover(
-                                restore=lambda _settle: recovery.restore(
+                            def _restore_cycle(_settle):
+                                status = recovery.restore(
                                     client, ctx, app, _rc["mode"], timeout=m.timeout,
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
                                     report=lambda msg: _report(m.name, msg),
-                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}")),
+                                    progress=_hb(f"recover: waiting for app RUNNING{_tag}"))
+                                if _tx_pool is not None:
+                                    _tx_pool.observe_recovery("post_restore")
+                                return status
+                            _restore_then_post_recover(
+                                restore=_restore_cycle,
                                 run_files=_run_files,
                                 seeds=_post_rec,
+                                post_restore=(lambda: _tx_pool.run_phase(m.transaction_steps, "post_recover"))
+                                    if _tx_pool is not None and any(s["when"] == "post_recover" for s in m.transaction_steps) else None,
                                 settle=_rc["settle"],
                                 last=_last,
                                 hb=_hb,
@@ -3234,6 +3271,11 @@ class LiveItem(pytest.Item):
                             tokens=tokens, ident=ident, owned=ledger.owns,
                             read_files=lambda _p, **_k: read_server_files(ctx, _p, **_k),
                             source_dir=m.source_dir)
+                    if _snapshot_observer is not None:
+                        self._slt_records += _snapshot_observer.finish()
+                    if m.audit_specs:
+                        from livetest.audit import prepare as prepare_audit
+                        prepare_audit(m.audit_specs, admins, tokens, ledger.owns, timeout=m.timeout)
                     from livetest.nothing import assert_nothing
                     from livetest.sinkprobe import rows as sink_rows
                     for _kind in ("data", "file"):
@@ -3369,6 +3411,19 @@ class LiveItem(pytest.Item):
                 pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, monitor, checkpoint_history, jmx)")
             succeeded = True
         finally:
+            _tx_cleanup_error = None
+            if _snapshot_observer is not None:
+                try:
+                    import sys
+                    _abandon_snapshot(_snapshot_observer, self._slt_records,
+                        str(sys.exc_info()[1] or "case ended before snapshot assertions"))
+                except Exception as e:
+                    _tx_cleanup_error = e
+            if _tx_pool is not None:
+                try:
+                    _tx_pool.close()
+                except Exception as e:
+                    _tx_cleanup_error = e
             self._slt_cleanup_active = True
             # Stop the run-level progress line before teardown emits its own output.
             _clear_progress()
@@ -3458,6 +3513,8 @@ class LiveItem(pytest.Item):
             # C7.4: a cleanup failure fails a run that had nothing else in
             # flight; an exception already propagating is never replaced.
             import sys as _slt_sys
+            if _slt_sys.exc_info()[0] is None and _tx_cleanup_error is not None:
+                raise _tx_cleanup_error
             if _slt_sys.exc_info()[0] is None and cleanup is not None and cleanup.status == "failed":
                 raise _slt_ownership.CleanupError(f"{m.name}: cleanup failed: {cleanup.detail}")
 
