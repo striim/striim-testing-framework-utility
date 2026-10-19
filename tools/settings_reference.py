@@ -175,6 +175,19 @@ SERVICE_EXTRAS = {
     "SLT_BIGQUERY_TOKEN_URI": (None, "Dedicated local fake OAuth endpoint ending in `/token`."),
     "SLT_BIGQUERY_IMAGE": (None, "Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence."),
     "SLT_BIGQUERY_TOKEN_IMAGE": (None, "Override the dedicated fake token server image; use a pinned digest."),
+    "SLT_PG_FIXTURE_TIMEOUT": (None,
+        "Optional live-engine Postgres fixture statement deadline in positive finite seconds, at most "
+        "2147483.647. Also opts into a lock deadline of min(15 seconds, half the statement budget). "
+        "Manifest fixture_timeout takes precedence. Unset: no new statement/lock policy for DDL or seed; "
+        "existing bulk-load fixtures retain server defaults. Passive diagnostics stay enabled."),
+    "SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS": (None,
+        "Optional disposable Postgres idle-transaction deadline for qasource/qatarget in sltdb, "
+        "including Striim sessions. Positive integer milliseconds, at most 2147483647; unset removes "
+        "the policy. Validated before compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged."),
+    "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS": (None,
+        "Optional disposable integration Postgres idle-transaction deadline for qasource/qatarget in intdb. "
+        "Positive integer milliseconds, at most 2147483647; unset removes the policy. Validated before "
+        "compose; reapplied on every bring-up, including reuse, for new connections. External databases are unchanged."),
     "SLT_MSSQL_BOOTSTRAP_PASSWORD": ("`QAtestuser1`",
                                      "The strong `sa` password the container boots with; the setup then "
                                      "sets the test password."),
@@ -277,6 +290,8 @@ def service_settings(services: Path) -> list:
                 rows.append((name, default, what))
         for field, name in (raw.get("live_env") or {}).items():
             what = FIELDS.get(field) or field.replace("_", " ")
+            if file.parent.name == "oracle" and field == "admin_user":
+                what = "the optional observer admin account, owning database logon triggers in the data PDB"
             add(name, code(defaults.get(field)), "Your own instance: " + what + "." if field != "host"
                 else what[0].upper() + what[1:] + ".")
         for field, name in (raw.get("docker_env") or {}).items():

@@ -918,12 +918,70 @@ def substitute_targets(specs, tokens) -> list:
         out.append(c)
     return out
 
-def _run_admin_sql(entry, sql) -> None:
+def _pg_fixture_owners(ledger):
+    """Correlate recorded namespaces with run IDs for diagnostics, never deletion authority."""
+    import json
+    owners, ambiguous = {}, set()
+    for path in ledger.path.parent.glob("*.json"):
+        try:
+            identity = json.loads(path.read_text()).get("identity", {})
+            namespace, run_id = identity.get("namespace"), identity.get("runId")
+            if not isinstance(namespace, str) or not namespace or not isinstance(run_id, str) or not run_id:
+                continue
+            if namespace in owners and owners[namespace] != run_id:
+                ambiguous.add(namespace)
+            owners[namespace] = run_id
+        except (OSError, ValueError, AttributeError):
+            continue
+    return {ns: run_id for ns, run_id in owners.items() if ns not in ambiguous}
+
+
+def _run_admin_sql(entry, sql, *, phase="ddl", timeout=None, run_id=None, owners=None, ledger=None) -> None:
     # Every admin now runs DDL/seed in its own FIXED schema — Oracle QASOURCE/QATARGET,
     # Postgres/MSSQL qasource/qatarget via the source/target role's connection — so
     # run_sql takes just the SQL (no per-test schema argument). entry["schema"] is kept
     # in the dict for shape compatibility but is always None.
-    entry["admin"].run_sql(sql)
+    from livetest.pgclient import PgAdmin
+    if isinstance(entry["admin"], PgAdmin):
+        if owners is None and ledger is not None:
+            cache = []
+            # read only if a fixture blocks: every ledger in the state dir is parsed
+            owners = lambda: (cache or cache.append(_pg_fixture_owners(ledger)) or cache)[0]
+        entry["admin"].run_sql(sql, phase=phase, timeout=timeout, run_id=run_id, owners=owners)
+    else:
+        entry["admin"].run_sql(sql)
+
+def _oracle_admins(base, prefix, ledger=None):
+    routes = {}
+    for role in ("source", "target", "admin"):
+        dsn = {**base, "source_user": base.get(role + "_user", "system" if role == "admin" else None),
+               "source_password": base.get(role + "_password", "striim" if role == "admin" else None)}
+        admin = OraAdmin(dsn, prefix=prefix if role == "admin" else None)
+        admin.observer_prefix = prefix
+        admin.observer_ledger, admin.observer_route = ledger, "oracle-" + role
+        routes["oracle-" + role] = {"admin": admin, "schema": None}
+    return routes
+
+
+def teardown_oracle_observers(admins, tokens):
+    result = {"attempted": [], "failed": {}}
+    # The privileged database trigger is removed before data-user views/tables.
+    routes = sorted((db for db in admins if db.startswith("oracle-")),
+                    key=lambda db: (db != "oracle-admin", db))
+    for db in routes:
+        admin = admins[db]["admin"]
+        if not getattr(admin, "touched", False):
+            continue  # do not open a new privileged connection for ordinary cases
+        subject = "oracle-observer " + db
+        result["attempted"].append(subject)
+        try:
+            admin.drop_observer_objects(tokens.get("TID_ORACLE", ""))
+            from livetest.oracle_ownership import settle
+            settle(admin)
+        except Exception as exc:
+            result["failed"][subject] = str(exc)
+    return result
+
 
 def _spanner_ensure(admin, attempts: int = 20, delay: float = 1.5) -> None:
     # The emulator has no healthcheck and needs a moment after the container starts;
@@ -1230,7 +1288,7 @@ def teardown_file_outputs(file_spec, tokens: dict, clear) -> None:
             pass
 
 def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: list, kafka_cleanup: list,
-                     file_spec, clear_files, upload_names: list, delete_uploads) -> dict:
+                     file_spec, clear_files, upload_names: list, delete_uploads, *, oracle_observer_failed=False) -> dict:
     """The best-effort teardown of a case without a `lifecycle:` block, after the ledger cleanup.
 
     The ownership ledger deletes Postgres objects, the namespace, slots and exact file claims; the
@@ -1257,6 +1315,11 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
         entry = admins.get(db)
         drop = getattr(entry["admin"], "drop_test_tables", None) if entry else None
         if drop is None:
+            continue
+        if oracle_observer_failed and db.startswith("oracle-"):
+            subject = f"engine-tables {db}"
+            out["attempted"].append(subject)
+            out["failed"][subject] = "tables preserved because Oracle observer teardown failed"
             continue
         token = _DDL_TEARDOWN_PREFIX_TOKENS.get(db.split("-", 1)[0], "TID")
         attempt(f"engine-tables {db}", drop, tokens.get(token, ""))
@@ -1882,49 +1945,44 @@ def pytest_collect_file(parent, file_path):
         return None
     return LiveYamlFile.from_parent(parent, path=file_path)
 
-def _declared_services(path) -> list:
-    """`requires:` read at COLLECTION time, for the per-service markers.
-
-    Deliberately a raw yaml read rather than load_manifest: collection must not fail on a
-    manifest that the loader would reject, because a broken manifest's error belongs at RUN
-    time where it names the file and the reason. A file we cannot parse simply gets no service
-    markers, which makes it run in the default (serial-safe) bucket rather than vanish.
-    """
+def _collection_manifest(path):
+    """Read once for collection; invalid manifests still get their error at run time."""
     try:
-        raw = yaml.safe_load(path.read_text()) or {}
+        raw = yaml.safe_load(path.read_text())
     except (OSError, yaml.YAMLError):
-        # Narrow on purpose. A broad `except Exception` here silently swallowed a missing
-        # import while writing this, leaving every test unmarked and the selector matching
-        # nothing -- a bug that looks exactly like "no spanner tests exist". Unparseable YAML
-        # and unreadable files are the two conditions worth tolerating; anything else is a
-        # defect and should surface.
-        return []
-    if not isinstance(raw, dict):
-        return []
+        # Keep this narrow: programming errors must surface instead of silently
+        # leaving every test unmarked.
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _declared_services(path, raw=None) -> list:
+    """Collection-time service markers, without run-time manifest validation."""
+    raw = _collection_manifest(path) if raw is None else raw
     return [s for s in (raw.get("requires") or []) if isinstance(s, str)]
 
-def _declared_depth(path):
-    """`depth:` read at COLLECTION time, mirroring `_declared_services` above.
 
-    Same rationale: collection must not fail on a manifest `load_manifest` would reject. A
-    file we cannot parse, or that omits/misspells `depth`, simply gets no depth marker rather
-    than vanishing or crashing collection -- L1's lint gate is where a missing/invalid depth
-    is a hard error, not here.
-    """
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except (OSError, yaml.YAMLError):
-        return None
-    if not isinstance(raw, dict):
-        return None
+def _declared_depth(path, raw=None):
+    """Missing or invalid depth gets no marker; lint owns validation."""
+    raw = _collection_manifest(path) if raw is None else raw
     depth = raw.get("depth")
     return depth if isinstance(depth, str) else None
 
+
+def _declared_tags(path, raw=None):
+    """Read collection labels without moving manifest validation out of run time."""
+    raw = _collection_manifest(path) if raw is None else raw
+    tags = raw.get("tags")
+    return [tag for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+
+
 class LiveYamlFile(pytest.File):
     def collect(self):
+        raw = _collection_manifest(self.path)
         yield LiveItem.from_parent(self, name=self.path.parent.name, manifest_path=self.path,
-                                   services=_declared_services(self.path),
-                                   depth=_declared_depth(self.path))
+                                   services=_declared_services(self.path, raw),
+                                   depth=_declared_depth(self.path, raw),
+                                   tags=_declared_tags(self.path, raw))
 
 def _prepare_service(defn, env, mode):
     why = _prestart.prepare_selected(defn, env, mode)
@@ -1939,7 +1997,7 @@ def _abandon_snapshot(observer, records, reason):
 
 
 class LiveItem(pytest.Item):
-    def __init__(self, *, manifest_path, services=(), depth=None, **kw):
+    def __init__(self, *, manifest_path, services=(), depth=None, tags=(), **kw):
         super().__init__(**kw)
         self.manifest_path = manifest_path
         self.add_marker(pytest.mark.live)
@@ -1955,6 +2013,14 @@ class LiveItem(pytest.Item):
                 except (AttributeError, ValueError):
                     continue
             self.add_marker(getattr(pytest.mark, svc))
+        registered = _registered_markers(self.config) if tags else set()
+        for tag in tags:
+            self.extra_keyword_matches.add(tag)
+            marker = "tag_" + re.sub(r"[^a-zA-Z0-9_]", "_", tag)
+            if marker not in registered:
+                self.config.addinivalue_line("markers", f"{marker}: manifest tag")
+                registered.add(marker)
+            self.add_marker(getattr(pytest.mark, marker))
         if depth in VALID_DEPTHS:
             self.add_marker(getattr(pytest.mark, f"depth_{depth}"))
 
@@ -2179,14 +2245,7 @@ class LiveItem(pytest.Item):
                                                  "schema": None}
                     pg_admins.append((_pg_src, schema))
                 elif svc == "oracle":
-                    admins["oracle-source"] = {"admin": OraAdmin(resolved.base), "schema": None}
-                    # A second admin as the TARGET data user (qatarget) — for DDL/reads
-                    # in QATARGET.* (the source user has CREATE TABLE only in its own
-                    # schema). Route target ddl/data specs with `target_db: oracle-target`.
-                    _ora_tgt = {**resolved.base,
-                                "source_user": resolved.base["target_user"],
-                                "source_password": resolved.base["target_password"]}
-                    admins["oracle-target"] = {"admin": OraAdmin(_ora_tgt), "schema": None}
+                    admins.update(_oracle_admins(resolved.base, tid_oracle, ledger=ledger))
                 elif svc == "mssql":
                     # Like oracle/postgres: qasource (source) + qatarget (target) accounts &
                     # schemas. ensure_setup (as sa) relaxes the sa password, creates qauser +
@@ -2328,11 +2387,13 @@ class LiveItem(pytest.Item):
                     ensure_fake_gcp_key(self.config, ctx, key_name="fake-bigquery-key.json",
                                         token_uri=token_uri, project_id=resolved.base["project"])
 
-            def _run_files(items):
+            def _run_files(items, phase="seed"):
                 for db, fname in items:
                     entry = require_service_admin(admins, db, m.name, f"file {fname!r}")
                     _slt_sql = render(m.file_path(fname).read_text(), tokens)
-                    _run_admin_sql(entry, _slt_sql)
+                    _run_admin_sql(entry, _slt_sql, phase=phase,
+                                   timeout=m.fixture_timeout,
+                                   run_id=ident.run_id, ledger=ledger)
                     # C4: the SQL exactly as sent
                     self._slt_inputs.record("ddl" if any(_f == fname for _d, _f in m.ddl_files) else "seed", fname,
                                             _slt_sql, path=m.file_path(fname))
@@ -2401,7 +2462,7 @@ class LiveItem(pytest.Item):
             # run, confirm what now exists; a failed file keeps the objects it did create.
             ledger.run_ddl_files(m.ddl_files, admins=admins, tokens=tokens,
                                  render_file=lambda _f: render(m.file_path(_f).read_text(), tokens),
-                                 run_one=lambda _db, _f: _run_files([(_db, _f)]),
+                                 run_one=lambda _db, _f: _run_files([(_db, _f)], phase="ddl"),
                                  record=lambda _db, _f, _sql: self._slt_inputs.record(
                                      "ddl", _f, _sql, path=m.file_path(_f)), acquire_sinks=m.lifecycle is not None)
             if m.transaction_steps:
@@ -3100,13 +3161,13 @@ class LiveItem(pytest.Item):
                                 if not _op_admin_entry:
                                     _report(m.name, f"action: concurrent op db {_op_db} not found")
                                     return
-                                _op_admin = _op_admin_entry["admin"]
                                 try:
                                     while not _action_stop_flag.is_set():
                                         try:
                                             # ${TOKEN} form, like every other SQL file; str.format
                                             # cannot see it, which is why three cases hardcoded a schema.
-                                            _op_admin.run_sql(render(_op_sql, tokens))
+                                            _run_admin_sql(_op_admin_entry, render(_op_sql, tokens),
+                                                           phase="action", run_id=ident.run_id)
                                             _report(m.name, f"action: concurrent {_op_file} executed")
                                         except Exception as e:
                                             # Log but don't fail: concurrent ops are best-effort
@@ -3610,12 +3671,22 @@ class LiveItem(pytest.Item):
                 except Exception:
                     return []
 
+            # Remove database-wide hooks before app cleanup can exhaust the interrupt alarm.
+            _observers = teardown_oracle_observers(admins, tokens)
             cleanup = _slt_ownership.run_cleanup(
                 ledger, client=client, admins=admins, ctx=ctx, tokens=tokens,
                 gcs_cleanup=gcs_cleanup, kafka_cleanup=kafka_cleanup, upload_names=_slt_upload_names(),
                 file_globs=_slt_file_globs(),
                 checkpoint_ns=ident.ns if m.modules else None, keep_reason=_slt_keep_reason,
                 keep_slots=bool(os.environ.get("SLT_KEEP_RESOURCES")))
+            if _observers["failed"]:
+                cleanup.status, cleanup.verified = "failed", False
+                _detail = "oracle-observer-cleanup-failed: " + "; ".join(
+                    subject + ": " + message for subject, message in _observers["failed"].items())
+                cleanup.detail = "; ".join(filter(None, (cleanup.detail, _detail)))
+                cleanup.gaps.extend(_observers["failed"])
+                cleanup.failures.extend({"kind": "oracle-observer", "name": subject, "error": error}
+                                        for subject, error in _observers["failed"].items())
             if _slt_keep_reason:
                 if os.environ.get("SLT_KEEP_RESOURCES"):
                     print("[slt] PostgreSQL replication slots and app state kept for exploration.")
@@ -3638,7 +3709,8 @@ class LiveItem(pytest.Item):
                 try:
                     _unowned = teardown_unowned(admins, m.ddl_files, tokens, gcs_cleanup, kafka_cleanup,
                                                 m.assert_.get("file"), lambda _p: clear_server_files(ctx, _p),
-                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n))
+                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n),
+                                                oracle_observer_failed=bool(_observers["failed"]))
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")

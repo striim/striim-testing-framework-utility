@@ -71,13 +71,15 @@ CHECKPOINT_SUFFIXES = (".position.json", ".position.bk", ".cursors.json", ".curs
 # An OP that cannot resolve its app or component name falls back to a bare letters-and-digits prefix.
 _BARE_CHECKPOINT = re.compile(r"^[A-Za-z0-9]+\.")
 # Only an object this run is known to have created is deletion authority; an ``intended`` entry
-# (the process stopped between intent and confirmation) is never deleted.
+# (the process stopped between intent and confirmation) is normally never deleted.
+# Oracle triggers are the exception: absence is checked before recording intent,
+# and exact database/PDB/user/name identity is checked again before every drop.
 DELETABLE_STATES = ("confirmed", "delete-failed")
 UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acquirable in 4.1 (F2): never deleted
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("namespace", "deployment-group", "pg-view", "pg-table", "bigquery-table", "bigquery-dataset", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("oracle-trigger", "namespace", "deployment-group", "pg-view", "pg-table", "bigquery-table", "bigquery-dataset", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -111,6 +113,15 @@ class Unsupported(RuntimeError):
 
 class InventoryError(RuntimeError):
     """A node's listing or existence check could not be read (never treated as absence)."""
+
+
+def _oracle_trigger_intent(entry):
+    return entry.get("kind") == "oracle-trigger" and entry.get("state") in ("intended", "unresolved-intent")
+
+
+def _deletable(entry):
+    return entry.get("state") in DELETABLE_STATES or _oracle_trigger_intent(entry)
+
 
 
 def _docker(argv):
@@ -576,7 +587,7 @@ class Ledger:
 
     def _unresolved_intents(self, entries) -> None:
         for e in entries:
-            if e["state"] == "intended":
+            if e["state"] == "intended" and not _oracle_trigger_intent(e):
                 self._set(e, "unresolved-intent", "the attempt stopped before confirming it; never deleted")
                 self.gaps.append(f"{e['kind']} {e['name']}: an unresolved intent of attempt {e['attempt']} "
                                  f"is not deletion authority")
@@ -588,7 +599,7 @@ class Ledger:
         now = self.bind(admins, ctx)
         mine = self.ident.attempt
         self._unresolved_intents([e for e in self.entries if e["attempt"] != mine])
-        prior = [e for e in self.entries if e["attempt"] != mine and e["state"] in DELETABLE_STATES]
+        prior = [e for e in self.entries if e["attempt"] != mine and _deletable(e)]
         done = []
         self._delete_all(prior, None, lambda e: {"client": client, "admins": admins, "ctx": ctx}, tokens or {},
                          check=lambda e: self.target_problem(e, now), fault=False,
@@ -880,7 +891,10 @@ class Ledger:
                               f"never deleted")
         if fault:
             self._fault(entry)
-        if kind == "namespace":
+        if kind == "oracle-trigger":
+            from livetest.oracle_ownership import drop
+            drop(_lifecycle._admin(admins, db), entry)
+        elif kind == "namespace":
             if client is None:
                 raise RuntimeError("no Striim client to drop the namespace")
             client.teardown_namespace(name)
@@ -936,6 +950,9 @@ class Ledger:
         """True (absent), False (still present) or None (no read available: a verification gap). An
         unreadable inventory raises, so it is recorded as a failed read, never as absence."""
         kind, name, db = entry["kind"], entry["name"], entry.get("db")
+        if kind == "oracle-trigger":
+            from livetest.oracle_ownership import absent
+            return absent(_lifecycle._admin(admins, db), entry)
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
@@ -996,6 +1013,8 @@ class Ledger:
                     self._set(e, "not-deleted", str(exc))
                     self.gaps.append(str(exc))
                 except Exception as exc:    # noqa: BLE001 - recorded; the result carries it
+                    if kind == "oracle-trigger":
+                        self.gaps.append(f"{kind} {e['name']}: {exc}")
                     self._set(e, "delete-failed", f"reset: {exc}" if result is None else str(exc))
                     if result is not None:
                         result.failures.append({"kind": kind, "name": e["name"], "error": str(exc)})
@@ -1113,7 +1132,8 @@ class Ledger:
             deadline = _lifecycle.Deadline(deadline_s or CLEANUP_DEADLINE_S)
             targets = lambda e: {"client": client, "admins": admins, "ctx": ctx}   # noqa: E731
             self._unresolved_intents([x for x in self.entries if x["attempt"] == mine])
-            self._delete_all([x for x in self.entries if x["attempt"] == mine and x["state"] == "confirmed"],
+            self._delete_all([x for x in self.entries if x["attempt"] == mine
+                              and (x["state"] == "confirmed" or _oracle_trigger_intent(x))],
                              result, targets, tokens, deadline=deadline)
             if checkpoint_ns and getattr(ctx, "mode", None) == "docker":
                 try:
@@ -1243,7 +1263,7 @@ def leftover_ledgers(state_dir, current_run=None, pid_alive=None) -> list:
         rec = doc.get("identity") or {}
         if current_run and rec.get("runId") == current_run:
             continue
-        pending = [e for e in doc.get("entries", []) if e.get("state") in DELETABLE_STATES]
+        pending = [e for e in doc.get("entries", []) if _deletable(e)]
         if not pending:
             continue
         keep = (doc.get("keep") or {}).get("reason")
@@ -1328,6 +1348,9 @@ def replay(ledger_path, *, admins=None, client=None, ctx=None, env=None, pid_ali
         if bq:
             from livetest.bigqueryadmin import BigQueryAdmin
             admins["bigquery-target"] = {"admin": BigQueryAdmin(bq), "schema": bq["dataset"]}
+        if any(entry["kind"] == "oracle-trigger" for entry in doc["entries"]):
+            from livetest.oracle_ownership import replay_admins
+            admins.update(replay_admins(doc, env))
     striim = _latest_binding(doc, lambda b: b.get("striim")) or {}
     if ctx is None:
         ctx = SimpleNamespace(url=striim.get("url"), user=striim.get("user"), mode=striim.get("mode"))
@@ -1350,7 +1373,7 @@ def replay(ledger_path, *, admins=None, client=None, ctx=None, env=None, pid_ali
     result = CleanupResult("ok", ledger_path=str(path))
     targets = lambda e: {"client": client, "admins": admins, "ctx": ctx}   # noqa: E731
     replayed = []
-    ledger._delete_all([e for e in ledger.entries if e["state"] in DELETABLE_STATES], result, targets,
+    ledger._delete_all([e for e in ledger.entries if _deletable(e)], result, targets,
                        {"TID": ident.tid, "TID_ORACLE": ident.tid_oracle, "TID_UPPER": ident.tid_upper},
                        check=lambda e: ledger.target_problem(e, now), fault=False, detail="replayed", done=replayed,
                        deadline=_lifecycle.Deadline(CLEANUP_DEADLINE_S))

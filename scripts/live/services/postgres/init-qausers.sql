@@ -14,3 +14,27 @@ CREATE ROLE qatarget LOGIN REPLICATION PASSWORD 'striim';
 GRANT CONNECT ON DATABASE sltdb TO qasource, qatarget;
 CREATE SCHEMA qasource AUTHORIZATION qasource;
 CREATE SCHEMA qatarget AUTHORIZATION qatarget;
+
+-- Optional idle-transaction policy for direct container initialization.
+-- Framework bring-up reconciles policy separately, including reused volumes.
+-- Unset by default: Striim reader/writer transactions may legitimately stay idle.
+DO $idle_budget$
+DECLARE
+    budget text := NULLIF(current_setting('slt.idle_transaction_timeout_ms', true), '');
+    role_name text;
+BEGIN
+    IF budget IS NULL THEN
+        RETURN;
+    END IF;
+    IF budget !~ '^[1-9][0-9]{0,9}$' THEN
+        RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: expected positive milliseconds';
+    END IF;
+    IF budget::bigint > 2147483647 THEN
+        RAISE EXCEPTION 'invalid-postgres-idle-transaction-budget: exceeds server limit';
+    END IF;
+    FOREACH role_name IN ARRAY ARRAY['qasource', 'qatarget'] LOOP
+        EXECUTE format('ALTER ROLE %I IN DATABASE %I SET idle_in_transaction_session_timeout = %L',
+                       role_name, current_database(), budget || 'ms');
+    END LOOP;
+END;
+$idle_budget$;
