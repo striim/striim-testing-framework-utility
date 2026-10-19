@@ -126,10 +126,37 @@ _DDL = re.compile(rf"\s*(CREATE(?:\s+OR\s+REPLACE)?|DROP|ALTER)\s+{_KIND}\s+"
                   rf"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?{_NAME}", re.I)
 _DML = re.compile(rf"\s*(?:INSERT(?:\s+OR\s+(?:IGNORE|UPDATE))?(?:\s+INTO)?|UPDATE|DELETE(?:\s+FROM)?)"
                   rf"\s+{_NAME}", re.I)
-_REFS = re.compile(rf"\b(?:(?:INTERLEAVE\s+IN(?:\s+PARENT)?|REFERENCES|RENAME\s+TO)\s+"
-                   rf"|SYNONYM\s*\(\s*|SYNONYM\s+){_NAME}", re.I)
-_INDEX_ON = re.compile(rf"\bON\s+{_NAME}", re.I)
-_STREAM_FOR = re.compile(r"\bFOR\s+(.*?)(?:\bOPTIONS\b|$)", re.I | re.S)
+# A keyword and the name after it: whitespace, or none before a quoted name (ON`x`).
+_GAP = r"""(?:\s+|\s*(?=["`]))"""
+_REFS = re.compile(rf"\b(?:(?:INTERLEAVE\s+IN(?:\s+PARENT)?|REFERENCES|RENAME\s+TO){_GAP}"
+                   rf"|SYNONYM\s*\(\s*|SYNONYM{_GAP}){_NAME}", re.I)
+_INDEX_ON = re.compile(rf"\bON{_GAP}{_NAME}", re.I)
+_STREAM_FOR = re.compile(rf"\bFOR{_GAP}(.*?)(?:\bOPTIONS\b|$)", re.I | re.S)
+# Sequence functions: the sequence they advance or read must be this test's.
+_SEQ_ANY = re.compile(r"\b(?:GET_NEXT_SEQUENCE_VALUE|GET_INTERNAL_SEQUENCE_STATE|NEXTVAL|SETVAL|CURRVAL)\s*\(",
+                      re.I)
+_SEQ_GSQL = re.compile(rf"\b(?:GET_NEXT_SEQUENCE_VALUE|GET_INTERNAL_SEQUENCE_STATE)\s*\(\s*SEQUENCE{_GAP}{_NAME}",
+                       re.I)
+_SEQ_PG = re.compile(r"\b(?:NEXTVAL|SETVAL|CURRVAL|GET_INTERNAL_SEQUENCE_STATE)\s*\(\s*'([^']*)'", re.I)
+# A view body's tables: each FROM or JOIN, and each name after a comma in a FROM list.
+_FROM = re.compile(rf"\b(?:FROM|JOIN){_GAP}{_NAME}", re.I)
+_ALIAS = re.compile(r"""\s+(?:AS\s+)?(?:"[^"]+"|`[^`]+`|[A-Za-z_]\w*)""", re.I)
+_FROM_NEXT = re.compile(rf"\s*,\s*{_NAME}")
+
+
+def _view_tables(body: str) -> list[str]:
+    names = []
+    for m in _FROM.finditer(body):
+        names.append(m.group(1))
+        pos = m.end()
+        while True:
+            alias = _ALIAS.match(body, pos)
+            nxt = _FROM_NEXT.match(body, alias.end() if alias else pos)
+            if not nxt:
+                break
+            names.append(nxt.group(1))
+            pos = nxt.end()
+    return names
 
 
 def _carries(name: str, tid: str) -> bool:
@@ -147,6 +174,15 @@ def _refusal(stmt: str, tid: str) -> str | None:
     # DELIMITER line can leave several statements in one entry; the checks below read one.
     if re.search(r";\s*\S", stmt):
         return "a ';' inside an entry (a second statement, or a ';' in a literal) is refused"
+    if re.search(r"#|--|/\*", stmt):
+        # GoogleSQL starts a comment at '#', which split_statements (shared with every engine,
+        # where '#' is an operator or a comment of its own) does not strip, and a caller that
+        # did not split leaves -- and /* in: the checks below would read what Spanner skips.
+        # Refusing a comment is safer than stripping it here.
+        return "a comment ('#', '--' or '/*') inside an entry is refused"
+    seq = [m.group(1) for m in _SEQ_GSQL.finditer(stmt)] + [m.group(1) for m in _SEQ_PG.finditer(stmt)]
+    if len(seq) < len(_SEQ_ANY.findall(stmt)):
+        return "a sequence function whose sequence the guard cannot read"
     ddl = _DDL.match(stmt)
     if ddl:
         if ddl.group(1).upper() == "DROP" and stmt[ddl.end():].strip(" \t\r\n;"):
@@ -157,6 +193,8 @@ def _refusal(stmt: str, tid: str) -> str | None:
             on = _INDEX_ON.search(stmt, ddl.end())
             if on:
                 names.append(on.group(1))
+        if kind == "VIEW" and ddl.group(1).upper() != "DROP":
+            names += _view_tables(stmt[ddl.end():])
         if kind == "CHANGE STREAM":
             clause = _STREAM_FOR.search(stmt, ddl.end())
             if clause:
@@ -167,6 +205,7 @@ def _refusal(stmt: str, tid: str) -> str | None:
         if not dml:
             return "not a statement the real-Spanner guard recognises"
         names = [dml.group(1)]
+    names += seq
     foreign = [n for n in names if not _carries(n, tid)]
     if foreign:
         return (f"{', '.join(foreign)} does not carry this test's ${{TID}} prefix {tid!r} "

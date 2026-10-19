@@ -365,12 +365,15 @@ What changes:
   machine and reads the key from that path.
 - The framework creates and deletes no instance or database. It checks that the instance and both
   databases exist with the right dialects, and fails naming the one that does not.
-- Every statement the framework runs on Spanner (`ddl:`, `seed:`, teardown) must name only
-  objects that start with the case's `${TID}`: tables, indexes, change streams, views and
-  sequences, and the tables they are created on, interleaved in, reference or name as a synonym,
-  in the default schema. One statement per entry, with no `;` inside it, and a `DROP` names one
-  object. Anything else, `FOR ALL` change streams included, fails the case before any statement
-  runs. A serial run has an empty `${TID}`, so it is refused.
+- Every statement the framework runs on Spanner (`ddl:`, `seed:`, `mid_run:`, teardown) must
+  name only objects that start with the case's `${TID}`, in the default schema: tables, indexes,
+  change streams, views and sequences; the tables they are created on, interleaved in, reference
+  or name as a synonym; the sequences a statement uses; and the tables after each `FROM` or
+  `JOIN` in a view. One statement per entry, with no `;` and no comment (`#`, `--`, `/*`) inside
+  it, and a `DROP` names one object. Anything else, `FOR ALL` change streams included, is
+  refused. Each entry is checked before any of its statements run; an earlier entry's objects
+  are already there and are kept, because the case then failed. A serial run has an empty
+  `${TID}`, so it is refused.
 - What the module under test writes is not checked: its settings must use `${TID}` names too.
 - A failed case keeps its tables, as on the emulator; drop them by hand. A passing case whose
   teardown leaves any of its objects, or cannot list one kind of them, fails naming them.
