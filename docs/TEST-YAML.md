@@ -408,6 +408,10 @@ after DDL, deploy or assertion failure, for seed-only routes, and with either
 resource-retention flag: retained apps/tables do not retain observer hooks.
 This also removes existing case-prefixed observer views when resources are kept;
 unprefixed ordinary data-user views are outside this observer cleanup.
+Oracle observer views use the case prefix as deletion authority, including a
+pre-existing view carrying that prefix; they are not recorded in the ledger. This
+differs from Postgres views, which require an exact ownership-ledger entry. Keep
+Oracle observer prefixes reserved for this run and case.
 Catalog readback verifies absence. A failed drop or unreadable catalog fails
 cleanup as `oracle-observer-cleanup-failed`, preserves Oracle tables and records
 verification gaps for their skipped cleanup, keeping any original case failure
