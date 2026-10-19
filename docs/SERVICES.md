@@ -217,7 +217,7 @@ WRITERS separately, so losing the framework's program tag fails the case.
 
 Dynamic SQL avoids a static dependency on the log table; the exception handler
 rolls back and swallows logging errors so a missing table cannot invalidate the
-trigger or block logins. Compilation warnings still fail immediately with
+trigger or block logins. On `oracle-admin`, observer compilation warnings fail immediately with
 `oracle-ddl-compilation-error`, after an attempt to drop the just-created object.
 
 Created observer triggers have persisted intended/confirmed ledger entries with

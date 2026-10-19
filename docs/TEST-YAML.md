@@ -409,7 +409,7 @@ Catalog readback verifies absence. A failed drop or unreadable catalog fails
 cleanup as `oracle-observer-cleanup-failed`, preserves Oracle tables and records
 verification gaps for their skipped cleanup, keeping any original case failure
 visible. Observer teardown runs before app cleanup so a slow undeploy cannot skip
-it when an interrupt teardown deadline expires. A compilation warning fails as
+it when an interrupt teardown deadline expires. An admin-route observer compilation warning fails as
 `oracle-ddl-compilation-error` after an attempt to drop the just-created object. An empty cleanup prefix is refused as
 `oracle-observer-cleanup-scope`; unrelated objects are untouched.
 

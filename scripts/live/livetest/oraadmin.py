@@ -176,7 +176,8 @@ class OraAdmin:
                     if trigger_entry is not None:
                         self.observer_ledger._set(trigger_entry, "confirmed")
                     warning = getattr(cur, "warning", None)
-                    if warning is not None:
+                    if (warning is not None and self.prefix is not None and match
+                            and match["operation"].upper().startswith("CREATE")):
                         # Compilation warnings leave an INVALID object behind. Remove it
                         # before a database logon trigger can affect another session.
                         match = _OBSERVER_DDL.match(stmt)

@@ -186,3 +186,31 @@ def test_admin_refuses_non_observer_sql_before_connect(sql):
     admin._open = lambda: pytest.fail('refused script must not connect')
     with pytest.raises(ValueError, match='oracle-observer-ddl-unsupported'):
         admin.run_sql(sql)
+
+
+@pytest.mark.parametrize('route', ['oracle-source', 'oracle-target'])
+@pytest.mark.parametrize('name', ['REPORT_V', 'TCASE_REPORT_V'])
+def test_ordinary_force_view_warning_keeps_the_invalid_view(route, name):
+    admin = _oracle_admins(BASE, 'TCASE_')[route]['admin']
+    sent = []
+    class Cursor:
+        warning = SimpleNamespace(full_code='DPY-7000')
+        def execute(self, sql): sent.append(sql)
+        def close(self): pass
+    admin._open = lambda: SimpleNamespace(cursor=Cursor, close=lambda: None)
+    sql = f'CREATE OR REPLACE FORCE VIEW {name} AS SELECT * FROM NOT_YET_CREATED'
+    admin.run_sql(sql + ';')
+    assert sent == [sql]
+
+
+def test_admin_force_view_warning_drops_the_invalid_observer():
+    admin = _oracle_admins(BASE, 'TCASE_')['oracle-admin']['admin']
+    sent = []
+    class Cursor:
+        warning = SimpleNamespace(full_code='DPY-7000')
+        def execute(self, sql): sent.append(sql)
+        def close(self): pass
+    admin._open = lambda: SimpleNamespace(cursor=Cursor, close=lambda: None)
+    with pytest.raises(RuntimeError, match='oracle-ddl-compilation-error'):
+        admin.run_sql('CREATE OR REPLACE FORCE VIEW TCASE_REPORT_V AS SELECT * FROM NOT_YET_CREATED;')
+    assert sent[-1] == 'DROP VIEW "TCASE_REPORT_V"'
