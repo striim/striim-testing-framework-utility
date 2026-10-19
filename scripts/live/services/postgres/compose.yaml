@@ -26,8 +26,7 @@ services:
     # lane, and a test killed at its timeout never drops its slot; at 10, a few leaks failed every
     # later CDC test in the lane with "all replication slots are in use".
     command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=32", "-c", "max_wal_senders=32",
-              "-c", "output_plugin_libraries=pgoutput,test_decoding,wal2json",
-              "-c", "slt.idle_transaction_timeout_ms=${SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS:-600000}"]
+              "-c", "output_plugin_libraries=pgoutput,test_decoding,wal2json"]
     environment:
       # Superuser (admin). The framework's PgAdmin connects as this to create the
       # qasource/qatarget roles + schemas and to wipe them between tests; the qasource

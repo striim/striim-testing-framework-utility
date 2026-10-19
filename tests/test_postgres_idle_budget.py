@@ -10,10 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
     ('live', 'SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS', 'slt-postgres'),
     ('integration', 'INT_PG_IDLE_TRANSACTION_TIMEOUT_MS', 'int-postgres'),
 ])
-def test_compose_supplies_ten_minute_role_budget(tier, setting, service):
+def test_compose_policy_changes_do_not_restart_kept_service(tier, setting, service):
     text = (ROOT / 'scripts' / tier / 'services/postgres/compose.yaml').read_text()
     command = yaml.safe_load(text)['services'][service]['command']
-    assert f'slt.idle_transaction_timeout_ms=${{{setting}:-600000}}' in ' '.join(command)
+    assert setting not in ' '.join(command)
     # This custom input must not set a server-wide idle timeout for unrelated users.
     assert not re.search(r'(?<![a-z_])idle_in_transaction_session_timeout=', ' '.join(command))
 
