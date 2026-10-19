@@ -48,7 +48,7 @@ final class TargetCore implements TargetDriver {
     private Object instance;
     private boolean acknowledgeable;
     private Method publishMonitorEvents;
-    private Method processEvent;
+    private Method receive;
     private Method flush;
     private Method endpointCheckpoint;
     private Method close;
@@ -176,7 +176,7 @@ final class TargetCore implements TargetDriver {
             writer.setRecoveryEnabled(recovery);
         }
 
-        processEvent = method("processEvent", int.class, com.webaction.event.Event.class,
+        receive = method("receive", int.class, com.webaction.event.Event.class,
                 ImmutableStemma.class);
         flush = method("flush");
         endpointCheckpoint = method("getEndpointCheckpoint");
@@ -195,11 +195,16 @@ final class TargetCore implements TargetDriver {
         }
     }
 
+    /**
+     * Delivers through {@code receive}, which holds {@code synchObject} around
+     * {@code processEvent} as the platform's {@code RetriableWriter.receive} does.
+     */
     @Override
     public void accept(WAEvent event, ImmutableStemma position) throws Exception {
-        invoke(processEvent, "processEvent", 0, event, position);
+        invoke(receive, "receive", 0, event, position);
     }
 
+    /** Without {@code synchObject}, as the platform's {@code Target.flush} calls it. */
     @Override
     public void flush() throws Exception {
         invoke(flush, "flush");

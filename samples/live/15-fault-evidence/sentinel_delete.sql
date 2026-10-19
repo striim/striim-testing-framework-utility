@@ -1,0 +1,1 @@
+DELETE FROM ${TID}src WHERE id = ${SENTINEL_ID};

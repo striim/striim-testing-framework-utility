@@ -103,6 +103,51 @@ def report(when="call", outcome="passed", text=""):
     return SimpleNamespace(when=when, outcome=outcome, longrepr=text or None, longreprtext=text, user_properties=[], duration=0.1)
 
 
+def test_strict_json_file_comparison_writes_and_validates_full_evidence(good):
+    decl = canon.declaration({"columns": {"id": "integer"}, "strict_json": True}, db_route=False)
+    golden = canon.parse_golden(b"id\n1\n2\n", db_route=False)
+    comp = canon.compare(golden, [{"id": 1}, {"id": 2}], decl)
+    old = good._slt_data[0]
+    target = "/owned/rows.json"
+    good._slt_data = [{**old, **comp, "type": "file", "target": target, "route": "file",
+        "expected": {**comp["expected"], "source": old["expected"]["source"],
+                     "templateSha256": old["expected"]["templateSha256"]},
+        "actual": {**comp["actual"], "owned": True}}]
+    good._slt_records = [record(type="file", target=target, db="file",
+        spec={"path": target, "match": "expected/tgt.csv",
+              "exact": {"columns": {"id": "integer"}, "strict_json": True}})]
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    assert saved["data"]["comparisons"][0]["declaration"]["strict_json"] is True
+    assert saved["data"]["comparisons"][0]["equal"] is True
+
+
+def test_transaction_commit_after_recovery_is_written_to_evidence(good):
+    from livetest.transactions import Pool
+    class Connection:
+        def commit(self): pass
+        def rollback(self): pass
+        def close(self): pass
+    pool = Pool({"postgres-source": {"admin": object()}}, {}, source_sql=lambda f: "",
+                connect=lambda *args: Connection(), trace=good._slt_records.append)
+    steps = [{"session": "held", "op": "begin", "db": "postgres-source", "when": "post_start"},
+             {"session": "held", "op": "commit", "when": "post_recover"}]
+    pool.run_phase(steps, "post_start")
+    pool.run_phase(steps, "post_recover")
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    records = [r for r in saved["assertions"] if r["type"] == "transaction"]
+    assert len(records) == 2
+    event = records[-1]["actual"]["rows"][0]
+    assert (event["session"], event["op"], event["phase"], event["outcome"]) == (
+        "held", "commit", "post_recover", "succeeded")
+    assert event["startedAt"] <= event["endedAt"]
+
+
 def doc_of(item, status="passed"):
     return evidence.case_envelope(item, report(), status)
 
@@ -555,3 +600,242 @@ def test_a_service_the_run_uses_in_docker_still_needs_its_container(good):
         doc = doc_of(good)
         doc["runtime"]["services"] = [_service(None, status)]
         assert "runtime.services[0] needs name, container and status" in str(rejected(doc, good, "evidence-invalid"))
+
+
+@pytest.mark.parametrize("route", ["spanner-google", "spanner-postgres"])
+@pytest.mark.parametrize("equal", [True, False])
+def test_spanner_diff_real_envelope_validator(good, route, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}}, db_route=True)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    good._slt_data = [{**comp, "index": 0, "type": "diff", "target": "t1_tgt", "route": route,
+        "expected": {**comp["expected"], "source": route + ":t1_src", "templateSha256": None},
+        "actual": {**comp["actual"], "owned": True}}]
+    good._slt_records = [record(type="diff", target="t1_tgt", db=route,
+        status="passed" if equal else "failed", spec={"source": "t1_src", "source_db": route})]
+    good._slt_resources["owned"] = [{"kind": "spanner-table", "name": "t1_src", "db": route,
+                                     "state": "verified-absent"}]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))
+    doc["resources"]["owned"] = []
+    with pytest.raises(EvidenceError, match="is not the source table this run witnessed and owned"):
+        evidence.validate_case(doc)
+
+
+@pytest.mark.parametrize("equal", [True, False])
+def test_kafka_sequence_real_envelope_validator(good, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}, "order": "sequence"}, db_route=False)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    good._slt_data = [{**comp, "index": 0, "type": "data", "target": "t1_topic", "route": "kafka",
+        "expected": {**comp["expected"], **{k: good._slt_data[0]["expected"][k]
+                                            for k in ("source", "templateSha256")}},
+        "actual": {**comp["actual"], "owned": False}}]
+    good._slt_records = [record(target="t1_topic", db="kafka", status="passed" if equal else "failed")]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))
+
+
+@pytest.mark.parametrize("equal", [True, False])
+def test_kafka_strict_json_real_envelope_validator(good, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}, "strict_json": True}, db_route=False)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    old = good._slt_data[0]
+    good._slt_data = [{**comp, "index": 0, "type": "data", "target": "t1_topic", "route": "kafka",
+        "expected": {**comp["expected"], "source": old["expected"]["source"],
+                     "templateSha256": old["expected"]["templateSha256"]},
+        "actual": {**comp["actual"], "owned": False}}]
+    good._slt_records = [record(target="t1_topic", db="kafka", status="passed" if equal else "failed",
+        spec={"project": "kafka_record", "payload": "json", "exact": {"columns": {"id": "integer"}, "strict_json": True}})]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))
+
+
+def test_observed_commit_writes_source_keys_and_slot_evidence(good):
+    from livetest.transactions import Pool
+    class Cursor:
+        def execute(self, *args): pass
+        def fetchone(self): return (41,)
+        def close(self): pass
+    class Connection:
+        def cursor(self): return Cursor()
+        def commit(self): pass
+        def rollback(self): pass
+        def close(self): pass
+    class Probe:
+        def query(self, sql, params=None, remaining=1):
+            if 'txid_status' in sql: return [('committed',)]
+            if 'pg_replication_slots' in sql: return [('0/10','0/08')]
+            return [('1',False),('2',False)]
+    pool = Pool({'postgres-source': {'admin': object()}},
+        {'PG_SOURCE_SCHEMA': 'qasource', 'TID': 'case_', 'PG_SLOT': 'case_slot'},
+        source_sql=lambda f: '', connect=lambda *args: Connection(), probe=lambda *args: Probe(),
+        owned=lambda *args: True, trace=good._slt_records.append)
+    steps = [{'session':'a','op':'begin','db':'postgres-source','when':'post_start',
+        'observe': {'tables':[{'table':'${PG_SOURCE_SCHEMA}.${TID}src','key':'id'}],'slot':'${PG_SLOT}'}},
+        {'session':'a','op':'commit','when':'post_recover'}]
+    pool.run_phase(steps,'post_start')
+    pool.observe_recovery('pre_interrupt')
+    pool.observe_recovery('post_restore')
+    pool.run_phase(steps,'post_recover')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc_of(good), secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved,secrets=())
+    event = saved['assertions'][-1]['actual']['rows'][0]
+    assert event['txid'] == 41 and event['commitStatus'] == 'committed'
+    assert event['source']['tables'][0]['keys'] == ['1','2']
+    assert event['source']['slot']['restartLsn'] == '0/08'
+
+
+def test_abandoned_snapshot_history_is_written_on_completion_failure(good):
+    from livetest.snapshot_observer import Observer
+    from livetest.plugin import _abandon_snapshot
+    spec = {'db':'postgres-target','tables':{
+        'a':{'target':'${PG_TARGET_SCHEMA}.${TID}a','columns':{'id':'integer'}},
+        'b':{'target':'${PG_TARGET_SCHEMA}.${TID}b','columns':{'id':'integer'}}},
+        'prefixes':[{'a':'empty.csv','b':'empty.csv'}]}
+    observer = Observer(spec, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: b'id\n'), read=lambda *args: {'a':[], 'b':[]})
+    observer.sample()
+    good._slt_lc.completion = {**good._slt_lc.completion, 'reason':'deadline', 'witness':None}
+    _abandon_snapshot(observer, good._slt_records, 'lifecycle completion deadline')
+    doc = evidence.case_envelope(good, report(outcome='failed',text='completion deadline'), 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved,secrets=())
+    assert saved['run']['status'] == 'failed' and not saved['run']['qualifies']
+    record = saved['assertions'][-1]
+    assert 'observer-incomplete' in record['detail']
+    assert record['actual']['rows'][0]['prefix'] == 0
+    assert record['actual']['rows'][0]['observedUtc']
+
+
+def test_failed_snapshot_keys_survive_written_evidence(good):
+    from livetest.snapshot_observer import Observer
+    from livetest.assertions import AssertionFailed
+    spec = {'db': 'postgres-target', 'tables': {
+        'a': {'target': '${TID}a', 'columns': {'id': 'integer'}, 'keys': ['id']},
+        'b': {'target': '${TID}b', 'columns': {'id': 'integer'}, 'keys': ['id']}},
+        'prefixes': [{'a': 'empty.csv', 'b': 'empty.csv'}]}
+    observer = Observer(spec, admins={}, tokens={}, case_dir='.',
+        inputs=SimpleNamespace(golden=lambda p: b'id\n'),
+        read=lambda *a: {'a': [{'id': 2}], 'b': []})
+    with pytest.raises(AssertionFailed):
+        observer.sample()
+    doc = doc_of(good, status='failed')
+    doc['assertions'].append(observer.abandon('completion failed'))
+    path = write(good, doc)
+    saved = json.loads(Path(path).read_text())
+    evidence.validate_case(saved)
+    tables = saved['assertions'][-1]['actual']['rows'][-1]['tables']
+    assert tables['a']['keys'] == [['2']] and tables['b']['keys'] == []
+
+
+def test_checkpoint_read_error_after_interrupt_is_valid_diagnostic_evidence(good):
+    from livetest import progress
+    interrupted = [False]
+    records = []
+    def read(left):
+        if interrupted[0]: raise ConnectionError('checkpoint API unavailable')
+        return 1
+    progress.at_fault(progress.normalize({'kind': 'checkpoint', 'above': 0}), read,
+        lambda: interrupted.__setitem__(0, True), record=records.append, cycle=1)
+    assert records[0]['status'] == 'passed'
+    good._slt_records.extend(records)
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
+    row = saved['assertions'][-1]['actual']['rows'][0]
+    assert row['interrupted'] is True and row['afterInterrupt']['error']
+
+def test_recovery_sentinel_result_writes_and_validates_full_evidence(good, monkeypatch):
+    from types import SimpleNamespace
+    from livetest import recovery_sentinel
+    monkeypatch.setattr(lifecycle, 'check_witness_refs', lambda *args: None)
+    class Marker:
+        def __init__(self, *args, **kwargs): pass
+        def run(self, watch, terminal):
+            watch.observe({'step': 'present', 'count': 1})
+            watch.observe({'step': 'absent', 'count': 0})
+            return 'satisfied'
+    monkeypatch.setattr(lifecycle, 'Sentinel', Marker)
+    spec = SimpleNamespace(completion_s=1, sentinel={'observe': {'db': 'postgres-target'}})
+    recovery_sentinel.run(lifecycle.State('cdc'), spec, client=None, app='N.app', admins={},
+        tokens={}, ident=None, read_files=None, owned=lambda *args: True, source_dir='.',
+        cycle=1, record=good._slt_records.append)
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    result = next(r for r in saved['assertions'] if r['type'] == 'recovery')
+    assert result['expected']['rows'] == [{'insertPresent': True, 'deleteAbsent': True}]
+    assert len(result['actual']['rows'][0]['observations']) == 2
+
+
+
+def test_owner_selection_refusal_writes_placement_reads(good):
+    from livetest import node_fault, recovery
+    from livetest.striim import StriimClient
+    servers = ['server_primary', 'server_secondary', 'server_agent']
+    replies = json.loads((Path(__file__).parents[1] / 'fixtures/striim/flow-placement-5.4.2.json').read_text())['queries']
+    replies['MON N.flow;'][0]['output']['diagnostic'] = {'reason': 'observed'}
+    class API:
+        def post_tungsten_line(self, command, timeout):
+            return replies[command]
+    nodes = {role: {'role': role, 'server': 'server_' + role, 'id': 'id_' + role}
+             for role in ('primary', 'secondary', 'agent')}
+    with pytest.raises(recovery.RecoveryError, match='fault-missed'):
+        node_fault.Target(StriimClient(API()), SimpleNamespace(mode='docker'),
+            {'hosting': 'N.flow'}, app='N.app', nodes=nodes,
+            record=good._slt_records.append, timeout=1)
+    doc = doc_of(good, status='failed')
+    path = write(good, doc)
+    saved = json.loads(path.read_text()); evidence.validate_case(saved)
+    diagnostic = saved['assertions'][-1]['actual']['rows'][0]
+    assert set(diagnostic['reads']['servers']) == set(servers)
+    assert json.loads(diagnostic['reads']['monitor']['json'])['diagnostic'] == {'reason': 'observed'}
+    assert diagnostic['interrupted'] is False and not saved['run']['qualifies']
+    assert diagnostic['owners'] == ['server_primary', 'server_secondary']
+    assert set(diagnostic['reads']['statuses']) == {'server_primary', 'server_secondary'}
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_node_failover_wait_writes_valid_evidence_on_success_and_failure(good, monkeypatch, succeeded):
+    from ..test_node_failover_evidence import target_for
+    from livetest.recovery import RecoveryError
+    target, clock, records, commands = target_for(monkeypatch,
+        lambda clock, index: {'server_secondary'} if succeeded else set())
+    if succeeded:
+        target.restore()
+    else:
+        with pytest.raises(RecoveryError, match='fault-node-no-failover'):
+            target.restore()
+    good._slt_records.extend(records)
+    doc = doc_of(good, status='passed' if succeeded else 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    wait_record = next(r for r in saved['assertions']
+        if ((r.get('actual') or {}).get('rows') or [{}])[0].get('phase') == 'failover-wait')
+    event = wait_record['actual']['rows'][0]
+    assert event['phase'] == 'failover-wait' and event['failedOver'] is succeeded
+    assert event['observations'] and wait_record['status'] == ('passed' if succeeded else 'failed')
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_initial_placement_records_validate_on_pass_and_failure(good, succeeded):
+    from livetest import node_fault
+    from ..test_failover_boundaries import Clock
+    clock = Clock(); records = []
+    def read(flow, left):
+        if succeeded: return {'server_secondary'}
+        raise ValueError('server not ready')
+    kw = dict(client=None, flow='N.flow', servers={'server_secondary'}, timeout=1,
+        record=records.append, read=read, now=clock.now, sleep=clock.sleep)
+    if succeeded: node_fault.initial_placement(**kw)
+    else:
+        with pytest.raises(node_fault.RecoveryError): node_fault.initial_placement(**kw)
+    good._slt_records.extend(records)
+    doc = doc_of(good, status='passed' if succeeded else 'failed')
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
+    assert saved['assertions'][-1]['actual']['rows'][0]['phase'] == 'initial-placement'

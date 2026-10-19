@@ -23,7 +23,7 @@ Declaration points:
 - `_resolve_striim` never refuses by itself. It reads the declaration on the config: `shared`
   forbids redeploy, `exclusive` refuses a foreign endpoint, absent keeps the old behaviour (only
   direct in-process callers such as hermetic tests). Every non-test caller must sit behind an
-  unconditional declaration; the AST scanner in `tests/lifecycle/test_infra.py` enforces it.
+  unconditional declaration; the AST scanner in `scripts/live/tests/lifecycle/test_infra.py` enforces it.
 
 **Exclusive** — freshly allocated, leased, bound; never adopts or redeploys a cluster:
 - `SLT_STACK_PREFIX` must be unset. The prefix is `x<sha256(SLT_RUN_EPOCH)[:8]>`, exported
@@ -104,10 +104,12 @@ lifecycle:
 Validated at load, before any provisioning (`LifecycleSpecError`, surfaced as a manifest error):
 - `initial-load` → readiness `baseline-landed`; completion `source-count`, `row-count`,
   `file-lines`. `cdc` → readiness `source-progress` or `sentinel`; completion `sentinel`,
-  `row-count`, `file-lines`. `sink: file` → no sentinel kinds.
+  `row-count`, `file-lines`. File sentinel kinds require an owned observe path;
+  Kafka requires completion sentinel and sentinel/source-progress readiness.
 - Zero is never a witness: `expect: 0` / `lines: 0` are rejected at load; a zero baseline or
   source count fails at run time with `zero-count`.
-- Routes: only `postgres-source`, `postgres-target` and `sink: file` on the docker cluster.
+- Source SQL/count routes: Postgres. Sentinel output: Postgres, either Spanner dialect,
+  freshly owned Kafka topic, or a Docker-owned file.
 - Every `assert.file` path and `server_files` dest starts with `${OWNED_DIR}/`, with no `.`,
   `..` or empty segments; the rendered path is re-checked before any read. Native mode does not
   support lifecycle file cases.
@@ -159,8 +161,11 @@ live engine dir), persisted before any side effect.
   container ids. A prior entry is reset, and `replay` deletes, only on an equal target; a changed
   or unreadable target is reported foreign with a verification gap.
 - **Intents.** An `intended` entry is never deletion authority (`unresolved-intent`, a gap).
-- **Unsupported kinds.** Other engines' tables, Kafka topics, GCS buckets and OP uploads are
-  never acquired or deleted (no prefix drop, no computed name); each is a verification gap.
+- **Spanner/Kafka.** Tables/topics are collision-checked, acquired fresh and confirmed
+  before use, then deleted by exact owned name in the current attempt. Without an
+  immutable incarnation identity, a prior-attempt replay cannot delete them.
+- **Unsupported kinds.** Other engine tables, GCS buckets and OP uploads remain
+  verification gaps; no computed-name or prefix drop is deletion authority.
 - **Inventories.** A docker check is `present`, `absent` or unreadable; unreadable refuses
   acquisition and is a failed verification read, never absence.
 - **Checkpoints** are deleted only by exact name when `<ns>.` is a whole component; every other

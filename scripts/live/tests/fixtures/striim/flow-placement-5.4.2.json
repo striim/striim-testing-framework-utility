@@ -1,0 +1,326 @@
+{
+  "provenance": "Striim 5.4.2 read-only replies; identifiers/activity times replaced, unrelated applications removed. Single-owner distribution is a controlled variant.",
+  "queries": {
+    "LIST DEPLOYMENTGROUPS;": [
+      {
+        "command": "LIST DEPLOYMENTGROUPS",
+        "executionStatus": "Success",
+        "output": [
+          {
+            "deploymentgroup1": {
+              "name": "default",
+              "actualServers": [
+                {
+                  "uuid": "00000000-0000-0000-0000-000000000001",
+                  "name": "server_primary"
+                },
+                {
+                  "uuid": "00000000-0000-0000-0000-000000000002",
+                  "name": "server_secondary"
+                }
+              ],
+              "configuredServers": [],
+              "minimumRequiredServers": 1,
+              "applicationLimit": 2147483647
+            }
+          },
+          {
+            "deploymentgroup2": {
+              "name": "Agents",
+              "actualServers": [
+                {
+                  "uuid": "00000000-0000-0000-0000-000000000003",
+                  "name": "server_agent"
+                }
+              ],
+              "configuredServers": [],
+              "minimumRequiredServers": 1,
+              "applicationLimit": 2147483647
+            }
+          },
+          {
+            "deploymentgroup3": {
+              "name": "DefaultAgentMonitoring",
+              "actualServers": [
+                {
+                  "uuid": "00000000-0000-0000-0000-000000000003",
+                  "name": "server_agent"
+                }
+              ],
+              "configuredServers": [],
+              "minimumRequiredServers": 0,
+              "applicationLimit": 2147483647
+            }
+          }
+        ],
+        "responseCode": 200
+      }
+    ],
+    "MON N.flow;": [
+      {
+        "command": "MON N.flow",
+        "executionStatus": "Success",
+        "output": {
+          "entityType": "FLOW",
+          "fullName": "N.flow",
+          "statusChange": "",
+          "rate": "0",
+          "sourceRate": "0",
+          "cpuRate": "",
+          "numServers": "2",
+          "latestActivity": "",
+          "flowComponents": [
+            {
+              "entityType": "SOURCE",
+              "fullName": "N.reader",
+              "statusChange": "",
+              "rate": "0.067",
+              "sourceRate": "0.067",
+              "cpuRate": "0.16%",
+              "numServers": "2",
+              "latestActivity": "2026-01-01 00:00:00"
+            }
+          ]
+        },
+        "responseCode": 200
+      }
+    ],
+    "DESCRIBE server_agent;": [
+      {
+        "command": "DESCRIBE server_agent",
+        "executionStatus": "Success",
+        "output": [
+          {
+            "nodeType": "Agent",
+            "name": "server_agent",
+            "uuid": "00000000-0000-0000-0000-000000000003",
+            "deploymentGroups": [
+              {
+                "uuid": "00000000-0000-0000-0000-000000000004"
+              },
+              {
+                "uuid": "00000000-0000-0000-0000-000000000005"
+              }
+            ],
+            "deployedObjects": [
+              {
+                "applicationName": "app",
+                "components": [
+                  {
+                    "entityType": "SOURCE",
+                    "name": "N.agentReader",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "FLOW",
+                    "name": "N.flowAgent",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "STREAM",
+                    "name": "N.events",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "APPLICATION",
+                    "name": "N.app",
+                    "created": "2026-01-01 00:00:00"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "responseCode": 200
+      }
+    ],
+    "STATUS server_agent;": [
+      {
+        "command": "STATUS server_agent",
+        "executionStatus": "Success",
+        "output": {
+          "server": "server_agent",
+          "appCount": 1,
+          "hasAppManager": false,
+          "applications": [
+            {
+              "app": "N.app",
+              "status": "RUNNING"
+            }
+          ]
+        },
+        "responseCode": 200
+      }
+    ],
+    "DESCRIBE server_primary;": [
+      {
+        "command": "DESCRIBE server_primary",
+        "executionStatus": "Success",
+        "output": [
+          {
+            "nodeType": "Server",
+            "name": "server_primary",
+            "uuid": "00000000-0000-0000-0000-000000000001",
+            "deploymentGroups": [
+              {
+                "uuid": "00000000-0000-0000-0000-000000000006"
+              }
+            ],
+            "deployedObjects": [
+              {
+                "applicationName": "app",
+                "components": [
+                  {
+                    "entityType": "FLOW",
+                    "name": "N.flow",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "STREAM",
+                    "name": "N.events",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "SOURCE",
+                    "name": "N.reader",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "APPLICATION",
+                    "name": "N.app",
+                    "created": "2026-01-01 00:00:00"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "responseCode": 200
+      }
+    ],
+    "STATUS server_primary;": [
+      {
+        "command": "STATUS server_primary",
+        "executionStatus": "Success",
+        "output": {
+          "server": "server_primary",
+          "appCount": 1,
+          "hasAppManager": true,
+          "applications": [
+            {
+              "app": "N.app",
+              "status": "RUNNING"
+            }
+          ]
+        },
+        "responseCode": 200
+      }
+    ],
+    "DESCRIBE server_secondary;": [
+      {
+        "command": "DESCRIBE server_secondary",
+        "executionStatus": "Success",
+        "output": [
+          {
+            "nodeType": "Server",
+            "name": "server_secondary",
+            "uuid": "00000000-0000-0000-0000-000000000002",
+            "deploymentGroups": [
+              {
+                "uuid": "00000000-0000-0000-0000-000000000006"
+              }
+            ],
+            "deployedObjects": [
+              {
+                "applicationName": "app",
+                "components": [
+                  {
+                    "entityType": "FLOW",
+                    "name": "N.flow",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "STREAM",
+                    "name": "N.events",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "SOURCE",
+                    "name": "N.reader",
+                    "created": "2026-01-01 00:00:00"
+                  },
+                  {
+                    "entityType": "APPLICATION",
+                    "name": "N.app",
+                    "created": "2026-01-01 00:00:00"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "responseCode": 200
+      }
+    ],
+    "STATUS server_secondary;": [
+      {
+        "command": "STATUS server_secondary",
+        "executionStatus": "Success",
+        "output": {
+          "server": "server_secondary",
+          "appCount": 1,
+          "hasAppManager": false,
+          "applications": [
+            {
+              "app": "N.app",
+              "status": "RUNNING"
+            }
+          ]
+        },
+        "responseCode": 200
+      }
+    ]
+  },
+  "singleFlowMonitor": {
+    "cpuRate": "",
+    "entityType": "FLOW",
+    "flowComponents": [
+      {
+        "cpuRate": "",
+        "entityType": "SOURCE",
+        "fullName": "N.reader",
+        "latestActivity": "2026-01-01 00:00:00",
+        "numServers": "1",
+        "rate": "0",
+        "sourceRate": "0",
+        "statusChange": ""
+      },
+      {
+        "cpuRate": "",
+        "entityType": "STREAM",
+        "fullName": "N.events",
+        "latestActivity": "2026-01-01 00:00:00",
+        "numServers": "1",
+        "rate": "0",
+        "sourceRate": "0",
+        "statusChange": ""
+      },
+      {
+        "cpuRate": "",
+        "entityType": "TARGET",
+        "fullName": "N.writer",
+        "latestActivity": "2026-01-01 00:00:00",
+        "numServers": "1",
+        "rate": "0",
+        "sourceRate": "0",
+        "statusChange": ""
+      }
+    ],
+    "fullName": "N.flow",
+    "latestActivity": "",
+    "numServers": "1",
+    "rate": "0",
+    "sourceRate": "0",
+    "statusChange": ""
+  }
+}

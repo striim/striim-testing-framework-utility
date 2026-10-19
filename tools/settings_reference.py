@@ -132,7 +132,15 @@ SECTIONS = (
          "A manifest of the Striim installers you already have, to skip the 6.3 GB download "
          "([RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md) has the format)."),
         ("SLT_STRIIM_MIN_FREE_GB", "`35`", "Free Docker disk, in GB, a first image build requires."),
+        ("SLT_TERADATA_JDBC", "unset",
+         "`1`: fetch Teradata's JDBC driver from Maven Central and build it into the Striim image, for "
+         "the `teradata` service. Teradata's licence for the driver applies "
+         "([SERVICES.md](SERVICES.md), Teradata)."),
         ("SLT_STRIIM_HTTP_HOST_PORT", None, "Host port of the console and REST API."),
+        ("SLT_ENABLE_NODE_FAULTS", "unset (disabled)",
+         "Set to `1` only on a dedicated disposable stack to permit node faults and publish the secondary API."),
+        ("SLT_STRIIM_NODE_HTTP_HOST_PORT", "`9082` when enabled",
+         "Host port of the second node's REST API; published only with `SLT_ENABLE_NODE_FAULTS=1`."),
         ("SLT_STRIIM_HTTPS_HOST_PORT", None, "Host port of HTTPS."),
         ("SLT_STRIIM_JMX_HOST_PORT", None, "Host port of the primary's JMX Prometheus exporter."),
         ("SLT_STRIIM_NODE_JMX_HOST_PORT", None, "Host port of the second node's JMX exporter."),
@@ -186,7 +194,8 @@ FRAMEWORK_SET = (
 )
 RETIRED = {"SLT_MODE": "SLT_FRAMEWORK_MODE", "SLT_FRAMEWORK": "SLT_FRAMEWORK_HOME"}
 # Names the code holds that are not settings: tokens it fills in itself.
-NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID"}
+NOT_SETTINGS = {"STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID",
+                "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
@@ -206,6 +215,9 @@ FIELDS = {
                                                                           "database",
     "project": "the project id", "instance": "the instance", "gsql_db": "GoogleSQL-dialect database",
     "pg_db": "PostgreSQL-dialect database", "admin_port": "its REST admin port",
+    "credentials": "path of a service-account key file (in `.env`, relative to its folder); set, the "
+                   "tests use real Cloud Spanner, not the "
+                   "emulator ([SERVICES.md](SERVICES.md#real-cloud-spanner))",
     "src_bucket": "the bucket source objects go in", "tgt_bucket": "the bucket target objects go in",
     "src_topic": "the source topic", "tgt_topic": "the target topic",
     "broker_port": "the broker port Striim connects to", "registry_port": "schema registry port",

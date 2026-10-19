@@ -69,6 +69,8 @@ def _stack_env_names() -> list:
     names = {n for n in os.environ if n.startswith("INT_")}
     # Read by plugin.py's _spanner_tokens but not published by services/spanner's provides:.
     names.add("SPANNER_ADMIN_PORT")
+    # Sends Google's Spanner client to an emulator; inttest/spanneradmin.py refuses it in real mode.
+    names.add("SPANNER_EMULATOR_HOST")
     names |= _published_token_names()
     return sorted(names)
 

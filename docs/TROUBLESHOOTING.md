@@ -70,7 +70,7 @@ either the same way.
 | `exact-block-missing` | a spec has `exact:` but the top-level `exact: {version: 1}` is missing | add the block |
 | `undeclared-conversion:amount:Decimal` | a numeric, date or JSON column without a type | add it under `exact.columns` |
 | `invalid-value:expected:amount` | a golden cell does not parse as the column's type | fix the cell; write `<null>` for NULL |
-| `exact-route-unsupported`, or a `lifecycle:` route refused | `exact:` and `lifecycle:` read Postgres only | on other databases use `data` with `rows:` or `match:`, or `diff`, and no `lifecycle:` |
+| `exact-route-unsupported`, or a `lifecycle:` route refused | the selected route or projection does not support that check | check the [route matrix](WHAT-IS-SUPPORTED.md#check-routes); exact supports Postgres, both Spanner dialects and Kafka `kafka_record`, plus Docker files. Keep supported exact checks |
 | a `ddl:` file refused: schema or publication | the framework creates and drops the schemas a test uses | remove the `CREATE SCHEMA` / `CREATE PUBLICATION` |
 
 ## During a run
@@ -79,7 +79,7 @@ either the same way.
 |---|---|---|
 | `run` printed `run-dir:` and nothing else | a framework pinned before the result line printed only failures: nothing more means the run passed | `outcome.json` in the run directory says `"exit": 0`; move `framework.pin` to a newer release and run `python3 scripts/sync-framework.py` for the result line |
 | `exact data assertion failed`, with `samples.missing` / `samples.extra` | the target differs from the golden | read the two lists: fix the app, or the golden if the golden is wrong |
-| a `match:` test passes with a duplicated row | without `exact:`, `match` compares the distinct set of rows as text | add `exact:` (Postgres), or pin the count with `rows: N` |
+| a `match:` test passes with a duplicated row | without `exact:`, `match` compares the distinct set of rows as text | add `exact:` on a supported route; a hand-written row count alone cannot check every value |
 | lifecycle `deadline` at readiness | the app never delivered the sentinel, or never reached the baseline | check the app reached RUNNING, the replication slot, and the sentinel's `observe` table and `key` |
 | lifecycle `terminal-status:HALT` | the app halted | the Striim server log; the reason is in `evidence.json` |
 | lifecycle `zero-count` | the source had no rows to count | seed the source; for an empty correct result use the sentinel kinds |
@@ -131,3 +131,202 @@ which nothing executed as **exit 3, not a pass**.
 | `another integration-test session is already running against this checkout` | one integration run per checkout | wait for it, or use `--parallel` inside one run |
 | `NoSuchFileException` under `target/`, or a run that reports one case fewer than expected | you ran Maven in the module while the tier was building it | let the run finish; do not build the module at the same time |
 | a case reports a mismatch in event N, section, column | the emitted events differ from `expected/` | the message names the first difference |
+
+## Check typed, counted Spanner rows
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-declaration` | The exact declaration is malformed or has an unknown key/type. | Use the declared keys and types in TEST-YAML; retain the exact check. |
+| `invalid-exact-spec` | The exact declaration is malformed or has an unknown key/type. | Use the declared keys and types in TEST-YAML; retain the exact check. |
+| `exact-route-unsupported` | This route/projection cannot return typed exact rows. | Use a supported exact route or the route-appropriate assertion; see the route matrix. |
+| `canonical-limit-exceeded` | A read exceeds the declared row or byte budget. | Check unexpected rows/duplicates first; choose a sufficient bounded budget for the hand-derived input. |
+| `exact-read-error` | The typed target query failed. | Read the nested driver error, check privileges and target naming, and correct the route. |
+| `exact-read-timeout` | The typed query did not finish inside its deadline. | Check target reachability and query blocking; the read cannot qualify the result. |
+
+## Keep JSON token types in payload comparisons
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `undeclared-column` | Strict JSON contains a column absent from the declaration. | Declare every intended column with its token type, or fix the payload producer. |
+| `invalid-json` | The payload is malformed JSON, has duplicate keys/non-finite numbers, or has invalid framing. | Fix the producer; NaN and Infinity must not be emitted as JSON. |
+| `invalid-value:actual:<column>` | The observed token/value does not match its declared type. | Keep numeric/boolean/null token types; fix a formatter that quotes numbers, and declare binary encoding explicitly. |
+| `evidence-invalid` | The framework could not validate the written evidence envelope. | Treat the run as failed even when assertions passed. Report the framework commit and sanitized evidence/stdout through CONTRIBUTING; do not bypass validation. |
+
+## Check file bytes, hashes and the exact rolled inventory
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-raw-file-spec` | The raw inventory declaration is malformed or mixed with content assertions. | Use only path and raw on the spec; declare every expected rolled file, bytes, SHA-256 and records. |
+| `raw-file-inventory-mismatch` | The file names present differ from the complete declared inventory. | Check the .00 first-roll name, ${TID} rendering, and empty/hidden extra files; fix writer rollover rather than ignoring extras. |
+| `raw-file-mismatch` | An expected file has different bytes, hash or record count. | Check formatter members, encoding, separators and headers against the hand-derived golden. |
+| `raw-file-limit-exceeded` | The raw read exceeds max_bytes. | Check unintended output first, then declare an adequate bounded max_bytes. |
+| `raw-file-invalid-json` | The bytes cannot be parsed as complete strict JSON objects for raw.format: json. | Fix the emitted JSON record; counts cannot establish byte correctness. |
+| `raw-file-route-unsupported` | Raw inventory needs Docker access to owned output files. | Run the case in Docker mode with its owned directory. |
+| `raw-file-target-not-owned` | The raw path is outside this attempt's confirmed owned directory. | Use ${OWNED_DIR} and let the framework acquire the exact output scope. |
+
+## Prior-attempt Spanner or Kafka resources
+
+A later attempt can fail with `collision:kafka-topic` or `collision:spanner-table`
+after an earlier attempt's cleanup failed. This is intentional: attempts can use
+the same run/worker/case name, but matching names and endpoints cannot prove an
+object's incarnation. Replay refuses prior-attempt sink deletes, and acquisition
+refuses to clear a resource that already exists.
+
+1. Read the failed attempt's ownership ledger for the exact topic/table name and
+   backend binding. Confirm that attempt is abandoned and no active run uses it.
+2. In a framework checkout with its [test environment](../CONTRIBUTING.md#set-up)
+   installed, set only the relevant backend variables below from that ledger.
+   Replace each placeholder with the recorded value; do not use a prefix or pattern.
+3. Delete and verify that one object using the corresponding command. These are
+   manual destructive operations; only run the block for the abandoned resource.
+
+For a leftover Kafka topic (also removes its value schema subject):
+
+```bash
+export CLEANUP_BROKER='<recorded broker>' CLEANUP_REGISTRY='<recorded registry URL>'
+export CLEANUP_TOPIC='<exact recorded topic>'
+.venv-test/bin/python - <<'PY'
+import os
+from livetest.kafkaadmin import KafkaAdmin
+admin = KafkaAdmin({"broker": os.environ["CLEANUP_BROKER"],
+                    "registry_url": os.environ["CLEANUP_REGISTRY"]})
+topic = os.environ["CLEANUP_TOPIC"]
+admin.delete_topic(topic)
+assert not admin.topic_exists(topic), "topic is still present"
+PY
+```
+
+For a leftover Spanner table in the recorded emulator database:
+
+```bash
+export SPANNER_EMULATOR_HOST='<recorded emulator endpoint>'
+export CLEANUP_PROJECT='<recorded project>' CLEANUP_INSTANCE='<recorded instance>'
+export CLEANUP_DATABASE='<recorded database>' CLEANUP_TABLE='<exact recorded table>'
+.venv-test/bin/python - <<'PY'
+import os
+from livetest.spanneradmin import SpannerAdmin
+admin = SpannerAdmin({"project": os.environ["CLEANUP_PROJECT"],
+                      "instance": os.environ["CLEANUP_INSTANCE"],
+                      "database": os.environ["CLEANUP_DATABASE"],
+                      "emulator_host": os.environ["SPANNER_EMULATOR_HOST"]})
+table = os.environ["CLEANUP_TABLE"]
+admin.drop_owned_table(table)
+assert table not in admin.list_owned_tables(), "table is still present"
+PY
+```
+
+4. Start a fresh attempt. Do not use broad prefix drops or bypass the ownership
+   checks. If the original backend binding is unavailable, resolve it before deleting.
+
+## Prove no matching data arrived after a sentinel
+
+For Kafka/file sentinels, `canonical-limit-exceeded` at readiness/completion can
+mean the complete append sink exceeded 100000 decoded rows or 67108864 bytes
+(64 MiB): `DEFAULT_MAX_ROWS` / `DEFAULT_MAX_BYTES`. Sentinel insert/delete events
+and application data share this fixed budget; `exact:` overrides do not raise it.
+Reduce the case's total output or use a database sentinel. Spanner sentinels use
+a keyed `WHERE` count and do not materialize the whole table.
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-nothing-spec` | The absence spec has invalid keys, predicate or timing. | Use the route-appropriate nothing block; content keys and project are refused on data absence specs. |
+| `nothing-sentinel-unproven` | No satisfied route sentinel authorizes the bounded absence check. | Declare and deliver the lifecycle sentinel through the route reaching the input before checking absence. |
+| `nothing-arrived` | A matching row arrived during the declared absence window. | Inspect the offending row and fix the app/input; do not shorten the window to hide it. |
+| `nothing-read-error` | An absence probe failed or missed its read deadline. | Correct route reachability/ownership and inspect the nested error; an unreadable sink is not empty. |
+| `witness-unresolvable` | A lifecycle observation cannot be rendered/resolved. | Check sentinel tokens, route, table/path/topic and key declarations against the sink shape. |
+
+## Control overlapping seed transactions and recovery commits
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-transaction-seed` | A transaction schedule/observation has invalid keys, references or phase ordering. | Use valid session names and supported operations; observe only declared owned source tables and slots. |
+| `invalid-transaction-observe` | A transaction schedule/observation has invalid keys, references or phase ordering. | Use valid session names and supported operations; observe only declared owned source tables and slots. |
+| `transaction-control-in-sql` | A transaction SQL file contains transaction-control statements. | Move BEGIN/COMMIT/ROLLBACK/SAVEPOINT operations to transactions; keep the file data SQL only. |
+| `transaction-step-error` | A scheduled transaction operation failed. | Read the transaction record for session/op/phase and driver error; check source constraints and held sessions. |
+| `transaction-cleanup-error` | A held session could not be rolled back/closed during teardown. | Inspect the session error and ensure the source connection can be closed; cleanup failure is retained. |
+| `transaction-observe-not-owned` | A diagnostic table/slot is not confirmed for this attempt and route. | Create/declare it through framework DDL; do not use prior-attempt or foreign resources. |
+
+## Check consistent target snapshots against committed prefixes
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-snapshot-spec` | The observer declaration is malformed or outside budgets. | Declare every table and every complete prefix, supported types and positive bounded limits. |
+| `snapshot-target-not-owned` | A snapshot table is not owned by this attempt. | Create the target in DDL with ${TID} and use the same route. |
+| `snapshot-not-committed-prefix` | A consistent observed state matches no declared committed prefix. | Inspect retained history (prefix null, aggregate SHA-256 and total row count) and the completion key diagnostics; correct transaction visibility or the hand-derived prefixes. |
+| `snapshot-table-set-mismatch` | A read/golden does not name exactly the declared tables. | Include each table alias in every complete prefix. |
+| `snapshot-target-ambiguous` | Two aliases resolve to the same physical target. | Give each alias a distinct owned target table. |
+| `snapshot-duplicate-column` | A table returns duplicate column names. | Use unique column names matching the declaration. |
+| `snapshot-undeclared-column` | A snapshot has a column outside the declared set. | Declare the complete intended schema or fix the target schema. |
+| `snapshot-limit-exceeded` | The observer exceeds row, byte or history limits. | Inspect excess output and set adequate bounded budgets; history is capped. |
+| `snapshot-read-error` | The consistent snapshot could not be read inside its deadline. | Check connectivity, privileges and blocked queries; inspect retained observer error/history. |
+| `snapshot-read-timeout` | The consistent snapshot could not be read inside its deadline. | Check connectivity, privileges and blocked queries; inspect retained observer error/history. |
+| `snapshot-final-prefix-missing` | The final observed snapshot is not the declared final prefix. | Check completion and full transaction delivery; retain every expected row. |
+| `observer-incomplete` | The case ended before the observer could finish qualification. | Read the primary failure and the abandoned observer history; incomplete observation cannot pass. |
+| `snapshot-prefix-regressed` | A snapshot matched an earlier declared state after a newer prefix was observed. | Check replay order and transaction preservation; retain the failed history and keep prefixes derived from intended committed states. |
+
+## Reject replay duplicates with an append-only audit
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-audit-spec` | An audit declaration is malformed or lacks lifecycle/exact requirements. | Use the audit block and matching exact append target with multiset comparison. |
+| `audit-writer-not-append-only` | The declared writer/typed input/target mapping permits upsert or does not match. | Use the route-specific append writer, identical textual target mapping and required false upsert flags. |
+| `audit-target-not-append-only` | The target schema/guard permits replacing an existing delivery. | Remove upsert/unique conflicts from the audit sink and retain duplicate rows for comparison. |
+| `audit-target-not-owned` | The audit target is not confirmed for this attempt. | Use framework-created ${TID} tables/topics or ${OWNED_DIR} output. |
+
+## Interrupt inside an observed progress window
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-progress-trigger` | The progress declaration or rendered target is invalid. | Use the documented kind, route, identifiers and open-window constraints; trigger cannot coexist with after/every. |
+| `invalid-progress-target` | The progress declaration or rendered target is invalid. | Use the documented kind, route, identifiers and open-window constraints; trigger cannot coexist with after/every. |
+| `progress-target-not-owned` | The slot/topic/table is not confirmed on this attempt and route. | Create the resource through framework DDL/acquisition and use its exact rendered route/name. |
+| `progress-deadline` | The condition was never observed before the deadline. | Check whether input reached the reader and whether the chosen threshold is reachable. |
+| `progress-window-missed` | The count reached/passed the upper bound before the fault. | Choose a window that includes observable in-flight work and slow/provide sufficient input; final equality cannot prove a fault. |
+| `progress-read-error` | The progress transport/query failed. | Read the nested error; check target/slot/topic access and offset/checkpoint fields. |
+| `progress-app-not-running` | The app left RUNNING before the declared fault could land. | Inspect app status and deployment; ensure the work remains in flight until the trigger. |
+
+## Prove the fault was issued while its precondition held
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `fault-missed` | The fault boundary was not proven, either before issuance or after interruption took effect. | Check `interrupted` and `afterInterrupt` before assuming the stack was undisturbed. Suffixes include deadline/window/read/app-status, no unique running Docker owner, and a flow moved before interruption. This is never absorbed by xfail. |
+| `fault-interrupt-error` | The interrupt command failed after its final observation. | Inspect the recorded command boundary and transport error; a failed request is not a completed fault. |
+
+## Prove the route transports a fresh marker after recovery
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-post-recovery-sentinel` | Recovery sentinel lacks running/lifecycle prerequisites. | Set expect_running: true and declare a supported lifecycle sentinel; use reserved recovery tokens only in sentinel files. |
+| `post-recovery-sentinel-missed` | The fresh post-restore marker did not arrive and disappear. | Inspect insert/delete witness evidence and resumed reader/writer capture before post_recover seeds. |
+
+## Interrupt one named node and check flow placement
+
+| Code | Meaning | What to change |
+|---|---|---|
+| `invalid-node-fault` | Named-node selection/mode is invalid or unavailable. | Use Docker topology: cluster, a valid role/unique hosting flow, and stop/kill/restart; restart requires node and quiesce refuses node. |
+| `node-fault-error` | The selected container command/state check failed. | Inspect the recorded container ID and Docker error; the fault is not proven. |
+| `fault-node-hosts-metadata` | The selected primary also hosts the metadata database. | Place the flow initially on the secondary and keep the primary available as survivor; the framework refuses this control-plane interruption before issuing the fault. |
+| `fault-node-no-failover` | The hosted flow did not move to a surviving app node while its owner stayed down. | Inspect bounded failover observations and node logs. Keep metadata outside the killed container: the bundled primary also hosts the metadata database. Sample 17 uses an owned group to start on the secondary and add the primary as survivor.
+| `fault-fallback-unavailable` | No reachable surviving node API is published. | Coordinate recreation of the Striim stack with the new second-node mapping; see UPGRADING. |
+| `fault-node-not-running` | The selected node was not running before interruption. | Restore/inspect the cluster before the case; a pre-existing stopped node is not this test's fault. |
+| `fault-node-unmapped` | A Striim server name could not be bound to a framework container. | Use the framework three-container cluster and inspect node-name discovery. |
+| `fault-node-inventory-unreadable` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-inventory-ambiguous` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-inventory-deadline` | The exact container inventory is unreadable, ambiguous or late. | Check Docker access, cluster identities and inventory evidence; do not target a guessed container. |
+| `fault-node-restore-status` | The app left RUNNING/COMPLETED during the restore settle. | Inspect app status and server logs; the container-state check is a separate node-fault check. |
+| `fault-api-origin-unavailable` | The original API host cannot supply a surviving peer URL. | Use a resolvable Striim API URL and the published second-node REST mapping. |
+| `placement-mismatch` | The flow owner differs from the declared node/survivor. | Inspect running MON ownership and deployment placement; correct the deployment group. |
+| `placement-read-error` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |
+| `placement-read-deadline` | Placement could not be read inside the assertion deadline. | Check MON/DESCRIBE API responses, surviving-node access and the nested error. |
+| `placement-read-shape` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-name-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-list-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-node-description-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `placement-components-unavailable` | Placement metadata is absent or has an unsupported shape. | Inspect the server responses and framework release compatibility; missing ownership cannot satisfy placement. |
+| `invalid-placement-spec` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `invalid-placement-flow` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `invalid-placement-node` | The placement assertion has invalid keys, flow scope or node selection. | Use a case-qualified flow, valid node role/name, and survivor only with recover.node. |
+| `CLUSTER-READY` | Full post-settle deployment-group membership was not observed within the join deadline. | Check last default/Agents counts and saved node logs; a registration message alone cannot qualify cluster topology. |
+| `placement-flow-monitor-unavailable` | MON does not identify the requested FLOW. | Check the fully qualified flow name and returned entityType/fullName; do not use an absent flow status as a running-state proof. |
+| `placement-application-unavailable` | A deployed flow cannot be bound to one full parent application identity. | Inspect the matching server DESCRIBE components; a bare applicationName is not sufficient proof. |
+| `placement-node-status-unavailable` | The same server cannot report an unambiguous runtime state for that parent application. | Inspect the recorded STATUS reply and server binding, correct availability/privileges, and retain the owner check. |

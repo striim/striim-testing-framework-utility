@@ -346,6 +346,15 @@ In it, under `live/`:
 - `data.comparisons[]`: one entry per exact comparison. `equal` says whether it matched, and
   `samples.missing` and `samples.extra` list the rows that differ, with their counts.
 - `resources`: what the run created, reused and cleaned up.
+- **Raw files**: A `file` assertion carries complete `expected.rows` and `actual.rows` inventory entries: `name`, `bytes`, `sha256`, and optional `records`. Its status and detail distinguish inventory, byte/hash and record-count failures.
+- **Bounded absence**: A `data` or `file` assertion expects count zero and records the last matching count. Success detail states the completed window and read count. A zero count alone does not qualify a failed probe; require a passed assertion and the satisfied completion sentinel.
+- **Transaction seeds**: `transaction` assertions record session, operation, phase, UTC start/end, duration and outcome. Observed commits add `txid`, `commitSucceeded`, `commitStatus` and `source` key/slot read-back. Recovery source observations show `pre_interrupt`/`post_restore` and UTC. Failed row-count completion with `key` adds bounded `targetKeys`; the original completion reason remains.
+- **Consistent snapshots**: A `data` assertion for `snapshot:<db>` contains history rows with `observedUtc`, monotonic `at`, matched zero-based `prefix` (null when none matched), aggregate `sha256` and total `rows`. Failure before final qualification keeps an `observer-incomplete` record and worker error. This uses the `data` record type; there is no separate snapshot assertion tier. An undeclared state also records per-table keyColumns, bounded canonical keys, total rows and truncation flags, retained through abandon().
+- **Append-only audit**: Audit uses the normal exact multiset comparison, so repeated deliveries appear as extra counted rows. The declaration records ignored sink-generated delivery keys; it must still retain every payload delivery.
+- **Progress trigger**: `recover.trigger` declares the reader, thresholds and polling budget. A missed window or unreadable position fails before interruption; inspect the progress error and source/target state.
+- **Fault boundary**: Each cycle writes a `recovery` assertion with trigger, first in-window `windowOpened`, pre-command value, UTC/monotonic times, held and interrupted booleans, issue time and bounded `afterInterrupt`. Timed recovery uses trigger kind `timed`. A failure before issuance has interrupted false; work completed during STOP fails with interrupted true and retained post-interruption value. Neither missed boundary is absorbed by `xfail`.
+- **Recovery marker**: Each cycle adds a `recovery` assertion whose expected booleans are `insertPresent: true` and `deleteAbsent: true`; actual rows retain the full marker witness, its phase and observations. This is additional to the fault-boundary record.
+- **Named node and placement**: A named fault adds another `recovery` assertion with `node`, `role`, exact `containerId`, monotonic `observedAt` and `interrupted`. A `placement` assertion compares the declared singleton node with live owner rows read from Striim; check its status before interpreting an empty owner set. Refused owner selection or final revalidation retains phase, flow, selected server, owner names, Docker mapping and redacted/truncated JSON strings for the queried MON, DESCRIBE and per-server STATUS replies. Initial selection checks all nodes; issuance rechecks only the selected server plus MON single-owner count. The separate failover-wait record retains bounded placement observations and errors on both success and failure, plus the total/dropped counts and last native reply diagnostics.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -499,3 +508,51 @@ the Striim server (`server_files:`), and every assertion tier.
 The framework tests itself with one small live test per `test.yaml` feature, in
 `scripts/live/regression/framework/`. Its [README](../scripts/live/regression/framework/README.md)
 lists which folder shows which key.
+
+### Check typed, counted Spanner rows
+
+Start with [07-spanner-exact](../samples/live/07-spanner-exact/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md).
+
+Evidence for **Typed exact rows**: `data.comparisons[]`: `declaration`, declaration hash, `expected`/`actual` counts and SHA-256, `equal`, and mismatch samples. Require `equal: true` for each comparison.
+
+### Keep JSON token types in payload comparisons
+
+Start with [08-strict-json](../samples/live/08-strict-json/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md).
+
+Evidence for **Strict JSON**: The comparison declaration includes `strict_json: true`. `payload` in the assertion spec selects JSON or Avro; observed values keep token types before canonicalization.
+
+### Check file bytes, hashes and the exact rolled inventory
+
+Start with [09-raw-file](../samples/live/09-raw-file/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-raw-file/README.md) exercises the same framework contract.
+
+### Prove no matching data arrived after a sentinel
+
+Start with [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-bounded-nothing/README.md) exercises the same framework contract.
+
+### Control overlapping seed transactions and recovery commits
+
+Start with [11-transaction-seeds](../samples/live/11-transaction-seeds/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-transaction-seeds/README.md) exercises the same framework contract.
+
+### Check consistent target snapshots against committed prefixes
+
+Start with [12-snapshot-observer](../samples/live/12-snapshot-observer/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-snapshot-observer/README.md) exercises the same framework contract.
+
+### Reject replay duplicates with an append-only audit
+
+Start with [13-append-only-audit](../samples/live/13-append-only-audit/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-append-only-audit/README.md) exercises the same framework contract.
+
+### Interrupt inside an observed progress window
+
+Start with [14-progress-recovery](../samples/live/14-progress-recovery/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-progress-recovery/README.md) exercises the same framework contract.
+
+### Prove the fault was issued while its precondition held
+
+Start with [15-fault-evidence](../samples/live/15-fault-evidence/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-fault-evidence/README.md) exercises the same framework contract.
+
+### Prove the route transports a fresh marker after recovery
+
+Start with [16-recovery-sentinel](../samples/live/16-recovery-sentinel/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-recovery-sentinel/README.md) exercises the same framework contract.
+
+### Interrupt one named node and check flow placement
+
+Start with [17-one-node-failover](../samples/live/17-one-node-failover/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-one-node-failover/README.md) exercises the same framework contract.
