@@ -24,7 +24,7 @@ _SQL_IDENT = r'(?:"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_$#]*)'
 _OBSERVER_DDL = re.compile(
     r'\s*(?P<operation>CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:NO)?FORCE\s+)?'
     r'(?:(?:EDITIONABLE\s+(?:EDITIONING\s+)?|NONEDITIONABLE\s+|EDITIONING\s+))?'
-    r'|DROP\s+|ALTER\s+)(?P<kind>VIEW|TRIGGER)\s+(?:IF\s+EXISTS\s+)?'
+    r'|DROP\s+|ALTER\s+)(?P<kind>VIEW|TRIGGER)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?'
     rf'(?P<name>{_SQL_IDENT}(?:\s*\.\s*{_SQL_IDENT})?)', re.I | re.S)
 
 
@@ -237,6 +237,8 @@ class OraAdmin:
         sibling's tables survive. Individual drop failures are swallowed (best-effort
         teardown); CASCADE CONSTRAINTS handles cross-table FKs, PURGE skips the
         recycle bin."""
+        if self.prefix is not None:
+            return    # the admin route owns no test tables; never sweep as SYSTEM
         _, rows = self._query("SELECT table_name FROM user_tables")
         tables = [r[0] for r in rows]
         if prefix:

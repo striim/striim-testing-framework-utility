@@ -159,8 +159,8 @@ DDL/seeds without case-prefixed views/triggers open no observer catalog connecti
 `SLT_ORA_ADMIN_USER` / `SLT_ORA_ADMIN_PASSWORD` (defaults `system` / `striim`),
 connecting to `SLT_ORA_SERVICE`. The baked SYSTEM account has direct
 `CREATE TRIGGER`, `ADMINISTER DATABASE TRIGGER` and direct `SELECT` on
-`SYS.V_$SESSION` and `SYS.V_$CONTAINERS`.
-For your own Oracle, grant these to the chosen admin in the data PDB, and grant
+`SYS.V_$SESSION` and `SYS.V_$CONTAINERS`; it reads `SYS.V_$DATABASE` through its roles.
+For your own Oracle, grant these and `SELECT` on `SYS.V_$DATABASE` to the chosen admin in the data PDB, and grant
 the data-user privileges above directly to each observer/writer user. The trigger
 owner also needs a direct grant on each table its body writes; include that grant
 in the case's data-user DDL, using `${ORACLE_ADMIN_USER}` as the grantee.

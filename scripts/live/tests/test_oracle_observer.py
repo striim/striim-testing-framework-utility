@@ -118,6 +118,26 @@ def test_foreign_observer_ddl_is_refused_before_connect(sql):
         admin.run_sql(sql)
 
 
+def test_if_not_exists_view_is_scoped_by_its_name():
+    assert oraadmin._OBSERVER_DDL.match("CREATE VIEW IF NOT EXISTS TCASE_V AS SELECT 1 id FROM dual")["name"] == "TCASE_V"
+    admin = oraadmin.OraAdmin(BASE, prefix="TCASE_")
+    admin._open = lambda: (_ for _ in ()).throw(RuntimeError("open failed"))
+    with pytest.raises(RuntimeError, match="open failed"):     # past the scope check
+        admin.run_sql("CREATE VIEW IF NOT EXISTS TCASE_V AS SELECT 1 id FROM dual;")
+
+
+def test_oracle_admin_route_never_sweeps_tables_at_teardown():
+    from livetest.plugin import teardown_unowned
+    admin = oraadmin.OraAdmin(BASE, prefix="TCASE_")
+    admin._open = lambda *a, **k: pytest.fail("teardown must not log in on oracle-admin")
+    admin._query = lambda sql: pytest.fail("teardown must not list SYSTEM's tables")
+    admins = {"oracle-admin": {"admin": admin}}
+    for prefix in ("TCASE_", ""):
+        out = teardown_unowned(admins, [("oracle-admin", "x.sql")], {"TID_ORACLE": prefix}, [], [], None,
+                               lambda p: None, [], lambda n: None)
+        assert out["failed"] == {}
+
+
 def test_failed_observer_ddl_is_still_marked_for_teardown():
     admin = oraadmin.OraAdmin(BASE, prefix="TCASE_")
     admin._open = lambda: (_ for _ in ()).throw(RuntimeError("open failed"))
