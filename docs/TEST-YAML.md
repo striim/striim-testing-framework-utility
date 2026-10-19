@@ -395,9 +395,17 @@ Created observer triggers are persisted in the ownership ledger: an absence chec
 and intended entry precede CREATE, and successful CREATE confirms the entry.
 Cleanup and `python -m livetest.ownership replay <ledger.json>` delete triggers
 with intended or confirmed ownership by exact name on the recorded user, endpoint,
-database identity and PDB. An intended trigger is eligible because absence was
+CDB DBID, PDB name, PDB DBID and GUID. The PDB identifiers come from
+`SYS.V_$CONTAINERS` for the current `USERENV.CON_ID` and are checked before every
+drop and absence verification. A same-name replacement PDB is refused.
+An intended trigger is eligible because absence was
 checked before CREATE: Oracle may commit DDL and then lose the response. Old
-`unresolved-intent` trigger entries are also replayable with these checks.
+`unresolved-intent` trigger entries are also replayable with these checks, only
+when they already record both PDB identifiers. Missing identity fields fail
+`oracle-observer-pdb-identity-missing`, with manual cleanup instructions: an
+administrator must verify the original PDB and ownership before running the
+reported `DROP TRIGGER "owner"."name"` there. Never infer missing fields from the
+current same-name PDB.
 An existing trigger without a matching ownership entry is preserved and refused with
 `oracle-observer-not-owned`; an unreadable or changed target is not deletion
 authority. Passwords come from current settings and are never stored in the ledger.

@@ -946,6 +946,8 @@ class Ledger:
                     self._set(e, "not-deleted", str(exc))
                     self.gaps.append(str(exc))
                 except Exception as exc:    # noqa: BLE001 - recorded; the result carries it
+                    if kind == "oracle-trigger":
+                        self.gaps.append(f"{kind} {e['name']}: {exc}")
                     self._set(e, "delete-failed", f"reset: {exc}" if result is None else str(exc))
                     if result is not None:
                         result.failures.append({"kind": kind, "name": e["name"], "error": str(exc)})

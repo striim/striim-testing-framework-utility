@@ -94,9 +94,12 @@ GRANT SELECT ON SYS.V_$SESSION TO qasource;
 GRANT SELECT ON SYS.V_$SESSION TO qatarget;
 GRANT SELECT ON SYS.V_$DATABASE TO qasource;
 GRANT SELECT ON SYS.V_$DATABASE TO qatarget;
+GRANT SELECT ON SYS.V_$CONTAINERS TO qasource;
+GRANT SELECT ON SYS.V_$CONTAINERS TO qatarget;
 -- The privileged observer route owns database logon triggers in this PDB.
 GRANT CREATE TRIGGER, ADMINISTER DATABASE TRIGGER TO SYSTEM;
 GRANT SELECT ON SYS.V_$SESSION TO SYSTEM;
+GRANT SELECT ON SYS.V_$CONTAINERS TO SYSTEM;
 
 -- QUIESCE's marker table, FREEPDB1 copy. Both containers are required (the fixtures say so),
 -- and this is the container where qasource exists, so the grant belongs here and only here --

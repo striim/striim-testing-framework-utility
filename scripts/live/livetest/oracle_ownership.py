@@ -5,12 +5,29 @@ from livetest.oraadmin import _IDENT, _SQL_IDENT
 
 
 def target(admin):
-    _, rows = admin._query("SELECT DBID, SYS_CONTEXT('USERENV', 'CON_NAME') FROM SYS.V_$DATABASE")
-    if len(rows) != 1 or len(rows[0]) != 2 or any(value is None for value in rows[0]):
-        raise RuntimeError('oracle-observer-identity-unreadable: database identity is required')
+    # V_$CONTAINERS.DBID is the PDB identifier; USERENV.CON_DBID is not a
+    # documented SYS_CONTEXT parameter. Read both PDB identifiers for CON_ID.
+    try:
+        _, rows = admin._query(
+            "SELECT d.DBID, SYS_CONTEXT('USERENV', 'CON_NAME'), "
+            "c.DBID, RAWTOHEX(c.GUID) "
+            "FROM SYS.V_$DATABASE d CROSS JOIN SYS.V_$CONTAINERS c "
+            "WHERE c.CON_ID = TO_NUMBER(SYS_CONTEXT('USERENV', 'CON_ID'))")
+    except Exception as exc:
+        raise RuntimeError('oracle-observer-identity-unreadable: cannot read CDB/PDB identity') from exc
+    if (len(rows) != 1 or len(rows[0]) != 4
+            or any(value is None or not str(value).strip() for value in rows[0])
+            or not re.fullmatch(r'[1-9][0-9]*', str(rows[0][2]))
+            or not re.fullmatch(r'[0-9A-Fa-f]{32}', str(rows[0][3]))):
+        raise RuntimeError('oracle-observer-identity-unreadable: CDB/PDB identity and GUID are required')
     dsn = admin.dsn
     return dict(host=dsn['host'], port=int(dsn['port']), service=dsn['service'],
-                user=dsn['source_user'], dbid=str(rows[0][0]), pdb=str(rows[0][1]))
+                user=dsn['source_user'], dbid=str(rows[0][0]), pdb=str(rows[0][1]),
+                pdbDbid=str(rows[0][2]), pdbGuid=str(rows[0][3]).upper())
+
+
+def _has_pdb_identity(identity):
+    return bool(identity and identity.get('pdbDbid') and identity.get('pdbGuid'))
 
 
 def objects(admin):
@@ -53,8 +70,16 @@ def check_target(admin, entry):
     if (not prefix or not _IDENT.fullmatch(prefix) or not _IDENT.fullmatch(name)
             or not name.upper().startswith(prefix.upper())):
         raise RuntimeError('oracle-observer-cleanup-scope: invalid recorded trigger name')
-    if target(admin) != entry.get('oracleTarget'):
-        raise RuntimeError('oracle-observer-target-changed: recorded database or user does not match')
+    recorded = entry.get('oracleTarget')
+    if not _has_pdb_identity(recorded):
+        owner = (recorded or {}).get('user', admin.dsn['source_user'])
+        raise RuntimeError(
+            'oracle-observer-pdb-identity-missing: legacy entry has no complete PDB identity; '
+            'deletion and absence verification refused. An administrator must verify the original '
+            f'PDB and trigger ownership, then run DROP TRIGGER "{owner}"."{name}" by hand; '
+            'do not infer ownership from the current same-name PDB')
+    if target(admin) != recorded:
+        raise RuntimeError('oracle-observer-target-changed: recorded database, PDB identity or user does not match')
 
 
 def drop(admin, entry):
@@ -118,6 +143,8 @@ def authorise_catalog_drop(admin, found):
             # An intent follows the absence check in before_create. Oracle can
             # commit CREATE and then lose its response; confirmation is not needed
             # to remove that exact object on the unchanged recorded target.
+            if not any(_has_pdb_identity(e.get('oracleTarget')) for e in entries):
+                check_target(admin, entries[-1])  # report legacy recovery before reading the current PDB
             identity = target(admin)
             entry = next((e for e in entries if e.get('oracleTarget') == identity), entries[-1])
             check_target(admin, entry)

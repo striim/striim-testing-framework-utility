@@ -13,6 +13,7 @@ BASE = dict(host='db.example', port=1521, service='PDB', source_user='qasource',
 
 def connect_fake(admin, state=None):
     state = state if state is not None else set()
+    admin.fake_pdb_identity = {'dbid': '456', 'guid': 'A' * 32}
     class Cursor:
         warning = None
         def execute(self, sql):
@@ -23,7 +24,12 @@ def connect_fake(admin, state=None):
         def close(self): pass
     admin._open = lambda: SimpleNamespace(cursor=Cursor, close=lambda:None)
     def query(sql):
-        if 'V_$DATABASE' in sql: return ['DBID','PDB'], [('123','PDB')]
+        if 'V_$DATABASE' in sql:
+            if 'c.DBID' in sql and 'RAWTOHEX' in sql:
+                assert 'SYS.V_$CONTAINERS' in sql and 'CON_ID' in sql
+                return ['DBID', 'PDB', 'PDB_DBID', 'GUID'], [
+                    ('123', 'PDB', admin.fake_pdb_identity['dbid'], admin.fake_pdb_identity['guid'])]
+            return ['DBID', 'PDB'], [('123', 'PDB')]
         if 'user_objects' in sql.lower(): return ['OBJECT_NAME','OBJECT_TYPE'], list(state)
         raise AssertionError(sql)
     admin._query = query
@@ -78,6 +84,8 @@ def test_created_trigger_is_persisted_and_exactly_replayable(tmp_path):
     entries = json.loads(ledger.path.read_text())['entries']
     trigger = next(e for e in entries if e['kind']=='oracle-trigger')
     assert trigger['name'] == name and trigger['state']=='confirmed'
+    assert trigger['oracleTarget']['pdbDbid'] == '456'
+    assert trigger['oracleTarget']['pdbGuid'] == 'A' * 32
     assert 'password' not in json.dumps(trigger).lower()
     state.add(('OTHER_LOGON','TRIGGER'))
     result = ownership.replay(ledger.path, admins=admins, ctx=ctx, client=None, env={})
@@ -100,7 +108,10 @@ def test_trigger_replay_refuses_a_different_database(tmp_path):
     name=ident.tid_oracle+'LOGON'
     admin.run_sql(f'CREATE TRIGGER {name} AFTER LOGON ON DATABASE BEGIN NULL; END;\n/')
     query=admin._query
-    admin._query=lambda sql: (['DBID','PDB'], [('999','PDB')]) if 'V_$DATABASE' in sql else query(sql)
+    def changed_database(sql):
+        cols, rows = query(sql)
+        return (cols, [('999', *rows[0][1:])]) if 'V_$DATABASE' in sql else (cols, rows)
+    admin._query = changed_database
     result=ownership.replay(ledger.path, admins=admins, ctx=ctx, client=None, env={})
     assert result.status=='failed' and not result.verified
     assert (name,'TRIGGER') in state
@@ -301,3 +312,90 @@ def test_intended_trigger_reset_checks_recorded_target_and_removes_exact_name(tm
     retry.reset(client=None, admins=admins, ctx=ctx, tokens={})
     assert state == {('OTHER_LOGON', 'TRIGGER')}
     assert retry.entries[0]['state'] == 'deleted'
+
+
+def assert_identity_cleanup_refused(ident, ledger, admins, ctx, tmp_path, cleanup, code):
+    if cleanup == 'teardown':
+        outcome = teardown_oracle_observers(admins, {'TID_ORACLE': ident.tid_oracle})
+        assert outcome['failed'] and code in str(outcome['failed'])
+    elif cleanup == 'reset':
+        retry_ident = runident.derive(ident.case, {'SLT_RUN_EPOCH': ident.run_id})
+        retry = ownership.Ledger.open(retry_ident, state_dir=tmp_path, env={})
+        retry.reset(client=None, admins=admins, ctx=ctx, tokens={})
+        assert code in str(retry.gaps)
+    else:
+        if cleanup == 'replay':
+            result = ownership.replay(ledger.path, admins=admins, ctx=ctx, client=None, env={})
+        else:
+            result = ledger.cleanup(client=None, admins=admins, ctx=ctx, tokens={})
+        assert not result.verified and code in str(result.gaps)
+    assert json.loads(ledger.path.read_text())['entries'][0]['state'] != 'verified-absent'
+
+
+@pytest.mark.parametrize('cleanup', ['teardown', 'cleanup', 'replay', 'reset'])
+@pytest.mark.parametrize('changed', ['dbid', 'guid'])
+def test_replacement_pdb_preserves_same_name_trigger(tmp_path, cleanup, changed):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    name = ident.tid_oracle + 'LOGON'
+    create_trigger_then_disconnect(admin, name)
+    # Only the PDB incarnation changes; the CDB, name, endpoint and user stay fixed.
+    admin.fake_pdb_identity[changed] = '789' if changed == 'dbid' else 'B' * 32
+    state.clear()
+    state.add((name, 'TRIGGER'))  # same name in the replacement PDB's catalog
+    assert_identity_cleanup_refused(ident, ledger, admins, ctx, tmp_path, cleanup,
+                                    'oracle-observer-target-changed')
+    assert state == {(name, 'TRIGGER')}
+
+
+@pytest.mark.parametrize('cleanup', ['teardown', 'cleanup', 'replay', 'reset'])
+@pytest.mark.parametrize('missing', [('pdbDbid',), ('pdbGuid',), ('pdbDbid', 'pdbGuid')])
+def test_missing_pdb_identity_refuses_legacy_entry(tmp_path, cleanup, missing):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    name = ident.tid_oracle + 'LOGON'
+    create_trigger_then_disconnect(admin, name)
+    for field in missing:
+        ledger.entries[0]['oracleTarget'].pop(field, None)
+    ledger.persist()
+    assert_identity_cleanup_refused(ident, ledger, admins, ctx, tmp_path, cleanup,
+                                    'oracle-observer-pdb-identity-missing')
+    assert state == {(name, 'TRIGGER')}
+    persisted = json.loads(ledger.path.read_text())['entries'][0]
+    assert all(field not in persisted['oracleTarget'] for field in missing)
+    # Reported diagnostics must give an explicit manual recovery path.
+    diagnostic = str(teardown_oracle_observers(admins, {'TID_ORACLE': ident.tid_oracle}))
+    assert 'by hand' in diagnostic and f'DROP TRIGGER "SYSTEM"."{name}"' in diagnostic
+
+
+@pytest.mark.parametrize('identity', ['replacement', 'missing'])
+def test_absence_verification_requires_recorded_pdb_identity(tmp_path, identity):
+    from livetest.oracle_ownership import absent, settle
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    create_trigger_then_disconnect(admin, ident.tid_oracle + 'LOGON')
+    state.clear()
+    if identity == 'replacement':
+        admin.fake_pdb_identity['guid'] = 'B' * 32
+        code = 'oracle-observer-target-changed'
+    else:
+        ledger.entries[0]['oracleTarget'].pop('pdbGuid', None)
+        code = 'oracle-observer-pdb-identity-missing'
+    with pytest.raises(RuntimeError, match=code):
+        absent(admin, ledger.entries[0])
+    with pytest.raises(RuntimeError, match=code):
+        settle(admin)
+    assert ledger.entries[0]['state'] == 'intended'
+
+
+@pytest.mark.parametrize('cleanup', ['teardown', 'cleanup', 'replay', 'reset'])
+@pytest.mark.parametrize('identity', ['replacement', 'missing'])
+def test_empty_catalog_does_not_verify_a_different_or_legacy_pdb(tmp_path, cleanup, identity):
+    ident, ledger, admins, admin, state, ctx = trigger_case(tmp_path)
+    create_trigger_then_disconnect(admin, ident.tid_oracle + 'LOGON')
+    state.clear()
+    if identity == 'replacement':
+        admin.fake_pdb_identity['dbid'] = '789'
+        code = 'oracle-observer-target-changed'
+    else:
+        ledger.entries[0]['oracleTarget'].pop('pdbDbid', None)
+        ledger.persist()
+        code = 'oracle-observer-pdb-identity-missing'
+    assert_identity_cleanup_refused(ident, ledger, admins, ctx, tmp_path, cleanup, code)

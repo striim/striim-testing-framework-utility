@@ -141,10 +141,11 @@ def test_direct_grants_cover_both_data_users_and_the_trigger_owner():
         'ALTER SESSION SET CONTAINER=FREEPDB1;', 1)[1]
     for user in ('qasource', 'qatarget'):
         assert re.search(r'GRANT CREATE VIEW TO ' + user + r'\s*;', sql, re.I)
-        for view in ('SESSION', 'DATABASE'):
+        for view in ('SESSION', 'DATABASE', 'CONTAINERS'):
             assert re.search(r'GRANT SELECT ON SYS\.V_\$' + view + r' TO ' + user + r'\s*;', sql, re.I)
     assert re.search(r'GRANT CREATE TRIGGER, ADMINISTER DATABASE TRIGGER TO SYSTEM\s*;', sql, re.I)
     assert re.search(r'GRANT SELECT ON SYS\.V_\$SESSION TO SYSTEM\s*;', sql, re.I)
+    assert re.search(r'GRANT SELECT ON SYS\.V_\$CONTAINERS TO SYSTEM\s*;', sql, re.I)
 
 
 def test_documented_observer_scripts_keep_the_trigger_body_and_case_scope():

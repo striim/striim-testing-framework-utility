@@ -147,7 +147,8 @@ exercises these routes, writer logons and the probe filter.
 
 Cases can create views over their own tables and observe writer sessions without
 counting the framework's probes. The baked data users have `CREATE VIEW` and
-direct `SELECT` grants on `SYS.V_$SESSION` and `SYS.V_$DATABASE` in the data PDB.
+direct `SELECT` grants on `SYS.V_$SESSION`, `SYS.V_$DATABASE` and
+`SYS.V_$CONTAINERS` in the data PDB.
 Direct grants allow view/trigger compilation without depending on roles, and
 `V_$DATABASE` also supports writer metadata checks.
 
@@ -157,7 +158,8 @@ Materialized views on `oracle-admin` are explicitly unsupported. Ordinary data-u
 DDL/seeds without case-prefixed views/triggers open no observer catalog connection. Its optional credentials are
 `SLT_ORA_ADMIN_USER` / `SLT_ORA_ADMIN_PASSWORD` (defaults `system` / `striim`),
 connecting to `SLT_ORA_SERVICE`. The baked SYSTEM account has direct
-`CREATE TRIGGER`, `ADMINISTER DATABASE TRIGGER` and `SELECT ON SYS.V_$SESSION`.
+`CREATE TRIGGER`, `ADMINISTER DATABASE TRIGGER` and direct `SELECT` on
+`SYS.V_$SESSION` and `SYS.V_$CONTAINERS`.
 For your own Oracle, grant these to the chosen admin in the data PDB, and grant
 the data-user privileges above directly to each observer/writer user. The trigger
 owner also needs a direct grant on each table its body writes; include that grant
@@ -221,11 +223,17 @@ trigger or block logins. On `oracle-admin`, observer compilation warnings fail i
 `oracle-ddl-compilation-error`, after an attempt to drop the just-created object.
 
 Created observer triggers have persisted intended/confirmed ledger entries with
-their database identity, PDB, user and endpoint. Cleanup and ownership replay use
-exact names and refuse foreign or changed targets; passwords are read from current
+their CDB DBID, PDB name, PDB DBID and GUID, user and endpoint. PDB DBID and GUID
+come from `SYS.V_$CONTAINERS` for `SYS_CONTEXT('USERENV', 'CON_ID')`. Cleanup and
+ownership replay compare these identities before deletion and absence verification,
+so a replacement PDB with the same name is refused; passwords are read from current
 settings, never recorded. An intended entry also authorizes deletion: absence was
 checked before CREATE, which may commit before its response is lost. A pre-existing
-unacquired trigger is preserved.
+unacquired trigger is preserved. Older entries missing either PDB identifier are
+refused with `oracle-observer-pdb-identity-missing`. An administrator must first
+verify the original PDB and trigger ownership, then run the diagnostic
+`DROP TRIGGER "owner"."name"` by hand there; never fill missing identity fields
+from the current same-name PDB.
 
 The framework removes the case's owned observer triggers before views and
 ordinary tables, including failed cases and resource-retained runs. Existing

@@ -13,7 +13,8 @@ How it is built:
   `FREEPDB1` open read-write) and then connects as `qasource`, so `docker compose up --wait` returns
   only when the data user can log in.
 
-Observer cases use direct CREATE VIEW / SYS.V_$SESSION / SYS.V_$DATABASE grants
+Observer cases use direct CREATE VIEW / SYS.V_$SESSION / SYS.V_$DATABASE /
+SYS.V_$CONTAINERS grants
 on the data users, plus the optional `oracle-admin` PDB route for logon triggers.
 These grants change the image: rebuild this recipe and create a fresh Oracle
 service, or have the database administrator grant them on an existing instance.
