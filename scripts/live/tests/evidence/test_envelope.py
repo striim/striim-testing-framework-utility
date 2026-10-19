@@ -103,6 +103,27 @@ def report(when="call", outcome="passed", text=""):
     return SimpleNamespace(when=when, outcome=outcome, longrepr=text or None, longreprtext=text, user_properties=[], duration=0.1)
 
 
+def test_strict_json_file_comparison_writes_and_validates_full_evidence(good):
+    decl = canon.declaration({"columns": {"id": "integer"}, "strict_json": True}, db_route=False)
+    golden = canon.parse_golden(b"id\n1\n2\n", db_route=False)
+    comp = canon.compare(golden, [{"id": 1}, {"id": 2}], decl)
+    old = good._slt_data[0]
+    target = "/owned/rows.json"
+    good._slt_data = [{**old, **comp, "type": "file", "target": target, "route": "file",
+        "expected": {**comp["expected"], "source": old["expected"]["source"],
+                     "templateSha256": old["expected"]["templateSha256"]},
+        "actual": {**comp["actual"], "owned": True}}]
+    good._slt_records = [record(type="file", target=target, db="file",
+        spec={"path": target, "match": "expected/tgt.csv",
+              "exact": {"columns": {"id": "integer"}, "strict_json": True}})]
+    doc = doc_of(good)
+    path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
+    saved = json.loads(path.read_text())
+    evidence.validate_case(saved, secrets=())
+    assert saved["data"]["comparisons"][0]["declaration"]["strict_json"] is True
+    assert saved["data"]["comparisons"][0]["equal"] is True
+
+
 def doc_of(item, status="passed"):
     return evidence.case_envelope(item, report(), status)
 
@@ -555,3 +576,53 @@ def test_a_service_the_run_uses_in_docker_still_needs_its_container(good):
         doc = doc_of(good)
         doc["runtime"]["services"] = [_service(None, status)]
         assert "runtime.services[0] needs name, container and status" in str(rejected(doc, good, "evidence-invalid"))
+
+
+@pytest.mark.parametrize("route", ["spanner-google", "spanner-postgres"])
+@pytest.mark.parametrize("equal", [True, False])
+def test_spanner_diff_real_envelope_validator(good, route, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}}, db_route=True)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    good._slt_data = [{**comp, "index": 0, "type": "diff", "target": "t1_tgt", "route": route,
+        "expected": {**comp["expected"], "source": route + ":t1_src", "templateSha256": None},
+        "actual": {**comp["actual"], "owned": True}}]
+    good._slt_records = [record(type="diff", target="t1_tgt", db=route,
+        status="passed" if equal else "failed", spec={"source": "t1_src", "source_db": route})]
+    good._slt_resources["owned"] = [{"kind": "spanner-table", "name": "t1_src", "db": route,
+                                     "state": "verified-absent"}]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))
+    doc["resources"]["owned"] = []
+    with pytest.raises(EvidenceError, match="is not the source table this run witnessed and owned"):
+        evidence.validate_case(doc)
+
+
+@pytest.mark.parametrize("equal", [True, False])
+def test_kafka_sequence_real_envelope_validator(good, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}, "order": "sequence"}, db_route=False)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    good._slt_data = [{**comp, "index": 0, "type": "data", "target": "t1_topic", "route": "kafka",
+        "expected": {**comp["expected"], **{k: good._slt_data[0]["expected"][k]
+                                            for k in ("source", "templateSha256")}},
+        "actual": {**comp["actual"], "owned": False}}]
+    good._slt_records = [record(target="t1_topic", db="kafka", status="passed" if equal else "failed")]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))
+
+
+@pytest.mark.parametrize("equal", [True, False])
+def test_kafka_strict_json_real_envelope_validator(good, equal):
+    decl = canon.declaration({"columns": {"id": "integer"}, "strict_json": True}, db_route=False)
+    comp = canon.compare([{"id": "1"}], [{"id": 1 if equal else 2}], decl)
+    old = good._slt_data[0]
+    good._slt_data = [{**comp, "index": 0, "type": "data", "target": "t1_topic", "route": "kafka",
+        "expected": {**comp["expected"], "source": old["expected"]["source"],
+                     "templateSha256": old["expected"]["templateSha256"]},
+        "actual": {**comp["actual"], "owned": False}}]
+    good._slt_records = [record(target="t1_topic", db="kafka", status="passed" if equal else "failed",
+        spec={"project": "kafka_record", "payload": "json", "exact": {"columns": {"id": "integer"}, "strict_json": True}})]
+    doc = doc_of(good, "passed" if equal else "failed")
+    evidence.validate_case(doc)
+    evidence.read(write(good, doc))

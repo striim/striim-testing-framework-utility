@@ -72,18 +72,23 @@ class _FakeMsg:
     def value(self): return self._v
     def key(self): return self._k
     def error(self): return None
+    def partition(self): return 0
+    def offset(self): return self._offset
 
 class _FakePart:
     def __init__(self, ids): self.partitions = {i: None for i in ids}; self.error = None
 
 class _FakeConsumer:
     def __init__(self, topic, frames):
-        self._topic = topic; self._frames = list(frames)
+        self._topic = topic; self._frames = list(frames); self._offset = 0
     def list_topics(self, topic, timeout=None):
         return type("MD", (), {"topics": {self._topic: _FakePart([0])}})()
     def assign(self, tps): pass
     def get_watermark_offsets(self, tp, timeout=None, cached=False): return (0, len(self._frames))
-    def poll(self, t): return _FakeMsg(self._frames.pop(0)) if self._frames else None
+    def poll(self, t):
+        if not self._frames: return None
+        msg = _FakeMsg(self._frames.pop(0)); msg._offset = self._offset; self._offset += 1
+        return msg
     def close(self): pass
 
 def _mk_frame(c0, c1, sid=42):
@@ -101,6 +106,46 @@ def test_select_rows_consumes_and_decodes_all():
     assert admin.count_rows("slt_tgt") == 2   # fresh consumer re-reads from offset 0
 
 
+def test_legacy_record_assertion_polls_until_topic_appears(tmp_path, monkeypatch):
+    from livetest.assertions.data import assert_data
+    now, attempts, budgets = [0.0], [], []
+    class Consumer(_FakeConsumer):
+        def list_topics(self, topic, timeout=None):
+            attempts.append(topic)
+            budgets.append(timeout)
+            return type("MD", (), {"topics": {} if len(attempts) == 1 else {topic: _FakePart([0])}})()
+    admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
+        consumer_factory=lambda group: Consumer("slt_tgt", [_mk_frame("1", "row")]))
+    monkeypatch.setattr("livetest.assertions.data.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("livetest.assertions.data.time.sleep", lambda n: now.__setitem__(0, now[0] + n))
+    results = assert_data(admin, [{"target": "slt_tgt", "project": "kafka_record", "keys": ["value.c0"], "rows": 1}],
+                          tmp_path, timeout=3, poll=1)
+    assert results[0]["status"] == "passed" and len(attempts) == 2
+    assert budgets == [10, 10]
+
+
+def test_legacy_record_poll_budget_starts_after_metadata(monkeypatch):
+    now, poll_timeouts = [0.0], []
+    class Consumer(_FakeConsumer):
+        def list_topics(self, *a, **kw):
+            assert kw["timeout"] == 10
+            now[0] += 5
+            return super().list_topics(*a, **kw)
+        def get_watermark_offsets(self, *a, **kw):
+            assert kw["timeout"] == 10
+            now[0] += 5
+            return super().get_watermark_offsets(*a, **kw)
+        def poll(self, timeout):
+            poll_timeouts.append(timeout)
+            now[0] += 0.1
+            return super().poll(timeout)
+    admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
+        consumer_factory=lambda group: Consumer("slt_tgt", [_mk_frame("1", "row")]))
+    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
+    assert len(admin.select_records("slt_tgt", poll_budget=1)) == 1
+    assert poll_timeouts == [1.0]
+
+
 def test_select_records_preserves_key_value_association_and_typed_envelopes():
     schema = {"type": "record", "name": "Envelope", "fields": [
         {"name": "data", "type": {"type": "record", "name": "Row", "fields": [
@@ -112,6 +157,8 @@ def test_select_records_preserves_key_value_association_and_typed_envelopes():
         return _frame(buf.getvalue(), 42)
     messages = [_FakeMsg(frame(1) + frame(2), b'{"ID":"1"}'),
                 _FakeMsg(frame(3), b'{"ID":"3"}')]
+    for offset, message in enumerate(messages):
+        message._offset = offset
     closed = []
     class Consumer(_FakeConsumer):
         def poll(self, timeout):
@@ -164,20 +211,22 @@ def test_record_view_refuses_unread_bytes_after_or_inside_a_frame():
 
 def test_record_view_refuses_matching_prefix_before_captured_high_watermark(monkeypatch):
     closed = []
+    now = [0.0]
     class Consumer(_FakeConsumer):
         def close(self): closed.append(True)
+        def poll(self, timeout):
+            now[0] += 0.3
+            return super().poll(timeout)
     frames = [_mk_frame(str(i), "row") for i in range(5)]
     admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
                        consumer_factory=lambda group: Consumer("slt_tgt", frames))
-    # Consumer ID, deadline, four successful polls, then budget exhaustion.
-    clock_values = [0, 0, 0.1, 0.2, 0.3, 0.4, 2]
-    clock = iter(clock_values)
-    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: next(clock))
+    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
     assert len(admin.select_rows("slt_tgt", poll_budget=1)) == 4
-    clock = iter(clock_values)
+    now[0] = 0
     with pytest.raises(RuntimeError, match="1 captured message.*unread"):
-        admin.select_records("slt_tgt", poll_budget=1)
+        admin.select_records("slt_tgt", poll_budget=1, strict=True)
     assert closed == [True, True]
+
 
 def test_decode_multiframe_and_strips_striim_metadata():
     # Striim packs several records into ONE message as consecutive frames, and
@@ -283,3 +332,36 @@ def test_delete_topic_is_a_noop_when_absent(monkeypatch):
     admin = KafkaAdmin({"broker": "x", "registry_url": "y", "seed_topic": "s"},
                        admin=fake, sr=_FakeSubjSR())
     admin.delete_topic("slt_missing_src")   # must not raise
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_strict_metadata_errors_are_not_an_empty_snapshot(missing):
+    class Consumer(_FakeConsumer):
+        def list_topics(self, *a, **kw):
+            part = _FakePart([0])
+            part.error = "metadata unavailable"
+            return type("MD", (), {"topics": {} if missing else {"slt_tgt": part}})()
+    admin = KafkaAdmin({}, consumer_factory=lambda g: Consumer("slt_tgt", []))
+    with pytest.raises(RuntimeError, match="kafka_record.*metadata"):
+        admin.select_records("slt_tgt", strict=True)
+
+
+def test_strict_snapshot_ignores_new_offsets_until_all_captured_partitions_are_read():
+    class Message(_FakeMsg):
+        def __init__(self, partition, offset, value):
+            super().__init__(value)
+            self.p, self.o = partition, offset
+        def partition(self): return self.p
+        def offset(self): return self.o
+    class Consumer(_FakeConsumer):
+        def list_topics(self, *a, **kw):
+            return type("MD", (), {"topics": {"slt_tgt": _FakePart([0, 1])}})()
+        def get_watermark_offsets(self, tp, **kw):
+            return (0, 2 if tp.partition == 0 else 1)
+        def poll(self, timeout):
+            return self._frames.pop(0) if self._frames else None
+    frames = [Message(0, 0, _mk_frame("A", "row")), Message(0, 1, _mk_frame("B", "row")),
+              Message(0, 2, _mk_frame("C", "new")), Message(1, 0, _mk_frame("X", "wrong"))]
+    admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
+        consumer_factory=lambda group: Consumer("slt_tgt", frames))
+    assert [r["value"]["c0"] for r in admin.select_records("slt_tgt", strict=True)] == ["A", "B", "X"]

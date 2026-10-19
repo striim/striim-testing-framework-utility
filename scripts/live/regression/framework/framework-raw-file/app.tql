@@ -1,0 +1,40 @@
+-- Two pre-deploy Postgres rows flow through a real DatabaseReader into a DSV FileWriter.
+-- The framework allocates OWNED_DIR uniquely per attempt and removes that directory at teardown.
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE ${TID}source USING Global.DatabaseReader (
+  ConnectionURL: '${PG_URL}',
+  Username: '${PG_SOURCE_USER}',
+  Password: '${PG_SOURCE_PASSWORD}',
+  Tables: '${PG_SOURCE_SCHEMA}.${TID}src',
+  Query: 'SELECT id, name FROM ${PG_SOURCE_SCHEMA}.${TID}src ORDER BY id'
+) OUTPUT TO ${TID}stream;
+
+-- Project data fields so variable event metadata never enters the formatted bytes.
+CREATE TYPE ${TID}row (id Integer, name String);
+CREATE STREAM ${TID}rows OF ${TID}row;
+CREATE CQ ${TID}project
+  INSERT INTO ${TID}rows
+  SELECT TO_INT(e.data[0]), TO_STRING(e.data[1]) FROM ${TID}stream e;
+
+-- No interval-driven empty rolls: two records stay in the initial counter 00 file.
+CREATE OR REPLACE TARGET ${TID}writer USING Global.FileWriter (
+  FileName: '${OWNED_DIR}/${TID}rows.csv',
+  FlushPolicy: 'EventCount:1,Interval:1s',
+  RolloverPolicy: 'EventCount:10000'
+) FORMAT USING Global.DSVFormatter (
+  Members: 'id,name',
+  Charset: 'UTF-8',
+  ColumnDelimiter: ',',
+  RowDelimiter: '\r\n',
+  Header: false,
+  UseQuotes: false
+) INPUT FROM ${TID}rows;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

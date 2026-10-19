@@ -211,7 +211,7 @@ class KafkaAdmin:
             values.append(decoded)
         return values
 
-    def _decode_record(self, message) -> list[dict]:
+    def _decode_record(self, message, *, strict_json=False) -> list[dict]:
         """Keep each JSON message key attached to its typed Avro value frame.
 
         This opt-in view deliberately rejects non-JSON keys. A null Kafka key,
@@ -219,12 +219,23 @@ class KafkaAdmin:
         """
         raw_key = message.key()
         try:
-            key = None if raw_key is None else json.loads(raw_key)
+            if strict_json:
+                from livetest.strictjson import loads
+            else:
+                loads = json.loads
+            key = None if raw_key is None else loads(raw_key)
         except (ValueError, UnicodeDecodeError) as error:
             raise ValueError("kafka_record requires a JSON message key or a null Kafka key") from error
         return [{"key": key, "value": value} for value in self._decode_values(message.value(), strict=True)]
 
     # ---- topic lifecycle ----------------------------------------------------
+
+    def topic_exists(self, topic):
+        metadata = self._admin_client().list_topics(timeout=10)
+        found = metadata.topics.get(_check_topic(topic))
+        if found is not None and getattr(found, "error", None) is not None:
+            raise RuntimeError(f"Kafka topic inventory unreadable: {topic}")
+        return found is not None
 
     def ensure_topic(self, topic: str, partitions: int = 1) -> None:
         from confluent_kafka.admin import NewTopic
@@ -375,11 +386,34 @@ class KafkaAdmin:
     def select_rows(self, topic: str, poll_budget: float = 8.0) -> list[dict]:
         return self._select(topic, poll_budget, lambda message: self._decode(message.value()))
 
-    def select_records(self, topic: str, poll_budget: float = 8.0) -> list[dict]:
-        """Read JSON keys and Avro values together, without stringifying nested data."""
-        return self._select(topic, poll_budget, self._decode_record, strict=True)
+    def select_records(self, topic: str, poll_budget: float = 8.0, *, max_rows=None, max_bytes=None,
+                       strict_json=False, payload="avro", strict=False) -> list[dict]:
+        """Read keys and typed values; strict snapshots bound metadata and require every offset.
 
-    def _select(self, topic: str, poll_budget: float, decode_message, *, strict: bool = False) -> list[dict]:
+        Legacy assertions leave strict off: a not-yet-created topic is empty and poll_budget
+        starts after metadata/watermarks, so their outer assertion timeout remains authoritative.
+        """
+        def decode(message):
+            if payload == "json":
+                from livetest.strictjson import loads
+                try:
+                    return [{"key": None if message.key() is None else loads(message.key()),
+                             "value": loads(message.value())}]
+                except (ValueError, TypeError) as e:
+                    from livetest.canon import CanonError
+                    raise CanonError("invalid-json", str(e)) from None
+            try:
+                return self._decode_record(message, strict_json=strict_json)
+            except ValueError as e:
+                if strict_json:
+                    from livetest.canon import CanonError
+                    raise CanonError("invalid-json", str(e)) from None
+                raise
+        return self._select(topic, poll_budget, decode, strict=strict,
+                            max_rows=max_rows, max_bytes=max_bytes)
+
+    def _select(self, topic: str, poll_budget: float, decode_message, *, strict: bool = False,
+                max_rows=None, max_bytes=None) -> list[dict]:
         # poll_budget bounds ONE read of currently-available messages — NOT the total wait.
         # The assertion tiers (diff/data) already re-poll select_rows in a loop bounded by the
         # manifest `timeout`, so that outer loop is authoritative; a small per-call budget keeps
@@ -388,28 +422,58 @@ class KafkaAdmin:
         from confluent_kafka import TopicPartition
         c = self._consumer(f"slt-read-{topic}-{int(time.monotonic()*1000)}")
         try:
-            md = c.list_topics(_check_topic(topic), timeout=10)
+            deadline = time.monotonic() + poll_budget if strict else 0
+            def budget():
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise RuntimeError("kafka_record read deadline exceeded")
+                return min(10, left)
+            md = c.list_topics(_check_topic(topic), timeout=budget() if strict else 10)
             t = md.topics.get(topic)
             if t is None or t.error is not None:
+                if strict:
+                    raise RuntimeError("kafka_record topic metadata unavailable")
                 return []
             # Assign each partition at its LOW watermark and count (hi - lo). Cleared
             # topics start at 0, but a reused/live broker may have a non-zero low
             # (retention/compaction) — assuming 0 would over-count and wait out the
             # timeout, and could seek before the earliest available offset.
             tps, remaining = [], 0
+            captured = {}
             for p in t.partitions:
-                lo, hi = c.get_watermark_offsets(TopicPartition(topic, p), timeout=10, cached=False)
+                lo, hi = c.get_watermark_offsets(TopicPartition(topic, p),
+                                                timeout=budget() if strict else 10, cached=False)
                 tps.append(TopicPartition(topic, p, lo))
                 remaining += hi - lo
+                captured[p] = [lo, hi]
             c.assign(tps)
-            rows = []
-            deadline = time.monotonic() + poll_budget
+            rows, size = [], 0
+            if not strict:
+                deadline = time.monotonic() + poll_budget
             while remaining > 0 and time.monotonic() < deadline:
-                msg = c.poll(1.0)
+                msg = c.poll(min(1.0, budget()) if strict else 1.0)
                 if msg is None or msg.error() is not None:
                     continue
+                if strict:
+                    p, offset = msg.partition(), msg.offset()
+                    if p not in captured:
+                        raise RuntimeError("kafka_record received an uncaptured partition")
+                    next_offset, hi = captured[p]
+                    if offset < next_offset or offset >= hi:
+                        continue
+                    # Offset positions, not message count, bound each partition.
+                    remaining -= min(offset + 1, hi) - next_offset
+                    captured[p][0] = offset + 1
+                size += len(msg.value() or b"") + len(msg.key() or b"")
+                if max_bytes is not None and size > max_bytes:
+                    from livetest.canon import CanonError
+                    raise CanonError("canonical-limit-exceeded", "Kafka wire bytes exceed max_bytes")
                 rows.extend(decode_message(msg))   # a message may hold >1 frame
-                remaining -= 1
+                if max_rows is not None and len(rows) > max_rows:
+                    from livetest.canon import CanonError
+                    raise CanonError("canonical-limit-exceeded", "Kafka decoded rows exceed max_rows")
+                if not strict:
+                    remaining -= 1
             if strict and remaining:
                 raise RuntimeError(f"kafka_record snapshot incomplete: {remaining} captured message(s) unread; refusing partial results")
             return rows

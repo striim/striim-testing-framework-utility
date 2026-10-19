@@ -73,7 +73,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "pg-slot", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("namespace", "pg-view", "pg-table", "pg-slot", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -317,6 +317,8 @@ def snapshot_targets(admins, ctx, nodes=None, env=None) -> dict:
             rec["role"] = getattr(admin, "role", "source")
             rec["systemIdentifier"] = pg_system_identifier(make_catalog(admin))
             routes[route] = rec
+        elif (route.startswith("spanner-") or route == "kafka") and isinstance(dsn, dict):
+            routes[route] = {k: v for k, v in dsn.items() if "password" not in k}
     striim = None
     if ctx is not None:
         striim = {"url": getattr(ctx, "url", None), "user": getattr(ctx, "user", None), "mode": getattr(ctx, "mode", None)}
@@ -451,6 +453,10 @@ class Ledger:
         if kind == "pg-table":
             return any(e["kind"] == "pg-table" and e["name"] == name and e.get("db") == db and e["attempt"] == mine
                        and e["state"] == "confirmed" for e in self.entries)
+        if kind in ("spanner-table", "topic"):
+            actual_kind = "kafka-topic" if kind == "topic" else kind
+            return any(e["kind"] == actual_kind and e["name"] == name and e.get("db") == db
+                       and e["attempt"] == mine and e["state"] == "confirmed" for e in self.entries)
         if kind == "owned-file":
             return posixpath.normpath(name) == name and any(
                 e["kind"] == "owned-dir" and e["attempt"] == mine and e["state"] == "confirmed"
@@ -494,6 +500,15 @@ class Ledger:
             if not was.get("systemIdentifier") or was.get("systemIdentifier") != cur.get("systemIdentifier"):
                 return (f"{entry.get('db')} backend identity changed or unreadable ({was.get('systemIdentifier')!r} "
                         f"-> {cur.get('systemIdentifier')!r})")
+        elif kind in ("spanner-table", "kafka-topic"):
+            # These backends expose no immutable incarnation id. Never replay a prior
+            # attempt's delete using only a matching endpoint configuration.
+            if entry["attempt"] != self.ident.attempt:
+                return "backend incarnation unverified: prior-attempt sink cleanup is unsupported"
+            route = entry.get("db")
+            was, cur = (rec.get("routes") or {}).get(route), (now.get("routes") or {}).get(route)
+            if not was or not cur or was != cur:
+                return f"sink route {route} changed or is not bound"
         elif kind == "namespace":
             was, cur = (rec.get("striim") or {}).get("url"), (now.get("striim") or {}).get("url")
             if not was or was != cur:
@@ -560,7 +575,7 @@ class Ledger:
                                  f"created; it is left untouched")
         return self.add("namespace", ns, None, "confirmed", "absent before this attempt; created by its TQL")
 
-    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one) -> None:
+    def run_ddl_files(self, files, *, admins: dict, tokens: dict, render_file, run_one, acquire_sinks=False) -> None:
         """DDL one file at a time: refuse unsupported resources, acquire (pre-existence check), run,
         confirm from the catalog. The original exception of a failed file always propagates."""
         for db, fname in files:
@@ -570,6 +585,33 @@ class Ledger:
                 raise OwnershipError(f"unsupported-resource: {fname} runs CREATE {bad.group(1).upper()}, which the "
                                      f"ownership ledger does not support; refused before "
                                      f"execution")
+            if acquire_sinks and db in ("spanner-google", "spanner-postgres"):
+                admin = _lifecycle._admin(admins, db)
+                from livetest.spanneradmin import _check_table
+                raw_tables = _CREATE_TABLE.findall(sql)
+                if any("." in t for t in raw_tables):
+                    raise OwnershipError(f"{db} ownership requires table names without schema qualification; "
+                                         "refused before DDL execution")
+                if db == "spanner-postgres" and any(
+                        '"' in t or t != t.lower() for t in raw_tables):
+                    raise OwnershipError("spanner-postgres ownership requires unquoted lowercase table names "
+                                         "without schema qualification; refused before DDL execution")
+                tables = list(dict.fromkeys(_check_table(t.strip('"')) for t in raw_tables))
+                present = admin.list_owned_tables()
+                for table in tables:
+                    if table in present:
+                        raise OwnershipError(f"collision:spanner-table:{table} already exists before {fname}; left untouched")
+                intents = [self.add("spanner-table", table, db) for table in tables]
+                try:
+                    run_one(db, fname)
+                finally:
+                    now = admin.list_owned_tables()
+                    for entry in intents:
+                        if entry["name"] in now:
+                            self._set(entry, "confirmed")
+                        else:
+                            self._drop_entry(entry)
+                continue
             if db not in PG_ROUTES:
                 self.gaps.append(f"engine-tables {db}: the tables of {fname} are not acquired and never deleted "
                                  f"for this resource type (no bounded catalog for this engine); left in place")
@@ -615,6 +657,18 @@ class Ledger:
                             self._drop_entry(e)
                 except Exception as exc:    # noqa: BLE001 - never mask the file's own exception
                     self.gaps.append(f"{db}: could not confirm objects of {fname} from the catalog: {exc}")
+
+    def acquire_topic(self, admin, topic, create):
+        if admin.topic_exists(topic):
+            raise OwnershipError(f"collision:kafka-topic:{topic} already exists; left untouched")
+        entry = self.add("kafka-topic", topic, "kafka")
+        try:
+            create()
+        finally:
+            if admin.topic_exists(topic):
+                self._set(entry, "confirmed")
+            else:
+                self._drop_entry(entry)
 
     def allocate_owned_dir(self, ctx) -> dict:
         path = _safe_path(self.ident.owned_dir)
@@ -709,6 +763,10 @@ class Ledger:
             if client is None:
                 raise RuntimeError("no Striim client to drop the namespace")
             client.teardown_namespace(name)
+        elif kind == "spanner-table":
+            _lifecycle._admin(admins, db).drop_owned_table(name)
+        elif kind == "kafka-topic":
+            _lifecycle._admin(admins, db).delete_topic(name)
         elif kind in ("pg-table", "pg-view"):
             what = "TABLE" if kind == "pg-table" else "MATERIALIZED VIEW" if entry.get("materialized") else "VIEW"
             try:
@@ -747,6 +805,10 @@ class Ledger:
         if kind == "namespace":
             present = namespace_present(client, name) if client is not None else None
             return None if present is None else not present
+        if kind == "spanner-table":
+            return name not in _lifecycle._admin(admins, db).list_owned_tables()
+        if kind == "kafka-topic":
+            return not _lifecycle._admin(admins, db).topic_exists(name)
         if kind == "pg-table":
             return name not in pg_tables_present(make_catalog(_lifecycle._admin(admins, db)), [name])
         if kind == "pg-view":
@@ -849,7 +911,8 @@ class Ledger:
         for _admin, bucket in gcs_cleanup:
             self._not_acquired("bucket", bucket)
         for _admin, topic in kafka_cleanup:
-            self._not_acquired("topic", topic)
+            if not self.find("kafka-topic", topic, "kafka", attempt=mine):
+                self._not_acquired("topic", topic)
         for name in upload_names:
             self._not_acquired("upload", name)
         result = CleanupResult("ok", ledger_path=str(self.path))
