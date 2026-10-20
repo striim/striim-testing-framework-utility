@@ -161,7 +161,7 @@ The reference for each is [TEST-YAML.md](TEST-YAML.md).
 | `json`: a JSON column, compared by meaning | **supported, not exercised here** |
 | `monitor`: what Striim's monitor shows for a target | **supported, not exercised here** (`scripts/live/regression/framework/framework-assert-monitor`) |
 | `monitor` `component:` (any component) and the `present` / `absent` / `matches` matchers | **supported, not run on a cluster yet**; hermetic tests only |
-| `checkpoint_history`: whether Striim recorded a recovery checkpoint | **supported, not exercised here** |
+| `checkpoint_history`: whether Striim recorded a recovery checkpoint, or (`predates`) whether a `recover:` case replayed a seed | **supported, not exercised here** |
 | `expect_halt` / `expect_halt_contains`: the app must halt | **supported, not exercised here** (`framework-expect-halt`) |
 | `jmx`: an Open Processor's MBean attributes, read from the Striim nodes' JMX exporters | **supported, not exercised here**. Docker mode only; each spec names the MBean domain its bean is registered under. No shipped case uses it |
 

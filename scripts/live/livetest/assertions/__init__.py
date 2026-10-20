@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 
+class NotYetReadable(Exception):
+    """A committed read refused at once because a writer still holds the table (Teradata's
+    NOWAIT read). The diff and data polls treat it as "not yet" and poll again, so their
+    timeout can fire while the writer's batch stays open."""
+
+
 class AssertionFailed(AssertionError):
     """Raised by an assert_* function when its assertion fails. Carries the structured
     per-spec records built so far so the plugin can still write them to the sidecar,

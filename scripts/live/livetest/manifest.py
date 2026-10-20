@@ -1153,10 +1153,12 @@ def load_manifest(path: Path) -> TestManifest:
         _monitor_recaptures = []
     if assert_ and assert_.get("checkpoint_history") is not None:
         from livetest.assertions.checkpoint_history import (
-            CheckpointHistorySpecError, parse_checkpoint_history_spec,
+            CheckpointHistorySpecError, check_predates_manifest, parse_checkpoint_history_spec,
         )
         try:
-            parse_checkpoint_history_spec(assert_["checkpoint_history"])
+            check_predates_manifest(
+                parse_checkpoint_history_spec(assert_["checkpoint_history"]), recover,
+                _normalize_file_specs(raw.get("seed"), "seed", path, allow_when=True))
         except CheckpointHistorySpecError as e:
             raise ManifestError(f"{path}: {e}") from None
     if assert_ and assert_.get("jmx") is not None:

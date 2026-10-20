@@ -641,7 +641,8 @@ rather than discovered later as "no data".
 
 **The app needs a `RECOVERY … INTERVAL` clause.** Without it there is no checkpoint to resume
 from and a restarted app simply re-reads from wherever it happens to be — the test would still
-pass and would prove nothing.
+pass and would prove nothing. To prove the restart replayed a given seed, add
+[`checkpoint_history: {predates: <seed>}`](#predates--prove-a-recover-case-replayed-a-seed).
 
 Example: `scripts/live/regression/framework/framework-recover`, a writer on a tight commit policy
 that survives a `STOP`.
@@ -2162,6 +2163,42 @@ assert:
 
 Polls `SHOW <app> CHECKPOINT HISTORY;` until it shows at least one checkpoint (`nonempty`) or none
 (`empty`). Use it to tell an app with a `RECOVERY` clause from one without.
+
+#### `predates` — prove a `recover:` case replayed a seed
+
+<!-- snippet: fragment -->
+```yaml
+seed:
+  - {file: seed_a.sql, db: mysql-source, when: post_start, after: 5s}
+  - {file: seed_b.sql, db: mysql-source, when: post_start, after: 80s}
+recover:
+  mode: kill
+  after: 10
+assert:
+  checkpoint_history:
+    predates: seed_b.sql
+```
+
+Passes when the last checkpoint Striim recorded before the interruption is older than the named
+seed, so the restart must have replayed that seed's events. A crash case otherwise passes
+unchanged when a checkpoint lands between the seed and the kill, with nothing replayed.
+
+The history is read three times: just before the named seed runs, just before the interruption
+command, and as soon as the app is RUNNING again (before `post_recover` seeds and the settle). The
+case fails when:
+
+- the first read shows no checkpoint (nothing anchors the replay);
+- a later read shows a checkpoint the first did not;
+- a read fails, or a row has no `checkpointRecordedTime`.
+
+Rows are compared with each other, never with the harness clock, so the server's time zone does
+not matter. A checkpoint recorded between the interruption read and the command appears in the
+RUNNING read. A checkpoint the restored app records before that read also fails the case: with a
+one-minute `RECOVERY` interval that is unlikely, and it is a false failure, never a false pass.
+
+Requirements, refused at load otherwise: `recover:` with `times: 1`, no `node:`,
+`expect_running: true` and a mode other than `quiesce` (it records a checkpoint as it stops);
+exactly one `seed:` entry with that file and `when: post_start`. The mapping takes no other key.
 
 ### `jmx` — plugin MBean attributes from the Prometheus JMX exporters
 

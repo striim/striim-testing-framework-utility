@@ -210,8 +210,11 @@ def _restore_budget(default: float = 600.0) -> float:
 
 def restore(client, ctx, app: str, mode: str, timeout: int, settle: float = 0.0,
             expect_running: bool = True, run=None, report=None, progress=None,
-            poll: float = 2.0) -> str:
+            poll: float = 2.0, at_running=None) -> str:
     """Bring `app` back to RUNNING after `interrupt`, then pause `settle` seconds.
+
+    `at_running`, when given, is called once the app is RUNNING and before the settle (the
+    checkpoint_history `predates` read, which must come before the restored app checkpoints).
 
     Returns the final status. The `settle` pause is not politeness: recovery replays
     asynchronously, so an assertion that fires the instant the app reports RUNNING measures a
@@ -289,6 +292,9 @@ def restore(client, ctx, app: str, mode: str, timeout: int, settle: float = 0.0,
             f"{app} did not come back after the restore: {e} (status now {now}; the wait was "
             f"{budget:.0f}s -- SLT_RECOVER_RESTORE_TIMEOUT raises it if the cluster genuinely "
             f"needs longer)") from e
+
+    if at_running is not None:
+        at_running()
 
     if settle > 0:
         _say(f"recover: settling {settle:.0f}s for replay to drain")

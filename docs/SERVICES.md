@@ -448,6 +448,10 @@ your instance, or skips naming the setting to set.
   credentials fail with the required environment variable names before connecting.
 - `teradata-admin` runs a `seed:` statement as the admin user (for something a data user may not
   run, such as `SYSLIB.AbortSessions`); nothing is dropped on it, so do not use it for `ddl:`.
+- `diff` and `data` read rows with `LOCKING TABLE ... FOR READ NOWAIT`: while a writer holds the
+  table the read is refused at once (Error 7423) and the poll tries again, so its `timeout` still
+  applies. Row counts read with an `ACCESS` lock.
+- Live teardown drops a test's views, then its tables.
 - **Licence.** `teradatasql` is Teradata's proprietary driver, not part of this framework.
   Installing it means accepting Teradata's licence for it (the `LICENSE` file it installs). That
   licence allows using the driver only with your own licensed Teradata platform, and forbids

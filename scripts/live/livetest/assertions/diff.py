@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 
-from livetest.assertions import AssertionFailed
+from livetest.assertions import AssertionFailed, NotYetReadable
 from livetest.assertions.data import distinct_set, normalized_row
 from livetest import canon as _slt_canon   # legacy-text/1 (C8.4)
 from livetest.resultschema import build_assertion_result
@@ -63,8 +63,11 @@ def _multiset(rows: list) -> "Counter":
 
 
 def _evaluate(admins: dict, spec: dict, src_rows, want):
-    tgt_rows = _folded(_endpoint_admin(admins, spec, "target").select_rows(spec["target"]), spec)
     expected = {"kind": "rows", "rows": src_rows}
+    try:
+        tgt_rows = _folded(_endpoint_admin(admins, spec, "target").select_rows(spec["target"]), spec)
+    except NotYetReadable as e:
+        return False, f"{spec['target']} not readable yet: {e}", expected, None
     actual = {"kind": "rows", "rows": tgt_rows}
     if spec.get("exact"):
         # Cardinality AND content in one comparison: a multiset differs if a row is missing,
@@ -93,8 +96,17 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
     # source must be non-empty (an empty source asserts nothing). Source tables are
     # seeded once and static, so caching the source rows is safe; the target is polled.
     sources = []
+    read_deadline = time.monotonic() + timeout
     for s in specs:
-        src_rows = _folded(_endpoint_admin(admins, s, "source").select_rows(s["source"]), s)
+        while True:
+            try:
+                src_rows = _folded(_endpoint_admin(admins, s, "source").select_rows(s["source"]), s)
+                break
+            except NotYetReadable as e:
+                if time.monotonic() >= read_deadline:
+                    raise AssertionFailed(
+                        f"diff source {s['source']} not readable within {timeout}s: {e}", []) from e
+                time.sleep(poll or 0.05)
         want = distinct_set(src_rows)
         if not want:
             raise AssertionError(f"source {s['source']} is empty; nothing to propagate")

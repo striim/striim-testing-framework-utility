@@ -333,6 +333,18 @@ def test_restore_honours_expect_running_false():
     assert c.started == [] and c.awaited == []
 
 
+def test_restore_calls_at_running_once_running_and_before_the_settle(monkeypatch):
+    # checkpoint_history `predates` reads the history here, before the restored app's first
+    # checkpoint interval can elapse; a read after the settle would see that checkpoint.
+    events = []
+    c = StubClient(statuses=["STOPPED", "RUNNING"])
+    c.await_running = lambda app, timeout, progress=None: events.append("running")
+    monkeypatch.setattr(recovery.time, "sleep", lambda s: events.append("settle"))
+    recovery.restore(c, Ctx("native"), "NS.App", "stop", timeout=30, settle=0.01,
+                     at_running=lambda: events.append("at_running"))
+    assert events[:2] == ["running", "at_running"] and events.count("at_running") == 1
+
+
 def test_restore_raises_if_app_leaves_running_during_settle():
     # Recovering into a HALT must be reported as that, not discovered later as "no data".
     c = StubClient(statuses=["RUNNING", "HALT"])
