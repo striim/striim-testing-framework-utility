@@ -839,3 +839,18 @@ def test_initial_placement_records_validate_on_pass_and_failure(good, succeeded)
     path = evidence.write_case_envelope(good.config.option.xmlpath, good.name, RUN, doc, secrets=())
     saved = json.loads(path.read_text()); evidence.validate_case(saved, secrets=())
     assert saved['assertions'][-1]['actual']['rows'][0]['phase'] == 'initial-placement'
+
+
+@pytest.mark.parametrize("written", ["bare", "prefixed"])
+def test_passing_gcs_sha256_assertion_writes_valid_evidence(good, written):
+    from livetest.assertions.gcs import assert_gcs
+    data = b"blob"
+    hexdigest = hashlib.sha256(data).hexdigest()
+    spec = {"bucket": "b", "object": "o", "sha256": hexdigest if written == "bare" else f"sha256:{hexdigest.upper()}"}
+    gcs = SimpleNamespace(read_object_bytes=lambda bucket, name: data)
+    good._slt_records += assert_gcs(gcs, [spec], timeout=0, poll=0, db="gcs")
+    path = write(good)
+    saved = json.loads(Path(path).read_text())
+    evidence.validate_case(saved, secrets=())
+    assert saved["assertions"][-1]["status"] == "passed"
+    assert saved["assertions"][-1]["spec"]["sha256"] == f"sha256:{hexdigest}"
