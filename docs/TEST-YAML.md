@@ -2073,7 +2073,7 @@ assert:
   gcs:
     - bucket: ${GCS_TGT_BUCKET}     # required
       object: some/path/blob.bin    # required
-      sha256: <hex digest>           # one of content_hex / sha256 / size
+      sha256: <hex digest>           # one of content_hex / sha256 / size; bare or sha256:<hex>
       # or: content_hex: <hex>       # exact byte-for-byte match
       # or: size: 12345              # byte-length only
 ```

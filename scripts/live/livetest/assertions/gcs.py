@@ -27,6 +27,17 @@ def parse_gcs_specs(raw: list) -> list[dict]:
     return raw
 
 
+def _sha256_hex(value) -> str:
+    # test.yaml may write the digest bare or as evidence does, sha256:<hex>
+    text = str(value).strip().lower()
+    return text[len("sha256:"):] if text.startswith("sha256:") else text
+
+
+def _recorded(spec: dict) -> dict:
+    # Evidence requires every sha256 key to be sha256:<hex>, so the record carries that form.
+    return {**spec, "sha256": "sha256:" + _sha256_hex(spec["sha256"])} if "sha256" in spec else spec
+
+
 def _evaluate(admin, spec: dict):
     # Mirrors _check_spec's pass/fail decision but also returns the expected/actual
     # bytes snapshot for the sidecar record. When the spec is content_hex/sha256 (no
@@ -51,7 +62,7 @@ def _evaluate(admin, spec: dict):
                      expected, actual)
     if "sha256" in spec:
         got = hashlib.sha256(data).hexdigest().lower()
-        if got != str(spec["sha256"]).lower():
+        if got != _sha256_hex(spec["sha256"]):
             return False, f"{ref}: sha256 {got} != {spec['sha256']}", expected, actual
     if "size" in spec and actual_size != int(spec["size"]):
         return False, f"{ref}: size {actual_size} != {spec['size']}", expected, actual
@@ -74,14 +85,14 @@ def assert_gcs(admin, specs: list[dict], timeout: int, poll: float = 2.0,
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None:
             return [
-                build_assertion_result(type="gcs", status="passed", spec=s,
+                build_assertion_result(type="gcs", status="passed", spec=_recorded(s),
                                         target=f"{s['bucket']}/{s['object']}", db=db,
                                         detail="ok", expected=exp, actual=act)
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
         if time.monotonic() >= deadline:
             records = [
-                build_assertion_result(type="gcs", status="passed" if ok else "failed", spec=s,
+                build_assertion_result(type="gcs", status="passed" if ok else "failed", spec=_recorded(s),
                                         target=f"{s['bucket']}/{s['object']}", db=db,
                                         detail="ok" if ok else d, expected=exp, actual=act)
                 for s, (ok, d, exp, act) in zip(specs, results)
