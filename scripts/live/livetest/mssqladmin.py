@@ -329,11 +329,12 @@ class MssqlAdmin:
         # A diff polls the target while the writer is still applying its batches, and SQL
         # Server can pick this read as the victim of a deadlock with the writer (error 1205,
         # "Rerun the transaction"). That is a transient refusal of a committed read, not a
-        # result: the diff and data polls treat it as "not yet" and read again.
+        # result: the diff and data polls treat it as "not yet" and read again. DEADLOCK_PRIORITY
+        # LOW makes this read the victim, never the writer under test.
         conn = self._open()
         try:
             cur = conn.cursor()
-            cur.execute(f"SELECT * FROM {_check_table(table)}")
+            cur.execute(f"SET DEADLOCK_PRIORITY LOW; SELECT * FROM {_check_table(table)}")
             cols = [d[0] for d in cur.description]
             return [{c: coerce_cell(v) for c, v in zip(cols, row)}
                     for row in cur.fetchall()]

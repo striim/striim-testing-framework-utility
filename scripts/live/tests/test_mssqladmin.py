@@ -123,7 +123,7 @@ def test_admin_role_runs_seed_as_sa():
     assert logins == ["sa"] and "KILL 51" in executed
 
 
-class _DeadlockVictim(Exception):
+class _ServerError(Exception):
     """pymssql's shape for a server error: (number, message) in args."""
 
 
@@ -134,7 +134,7 @@ def _target_dsn():
 def _connect_failing_reads_with(error):
     def connect(server, port, user, password, database, autocommit):
         def execute(sql, *args):
-            if sql.startswith("SELECT * FROM"):
+            if "SELECT * FROM" in sql:
                 raise error
         cur = types.SimpleNamespace(execute=execute, fetchall=lambda: [], description=[("ID",)],
                                     close=lambda: None)
@@ -146,7 +146,7 @@ def test_select_rows_treats_a_deadlock_victim_as_not_yet():
     # A diff polls while the writer writes; SQL Server picked the read as the 1205 victim and the
     # whole case failed instead of polling again (xsqlserver-trail-builtin-pstb, 2026-10-24).
     from livetest.assertions import NotYetReadable
-    error = _DeadlockVictim(1205, b"Transaction (Process ID 62) was deadlocked on lock resources")
+    error = _ServerError(1205, b"Transaction (Process ID 62) was deadlocked on lock resources")
     adm = MssqlAdmin(_target_dsn(), connect=_connect_failing_reads_with(error), role="target")
     with pytest.raises(NotYetReadable, match="1205"):
         adm.select_rows("qatarget.T1")
@@ -155,7 +155,7 @@ def test_select_rows_treats_a_deadlock_victim_as_not_yet():
 def test_diff_poll_retries_a_deadlocked_target_read():
     from livetest.assertions import AssertionFailed
     from livetest.assertions.diff import assert_diff
-    error = _DeadlockVictim(1205, b"deadlocked")
+    error = _ServerError(1205, b"deadlocked")
     src = types.SimpleNamespace(select_rows=lambda t: [{"ID": "1"}])
     tgt = MssqlAdmin(_target_dsn(), connect=_connect_failing_reads_with(error), role="target")
     spec = {"source": "qasource.T1", "source_db": "src", "target": "qatarget.T1", "target_db": "tgt"}
@@ -164,7 +164,19 @@ def test_diff_poll_retries_a_deadlocked_target_read():
 
 
 def test_select_rows_raises_other_server_errors_unchanged():
-    error = _DeadlockVictim(208, b"Invalid object name 'qatarget.T1'.")
+    error = _ServerError(208, b"Invalid object name 'qatarget.T1'.")
     adm = MssqlAdmin(_target_dsn(), connect=_connect_failing_reads_with(error), role="target")
-    with pytest.raises(_DeadlockVictim):
+    with pytest.raises(_ServerError):
         adm.select_rows("qatarget.T1")
+
+
+def test_select_rows_reads_at_low_deadlock_priority():
+    # Without LOW, SQL Server may roll back the WRITER instead of this read, and the writer under
+    # test is charged with a 1205 the test caused. LOW makes the read the victim, handled above.
+    executed = []
+    def connect(server, port, user, password, database, autocommit):
+        cur = types.SimpleNamespace(execute=lambda sql, *a: executed.append(sql), fetchall=lambda: [],
+                                    description=[("ID",)], close=lambda: None)
+        return types.SimpleNamespace(cursor=lambda: cur, close=lambda: None)
+    MssqlAdmin(_target_dsn(), connect=connect, role="target").select_rows("qatarget.T1")
+    assert executed[-1].startswith("SET DEADLOCK_PRIORITY LOW; SELECT * FROM")
