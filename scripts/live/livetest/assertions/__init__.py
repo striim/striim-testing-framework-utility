@@ -3,8 +3,9 @@ from __future__ import annotations
 
 class NotYetReadable(Exception):
     """A committed read refused at once because a writer still holds the table (Teradata's
-    NOWAIT read). The diff and data polls treat it as "not yet" and poll again, so their
-    timeout can fire while the writer's batch stays open."""
+    NOWAIT read), or chosen as a deadlock victim against the writer (SQL Server 1205). The diff
+    and data polls treat it as "not yet" and poll again, so their timeout can fire while the
+    writer's batch stays open."""
 
 
 class AssertionFailed(AssertionError):
