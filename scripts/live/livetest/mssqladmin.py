@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from livetest.assertions import NotYetReadable
 from livetest.sqlutil import coerce_cell
 
 # SQL Server admin for pytest's own connection (setup + diff/data reads), backed by
@@ -20,6 +21,8 @@ _BOOTSTRAP_SA_PASSWORD = "QAtestuser1"
 # genuine PERMANENT errors ("Cannot open database ...") and retried them for 60s.
 _TRANSIENT = ("20009", "18456", "Login failed", "not currently available",
               "Adaptive Server connection failed", "Connection refused")
+# SQL Server's "chosen as the deadlock victim" error number (pymssql puts it in args[0]).
+_DEADLOCK_VICTIM = 1205
 
 
 def _split_statements(sql: str) -> list[str]:
@@ -323,6 +326,10 @@ class MssqlAdmin:
             conn.close()
 
     def select_rows(self, table: str) -> list[dict]:
+        # A diff polls the target while the writer is still applying its batches, and SQL
+        # Server can pick this read as the victim of a deadlock with the writer (error 1205,
+        # "Rerun the transaction"). That is a transient refusal of a committed read, not a
+        # result: the diff and data polls treat it as "not yet" and read again.
         conn = self._open()
         try:
             cur = conn.cursor()
@@ -330,5 +337,9 @@ class MssqlAdmin:
             cols = [d[0] for d in cur.description]
             return [{c: coerce_cell(v) for c, v in zip(cols, row)}
                     for row in cur.fetchall()]
+        except Exception as e:
+            if e.args and e.args[0] == _DEADLOCK_VICTIM:
+                raise NotYetReadable(f"{table}: read chosen as a deadlock victim (1205)") from e
+            raise
         finally:
             conn.close()
