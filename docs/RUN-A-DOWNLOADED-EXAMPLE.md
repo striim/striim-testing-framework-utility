@@ -36,8 +36,8 @@ Framework pin: <commit>; read README.md before running
 For a bundle in a local storage emulator, add `--endpoint http://localhost:4443`; it then uses
 anonymous credentials, not your `gcloud` sign-in.
 
-A download that fails (network, `gcloud`, emulator) exits 3; a bad prefix, destination or bundle
-exits 2.
+A prefix with nothing published under it, a bad destination or a bad bundle exits 2; a download
+that fails for any other reason (network, `gcloud` sign-in, emulator unreachable) exits 3.
 
 ## 2. Use the framework at that commit
 

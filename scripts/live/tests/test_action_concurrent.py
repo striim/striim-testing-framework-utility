@@ -18,25 +18,36 @@ def _nested(name, namespace):
     return namespace[name]
 
 
-def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1):
+class _QuickJoin(threading.Thread):
+    def join(self, timeout=None):                          # the 10 s stop budget, shortened
+        super().join(0.3 if timeout else None)
+
+
+def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1, file="op.sql", block=None):
     (tmp_path / "op.sql").write_text("INSERT INTO t VALUES (1)")
     calls = {"n": 0}
 
     def run_admin_sql(entry, sql, **kw):
         calls["n"] += 1
+        if block is not None:
+            block.wait(5)
         if fail(entry["admin"]):
             raise RuntimeError(f"{entry['admin']} refused")
-    ns = dict(m=SimpleNamespace(source_dir=tmp_path, name="c"), threading=threading,
-              admins={"postgres-source": {"admin": "pg"}, "mysql-source": {"admin": "my"}},
+    ns = dict(m=SimpleNamespace(source_dir=tmp_path, name="c"),
+              threading=SimpleNamespace(Event=threading.Event, Thread=_QuickJoin),
+              admins={"postgres-source": {"admin": "pg"}, "mysql-source": {"admin": "my"},
+                      "orders-db-source": {"admin": "orders"}},
               tokens={}, ident=SimpleNamespace(run_id="r"), _report=lambda *a: None,
               render=lambda text, tokens: text, _run_admin_sql=run_admin_sql)
     start, stop = _nested("_start_concurrent", ns), _nested("_stop_concurrent", ns)
-    flag, threads = start([{"db": db, "file": "op.sql", "loop_interval": 0.01} for db in ops])
+    flag, threads = start([{"db": db, "file": file, "loop_interval": 0.01} for db in ops])
     try:
         time.sleep(seconds)
         return stop(flag, threads, down_service=down_service)
     finally:
         flag.set()                                         # never leave a loop running
+        if block is not None:
+            block.set()
 
 
 def test_loops_that_succeed_pass(tmp_path):
@@ -61,9 +72,27 @@ def test_outage_tolerates_errors_on_the_stopped_service_only(tmp_path):
     assert problem and "mysql-source: 0 run(s) succeeded" in problem
 
 
+def test_outage_tolerance_matches_a_hyphenated_service(tmp_path):
+    flaky = iter([False, True] * 100)
+    assert _run(tmp_path, ["orders-db-source"], fail=lambda admin: next(flaky), down_service="orders-db") is None
+    flaky = iter([False, True] * 100)
+    assert _run(tmp_path, ["orders-db-source"], fail=lambda admin: next(flaky), down_service="postgres") is not None
+
+
 def test_outage_still_needs_one_success(tmp_path):
     problem = _run(tmp_path, ["postgres-source"], fail=lambda admin: True, down_service="postgres")
     assert problem and "0 run(s) succeeded" in problem
+
+
+def test_unreadable_sql_file_names_the_cause(tmp_path):
+    problem = _run(tmp_path, ["postgres-source"], file="missing.sql")
+    assert problem and "missing.sql on postgres-source: 0 run(s) succeeded, 1 failed" in problem
+    assert "No such file" in problem
+
+
+def test_a_first_run_still_going_is_reported_as_such(tmp_path):
+    problem = _run(tmp_path, ["postgres-source"], block=threading.Event())
+    assert problem == "op.sql on postgres-source: its first run was still going 10 s after the action ended"
 
 
 def test_no_loops_is_no_problem(tmp_path):

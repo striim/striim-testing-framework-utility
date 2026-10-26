@@ -503,8 +503,9 @@ def test_build_jar_prebuilt_named_file_requires_series_suffix(tmp_path, monkeypa
     _jar(prebuilt, major=61)
     var = opartifacts.prebuilt_env_var(MODULE) if per_module else "SLT_PREBUILT_JAR"
     monkeypatch.setenv(var, str(prebuilt))
-    with pytest.raises(opartifacts.OpArtifactError, match="does not end with the expected '-5.4.jar'"):
+    with pytest.raises(opartifacts.OpJarRejected, match="does not end with the expected '-5.4.jar'") as e:
         opartifacts.build_jar(MODULE, RELEASE_54)
+    assert "prebuilt jar" in str(e.value) and not isinstance(e.value, opartifacts.OpBuildFailed)
 
 
 @pytest.mark.parametrize("manifest_module", ["OtherOpV1", "ExampleMapOpExtraV1"])
@@ -1212,3 +1213,27 @@ def test_build_jar_module_prebuilt_variable_outranks_the_generic_ones(tmp_path, 
     assert build_jar(MODULE, RELEASE_54, report=reports.append).path == own
     assert any("(SLT_PREBUILT_JAR_EXAMPLEMAPOP)" in r for r in reports)
 
+
+
+@pytest.mark.parametrize("prop,env,platform,raises", [
+    ("<STRIIM_HOME>{home}</STRIIM_HOME>", {}, True, False),             # pom default holds the jar
+    ("<STRIIM_HOME>{home}</STRIIM_HOME>", {}, False, True),             # pom default without it
+    ("<STRIIM_HOME>${{env.STRIIM_HOME}}</STRIIM_HOME>", {}, True, True),  # empty env reference
+    ("<STRIIM_HOME>{home}</STRIIM_HOME>", {"STRIIM_HOME": "/x"}, False, False),  # set: _verify_striim_home's job
+    ("", {}, False, False),                                               # pom needs no install
+])
+def test_require_platform_home_before_mvn(tmp_path, prop, env, platform, raises):
+    home = tmp_path / "striim"
+    if platform:
+        (home / "lib").mkdir(parents=True)
+        (home / "lib" / "Platform-5.4.0.6.jar").write_text("x")
+    mod = tmp_path / "mod"
+    mod.mkdir()
+    (mod / "pom.xml").write_text(f"<project><properties>{prop.format(home=home)}</properties></project>")
+    check = lambda: opartifacts._require_platform_home(mod, env, {"STRIIM_VERSION": "5.4.0.6"})
+    if raises:
+        with pytest.raises(OpArtifactError, match="STRIIM_HOME is unset") as e:
+            check()
+        assert not isinstance(e.value, opartifacts.OpBuildFailed)
+    else:
+        check()

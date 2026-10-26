@@ -48,6 +48,9 @@ class OpArtifactError(Exception):
 class OpBuildFailed(OpArtifactError):
     """The build ran and failed: the module's code or pom is broken, not the environment."""
 
+class OpJarRejected(OpArtifactError):
+    """A jar the run was told to use cannot be used: a mistake to fix, not a missing prerequisite."""
+
 @dataclass(frozen=True)
 class BuiltArtifact:
     path: Path    # absolute path to the built, series-suffixed jar
@@ -98,7 +101,7 @@ def _release_jar_candidates(module_dir: Path, series: str) -> list[Path]:
 def op_name_for(jar_name: str, series: str) -> str:
     suffix = f"-{series}.jar"
     if not jar_name.endswith(suffix):
-        raise OpBuildFailed(
+        raise OpArtifactError(
             f"built jar {jar_name!r} does not end with the expected {suffix!r} "
             f"suffix for STRIIM_SERIES={series!r}")
     return jar_name[: -len(suffix)]
@@ -447,6 +450,26 @@ def resolve_build_java_home(java_release: str, run=None, platform: str | None = 
         raise OpArtifactError(f"{var}={home} has no bin/java")
     return home
 
+def _require_platform_home(module_dir: Path, build_env: dict, release: dict) -> None:
+    """With STRIIM_HOME unset, a pom that needs it falls back to its own default (often /opt/striim,
+    or an empty ${env.STRIIM_HOME}). If that holds no Platform jar, mvn would fail for a missing
+    prerequisite, not a broken module: refuse here so the case skips instead of failing."""
+    version = release.get("STRIIM_VERSION")
+    if "STRIIM_HOME" in build_env or not version:
+        return
+    try:
+        pom = (module_dir / "pom.xml").read_text()
+    except OSError:
+        return
+    if "STRIIM_HOME" not in pom:
+        return
+    m = re.search(r"<STRIIM_HOME>\s*([^<$\s]+)\s*</STRIIM_HOME>", pom)
+    if m is None or not (Path(m.group(1)) / "lib" / f"Platform-{version}.jar").exists():
+        default = m.group(1) if m else "none"
+        raise OpArtifactError(
+            f"STRIIM_HOME is unset and {module_dir / 'pom.xml'}'s default ({default}) has no "
+            f"lib/Platform-{version}.jar; set STRIIM_HOME to the Striim {version} install to build it")
+
 def _default_run(argv, cwd, env):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
 
@@ -672,7 +695,10 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
         _assert_jar_java_version(prebuilt, java_release, module_dir)
         jar_name = prebuilt.name
-        op_name = op_name_for(jar_name, series)
+        try:
+            op_name = op_name_for(jar_name, series)
+        except OpArtifactError as e:
+            raise OpJarRejected(f"prebuilt jar ({var}) {prebuilt}: {e}") from None
         digest = file_sha256(prebuilt)
         mod_id = jar_module_name(prebuilt)
         notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
@@ -757,6 +783,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         if (candidate_home / "lib" / f"Platform-{release.get('STRIIM_VERSION')}.jar").exists():
             build_env["STRIIM_HOME"] = str(candidate_home)
     _verify_striim_home(build_env, release)
+    _require_platform_home(module_dir, build_env, release)
     if java_release:
         java_home = resolve_build_java_home(str(java_release))
         if java_home:

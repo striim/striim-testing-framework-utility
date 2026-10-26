@@ -2514,8 +2514,8 @@ class LiveItem(pytest.Item):
                 try:
                     _report(m.name, "building OP/UDF jar(s)")
                     builts = build_modules(m, release, report=_report)
-                except opartifacts.OpBuildFailed as e:
-                    # The build ran, so the module under test is broken: a failure, not a skip.
+                except (opartifacts.OpBuildFailed, opartifacts.OpJarRejected) as e:
+                    # The module under test, or the jar named for it, is broken: a failure, not a skip.
                     pytest.fail(f"{m.name}: {e}", pytrace=False)
                 except opartifacts.OpArtifactError as e:
                     # A missing build prerequisite (JDK, mvn, STRIIM_HOME). "build", not an
@@ -3184,14 +3184,13 @@ class LiveItem(pytest.Item):
                                 _op_db = op_spec["db"]
                                 _op_file = op_spec["file"]
                                 _loop_interval = op_spec["loop_interval"]
-                                _op_path = m.source_dir / _op_file
-                                _op_sql = _op_path.read_text()
                                 _op_admin_entry = admins.get(_op_db)
                                 if not _op_admin_entry:
                                     _errors.append(f"db {_op_db} not found")
                                     _report(m.name, f"action: concurrent op db {_op_db} not found")
                                     return
                                 try:
+                                    _op_sql = (m.source_dir / _op_file).read_text()
                                     while not _action_stop_flag.is_set():
                                         try:
                                             # ${TOKEN} form, like every other SQL file; str.format
@@ -3234,8 +3233,11 @@ class LiveItem(pytest.Item):
                             for _t in _action_threads:
                                 _op = _t.slt_op
                                 _errs = _op.get("errors", [])
-                                _expected = down_service and _op["db"].split("-", 1)[0] == down_service
-                                if not _op.get("ok") or (_errs and not _expected):
+                                _expected = down_service and (_op["db"] == down_service or _op["db"].startswith(f"{down_service}-"))
+                                if not _op.get("ok") and _t.is_alive():
+                                    problems.append(f"{_op['file']} on {_op['db']}: its first run was still "
+                                                    f"going 10 s after the action ended")
+                                elif not _op.get("ok") or (_errs and not _expected):
                                     problems.append(f"{_op['file']} on {_op['db']}: {_op.get('ok', 0)} run(s) "
                                                     f"succeeded, {len(_errs)} failed"
                                                     + (f" (first: {_errs[0]})" if _errs else ""))

@@ -34,12 +34,28 @@ def test_op_build_failure_is_a_failure_not_a_skip(run_case):
     assert "deploy" not in run.names()
 
 
+def test_rejected_prebuilt_jar_is_a_failure(run_case):
+    run = run_case("legacy", {"op_stub": True, "op_build": "rejected"}, edit=OP, guard=True)
+    status, _, xml = run.junit()
+    assert status == "failed" and "prebuilt jar (SLT_PREBUILT_JAR)" in xml, run.text
+    assert _exit(run)[0] == (1, "tests-failed")
+
+
 def test_missing_build_tool_is_a_skip(run_case):
     run = run_case("legacy", {"op_stub": True, "op_build": "missing"}, edit=OP, guard=True)
     assert run.junit()[0] == "skipped", run.text
     (code, reason), _ = _exit(run)
     assert (code, reason) == (3, "selected-item-skipped")
     assert run.ret == 1                                       # the infra guard: a skip is not a pass
+
+
+def test_unset_striim_home_with_no_platform_jar_is_a_skip(run_case):
+    # The documented Docker-only setup leaves STRIIM_HOME unset; mvn would then fail on the pom's
+    # default for a missing install, which is not a broken module.
+    run = run_case("legacy", {"op_build": "no_striim_home"}, edit=OP, guard=True)
+    status, _, xml = run.junit()
+    assert status == "skipped" and "STRIIM_HOME is unset" in xml, run.text
+    assert _exit(run)[0] == (3, "selected-item-skipped") and "mvn" not in run.names()
 
 
 def test_no_supported_assertion_ran_fails(run_case):

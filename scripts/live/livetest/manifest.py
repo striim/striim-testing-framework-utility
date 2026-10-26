@@ -566,7 +566,7 @@ def _parse_concurrent(action: dict, i: int, path, requires) -> list:
             if not op_db:
                 raise ManifestError(
                     f"{path}: action[{i}] concurrent[{j}] must have 'db' key")
-            if str(op_db).split("-", 1)[0] not in requires:
+            if not any(op_db == s or str(op_db).startswith(f"{s}-") for s in requires):
                 raise ManifestError(
                     f"{path}: action[{i}] concurrent[{j}] db {op_db!r} is not a route of a "
                     f"service in 'requires' {requires} (routes are '<service>-<role>', e.g. "

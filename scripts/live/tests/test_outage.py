@@ -73,6 +73,13 @@ def test_concurrent_parsed_identically_for_both_types(tmp_path):
         {"db": "postgres-source", "file": "loop.sql", "loop_interval": 0.5}]
 
 
+def test_concurrent_route_of_a_hyphenated_service(tmp_path):
+    base = _BASE.replace("requires: [postgres]", "requires: [orders-db, postgres]")
+    conc = "    concurrent:\n      - {db: orders-db-source, file: loop.sql}\n"
+    m = _load(tmp_path, "  - type: stop_start_cycle\n" + conc, base=base)
+    assert m.action_specs[0]["concurrent"][0]["db"] == "orders-db-source"
+
+
 @pytest.mark.parametrize("conc,match", [
     ("    concurrent: loop.sql\n", "'concurrent' must be a list"),
     ("    concurrent:\n      - loop.sql\n", "must be a dict"),
