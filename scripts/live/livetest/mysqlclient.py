@@ -165,10 +165,10 @@ class MySQLAdmin:
         self._exec_sql(statements)
 
     def reset_schemas(self) -> None:
-        """Drop and recreate fixed qasource/qatarget schemas for clean slate.
+        """Drop and recreate the configured source and target schemas for a clean slate.
 
-        Called before each test (serial mode). Drops all tables in both schemas
-        and recreates them to start fresh. Grants permissions to qasource/qatarget users.
+        Called before each test (serial mode). Grants the configured users all privileges
+        on their schema.
         """
         statements = []
         for which in ("source", "target"):

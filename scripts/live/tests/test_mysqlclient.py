@@ -329,7 +329,7 @@ def test_reset_schemas_drops_and_recreates():
     admin.reset_schemas()
     stmts = executed()
     for schema in ("qasource", "qatarget"):
-        drop, create = stmts.index(f"DROP SCHEMA IF EXISTS {schema}"), stmts.index(f"CREATE SCHEMA {schema}")
+        drop, create = stmts.index(f"DROP SCHEMA IF EXISTS `{schema}`"), stmts.index(f"CREATE SCHEMA `{schema}`")
         assert drop < create
 
 
