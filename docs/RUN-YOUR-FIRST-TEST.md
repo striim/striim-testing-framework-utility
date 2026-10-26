@@ -178,6 +178,9 @@ stayed still, compares the target with `expected/rows.csv` row by row, and clean
 | 4 | cancelled, interrupted or timed out |
 | 5 | nothing was selected |
 
+When a run has several outcomes, it exits with the first of 2, 4, 1, 3: a failed test beside a
+skipped one exits 1.
+
 ## 6. Read the result
 
 The run directory is `scripts/live/runs/<time>-<id>/`. Under `live/`:

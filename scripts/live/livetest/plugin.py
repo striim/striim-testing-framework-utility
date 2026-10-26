@@ -1392,6 +1392,15 @@ def should_keep_resources(env: dict, deploy_attempted: bool, succeeded: bool) ->
         return True
     return bool(env.get("SLT_KEEP_RESOURCES_ON_ERROR")) and deploy_attempted and not succeeded
 
+def _ended_as_expected(config, m, exc) -> bool:
+    """True when `exc` ends the case as a skip or an expected xfail: not a failure to keep resources for."""
+    if isinstance(exc, (pytest.skip.Exception, pytest.xfail.Exception)):
+        return True
+    if not isinstance(exc, AssertionFailed):
+        return False
+    xf = _active_xfail(config, m)
+    return bool(xf) and ExpectedAssertionFailure.if_covered(exc, xf.get("tiers", ())) is not exc
+
 def _skip_shared_teardown(env: dict) -> bool:
     """True when THIS process must NOT tear down the shared services/cluster: any xdist worker
     (another process owns shared-infra lifecycle under -n), or SLT_KEEP_SERVICES. Under -n,
@@ -1415,9 +1424,9 @@ def build_modules(m: TestManifest, release: dict, report=None) -> list:
     """Build every op:/udf: module's jar (opartifacts.build_jar) against `release`.
     Returns [(module_dict, BuiltArtifact), ...] in module order (see
     manifest._normalize_modules — op: entries first, then udf: entries). Raises
-    opartifacts.OpArtifactError on a build failure; the caller turns that into a
-    pytest.skip (kept as a caller-side try/except, not swallowed here, so an upload
-    failure below is NOT accidentally skipped too).
+    opartifacts.OpBuildFailed on a build failure (the caller fails the case) and
+    OpArtifactError on a missing prerequisite (the caller skips); kept as a caller-side
+    try/except, not swallowed here, so an upload failure below is NOT accidentally skipped too.
 
     `report` (optional, a `(label, phase)` progress reporter like the run-level `_report`)
     surfaces WHY an automatic jar (re)build fired: build_jar calls back with the trigger
@@ -2505,12 +2514,13 @@ class LiveItem(pytest.Item):
                 try:
                     _report(m.name, "building OP/UDF jar(s)")
                     builts = build_modules(m, release, report=_report)
+                except (opartifacts.OpBuildFailed, opartifacts.OpJarRejected) as e:
+                    # The module under test, or the jar named for it, is broken: a failure, not a skip.
+                    pytest.fail(f"{m.name}: {e}", pytrace=False)
                 except opartifacts.OpArtifactError as e:
-                    # "build", not an infrastructure fault: OpArtifactError covers a failed
-                    # `mvn package` in the module's OWN source as well as a missing JDK. The
-                    # run still proved nothing, so it still counts -- but the banner must not
-                    # blame the cluster or offer SLT_ALLOW_NO_CLUSTER, which would turn a
-                    # broken build back into a green run.
+                    # A missing build prerequisite (JDK, mvn, STRIIM_HOME). "build", not an
+                    # infrastructure fault: the banner must not blame the cluster or offer
+                    # SLT_ALLOW_NO_CLUSTER.
                     self._slt_infra_skip = "build"
                     pytest.skip(f"{m.name}: {e}")
                 preloaded = bool(os.environ.get("SLT_OPS_PRELOADED"))
@@ -3168,46 +3178,72 @@ class LiveItem(pytest.Item):
 
                             def _run_concurrent_op(op_spec):
                                 """Background thread: run SQL loop until stop_flag is set."""
+                                # The thread's own tally, read by _stop_concurrent after the join.
+                                _errors = op_spec.setdefault("errors", [])
+                                op_spec.setdefault("ok", 0)
                                 _op_db = op_spec["db"]
                                 _op_file = op_spec["file"]
                                 _loop_interval = op_spec["loop_interval"]
-                                _op_path = m.source_dir / _op_file
-                                _op_sql = _op_path.read_text()
                                 _op_admin_entry = admins.get(_op_db)
                                 if not _op_admin_entry:
+                                    _errors.append(f"db {_op_db} not found")
                                     _report(m.name, f"action: concurrent op db {_op_db} not found")
                                     return
                                 try:
+                                    _op_sql = (m.source_dir / _op_file).read_text()
                                     while not _action_stop_flag.is_set():
                                         try:
                                             # ${TOKEN} form, like every other SQL file; str.format
                                             # cannot see it, which is why three cases hardcoded a schema.
                                             _run_admin_sql(_op_admin_entry, render(_op_sql, tokens),
                                                            phase="action", run_id=ident.run_id)
+                                            op_spec["ok"] += 1
                                             _report(m.name, f"action: concurrent {_op_file} executed")
                                         except Exception as e:
-                                            # Log but don't fail: concurrent ops are best-effort
+                                            _errors.append(str(e))
                                             _report(m.name, f"action: concurrent {_op_file} error: {e}")
                                         if not _action_stop_flag.wait(_loop_interval):
                                             pass  # Timeout: loop again
                                 except Exception as e:
+                                    _errors.append(str(e))
                                     _report(m.name, f"action: concurrent thread error: {e}")
 
                             if concurrent_ops:
                                 for _concurrent in concurrent_ops:
-                                    _t = threading.Thread(target=_run_concurrent_op, args=(_concurrent,), daemon=False)
+                                    _op = dict(_concurrent)
+                                    _t = threading.Thread(target=_run_concurrent_op, args=(_op,), daemon=False)
+                                    _t.slt_op = _op
                                     _t.start()
                                     _action_threads.append(_t)
                                 _report(m.name, f"action: started {len(_action_threads)} concurrent thread(s)")
                             return _action_stop_flag, _action_threads
 
-                        def _stop_concurrent(_action_stop_flag, _action_threads):
-                            if _action_threads:
-                                _report(m.name, "action: stopping concurrent operations")
-                                _action_stop_flag.set()
-                                for _t in _action_threads:
-                                    _t.join(timeout=10.0)
-                                _report(m.name, f"action: stopped {len(_action_threads)} concurrent thread(s)")
+                        def _stop_concurrent(_action_stop_flag, _action_threads, down_service=None):
+                            """Stop the loops; return why they did not deliver, or None. A loop that never
+                            succeeded fails the case, as does any error except one on `down_service`'s own
+                            route, which a service_outage expects while the service is down."""
+                            if not _action_threads:
+                                return None
+                            _report(m.name, "action: stopping concurrent operations")
+                            _action_stop_flag.set()
+                            for _t in _action_threads:
+                                _t.join(timeout=10.0)
+                            _report(m.name, f"action: stopped {len(_action_threads)} concurrent thread(s)")
+                            problems = []
+                            for _t in _action_threads:
+                                _op = _t.slt_op
+                                _errs = _op.get("errors", [])
+                                _owner = max((s for s in m.requires if _op["db"] == s or _op["db"].startswith(f"{s}-")),
+                                             key=len, default=None)
+                                _expected = down_service is not None and _owner == down_service
+                                if not _op.get("ok") and _t.is_alive():
+                                    problems.append(f"{_op['file']} on {_op['db']}: no run succeeded and one was still "
+                                                    f"going 10 s after the action ended ({len(_errs)} failed)")
+                                elif not _op.get("ok") or (_errs and not _expected):
+                                    problems.append(f"{_op['file']} on {_op['db']}: {_op.get('ok', 0)} run(s) "
+                                                    f"succeeded, {len(_errs)} failed"
+                                                    + (f" (first: {_errs[0]})" if _errs else ""))
+                            return "; ".join(problems) or None
 
                         def _wait_hb(seconds, label):
                             if not seconds:
@@ -3273,7 +3309,9 @@ class LiveItem(pytest.Item):
                                         client.await_running(app, timeout=m.timeout)
                                         _report(m.name, f"action: app running{_tag}")
                                 finally:
-                                    _stop_concurrent(_action_stop_flag, _action_threads)
+                                    _conc_problem = _stop_concurrent(_action_stop_flag, _action_threads)
+                                if _conc_problem:
+                                    pytest.fail(f"{m.name}: action concurrent SQL: {_conc_problem}", pytrace=False)
                             elif action_spec["type"] == "drop_recreate_app":
                                 # Stop -> force-drop -> rebuild the named app from its own block
                                 # of the rendered TQL -> deploy -> start. This is the source-
@@ -3445,7 +3483,9 @@ class LiveItem(pytest.Item):
                                                                report=lambda msg: _report(m.name, msg))
                                         _report(m.name, f"action: app {_st}{_tag}")
                                 finally:
-                                    _stop_concurrent(_so_flag, _so_threads)
+                                    _conc_problem = _stop_concurrent(_so_flag, _so_threads, down_service=_so_svc)
+                                if _conc_problem:
+                                    pytest.fail(f"{m.name}: action concurrent SQL: {_conc_problem}", pytrace=False)
                         ran = True
 
                     # SLT_SKIP_VERIFY: the app is now deployed, started, and seeded — stop before
@@ -3663,7 +3703,9 @@ class LiveItem(pytest.Item):
             # (always) / SLT_KEEP_RESOURCES_ON_ERROR (on failure) keep debugging resources;
             # only failure-only retention drops PostgreSQL slots, stopping apps on 55006.
             _slt_keep_reason = None
-            if should_keep_resources(os.environ, deploy_attempted, succeeded):
+            import sys
+            if should_keep_resources(os.environ, deploy_attempted, succeeded or _ended_as_expected(
+                    self.config, m, sys.exc_info()[1])):
                 self.config._slt_keep_resources = True   # keep provisioned services at session end
                 _slt_keep_reason = ("SLT_KEEP_RESOURCES is set" if os.environ.get("SLT_KEEP_RESOURCES")
                                     else f"{m.name} failed and SLT_KEEP_RESOURCES_ON_ERROR is set")
