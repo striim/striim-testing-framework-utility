@@ -127,34 +127,47 @@ public final class IntegrationProcessor {
             run(request);
         } catch (Throwable e) {
             // Throwable: an op's Error (an assertion, a linkage failure) is its refusal too.
-            System.err.println("IntegrationProcessor failed: " + e);
-            e.printStackTrace();
-            if (request != null && request.errorFile != null) {
-                try {
+            try {
+                System.err.println("IntegrationProcessor failed: " + e);
+                e.printStackTrace();
+                if (request != null && request.errorFile != null) {
                     Files.writeString(Path.of(request.errorFile), failureChain(e));
-                } catch (Exception ignored) {
-                    // stderr above still carries the failure
                 }
+            } catch (Throwable ignored) {
+                // stderr above, if it got that far, still carries the failure
+            } finally {
+                // Unconditional: an op's non-daemon threads would otherwise keep the JVM alive.
+                System.exit(1);
             }
-            System.exit(1);
         }
     }
 
+    /** Entries {@link #failureChain} writes before summarising the rest. */
+    static final int FAILURE_CHAIN_LIMIT = 50;
+
     /**
      * {@code toString()} of the failure, each cause, each suppressed exception and each
-     * {@code SQLException.getNextException()}, one per line.
+     * {@code SQLException.getNextException()}, one per line, breadth-first and capped at
+     * {@link #FAILURE_CHAIN_LIMIT} (a batch failure can carry one next exception per row).
      */
     static String failureChain(Throwable failure) {
         StringBuilder out = new StringBuilder();
         java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         java.util.Deque<Throwable> pending = new java.util.ArrayDeque<>();
         pending.add(failure);
+        int written = 0;
+        int skipped = 0;
         while (!pending.isEmpty()) {
             Throwable t = pending.poll();
             if (!seen.add(t)) {
                 continue;
             }
-            out.append(t).append('\n');
+            if (written < FAILURE_CHAIN_LIMIT) {
+                written++;
+                out.append(t).append('\n');
+            } else {
+                skipped++;
+            }
             if (t.getCause() != null) {
                 pending.add(t.getCause());
             }
@@ -162,6 +175,9 @@ public final class IntegrationProcessor {
             if (t instanceof java.sql.SQLException sql && sql.getNextException() != null) {
                 pending.add(sql.getNextException());
             }
+        }
+        if (skipped > 0) {
+            out.append("... ").append(skipped).append(" more\n");
         }
         return out.toString();
     }

@@ -25,7 +25,46 @@ class MainFailureFileTest {
 
     @Test
     void anErrorTheOpThrowsReachesTheErrorFile(@TempDir Path tempDir) throws Exception {
-        File jar = buildJar(tempDir, "static { if (true) throw new AssertionError(\"refused at load\"); }");
+        Path log = drive(tempDir, buildJar(tempDir, "static { if (true) throw new AssertionError(\"refused at load\"); }"));
+        Path error = tempDir.resolve("error.txt");
+        assertTrue(Files.exists(error), Files.readString(log));
+        assertTrue(Files.readString(error).contains("refused at load"), Files.readString(error));
+    }
+
+    @Test
+    void theJvmExitsEvenWhenReportingTheFailureThrowsAnError(@TempDir Path tempDir) throws Exception {
+        // A cause whose toString() throws while main reports it (never while the harness runs);
+        // a live non-daemon thread then keeps the JVM up unless the exit is unconditional.
+        drive(tempDir, buildJar(tempDir, """
+                static {
+                    new Sleeper().start();
+                    if (true) throw new Bad();
+                }
+
+                // Its own class: a lambda's body lives on Processor and could not run after its failed init.
+                static final class Sleeper extends Thread {
+                    @Override public void run() {
+                        try { Thread.sleep(600_000); } catch (InterruptedException e) { }
+                    }
+                }
+
+                static final class Bad extends RuntimeException {
+                    @Override public String toString() {
+                        boolean reporting = StackWalker.getInstance().walk(frames -> frames
+                                .filter(f -> f.getClassName().endsWith(".IntegrationProcessor"))
+                                .map(StackWalker.StackFrame::getMethodName)
+                                .allMatch("main"::equals));
+                        if (reporting) {
+                            throw new StackOverflowError("toString");
+                        }
+                        return "Bad";
+                    }
+                }
+                """));
+    }
+
+    /** Runs main in a child JVM; asserts it exits 1 within 60s. Returns its combined output. */
+    private static Path drive(Path tempDir, File jar) throws Exception {
         Path input = tempDir.resolve("input.json");
         Files.writeString(input, "[{\"metadata\": {\"TableName\": \"T\"}}]");
         Path error = tempDir.resolve("error.txt");
@@ -33,14 +72,18 @@ class MainFailureFileTest {
         Files.writeString(request, "{\"opJar\": \"" + jar.getAbsolutePath() + "\", \"inputFile\": \"" + input
                 + "\", \"outputFile\": \"" + tempDir.resolve("out.json") + "\", \"errorFile\": \"" + error + "\"}");
 
+        Path log = tempDir.resolve("log.txt");
         Process p = new ProcessBuilder(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-cp", System.getProperty("java.class.path"),
                 "com.striim.testing.inttest.IntegrationProcessor", request.toString())
-                .redirectErrorStream(true).redirectOutput(tempDir.resolve("log.txt").toFile()).start();
-        assertTrue(p.waitFor(60, TimeUnit.SECONDS));
-        assertEquals(1, p.exitValue(), Files.readString(tempDir.resolve("log.txt")));
-        assertTrue(Files.exists(error), Files.readString(tempDir.resolve("log.txt")));
-        assertTrue(Files.readString(error).contains("refused at load"), Files.readString(error));
+                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        boolean exited = p.waitFor(60, TimeUnit.SECONDS);
+        if (!exited) {
+            p.destroyForcibly();
+        }
+        assertTrue(exited, "the JVM did not exit: " + Files.readString(log));
+        assertEquals(1, p.exitValue(), Files.readString(log));
+        return log;
     }
 
     private static File buildJar(Path tempDir, String member) throws IOException {
@@ -78,10 +121,13 @@ class MainFailureFileTest {
         Manifest manifest = new Manifest();
         manifest.getMainAttributes().put(Attributes.Name.MANIFEST_VERSION, "1.0");
         manifest.getMainAttributes().putValue("Striim-Service-Implementation", "com.example.errorop.App");
-        try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar), manifest)) {
-            out.putNextEntry(new JarEntry("com/example/errorop/Processor.class"));
-            Files.copy(classes.resolve("com/example/errorop/Processor.class"), out);
-            out.closeEntry();
+        try (JarOutputStream out = new JarOutputStream(Files.newOutputStream(jar), manifest);
+                var classFiles = Files.list(classes.resolve("com/example/errorop"))) {
+            for (Path classFile : (Iterable<Path>) classFiles::iterator) {
+                out.putNextEntry(new JarEntry("com/example/errorop/" + classFile.getFileName()));
+                Files.copy(classFile, out);
+                out.closeEntry();
+            }
         }
         return jar.toFile();
     }
