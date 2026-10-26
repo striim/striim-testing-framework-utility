@@ -64,12 +64,14 @@ udf:
   several modules, give each a `token:` (`token: MAP` gives `${MAP_NAME}`, `${MAP_JAR}`).
 
 Jar filenames normally end in the Striim series, such as `ReferenceOpV1-5.4.jar`. When
-configured or installed releases share that series, both engines use the shortest unique version
-prefix: 5.4.2 and 5.4.4.0 use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four
-parts. The existing `STRIIM_BUILD_<version>` build matrix and installed siblings of `STRIIM_HOME`
-supply the release set automatically. If it cannot be determined, naming stays at the series.
+configured releases share that series, both engines use the shortest unique version prefix:
+5.4.2 and 5.4.4.0 use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four parts.
+The existing `STRIIM_BUILD_<version>` build matrix and the selected `STRIIM_HOME` supply the
+release set automatically; other installs beside `STRIIM_HOME` do not count, so one matrix gives
+the same names on every machine. If the set cannot be determined, naming stays at the series.
 Builds on machines with multiple known releases keep separate Maven output directories, so
-building or cleaning one release preserves the others' jars, including across different series. The deployed operator name stays the same.
+building or cleaning one release preserves the others' jars, including across different series.
+The deployed operator name stays the same.
 
 [TEST-YAML.md](TEST-YAML.md), "`op:` / `udf:`", has every key.
 

@@ -25,13 +25,13 @@ def test_shortest_unique_suffix(versions, version, expected):
     assert opjarrelease.jar_suffix({'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'}, versions) == expected
 
 
-def test_discover_existing_matrix_and_install_siblings(tmp_path):
+def test_discover_existing_matrix_and_selected_install(tmp_path):
     from inttest import opjarrelease
     matrix = tmp_path / 'matrix.env'
     matrix.write_text('export STRIIM_BUILD_5_4_2="install one"\n'
                       'STRIIM_BUILD_5_4_4_0=install-two\n'
                       'STRIIM_BUILD_5_4_4_0_JAVA=17\nSTRIIM_BUILD_5_4_9_JAVA=17\n')
-    lib = tmp_path / 'installs' / 'third' / 'lib'
+    lib = tmp_path / 'installs' / 'selected' / 'lib'
     lib.mkdir(parents=True)
     (lib / 'Platform-5.4.4.1.jar').touch()
     (lib / 'Platform-5.4.4.1-sources.jar').touch()
@@ -317,4 +317,36 @@ def test_prebuilt_named_for_another_release_is_refused(engine, tmp_path, monkeyp
                          run=lambda *a: pytest.fail('prebuilt must not build'))
     assert 'STRIIM_SERIES=' not in str(error.value)
     assert 'series 5.4.2' not in str(error.value)
+
+
+@pytest.mark.parametrize('package', ['livetest', 'inttest'])
+def test_sibling_installs_do_not_change_jar_names(tmp_path, package):
+    opjarrelease = importlib.import_module(package + '.opjarrelease')
+
+    def host(name, siblings):
+        root = tmp_path / name
+        for folder, version in [('one', '5.4.2'), ('two', '5.4.4.0'), *siblings]:
+            lib = root / 'installs' / folder / 'lib'
+            lib.mkdir(parents=True)
+            (lib / f'Platform-{version}.jar').touch()
+        (root / '.env').write_text('STRIIM_BUILD_5_4_2=installs/one\nSTRIIM_BUILD_5_4_4=installs/two\n')
+        env = {'STRIIM_HOME': str(root / 'installs' / 'two'),
+               'FTC_RELEASE_INSTALL_ROOT': str(root / 'installs')}
+        versions = opjarrelease.configured_versions(root, env)
+        return versions, [opjarrelease.jar_suffix({'STRIIM_SERIES': '5.4', 'STRIIM_VERSION': v}, versions)
+                          for v in ['5.4.2', '5.4.4.0']]
+
+    plain = host('a', [])
+    assert plain == ({'5.4.2', '5.4.4.0'}, ['5.4.2', '5.4.4'])
+    assert host('b', [('old', '5.4.4.1'), ('older', '5.4.2.1')]) == plain
+
+
+def test_selected_striim_home_outside_matrix_is_counted(tmp_path):
+    from inttest import opjarrelease
+    lib = tmp_path / 'selected' / 'lib'
+    lib.mkdir(parents=True)
+    (lib / 'Platform-5.4.4.0.jar').touch()
+    (tmp_path / '.env').write_text('STRIIM_BUILD_5_4_2=elsewhere\n')
+    env = {'STRIIM_HOME': str(tmp_path / 'selected')}
+    assert opjarrelease.configured_versions(tmp_path, env) == {'5.4.2', '5.4.4.0'}
 
