@@ -283,3 +283,38 @@ def test_build_then_prebuilt_lookup_ignores_private_cache(engine, tmp_path, monk
     _jar(module / 'target/published/ExampleOpV2-5.4.jar', '5.4.2')
     with pytest.raises(engine.OpArtifactError, match='multiple candidates'):
         engine.build_jar('ExampleOp', release, run=run)
+
+
+@pytest.mark.parametrize('route', ['SLT_PREBUILT_JAR', 'SLT_PREBUILT_DIR'])
+def test_series_named_prebuilt_is_accepted_on_multi_release_matrix(engine, tmp_path, monkeypatch, route):
+    # Maven names the shipped jar for the series; build it once and test it on each release.
+    shipped = tmp_path / 'ship' / 'ExampleOpV1-5.4.jar'
+    _jar(shipped, '5.4.2')
+    monkeypatch.setenv(route, str(shipped if route == 'SLT_PREBUILT_JAR' else shipped.parent))
+    for version in ['5.4.2', '5.4.4.0']:
+        built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'},
+                                 run=lambda *a: pytest.fail('prebuilt must not build'))
+        assert (built.path, built.name, built.op_name) == (shipped, shipped.name, 'ExampleOpV1')
+
+
+def test_prebuilt_release_suffix_wins_over_series_name(engine, tmp_path, monkeypatch):
+    folder = tmp_path / 'prebuilt'
+    for name in ['ExampleOpV1-5.4.jar', 'ExampleOpV1-5.4.2.jar']:
+        _jar(folder / name, '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_DIR', str(folder))
+    built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                             run=lambda *a: pytest.fail('prebuilt must not build'))
+    assert built.name == 'ExampleOpV1-5.4.2.jar'
+
+
+@pytest.mark.parametrize('route', ['SLT_PREBUILT_JAR', 'SLT_PREBUILT_DIR'])
+def test_prebuilt_named_for_another_release_is_refused(engine, tmp_path, monkeypatch, route):
+    other = tmp_path / 'ship' / 'ExampleOpV1-5.4.4.jar'
+    _jar(other, '5.4.4.0')
+    monkeypatch.setenv(route, str(other if route == 'SLT_PREBUILT_JAR' else other.parent))
+    with pytest.raises(engine.OpArtifactError, match=r"5\.4\.2.*5\.4\b") as error:
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                         run=lambda *a: pytest.fail('prebuilt must not build'))
+    assert 'STRIIM_SERIES=' not in str(error.value)
+    assert 'series 5.4.2' not in str(error.value)
+
