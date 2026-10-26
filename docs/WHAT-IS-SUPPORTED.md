@@ -53,7 +53,7 @@ What differs in native mode:
 
 | Release | Status |
 |---|---|
-| 5.4.4.0 | **tested**: on the Mac, framework `44ab472`, 2026-10-14, against a Docker cluster this framework built (`STRIIM_URL` set to it): striim-field's live gate (31 passed) and regression (202 passed, 2 skipped), without striim-field's Spanner, Teradata and MSJet cases |
+| 5.4.4.0 | **tested**: on the Mac, framework `44ab472`, 2026-10-14, against a Docker cluster this framework built (`STRIIM_URL` set to it): an internal suite of live cases, without its Spanner, Teradata and MSJet cases |
 | 5.4.2 | **tested**: Docker mode on the Linux host and the Mac, native mode on the Linux host |
 | other 5.4 releases | **supported, not exercised here** |
 | 5.0 and 5.2 | **supported, not exercised here**: the framework builds jars for them with Java 11 (5.4 uses Java 17) |

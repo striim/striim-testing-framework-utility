@@ -42,12 +42,3 @@ externaljars/
 # ---- striim-test run directories and ownership ledgers (default state dir: scripts/live) ----
 scripts/live/runs/
 scripts/live/lifecycle/
-
-# Prepared copies of the shared recovery golden.
-/samples/live/17-one-node-failover/expected/rows.csv
-/samples/live/15-fault-evidence/expected/rows.csv
-/samples/live/16-recovery-sentinel/expected/rows.csv
-/scripts/live/regression/framework/framework-one-node-failover/expected/rows.csv
-/scripts/live/regression/framework/framework-progress-recovery/expected/rows.csv
-/scripts/live/regression/framework/framework-fault-evidence/expected/rows.csv
-/scripts/live/regression/framework/framework-recovery-sentinel/expected/rows.csv

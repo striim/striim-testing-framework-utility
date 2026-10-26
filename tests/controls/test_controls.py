@@ -1047,7 +1047,7 @@ def test_extra_duplicate_uses_supported_transformed_fixture_and_exact_path(tmp_p
     cases = _cases(tmp_path)
     spec = module.load_spec(CONTROL_DIR / 'controls.json')
     tql = (cases / '02-transform' / 'app.tql').read_text()
-    assert 'CREATE STREAM TransformedCustomerRows OF Global.WAEvent;' in tql
+    assert 'CREATE STREAM DoubledCustomerRows OF Global.WAEvent;' in tql
     assert 'OF TYPE Global.WAEvent' not in tql
     assert re.search(r'MODIFY\s*\(\s*data\[2\]\s*=\s*TO_DOUBLE\(row_event\.data\[2\]\)', tql)
 
