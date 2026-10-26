@@ -64,10 +64,10 @@ udf:
   several modules, give each a `token:` (`token: MAP` gives `${MAP_NAME}`, `${MAP_JAR}`).
 
 Jar filenames normally end in the Striim series, such as `ReferenceOpV1-5.4.jar`. When the
-`STRIIM_BUILD_<version>` build matrix holds several releases of one series, the jars a run builds
-use the shortest unique version prefix instead: 5.4.2 and 5.4.4.0 use `-5.4.2.jar` and
-`-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four parts. Only the matrix counts, not other installs
-on the machine; without one, naming stays at the series. With several releases in the matrix,
+`STRIIM_BUILD_<version>` build matrix plus the release being tested hold several releases of one
+series, the jars a run builds use the shortest unique version prefix instead: 5.4.2 and 5.4.4.0
+use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four parts. Other installs on the
+machine do not count; without a matrix, naming stays at the series. With several releases in the matrix,
 each release builds in its own Maven output directory, so building or cleaning one keeps the
 others' jars. The deployed operator name stays the same.
 
@@ -113,9 +113,9 @@ The first one set wins, in that order. Set them in the shell; `.env` does not ho
 
 - **A folder**, which any of the three may name, must hold exactly one jar for the module and the
   release's series, named `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`),
-  in it or below it. A jar named with the release's longer prefix above
-  (`ReferenceOpV1-5.4.2.jar`) is used before the series jar. No match, or more than one, is an
-  error and the case does not run; another module's jar is never used.
+  or with the release's longer prefix above (`ReferenceOpV1-5.4.2.jar`), in it or below it. No
+  match, or more than one (a release jar beside a series jar included), is an error and the case
+  does not run; another module's jar is never used.
 - **A named file** must end in `-<series>.jar` for the release's series (for example
   `ReferenceOpV1-5.4.jar`), or in the longer prefix; otherwise the case does not run.
 - **A shared named file** selected by `SLT_PREBUILT_JAR` is refused if its `Striim-Module-Name`

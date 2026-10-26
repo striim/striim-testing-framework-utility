@@ -606,12 +606,11 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None) -> tu
     path = Path(value).resolve()
     if path.is_dir():
         mod = module_name(module_ref)
-        for name in names:
-            own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(name)}\.jar", re.IGNORECASE)
-            matches = sorted(p for p in path.rglob("*.jar")
-                             if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
-            if matches:
-                break
+        # A release jar beside a series jar is ambiguous: one may be a stale framework copy.
+        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-(?:{'|'.join(map(re.escape, names))})\.jar",
+                         re.IGNORECASE)
+        matches = sorted(p for p in path.rglob("*.jar")
+                         if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
         if not matches:
             wanted = f"{suffix} or series {names[1]}" if len(names) > 1 else f"series {suffix}"
             raise OpArtifactError(f"{var}: no {mod} jar for {wanted} in {path}")
@@ -627,7 +626,7 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None) -> tu
             raise OpArtifactError(
                 f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
         # No entry (UDF jars carry none): the file name must name the module, as in a folder. A
-        # name without the series suffix is left to op_name_for's error.
+        # name with neither ending is refused in build_jar.
         ending = next((f"-{n}.jar" for n in names if path.name.endswith(f"-{n}.jar")), None)
         if not mod_id and ending and not own.fullmatch(path.name[: -len(ending)]):
             raise OpArtifactError(
