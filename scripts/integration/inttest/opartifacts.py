@@ -387,8 +387,8 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None
                   ) -> tuple[Path, str] | None:
     """The prebuilt jar to use instead of building `module_ref`, and the variable that chose it;
     None when no prebuilt variable is set. A directory must hold exactly one jar of THIS module
-    named "<module>[V<version>]-<suffix>.jar", or failing that "-<series>.jar" (the name Maven
-    gives the jar that ships), searched recursively; another module's jar never stands in for it."""
+    named "<module>[V<version>]-<suffix>.jar" or "-<series>.jar" (the name Maven gives the jar that
+    ships), searched recursively; one of each is ambiguous. Another module's jar never stands in."""
     for var in (prebuilt_env_var(module_ref), "SLT_PREBUILT_JAR", "SLT_PREBUILT_DIR"):
         value = os.environ.get(var)
         if value:
@@ -399,12 +399,11 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None
     names = list(dict.fromkeys(n for n in (suffix, series) if n))
     if path.is_dir():
         mod = module_name(module_ref)
-        for name in names:
-            own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(name)}\.jar", re.IGNORECASE)
-            matches = sorted(p for p in path.rglob("*.jar")
-                             if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
-            if matches:
-                break
+        # A release jar beside a series jar is ambiguous: one may be a stale framework copy.
+        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-(?:{'|'.join(map(re.escape, names))})\.jar",
+                         re.IGNORECASE)
+        matches = sorted(p for p in path.rglob("*.jar")
+                         if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
         if not matches:
             wanted = (f"series {suffix}" if len(names) == 1
                       else f"release suffix {suffix} or series {series}")
@@ -520,14 +519,14 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         clean = True
         reason = f"{jar.name} is not a readable jar ({corrupt}) -> clean rebuild"
     elif ambiguous:
-        # Several *-<series>.jar in target/ (typically a version bump: V1B alongside V1C).
+        # Several *-<suffix>.jar in target/ (typically a version bump: V1B alongside V1C).
         # `clean` is mandatory -- a plain `package` leaves the stale jar in place and the
         # next run is ambiguous again.
         clean = True
         reason = (f"multiple *-{suffix}.jar in target/ "
                   f"({', '.join(p.name for p in existing)}) -> clean rebuild")
     else:
-        # No jar for this series. If target/ still holds a DIFFERENT release's compiled output,
+        # No jar for this suffix. If target/ still holds a DIFFERENT release's compiled output,
         # clean it -- mvn's compiler skips unchanged sources, so a plain `package` could shade
         # stale .class files (e.g. Java-17 bytecode into a nominally-5.0 jar). A fresh checkout
         # (no target/classes) needs no clean.

@@ -111,6 +111,60 @@ def test_prebuilt_directory_selects_release_suffix(engine, tmp_path, monkeypatch
     assert built.op_name == 'ExampleOpV1'
 
 
+@pytest.mark.parametrize('how', ['dir', 'file'])
+def test_prebuilt_series_jar_is_accepted_beside_another_release(engine, tmp_path, monkeypatch, how):
+    # The shipped jar is named for the series; it tests on every release of it without renaming.
+    shipped = tmp_path / 'ship' / 'ExampleOpV1-5.4.jar'
+    _jar(shipped, '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_DIR' if how == 'dir' else 'SLT_PREBUILT_JAR',
+                       str(shipped.parent if how == 'dir' else shipped))
+    for version in ['5.4.2', '5.4.4.0']:
+        built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'},
+                                 run=lambda *a: pytest.fail('prebuilt must not build'))
+        assert (built.path, built.op_name) == (shipped, 'ExampleOpV1')
+
+
+def test_prebuilt_directory_refuses_a_release_jar_beside_a_series_jar(engine, tmp_path, monkeypatch):
+    # Under a matrix, earlier runs leave release-named copies in target/ beside the series jar.
+    folder = tmp_path / 'prebuilt'
+    _jar(folder / 'ExampleOpV1-5.4.jar', '5.4.2')
+    _jar(folder / 'ExampleOpV1-5.4.2.jar', '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_DIR', str(folder))
+    release = {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'}
+    with pytest.raises(engine.OpArtifactError, match='multiple candidates'):
+        engine.build_jar('ExampleOp', release, run=lambda *a: pytest.fail('prebuilt must not build'))
+    (folder / 'ExampleOpV1-5.4.jar').unlink()
+    assert engine.build_jar('ExampleOp', release,
+                            run=lambda *a: pytest.fail('prebuilt must not build')).name == 'ExampleOpV1-5.4.2.jar'
+    (folder / 'ExampleOpV1-5.4.2.jar').unlink()
+    with pytest.raises(engine.OpArtifactError, match=r'no ExampleOp jar for release suffix 5\.4\.2 or series 5\.4 in'):
+        engine.build_jar('ExampleOp', release, run=lambda *a: pytest.fail('prebuilt must not build'))
+
+
+def test_wrong_jar_name_error_does_not_call_the_suffix_a_series(engine, tmp_path, monkeypatch):
+    unnamed = tmp_path / 'ship' / 'ExampleOpV1.jar'
+    _jar(unnamed, '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_JAR', str(unnamed))
+    with pytest.raises(Exception, match="does not end with the expected") as err:
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                         run=lambda *a: pytest.fail('prebuilt must not build'))
+    assert 'STRIIM_SERIES' not in str(err.value)
+    assert "'-5.4.2.jar' or '-5.4.jar'" in str(err.value)
+    # The integration tier fails (not skips) a misnamed jar, as op_name_for always did.
+    if engine.__name__.startswith('inttest'):
+        assert isinstance(err.value, engine.OpBuildFailed)
+
+
+def test_unreadable_pom_under_a_matrix_is_a_build_failure(engine, tmp_path):
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    (module / 'pom.xml').write_text('not xml')
+    with pytest.raises(engine.OpArtifactError, match='cannot read .*pom.xml'):
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4',
+                                     'JAVA_RELEASE': '17'},
+                         run=lambda *a: pytest.fail('maven must not run on an unreadable pom'))
+
+
 @pytest.mark.parametrize('matrix', ['', 'STRIIM_BUILD_5_4_2=one\nSTRIIM_BUILD_5_2_0_8=two\n'])
 def test_unique_or_unknown_set_reuses_series_name(engine, tmp_path, matrix):
     (tmp_path / '.env').write_text(matrix)
@@ -295,16 +349,6 @@ def test_series_named_prebuilt_is_accepted_on_multi_release_matrix(engine, tmp_p
         built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'},
                                  run=lambda *a: pytest.fail('prebuilt must not build'))
         assert (built.path, built.name, built.op_name) == (shipped, shipped.name, 'ExampleOpV1')
-
-
-def test_prebuilt_release_suffix_wins_over_series_name(engine, tmp_path, monkeypatch):
-    folder = tmp_path / 'prebuilt'
-    for name in ['ExampleOpV1-5.4.jar', 'ExampleOpV1-5.4.2.jar']:
-        _jar(folder / name, '5.4.2')
-    monkeypatch.setenv('SLT_PREBUILT_DIR', str(folder))
-    built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
-                             run=lambda *a: pytest.fail('prebuilt must not build'))
-    assert built.name == 'ExampleOpV1-5.4.2.jar'
 
 
 @pytest.mark.parametrize('route', ['SLT_PREBUILT_JAR', 'SLT_PREBUILT_DIR'])

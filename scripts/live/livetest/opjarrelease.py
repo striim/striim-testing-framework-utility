@@ -102,7 +102,10 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
 
     def invoke(argv, cwd, env):
         _remove_abandoned_poms(module_dir)
-        tree = ET.parse(module_dir / 'pom.xml')
+        try:
+            tree = ET.parse(module_dir / 'pom.xml')
+        except ET.ParseError as e:
+            return SimpleNamespace(returncode=1, stderr=f"cannot read {module_dir / 'pom.xml'}: {e}")
         project = tree.getroot()
         ns = project.tag.removesuffix('project')
         if ns:

@@ -121,10 +121,10 @@ that file on each release of the series.
 The first one set wins, in that order. Set them in the shell; `.env` does not hold them.
 
 - **A folder**, which any of the three may name, must hold exactly one jar for the module named
-  `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`), in it or below it. A
-  jar named for the release's suffix selected above (`ReferenceOpV1-5.4.2.jar`) is preferred
-  when there is one. No match, or more than one, is an error and the case does not run; another
-  module's jar is never used.
+  `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`) or named for the
+  release's suffix selected above (`ReferenceOpV1-5.4.2.jar`), in it or below it. No match, or
+  more than one (a release-named jar beside a series-named one included), is an error and the case
+  does not run; another module's jar is never used.
 - **A named file** must end in `-<series>.jar` or the release's selected suffix (for example
   `ReferenceOpV1-5.4.jar` or `ReferenceOpV1-5.4.2.jar`); otherwise the case does not run.
 - **A shared named file** selected by `SLT_PREBUILT_JAR` is refused if its `Striim-Module-Name`
