@@ -444,36 +444,42 @@ TIER_CANCEL_WAIT_S = 200.0
 TIER_STOP_WAIT_S = 10.0
 
 
-def _stop(proc, sig) -> None:
+def _signal_tier(proc, sig) -> None:
+    """``sig`` to the tier's process group: pytest, its xdist workers and the docker CLIs they run."""
     try:
-        proc.send_signal(sig)
-    except (ProcessLookupError, OSError):
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
         pass
 
 
-def wait_tier(proc, label: str, cancel_wait: float | None = None):
-    """The tier's exit code, or None when it was cancelled.
+def run_tier_process(argv, label: str, cancel_wait: float | None = None, **popen_kw):
+    """Run the tier and return its exit code, or None when it was cancelled.
 
-    Ctrl-C reaches the tier too (same process group), so on the first interrupt the tier is left to
-    run its own cleanup, up to ``TIER_CANCEL_WAIT_S``. A SIGTERM sent to striim-test alone is passed on
-    to the tier first. A second interrupt, or the bound, stops it: SIGTERM, then SIGKILL."""
+    The tier gets its own process group, so striim-test alone decides which signal reaches it: the
+    first Ctrl-C (or SIGTERM to striim-test) is passed on to the whole group (pytest, its xdist workers
+    and the docker CLIs they run) as the same signal, and the tier is left to run its own cleanup, up
+    to ``TIER_CANCEL_WAIT_S``. Another interrupt, or the bound, stops it: SIGTERM to the group,
+    ``TIER_STOP_WAIT_S``, then SIGKILL. However it ends, the tier is not left running."""
     cancel_wait = TIER_CANCEL_WAIT_S if cancel_wait is None else cancel_wait
-    terminated = []
+    term = []
 
     def on_term(sig, frame):
-        terminated.append(sig)
+        term.append(sig)
         raise KeyboardInterrupt("SIGTERM")
     try:
         previous, installed = signal.signal(signal.SIGTERM, on_term), True
     except ValueError:                  # not the main thread: no handler, plain waits
         previous, installed = None, False
+    proc = None
     try:
+        proc = subprocess.Popen(argv, start_new_session=True, **popen_kw)
+        if hasattr(proc, "_sigint_wait_secs"):
+            proc._sigint_wait_secs = 0  # so a second Ctrl-C right after the first is not swallowed
         try:
             return proc.wait()
         except KeyboardInterrupt:
             pass
-        if terminated:
-            _stop(proc, signal.SIGTERM)
+        _signal_tier(proc, signal.SIGTERM if term else signal.SIGINT)
         _say(f"{label}: cancelling: waiting for cleanup, up to {cancel_wait:.0f}s; "
              f"press Ctrl-C again to stop now")
         try:
@@ -482,14 +488,18 @@ def wait_tier(proc, label: str, cancel_wait: float | None = None):
         except (KeyboardInterrupt, subprocess.TimeoutExpired):
             pass
         _say(f"{label}: stopping without waiting for cleanup")
-        _stop(proc, signal.SIGTERM)
+        _signal_tier(proc, signal.SIGTERM)
         try:
             proc.wait(timeout=TIER_STOP_WAIT_S)
         except (KeyboardInterrupt, subprocess.TimeoutExpired):
-            proc.kill()
-            proc.wait()
+            pass
+        return None
+    except KeyboardInterrupt:           # before the launch, or a further interrupt between the waits
         return None
     finally:
+        if proc is not None and proc.poll() is None:
+            _signal_tier(proc, signal.SIGKILL)
+            proc.wait()
         if installed:
             signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
 
@@ -507,8 +517,8 @@ def run_tier(ctx: Ctx, tier: str, path: Path, *, label: str, cases=(), collect_o
         # The tier's output goes to its log, not the console: say how to watch it while it runs.
         _say(f"{label}: follow it with: tail -f {shlex.quote(str(tier_dir / 'stdout.log'))}")
     with open(tier_dir / "stdout.log", "wb") as so, open(tier_dir / "stderr.log", "wb") as se:
-        proc = subprocess.Popen(argv, cwd=tier_dir, env=env, stdin=subprocess.DEVNULL, stdout=so, stderr=se)
-        rc = wait_tier(proc, label)
+        rc = run_tier_process(argv, label, cwd=tier_dir, env=env, stdin=subprocess.DEVNULL,
+                              stdout=so, stderr=se)
     sel = _selection(tier_dir)
     res = _read_json(tier_dir / "results.json")
     code, reason = (CANCELLED, "interrupted") if rc is None else map_exit(rc, sel, res, collect_only)
@@ -658,6 +668,8 @@ def cmd_run(args, origins) -> int:
             _print_selection(o)
         codes.append(o.code)
         parts.append(asdict(o))
+        if o.code == CANCELLED:         # a cancelled run starts nothing else
+            return _finish(ctx, codes, parts)
     from striim_test import runner as runner_mod
     for r in selected_runners:
         if args.dry_run:
