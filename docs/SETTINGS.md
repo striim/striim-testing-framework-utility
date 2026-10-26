@@ -39,7 +39,7 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 
 | Setting | Where | Default | What it does |
 |---|---|---|---|
-| `SLT_INFRA_OWNERSHIP` | shell, `.env`, machine | unset: a run refuses to start | `shared`: reuse what is running, start what is missing, never tear it down (needs `SLT_KEEP_SERVICES=1`). `exclusive`: take a fresh stack, refuse if a Striim already answers, and tear everything down at the end. |
+| `SLT_INFRA_OWNERSHIP` | shell, `.env`, machine | unset: a run refuses to start | `shared`: reuse what is running, start what is missing, never tear it down (needs `SLT_KEEP_SERVICES=1`). `exclusive`: take a fresh stack, refuse if a Striim already answers, and tear everything down at the end, `--parallel` included. |
 | `SLT_KEEP_SERVICES` | shell, `.env`, machine | unset | `1`: keep the cluster and service containers after the run. Required with `shared`. |
 | `SLT_KEEP_RESOURCES` | shell | unset | `1`: keep each test's app, tables and slots whatever the result (`--keep-resources`). |
 | `SLT_KEEP_RESOURCES_ON_ERROR` | shell | unset | `1`: the same, for failed tests only. Replication slots are dropped; the teardown prints the SQL that recreates them. |
@@ -190,7 +190,7 @@ To use your own database instead of the container the framework starts, set its 
 |---|---|---|---|
 | `SLT_MYSQL_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
 | `SLT_MYSQL_PORT` | shell, `.env`, machine | `3306` | Your own instance: its port. |
-| `SLT_MYSQL_ADMIN_USER` | shell, `.env`, machine | `root` | Your own instance: the admin account, which makes the test accounts and schemas and cleans up. |
+| `SLT_MYSQL_ADMIN_USER` | shell, `.env`, machine | `root` | Your own instance: the admin account, which makes missing schemas and cleans up; it never creates or changes an account. |
 | `SLT_MYSQL_ADMIN_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: the admin account's password. |
 | `SLT_MYSQL_SOURCE_USER` | shell, `.env`, machine | `qasource` | Your own instance: the account a test's source side uses. |
 | `SLT_MYSQL_SOURCE_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |

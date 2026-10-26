@@ -93,3 +93,31 @@ def test_upgrading_shared_to_exclusive_self_deadlocks_and_reports_it(tmp_path):
                 pass
         assert time.monotonic() - started < 30          # bounded, not a hang
         assert "self-deadlock" in str(e.value)          # and it says why
+
+
+def test_a_waiting_reload_goes_before_tests_that_arrive_after_it(tmp_path):
+    """Writer preference: overlapping tests must not starve a pending reload. flock descriptors from
+    separate open() calls are independent even in one process, so threads stand in for processes."""
+    import threading
+    order, t0 = [], time.monotonic()
+
+    def test_run(name, start, hold):
+        time.sleep(start)
+        with opregistry.in_use(tmp_path):
+            order.append(name)
+            time.sleep(hold)
+
+    def reload(start):
+        time.sleep(start)
+        with opregistry.exclusive_reload(tmp_path):
+            order.append("reload")
+
+    threads = [threading.Thread(target=test_run, args=("first", 0.0, 0.6)),
+               threading.Thread(target=reload, args=(0.2,)),
+               threading.Thread(target=test_run, args=("late", 0.4, 0.6))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert order == ["first", "reload", "late"]
+    assert time.monotonic() - t0 < 10

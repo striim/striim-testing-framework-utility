@@ -119,6 +119,22 @@ class RecoveryContext:
         self.check()
         return min(5, self.deadline - self.clock())
 
+    def acquire(self, lock, what):
+        """Wait for a machine-wide lock until the deadline, checking cancellation every few seconds.
+        A bring-up elsewhere that holds it makes this pre-flight busy, not the service unavailable."""
+        from filelock import Timeout
+        while True:
+            if self.cancelled():
+                raise Refused('cancelled')
+            remaining = self.deadline - self.clock()
+            if remaining <= 0:
+                raise Refused(f'busy: {what} is still held by another bring-up')
+            try:
+                lock.acquire(timeout=min(5, remaining))
+                return
+            except Timeout:
+                continue
+
     def pause(self, seconds):
         # Check cancellation at least once per second even during backoff.
         end = min(self.deadline, self.clock() + seconds)

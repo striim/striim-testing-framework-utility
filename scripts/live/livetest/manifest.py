@@ -485,6 +485,9 @@ def _normalize_uploads(raw, path, label: str = "op.upload") -> list:
                 raise ManifestError(f"{path}: '{label}' entry needs a 'from' filename: {item!r}")
             if not isinstance(to, str) or not to:
                 raise ManifestError(f"{path}: '{label}' entry needs a 'to' filename: {item!r}")
+            if not upload_name_ok(to):
+                raise ManifestError(f"{path}: '{label}' entry 'to' must be a file name in UploadedFiles/, "
+                                    f"without '/' and not '.' or '..': {to!r}")
             # `local: true` is carried only when set, so the common shape stays {from, to}.
             out.append({"from": frm, "to": to, **({"local": True}
                                                   if _parse_local(item, label, path) else {})})
@@ -492,6 +495,11 @@ def _normalize_uploads(raw, path, label: str = "op.upload") -> list:
             raise ManifestError(
                 f"{path}: '{label}' entries must be a filename string or {{from, to}}: {item!r}")
     return out
+
+def upload_name_ok(name: str) -> bool:
+    """An op.upload name stays inside UploadedFiles/: no path separator, and not '.' or '..'."""
+    return bool(name) and "/" not in name and "\\" not in name and name not in (".", "..")
+
 
 _MODULE_FAMILY = {
     "op": "java/OpenProcessors/",

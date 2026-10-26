@@ -173,8 +173,12 @@ def ensure_provisioned_once(container: str, do_provision, state_dir=None) -> boo
     THIS call performed the provisioning."""
     reg, lock = _provision_state_paths(state_dir)
     context = service_healing.current_context()
-    timeout = context.timeout() if context else -1
-    with FileLock(str(lock), mode=lockdir.file_mode(), timeout=timeout):
+    held = FileLock(str(lock), mode=lockdir.file_mode())
+    if context:
+        context.acquire(held, f"provisioning lock {lock}")
+    else:
+        held.acquire()
+    try:
         if context:
             context.check()
         try:
@@ -187,6 +191,8 @@ def ensure_provisioned_once(container: str, do_provision, state_dir=None) -> boo
         state[container] = "1"
         reg.write_text(json.dumps(state))
         return True
+    finally:
+        held.release()
 
 class ServiceError(Exception):
     pass

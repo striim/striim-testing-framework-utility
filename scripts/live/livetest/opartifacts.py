@@ -1053,9 +1053,11 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
         # be the agent JVM at startup, which is exactly when a truncated jar becomes
         # "ClassNotFoundException" again -- the symptom this function exists to remove.
         tmp = f"{stack.AGENT_LIB_DIR}/.{name}.tmp.{os.getpid()}"
-        run(["docker", "cp", str(f), f"{agent}:{tmp}"])
-        run(["docker", "exec", "-u", "0", agent, "chmod", "644", tmp])
-        run(["docker", "exec", "-u", "0", agent, "mv", "-f", tmp, final])
+        for command in (["docker", "cp", str(f), f"{agent}:{tmp}"],
+                        ["docker", "exec", "-u", "0", agent, "chmod", "644", tmp],
+                        ["docker", "exec", "-u", "0", agent, "mv", "-f", tmp, final]):
+            _agent_step(run, command, f"placing {name} on {agent}",
+                        cleanup=["docker", "exec", "-u", "0", agent, "rm", "-f", tmp])
         placed.append(name)
 
     if not placed:
@@ -1065,7 +1067,7 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
 
     if progress:
         progress("agent", f"placed {', '.join(placed)} in {stack.AGENT_LIB_DIR}; restarting agent")
-    run(["docker", "restart", agent])
+    _agent_step(run, ["docker", "restart", agent], f"restarting {agent}")
 
     if client is not None:
         # The agent must be back in its deployment group before anything deploys to it, or the
@@ -1077,11 +1079,24 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
             progress("agent", "agent re-registered")
 
 
+def _agent_step(run, command, what, cleanup=None) -> None:
+    result = run(command)
+    if getattr(result, "returncode", 1) != 0:
+        if cleanup:
+            run(cleanup)
+        raise OpArtifactError(f"{what} failed: {' '.join(command)}: "
+                              f"{(getattr(result, 'stderr', '') or '').strip()}")
+
+
 def delete_artifacts(ctx, names: list[str], run=None) -> None:
     # Best-effort remove of per-test op.upload files (spec §B.3) from Striim's
     # UploadedFiles/ at teardown — upload_artifacts only ever copies/overwrites, so
     # without this a passing test's rendered config (e.g. customers_lookup.json)
     # sits there forever, same gap as the Postgres/server-file cleanup above.
+    from livetest.manifest import upload_name_ok
+    bad = [n for n in names if not upload_name_ok(n)]
+    if bad:
+        raise OpArtifactError(f"refusing to delete upload name(s) outside UploadedFiles/: {bad}")
     run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
     if ctx.mode == "docker":
         for name in names:

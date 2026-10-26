@@ -429,3 +429,63 @@ def test_drop_restores_fk_checks_even_when_the_drops_fail():
     with pytest.raises(RuntimeError, match="lock wait timeout"):
         admin.drop_test_tables("t0a1b_")
     assert calls[-1] == ["SET FOREIGN_KEY_CHECKS = 1"], calls
+
+
+# ---- credentials and the operator's own instance ------------------------------
+
+def test_engine_url_escapes_special_characters_in_credentials():
+    admin = MySQLAdmin(dict(_CFG, admin_user="ad@min", admin_password="p@ss:w/rd#1", host="dbhost"))
+    url = admin._engine.url
+    assert (url.username, url.password, url.host, url.port) == ("ad@min", "p@ss:w/rd#1", "dbhost", 3306)
+
+
+def _setup_statements(cfg, live):
+    admin = MySQLAdmin(cfg, role="source", live=live)
+    batches = []
+    admin._exec_sql = lambda stmts: batches.append(stmts)
+    admin.ensure_setup()
+    return [st for b in batches for st in b]
+
+
+_LIVE = dict(_CFG, source_user="app_reader", source_schema="app_src",
+             target_user="app_writer", target_schema="app_tgt")
+
+
+def test_live_setup_creates_only_the_configured_schemas():
+    stmts = _setup_statements(_LIVE, live=True)
+    assert stmts == ["CREATE SCHEMA IF NOT EXISTS `app_src`", "CREATE SCHEMA IF NOT EXISTS `app_tgt`"]
+
+
+def test_live_setup_never_touches_accounts_or_privileges():
+    joined = " ".join(_setup_statements(dict(_CFG, source_user="odd-user@corp"), live=True)).upper()
+    for word in ("USER", "GRANT", "QASOURCE'", "PRIVILEGES"):
+        assert word not in joined
+
+
+def test_docker_setup_uses_the_configured_accounts_and_schemas():
+    stmts = _setup_statements(_LIVE, live=False)
+    assert "CREATE USER IF NOT EXISTS 'app_reader'@'%' IDENTIFIED WITH mysql_native_password BY 'pw'" in stmts
+    assert "GRANT ALL PRIVILEGES ON `app_tgt`.* TO 'app_writer'@'%'" in stmts
+    assert "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'app_reader'@'%'" in stmts
+    assert not any("qasource" in st or "qatarget" in st for st in stmts)
+
+
+def test_docker_setup_refuses_an_unsafe_password_without_echoing_it():
+    with pytest.raises(ValueError, match="unsafe source password") as e:
+        _setup_statements(dict(_CFG, source_password="x'; DROP USER root; --"), live=False)
+    assert "DROP USER" not in str(e.value)
+
+
+def test_reset_test_objects_uses_the_configured_schemas():
+    admin, conn, batches = _drop_admin("source", [("app_src", "tddd_a")])
+    admin.config = _LIVE
+    admin.reset_test_objects("tddd_")
+    assert conn.last_cursor.params[0] == ("app_src", "app_tgt")
+    assert _dropped(batches) == ["tddd_a"]
+
+
+def test_plugin_marks_an_operator_instance_live():
+    import inspect
+    from livetest import plugin
+    assert 'MySQLAdmin(resolved.base, role="source", live=resolved.mode == "live")' in inspect.getsource(
+        plugin.LiveItem._runtest)

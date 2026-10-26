@@ -90,3 +90,12 @@ def test_first_signal_during_hung_cleanup_is_bounded(monkeypatch):
     with pytest.raises(KeyboardInterrupt, match="teardown timed out"):
         plugin.LiveItem.runtest(case)
     assert time.monotonic() - start < 1
+
+
+def test_cleanup_active_is_set_before_the_pre_cleanup_closes():
+    # A signal during the fault, snapshot or transaction-pool close must not skip ownership cleanup.
+    import inspect
+    src = inspect.getsource(plugin.LiveItem._runtest)
+    flag = src.index("self._slt_cleanup_active = True")
+    for close in ("_fault_target.close()", "_abandon_snapshot(", "_tx_pool.close()"):
+        assert flag < src.index(close, src.index("_tx_cleanup_error = None")), close

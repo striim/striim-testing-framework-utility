@@ -524,6 +524,9 @@ if SC.get("op_stub"):                                      # an op module whose 
         for mod in m.modules]
 if SC.get("op_poison"):
     P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
+    P._node_log_since = lambda ctx, marks, run=None: "java.util.zip.ZipException: invalid LOC header (bad signature)"
+    if SC.get("owned_stack"):                              # the run owns the stack exclusively
+        P._op_poison_restart_refusal = lambda config: None
     P._sp.restart_app_nodes = lambda client: log("restart_app_nodes")
     _real_in_use = P.opregistry.in_use
     _real_exclusive_reload = P.opregistry.exclusive_reload

@@ -67,8 +67,8 @@ SLT_PG_ADMIN_PASSWORD=...
 - Put them in `.env`, or export them (the shell wins). `striim-test doctor` lists the ones that are
   set and where each comes from.
 - **Use a disposable instance.** The framework creates the `qasource` and `qatarget` roles and
-  schemas if they are missing, and drops the objects each test creates. It does not empty the
-  schemas, so keep other data out of them.
+  schemas if they are missing (MySQL: schemas only, see [MySQL](#mysql-mysql)), and drops the objects
+  each test creates. It does not empty the schemas, so keep other data out of them.
 - If Striim reaches the instance under another name than this machine does, set
   `SLT_<SERVICE>_VIEW_HOST` (for example `SLT_POSTGRES_VIEW_HOST`), or `SLT_STRIIM_VIEW_HOST` for
   every service.
@@ -326,6 +326,10 @@ only, so it runs under emulation on Apple Silicon.
   `'${MYSQL_SOURCE_SCHEMA}.${TID}orders,${MYSQL_TARGET_SCHEMA}.${TID}orders'`.
 - `${TID}` must be a **prefix**: clean-up drops the tables whose names start with it, so
   `orders_${TID}` is left behind in a parallel run.
+- **Your own MySQL** (`SLT_MYSQL_HOST`): the framework creates `SLT_MYSQL_SOURCE_SCHEMA` and
+  `SLT_MYSQL_TARGET_SCHEMA` if they are missing and never creates or changes an account or grants a
+  privilege. Create the source and target accounts yourself: each needs access to its schema, and the
+  source account also `REPLICATION SLAVE` and `REPLICATION CLIENT` for CDC.
 
 ## Vertica (`vertica`)
 
@@ -363,6 +367,12 @@ Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `Kaf
   compares topics.
 - A topic your app creates that the framework does not know about (a persisted stream's topic, for
   example) goes in `kafka_cleanup_topics:` so it is removed at the end.
+- `KAFKA_ZOOKEEPER` is the ZooKeeper address Striim reaches (`host.docker.internal:2181` for the
+  Docker stack, following `SLT_ZOOKEEPER_CLIENT_PORT`; `SLT_KAFKA_HOST:SLT_ZOOKEEPER_PORT` for your own).
+- **A runner inside a container** (`SLT_SERVICES_HOST`): the framework connects to the broker's
+  Docker listener at `SLT_SERVICES_HOST`, and the broker then redirects it to the advertised
+  `host.docker.internal`. That name must resolve inside the runner's container: Docker Desktop provides
+  it; on Linux start the container with `--add-host host.docker.internal:host-gateway`.
 
 Kafka sentinel/absence cases require freshly acquired framework source/target topics,
 not a reused or custom unclaimed topic. See [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md)

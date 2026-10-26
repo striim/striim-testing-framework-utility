@@ -57,3 +57,24 @@ def test_kafka_resolve_live_override():
     r = resolve("kafka", env=env, started=set(),
                 compose_up=lambda defn: (_ for _ in ()).throw(AssertionError("no compose")))
     assert r.mode == "live" and r.base["src_topic"] == "s" and r.base["registry_port"] == "8888"
+
+
+def test_kafka_admin_out_of_docker_dials_the_services_host_not_the_striim_view_host():
+    # A containerized runner whose Striim reaches the services by another name.
+    r = resolve("kafka", env={"SLT_SERVICES_HOST": "10.0.0.5", "SLT_STRIIM_VIEW_HOST": "localhost"},
+                started=set(), compose_up=lambda defn: None)
+    assert _kafka_endpoints(r.base) == ("10.0.0.5:19092", "http://10.0.0.5:8081")
+
+
+def test_kafka_zookeeper_token_follows_view_host_and_port():
+    defn = load_service("kafka")
+    r = resolve("kafka", env={"SLT_STRIIM_VIEW_HOST": "host.docker.internal", "SLT_ZOOKEEPER_CLIENT_PORT": "12181"},
+                started=set(), compose_up=lambda defn: None)
+    assert build_service_tokens(defn, r, schema="")["KAFKA_ZOOKEEPER"] == "host.docker.internal:12181"
+
+
+def test_kafka_zookeeper_token_in_live_mode():
+    defn = load_service("kafka")
+    r = resolve("kafka", env={"SLT_KAFKA_HOST": "khost", "SLT_ZOOKEEPER_PORT": "2999"}, started=set(),
+                compose_up=lambda defn: (_ for _ in ()).throw(AssertionError("no compose")))
+    assert build_service_tokens(defn, r, schema="")["KAFKA_ZOOKEEPER"] == "khost:2999"
