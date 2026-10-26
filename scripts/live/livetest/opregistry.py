@@ -383,6 +383,8 @@ def ensure_registered(registry_dir, jar_name: str, fingerprint: str,
 #     tests run concurrently;
 #   - a reload takes it EXCLUSIVE, so it waits for every running test to finish and blocks
 #     new ones from starting until the new bytes are in place.
+# flock itself prefers no one, so a gate file in front of it does: a reload holds the gate while
+# it waits, and a new test passes through the gate before taking its shared lock.
 #
 # The cost of the exclusive path is why the content diff matters so much: when the jar is
 # byte-identical the reload is skipped entirely and nobody ever waits. The exclusive lock is
@@ -445,13 +447,45 @@ def _use_lock(registry_dir=None, env=None) -> Path:
     return stack.lock_path(_USE_LOCK, env).parent / _scoped(_USE_LOCK, env)
 
 
-def in_use(registry_dir=None, env=None):
+_GATE_QUIET_S = 2.0
+
+
+def _gate(path: Path) -> Path:
+    return path.with_name(path.name + ".gate")
+
+
+@contextmanager
+def _shared_after_gate(path: Path, timeout: float = _LOCK_TIMEOUT_S, progress=None):
+    deadline = time.monotonic() + timeout
+    try:
+        # Another test passes the gate in a moment; only a reload holds it for longer.
+        with _flock(_gate(path), fcntl.LOCK_EX, min(_GATE_QUIET_S, timeout)):
+            pass
+    except LockTimeout:
+        if progress:
+            progress(f"waiting for a pending OP/UDF jar reload to finish (up to {timeout:.0f}s; {_gate(path)})")
+        with _flock(_gate(path), fcntl.LOCK_EX, max(0.0, deadline - time.monotonic())):
+            pass
+    with _flock(path, fcntl.LOCK_SH, max(0.0, deadline - time.monotonic())):
+        yield
+
+
+@contextmanager
+def _exclusive_with_gate(path: Path, timeout: float = _LOCK_TIMEOUT_S):
+    deadline = time.monotonic() + timeout
+    with _flock(_gate(path), fcntl.LOCK_EX, timeout):
+        with _flock(path, fcntl.LOCK_EX, max(0.0, deadline - time.monotonic())):
+            yield
+
+
+def in_use(registry_dir=None, env=None, progress=None):
     """Shared lock held for the lifetime of a running test: many tests at once, but no
-    reload while any of them is up."""
-    return _flock(_use_lock(registry_dir, env), fcntl.LOCK_SH)
+    reload while any of them is up. A test that arrives while a reload waits waits behind it,
+    and says so through ``progress(message)``."""
+    return _shared_after_gate(_use_lock(registry_dir, env), progress=progress)
 
 
 def exclusive_reload(registry_dir=None, env=None):
     """Exclusive lock for an unload+load: waits for every running test to release, and holds
     off new ones until the new bytes are loaded."""
-    return _flock(_use_lock(registry_dir, env), fcntl.LOCK_EX)
+    return _exclusive_with_gate(_use_lock(registry_dir, env))

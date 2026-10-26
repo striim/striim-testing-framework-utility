@@ -213,6 +213,12 @@ def test_ensure_setup_rejects_unsafe_role_password():
     with pytest.raises(ValueError):
         PgAdmin(dsn, connect=lambda **kw: FakeConn([])).ensure_setup()
 
+def test_unsafe_role_password_is_not_in_the_error():
+    dsn = dict(_FULL_DSN, source_password="S3cret!pw")
+    with pytest.raises(ValueError, match="unsafe source role password") as e:
+        PgAdmin(dsn, connect=lambda **kw: FakeConn([])).ensure_setup()
+    assert "S3cret" not in str(e.value)
+
 def test_target_role_run_sql_uses_qatarget_schema():
     log = []
     PgAdmin(dict(_FULL_DSN), connect=lambda **kw: FakeConn(log), role="target").run_sql("CREATE TABLE t (id int);")

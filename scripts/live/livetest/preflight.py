@@ -263,7 +263,8 @@ def _bring_up_services(services, env, apply_gate: bool = True, infra=None,
             if recovery:
                 recovery.check()
                 recovery.log(f"preflight recovery: waiting for shared provisioning lock ({svc})")
-                lock_options["lock_timeout"] = recovery.timeout()
+                lock_options["acquire_lock"] = (
+                    lambda lock, svc=svc: recovery.acquire(lock, f"shared provisioning lock ({svc})"))
             # Compose can leave containers behind even when readiness fails.
             if cleanup_services is not None:
                 cleanup_services.append(svc)

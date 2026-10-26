@@ -194,9 +194,10 @@ class PgAdmin:
                 f"automatically (design §4.4).")
 
     def _role_password(self, which: str) -> str:
-        _, pw = self._creds(which)
+        user, pw = self._creds(which)
         if not _SIMPLE_PW.match(pw or ""):
-            raise ValueError(f"unsafe {which} role password for CREATE ROLE: {pw!r}")
+            raise ValueError(f"unsafe {which} role password for CREATE ROLE (user {user!r}): "
+                             f"only letters, digits and underscore can be inlined")
         return pw
 
     def ensure_setup(self) -> None:

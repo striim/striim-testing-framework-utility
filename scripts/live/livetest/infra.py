@@ -650,7 +650,7 @@ def teardown_failed(config, what: str, exc: BaseException) -> None:
 
 
 def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, load=None,
-                    container_running=None, lock_timeout=SHARED_LOCK_TIMEOUT_S):
+                    container_running=None, lock_timeout=SHARED_LOCK_TIMEOUT_S, acquire_lock=None):
     """The one service adapter for serial and parallel callers (C7.1, N3).
 
     Undeclared and exclusive: ``resolve_fn`` unchanged. Shared: under the machine-wide shared
@@ -658,7 +658,7 @@ def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, loa
     pre-registered in ``started`` (``resolve`` then sees ``first == False``) and recorded
     ``reused``; otherwise ``resolve_fn`` provisions it and it is recorded ``provisioned-and-kept``.
     ``ensure_provisioned_once`` (parallel branch) uses a different lock file, so nothing is
-    acquired recursively."""
+    acquired recursively. ``acquire_lock(lock)``, when given, replaces the bounded acquire."""
     if infra is None:
         return resolve_fn(name, env, started, progress=progress)
     if load is None:
@@ -679,7 +679,10 @@ def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, loa
         return resolve_fn(name, env, started, progress=progress)
     lock = FileLock(str(_lock_dir() / SHARED_PROVISION_LOCK), mode=lockdir.file_mode())
     try:
-        lock.acquire(timeout=lock_timeout)
+        if acquire_lock is not None:
+            acquire_lock(lock)
+        else:
+            lock.acquire(timeout=lock_timeout)
     except Timeout:
         raise InfraOwnershipError(
             f"lock-timeout: {_lock_dir() / SHARED_PROVISION_LOCK} not acquired within "

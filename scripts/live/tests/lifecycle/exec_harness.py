@@ -383,7 +383,7 @@ def resolve_service(infra, svc, env, started, resolve_fn, progress=None):
     started.add(f"slt-{svc}")
     if infra is not None:                                  # the declared service, for runtime.services
         infra.services.append({"name": svc, "container": f"slt-{svc}", "status": "reused"})
-    return SimpleNamespace(name=svc, mode="docker", started=True, base={
+    return SimpleNamespace(name=svc, mode="live" if svc in SC.get("live_services", ()) else "docker", started=True, base={
         "host": "localhost", "port": 5432, "dbname": "sltdb", "admin_user": "postgres", "admin_password": "striim",
         "source_user": "qasource", "source_password": "striim", "target_user": "qatarget", "target_password": "striim"})
 
@@ -441,6 +441,23 @@ P.build_service_tokens = lambda defn, resolved, schema: (
     else {"PG_SOURCE_SCHEMA": "qasource", "PG_TARGET_SCHEMA": "qatarget", "PG_SLOT": schema})
 P.topology_satisfies = lambda required, topology: (True, "")
 P.PgAdmin = FakePgAdmin
+
+
+class FakeMySQLAdmin:
+    def __init__(self, base, role=None, live=False):
+        log("mysql_admin", role=role, live=live)
+
+    def ensure_setup(self):
+        log("mysql_setup")
+
+    def reset_test_objects(self, tid):
+        pass
+
+    def drop_test_tables(self, prefix=""):
+        pass
+
+
+P.MySQLAdmin = FakeMySQLAdmin
 P.StriimClient = SimpleNamespace(from_url=lambda *a, **k: FakeClient())
 P._deploy_tql_once_retrying = deploy
 if SC.get("real_client"):
@@ -546,6 +563,20 @@ elif SC.get("op_build"):                                   # the module build fa
     P.build_modules = _failing_build
 if SC.get("op_poison"):
     P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
+    P._node_log_since = lambda ctx, marks, run=None: "java.util.zip.ZipException: invalid LOC header (bad signature)"
+    if SC.get("owned_stack"):                              # the run owns the stack exclusively
+        P._op_poison_restart_refusal = lambda config: None
+    if SC.get("op_poison_stale"):                          # only an earlier crash's lines, outside this case's slice
+        P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
+        P._node_log_since = lambda ctx, marks, run=None: ""
+    if SC.get("op_poison_at_load"):                        # logged during the LOAD, before the deploy's mark
+        _built, _build = [], P.build_modules
+        P.build_modules = lambda *a, **k: _built.append(1) or _build(*a, **k)
+        P._node_log_marks = lambda ctx, run=None: {"node": "after-build" if _built else "before-build"}
+        P._node_log_tail = lambda ctx: ""
+        P._node_log_since = lambda ctx, marks, run=None: (
+            "java.util.zip.ZipException: invalid LOC header (bad signature)" if marks == {"node": "before-build"}
+            else "")
     P._sp.restart_app_nodes = lambda client: log("restart_app_nodes")
     _real_in_use = P.opregistry.in_use
     _real_exclusive_reload = P.opregistry.exclusive_reload
@@ -559,7 +590,7 @@ if SC.get("op_poison"):
         finally:
             log("lock_exit", kind=kind)
 
-    P.opregistry.in_use = lambda: traced_lock("shared", _real_in_use())
+    P.opregistry.in_use = lambda **kw: traced_lock("shared", _real_in_use(**kw))
     P.opregistry.exclusive_reload = lambda: traced_lock("exclusive", _real_exclusive_reload())
 P._sp.cluster_down = lambda *a, **k: log("cluster_down")
 I.resolve_service = resolve_service

@@ -40,7 +40,7 @@ def test_exec_legacy_case_passes_with_qualifies_false(run_case):
 
 def test_exec_op_poison_recovery_reacquires_a_fresh_in_use_lock(run_case):
     run = run_case(
-        "legacy", {"op_stub": True, "op_poison": True}, env={"SLT_OPS_PRELOADED": "1"},
+        "legacy", {"op_stub": True, "op_poison": True, "owned_stack": True}, env={"SLT_OPS_PRELOADED": "1"},
         edit=lambda y: y.replace(
             "requires: [postgres]\n", "requires: [postgres]\nop: {jar: java/OpenProcessors/StubOp}\n"))
 
@@ -56,6 +56,39 @@ def test_exec_op_poison_recovery_reacquires_a_fresh_in_use_lock(run_case):
     ]
     names = run.names()
     assert names.index("deploy_poison") < names.index("restart_app_nodes") < names.index("deploy_retry")
+
+
+def test_exec_op_poison_logged_during_registration_is_recognised(run_case):
+    run = run_case(
+        "legacy", {"op_stub": True, "op_poison": True, "owned_stack": True, "op_poison_at_load": True},
+        env={"SLT_OPS_PRELOADED": "1"},
+        edit=lambda y: y.replace(
+            "requires: [postgres]\n", "requires: [postgres]\nop: {jar: java/OpenProcessors/StubOp}\n"))
+
+    assert run.ret == 0, run.text
+    assert "restart_app_nodes" in run.names()
+
+
+def test_exec_poison_lines_outside_the_case_slice_do_not_restart_app_nodes(run_case):
+    run = run_case(
+        "legacy", {"op_stub": True, "op_poison": True, "owned_stack": True, "op_poison_stale": True},
+        env={"SLT_OPS_PRELOADED": "1"},
+        edit=lambda y: y.replace(
+            "requires: [postgres]\n", "requires: [postgres]\nop: {jar: java/OpenProcessors/StubOp}\n"))
+
+    assert run.ret == 1, run.text
+    assert "restart_app_nodes" not in run.names()
+
+
+def test_exec_op_poison_on_a_shared_stack_fails_without_restarting_app_nodes(run_case):
+    run = run_case(
+        "legacy", {"op_stub": True, "op_poison": True}, env={"SLT_OPS_PRELOADED": "1"},
+        edit=lambda y: y.replace(
+            "requires: [postgres]\n", "requires: [postgres]\nop: {jar: java/OpenProcessors/StubOp}\n"))
+
+    assert run.ret == 1, run.text
+    assert "restart_app_nodes" not in run.names()
+    assert "[slt-op-poisoned]" in run.text and "SLT_INFRA_OWNERSHIP=shared" in run.text
 
 
 def test_exec_done_sentinel_never_arrives_empty_target_fails_with_deadline(run_case):
@@ -289,3 +322,11 @@ def test_exec_exclusive_session_teardown_failure_fails_the_run(run_case):
     assert env["resources"]["infrastructure"]["ownership"] == "exclusive"
     assert "infrastructure teardown failed" in env["run"]["qualifiesReason"]
     assert "infrastructure teardown failed" in run.junit()[2]
+
+
+def test_exec_an_operators_own_mysql_is_set_up_in_live_mode(run_case):
+    run = run_case("legacy", {"live_services": ["mysql"]},
+                   edit=lambda y: y.replace("requires: [postgres]\n", "requires: [postgres, mysql]\n"))
+    assert run.ret == 0, run.text
+    admins = [(e["role"], e["live"]) for e in run.events() if e["event"] == "mysql_admin"]
+    assert ("source", True) in admins and "mysql_setup" in run.names()

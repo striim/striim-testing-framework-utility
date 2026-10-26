@@ -35,7 +35,7 @@ live_env:
 # would need SLT_KAFKA_HOST + the HOST listener; the Docker cluster is the tested path.)
 provides:
   KAFKA_BROKER: "{view_host}:{broker_port}"
-  KAFKA_ZOOKEEPER: "slt-zookeeper:2181"
+  KAFKA_ZOOKEEPER: "{view_host}:{zookeeper_port}"
   KAFKA_SCHEMA_REGISTRY_URL: "http://{view_host}:{registry_port}"
   KAFKA_SRC_TOPIC: "{src_topic}"
   KAFKA_TGT_TOPIC: "{tgt_topic}"

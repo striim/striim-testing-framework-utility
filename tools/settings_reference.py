@@ -60,7 +60,7 @@ SECTIONS = (
         ("SLT_INFRA_OWNERSHIP", "unset: a run refuses to start",
          "`shared`: reuse what is running, start what is missing, never tear it down (needs "
          "`SLT_KEEP_SERVICES=1`). `exclusive`: take a fresh stack, refuse if a Striim already answers, "
-         "and tear everything down at the end."),
+         "and tear everything down at the end, `--parallel` included."),
         ("SLT_KEEP_SERVICES", "unset", "`1`: keep the cluster and service containers after the run. "
                                        "Required with `shared`."),
         ("SLT_KEEP_RESOURCES", "unset", "`1`: keep each test's app, tables and slots whatever the result "
@@ -292,6 +292,8 @@ def service_settings(services: Path) -> list:
             what = FIELDS.get(field) or field.replace("_", " ")
             if file.parent.name == "oracle" and field == "admin_user":
                 what = "the optional observer admin account, owning database logon triggers in the data PDB"
+            if name == "SLT_MYSQL_ADMIN_USER":
+                what = "the admin account, which makes missing schemas and cleans up; it never creates or changes an account"
             add(name, code(defaults.get(field)), "Your own instance: " + what + "." if field != "host"
                 else what[0].upper() + what[1:] + ".")
         for field, name in (raw.get("docker_env") or {}).items():

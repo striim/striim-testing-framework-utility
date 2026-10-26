@@ -19,6 +19,8 @@ import time
 from typing import Optional
 
 _IDENT = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# A password safe to inline into CREATE/ALTER USER.
+_SIMPLE_PW = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 def _check(name: str) -> str:
@@ -39,7 +41,7 @@ class MySQLAdmin:
     serialized) to match PgAdmin pattern.
     """
 
-    def __init__(self, config: dict, role: Optional[str] = None):
+    def __init__(self, config: dict, role: Optional[str] = None, live: bool = False):
         """Initialize MySQL admin client.
 
         Args:
@@ -47,15 +49,18 @@ class MySQLAdmin:
                     source_schema, target_user, target_password, target_schema}
                     (from service.yaml provides dict)
             role: "source" or "target" (selects which user/schema to use for connections)
+            live: the instance is the operator's own (SLT_MYSQL_HOST), not the framework's container
         """
         self.config = config
         self.role = role or "admin"
+        self.live = live
         self._engine = None
         self._init_engine()
 
     def _init_engine(self):
         """Initialize SQLAlchemy engine with StaticPool (single connection)."""
         from sqlalchemy import create_engine
+        from sqlalchemy.engine import URL
         from sqlalchemy.pool import StaticPool
 
         # Admin connection uses root credentials for setup/teardown
@@ -64,7 +69,7 @@ class MySQLAdmin:
         host = self.config.get("host", "localhost")
         port = self.config.get("port", 3306)
 
-        url = f"mysql+pymysql://{user}:{password}@{host}:{port}/"
+        url = URL.create("mysql+pymysql", username=user, password=password, host=host, port=int(port))
 
         self._engine = create_engine(
             url,
@@ -121,51 +126,56 @@ class MySQLAdmin:
         finally:
             conn.close()
 
+    def _account(self, which: str) -> tuple[str, str]:
+        """(user, schema) configured for ``which`` ("source" or "target"), validated for inlining."""
+        return _check(self.config.get(f"{which}_user") or f"qa{which}"), self._schema_of(which)
+
+    def _schema_of(self, which: str) -> str:
+        return _check(self.config.get(f"{which}_schema") or f"qa{which}")
+
+    def _schemas(self) -> list[str]:
+        return [self._schema_of("source"), self._schema_of("target")]
+
     def ensure_setup(self) -> None:
-        """Create qasource/qatarget users and schemas (idempotent).
+        """Create the configured source/target schemas, and in Docker mode their accounts (idempotent).
 
-        Creates:
-        - qasource user (source role, for reading/seeding)
-        - qatarget user (target role, for writing)
-        - qasource schema (source tables)
-        - qatarget schema (target tables)
-
-        Idempotent: safe to call multiple times. Runs once per session.
+        On the operator's own instance (``live``) only missing schemas are created: no account is
+        created or changed and no privilege is granted.
         """
-        statements = [
-            # Create source user + schema (mysql_native_password required for binlog CDC library)
-            "CREATE USER IF NOT EXISTS 'qasource'@'%' IDENTIFIED WITH mysql_native_password BY 'striim'",
-            "ALTER USER 'qasource'@'%' IDENTIFIED WITH mysql_native_password BY 'striim'",
-            "CREATE SCHEMA IF NOT EXISTS qasource",
-            "GRANT ALL PRIVILEGES ON qasource.* TO 'qasource'@'%'",
-            "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'qasource'@'%'",
-
-            # Create target user + schema
-            "CREATE USER IF NOT EXISTS 'qatarget'@'%' IDENTIFIED WITH mysql_native_password BY 'striim'",
-            "ALTER USER 'qatarget'@'%' IDENTIFIED WITH mysql_native_password BY 'striim'",
-            "CREATE SCHEMA IF NOT EXISTS qatarget",
-            "GRANT ALL PRIVILEGES ON qatarget.* TO 'qatarget'@'%'",
-
-            # Flush privileges to ensure permissions take effect
-            "FLUSH PRIVILEGES",
-        ]
+        if self.live:
+            self._exec_sql([f"CREATE SCHEMA IF NOT EXISTS `{schema}`" for schema in self._schemas()])
+            return
+        statements = []
+        for which in ("source", "target"):
+            user, schema = self._account(which)
+            pw = self.config.get(f"{which}_password") or "striim"
+            if not _SIMPLE_PW.match(pw):
+                raise ValueError(f"unsafe {which} password for CREATE USER (user {user!r}): "
+                                 f"only letters, digits and underscore can be inlined")
+            # mysql_native_password is required by the binlog CDC library
+            statements += [
+                f"CREATE USER IF NOT EXISTS '{user}'@'%' IDENTIFIED WITH mysql_native_password BY '{pw}'",
+                f"ALTER USER '{user}'@'%' IDENTIFIED WITH mysql_native_password BY '{pw}'",
+                f"CREATE SCHEMA IF NOT EXISTS `{schema}`",
+                f"GRANT ALL PRIVILEGES ON `{schema}`.* TO '{user}'@'%'",
+            ]
+            if which == "source":
+                statements.append(f"GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '{user}'@'%'")
+        statements.append("FLUSH PRIVILEGES")
         self._exec_sql(statements)
 
     def reset_schemas(self) -> None:
-        """Drop and recreate fixed qasource/qatarget schemas for clean slate.
+        """Drop and recreate the configured source and target schemas for a clean slate.
 
-        Called before each test (serial mode). Drops all tables in both schemas
-        and recreates them to start fresh. Grants permissions to qasource/qatarget users.
+        Called before each test (serial mode). Grants the configured users all privileges
+        on their schema.
         """
-        statements = [
-            "DROP SCHEMA IF EXISTS qasource",
-            "DROP SCHEMA IF EXISTS qatarget",
-            "CREATE SCHEMA qasource",
-            "CREATE SCHEMA qatarget",
-            "GRANT ALL PRIVILEGES ON qasource.* TO 'qasource'@'%'",
-            "GRANT ALL PRIVILEGES ON qatarget.* TO 'qatarget'@'%'",
-            "FLUSH PRIVILEGES",
-        ]
+        statements = []
+        for which in ("source", "target"):
+            user, schema = self._account(which)
+            statements += [f"DROP SCHEMA IF EXISTS `{schema}`", f"CREATE SCHEMA `{schema}`",
+                           f"GRANT ALL PRIVILEGES ON `{schema}`.* TO '{user}'@'%'"]
+        statements.append("FLUSH PRIVILEGES")
         self._exec_sql(statements)
 
     def _list_tables(self, schemas: list[str], prefix: str = "") -> list[tuple[str, str]]:
@@ -218,7 +228,7 @@ class MySQLAdmin:
 
     def reset_test_objects(self, tid: str) -> None:
         """Per-test clean slate SAFE under concurrent workers (spec §C.4): drop only THIS
-        test's ${tid}-prefixed tables in the shared qasource/qatarget schemas — NOT the
+        test's ${tid}-prefixed tables in the configured source/target schemas — NOT the
         whole-schema DROP (reset_schemas), which would clobber a sibling worker's tables
         mid-run. A same-test re-run reuses the deterministic tid, so its prior tables
         must go first.
@@ -227,7 +237,7 @@ class MySQLAdmin:
             tid: Test ID prefix including trailing '_' (e.g. 'mytest_')
         """
         prefix = _check(tid)
-        self._drop(self._list_tables(["qasource", "qatarget"], prefix))
+        self._drop(self._list_tables(self._schemas(), prefix))
 
     def drop_test_tables(self, prefix: str = "") -> None:
         """Teardown cleanup: drop this role's tables in its fixed schema (qasource or

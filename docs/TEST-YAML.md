@@ -1711,7 +1711,13 @@ or the shell, and a run without it is refused.
   databases. So every name carries `${TID}` or `${NS}`, and a test never assumes an empty database,
   a fresh cluster or a quiet server log.
 - **`exclusive`**: the run starts a stack of its own, refuses to start when anything already answers
-  on its Striim endpoint, and tears the stack down at the end unless `SLT_KEEP_SERVICES=1`.
+  on its Striim endpoint, and tears the stack down at the end unless `SLT_KEEP_SERVICES=1`. With
+  `--parallel` the controller tears down what its workers started.
+
+When an OP deploy fails because the cluster's OP class loader is poisoned (`invalid LOC header`
+in the server log since the case started), only an `exclusive` serial run restarts the app nodes
+and retries. Any other run fails the case with `[slt-op-poisoned]`; restart the app nodes with
+`python -m livetest.preflight --restart-app-nodes` once nothing else runs on the cluster.
 
 `recover: {mode: kill}` kills every app-node container when `node:` is absent, so on a shared cluster it kills the other
 tests running there too. Give such a test `disabled_parallel:`, and do not run it on a cluster others
@@ -1753,8 +1759,8 @@ udf:
     - from: customer_lookup.json  # explicit rename
       to: customer_lookup.json
 ```
-- Plain string — uploaded as `f"{TID}<name>"` (auto per-test-isolated; empty prefix when serial). The test's own TQL must reference that literal `${TID}`-prefixed name.
-- `{from, to}` — `from` is the example/test-dir-relative source file; `to` is the uploaded name, token-rendered if it contains any `${...}` (e.g. `${NS}-<name>`), fully author-controlled (no automatic prefix). If the TQL contains a literal `UploadedFiles/<from>` reference (e.g. a shipped example's clean, untokenized `ConfigFile:` line), the runner rewrites it to `UploadedFiles/<rendered to>` before deploy — so a customer-facing example can keep an untokenized `ConfigFile` while the test controls the uploaded name directly. **`to` is not auto-tokenized**: if several tests can run concurrently and upload the same basename (e.g. `products_lookup.json`), give `to` a `${NS}`/`${TID}` prefix to keep them from clobbering each other in the shared `UploadedFiles/`; a bare `to` (matching `from`) is only safe when nothing else uploads that same name at the same time.
+- Plain string — uploaded as `f"{TID}<name>"` (per-test; `${TID}` is never empty, serial runs included). The test's own TQL must reference that literal `${TID}`-prefixed name.
+- `{from, to}` — `from` is the example/test-dir-relative source file; `to` is the uploaded name, token-rendered if it contains any `${...}` (e.g. `${NS}-<name>`), fully author-controlled (no automatic prefix). If the TQL contains a literal `UploadedFiles/<from>` reference (e.g. a shipped example's clean, untokenized `ConfigFile:` line), the runner rewrites it to `UploadedFiles/<rendered to>` before deploy — so a customer-facing example can keep an untokenized `ConfigFile` while the test controls the uploaded name directly. **`to` is not auto-tokenized**: if several tests can run concurrently and upload the same basename (e.g. `products_lookup.json`), give `to` a `${NS}`/`${TID}` prefix to keep them from clobbering each other in the shared `UploadedFiles/`; a bare `to` (matching `from`) is only safe when nothing else uploads that same name at the same time. `to` must render to a plain file name: a `/`, `\`, `.` or `..` is refused. Teardown deletes an uploaded file only when its name carries the case's `${TID}` or `${NS}`; a bare name is left in `UploadedFiles/`.
 
 A single `op:`/`udf:` mapping normalizes internally to one module with the default token
 `OP`/`UDF`, so `${OP_JAR}`/`${OP_NAME}` (or `${UDF_JAR}`/`${UDF_NAME}`) keep working:

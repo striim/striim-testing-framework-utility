@@ -67,8 +67,8 @@ SLT_PG_ADMIN_PASSWORD=...
 - Put them in `.env`, or export them (the shell wins). `striim-test doctor` lists the ones that are
   set and where each comes from.
 - **Use a disposable instance.** The framework creates the `qasource` and `qatarget` roles and
-  schemas if they are missing, and drops the objects each test creates. It does not empty the
-  schemas, so keep other data out of them.
+  schemas if they are missing (MySQL: schemas only, see [MySQL](#mysql-mysql)), and drops the objects
+  each test creates. It does not empty the schemas, so keep other data out of them.
 - If Striim reaches the instance under another name than this machine does, set
   `SLT_<SERVICE>_VIEW_HOST` (for example `SLT_POSTGRES_VIEW_HOST`), or `SLT_STRIIM_VIEW_HOST` for
   every service.
@@ -80,8 +80,16 @@ SLT_PG_ADMIN_PASSWORD=...
   To provision a separate cluster instead, select an unused HTTP host port and matching
   `STRIIM_URL`, plus unused ports for its other published endpoints, as described in
   [SET-UP-YOUR-OWN-REPO.md](SET-UP-YOUR-OWN-REPO.md#several-checkouts-or-people-on-one-machine).
-- On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds) before it
-  exits non-zero.
+- On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds, after up to
+  90 seconds closing an injected node fault or open transactions) before it exits non-zero. Under
+  `striim-test run` the first Ctrl-C, or a SIGTERM, SIGHUP (terminal closed) or SIGQUIT to
+  striim-test, is passed to the tier and its workers, and striim-test waits up to 200 seconds for
+  this; a second Ctrl-C stops the run within about 10 seconds. With `--parallel`, xdist gives its
+  workers about 10 seconds before it kills them. If striim-test is killed with SIGKILL, Linux sends
+  the tier's pytest process SIGTERM (with `--parallel` its workers are cut short); macOS has no
+  equivalent and the tier runs on unsupervised. Anything that stops
+  the run before its cleanup ends leaves objects behind: `python -m livetest.ownership replay`
+  reclaims them.
 
 ## Striim peer API for node faults
 
@@ -326,6 +334,10 @@ only, so it runs under emulation on Apple Silicon.
   `'${MYSQL_SOURCE_SCHEMA}.${TID}orders,${MYSQL_TARGET_SCHEMA}.${TID}orders'`.
 - `${TID}` must be a **prefix**: clean-up drops the tables whose names start with it, so
   `orders_${TID}` is left behind in a parallel run.
+- **Your own MySQL** (`SLT_MYSQL_HOST`): the framework creates `SLT_MYSQL_SOURCE_SCHEMA` and
+  `SLT_MYSQL_TARGET_SCHEMA` if they are missing and never creates or changes an account or grants a
+  privilege. Create the source and target accounts yourself: each needs access to its schema, and the
+  source account also `REPLICATION SLAVE` and `REPLICATION CLIENT` for CDC.
 
 ## Vertica (`vertica`)
 
@@ -363,6 +375,14 @@ Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `Kaf
   compares topics.
 - A topic your app creates that the framework does not know about (a persisted stream's topic, for
   example) goes in `kafka_cleanup_topics:` so it is removed at the end.
+- `KAFKA_ZOOKEEPER` is the ZooKeeper address Striim reaches: `host.docker.internal:2181` for the
+  Docker stack, following `SLT_ZOOKEEPER_CLIENT_PORT`. For your own Kafka it is the host Striim
+  reaches the broker by (`SLT_KAFKA_HOST`; for a `localhost` broker, `SLT_KAFKA_VIEW_HOST` or else
+  `SLT_STRIIM_VIEW_HOST`) with `SLT_ZOOKEEPER_PORT`.
+- **A runner inside a container** (`SLT_SERVICES_HOST`): the framework connects to the broker's
+  Docker listener at `SLT_SERVICES_HOST`, and the broker then redirects it to the advertised
+  `host.docker.internal`. That name must resolve inside the runner's container: Docker Desktop provides
+  it; on Linux start the container with `--add-host host.docker.internal:host-gateway`.
 
 Kafka sentinel/absence cases require freshly acquired framework source/target topics,
 not a reused or custom unclaimed topic. See [10-bounded-nothing](../samples/live/10-bounded-nothing/README.md)

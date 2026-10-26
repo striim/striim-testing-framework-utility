@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextlib
 import dataclasses
 import hashlib
 import os
@@ -17,7 +18,7 @@ import yaml
 from filelock import FileLock
 
 from livetest import lockdir
-from livetest.manifest import load_manifest, TestManifest, ManifestError, VALID_DEPTHS, xfail_for_release
+from livetest.manifest import load_manifest, TestManifest, ManifestError, VALID_DEPTHS, xfail_for_release, upload_name_ok
 from livetest.substitute import render
 from livetest.striim import StriimClient, probe_reachable, TERMINAL_STATUSES, POLL_TIMEOUT
 from livetest.assertions import AssertionFailed, ExpectedAssertionFailure
@@ -106,6 +107,7 @@ def _interrupt_teardown(run, item):
             "live-test teardown timed out")))
         signal.setitimer(signal.ITIMER_REAL, INTERRUPT_TEARDOWN_TIMEOUT)
         interrupted = KeyboardInterrupt(f"live test interrupted by {signal.Signals(sig).name}")
+        item._slt_interrupted = True
         if not item._slt_cleanup_active:
             raise interrupted
 
@@ -797,6 +799,23 @@ def _resolve_striim(config):
 
 _NODE_LOG = "/var/log/striim/striim.server.log"
 
+@contextlib.contextmanager
+def _pre_cleanup_budget(item):
+    """The closes that run before ownership cleanup (node fault, snapshot, transaction pool). After
+    TERM/INT they share one teardown budget; if it runs out they are abandoned, and ownership cleanup
+    starts with a fresh one."""
+    item._slt_cleanup_active = True
+    try:
+        yield
+    except KeyboardInterrupt as e:
+        if not getattr(item, "_slt_interrupted", False):
+            raise
+        print(f"[slt] WARNING: {e} while closing faults/snapshots/transactions; ownership cleanup still runs")
+    finally:
+        if getattr(item, "_slt_interrupted", False):
+            signal.setitimer(signal.ITIMER_REAL, INTERRUPT_TEARDOWN_TIMEOUT)
+
+
 def _node_log_marks(ctx, run=None) -> dict:
     """Current size in bytes of each app node's server log: a per-test start mark.
 
@@ -852,6 +871,18 @@ def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000) -> str:
         except Exception:
             pass
     return "\n".join(out)
+
+
+def _op_poison_restart_refusal(config) -> str | None:
+    """Why this run may not restart the app nodes for OP-loader poison recovery, or None. The restart
+    kills every app on the cluster, so only a run that owns the stack exclusively may do it."""
+    infra = _slt_infra.of(config)
+    if infra is not None and infra.ownership == "exclusive":
+        return None
+    mode = infra.ownership if infra is not None else "undeclared"
+    return (f"the app nodes are not owned by this run (SLT_INFRA_OWNERSHIP={mode}), so they are not "
+            f"restarted; once nothing else runs on the cluster, run "
+            f"`python -m livetest.preflight --restart-app-nodes` and rerun the case")
 
 
 def _node_log_tail(ctx, run=None, nbytes: int = 20000) -> str:
@@ -1173,12 +1204,12 @@ def _kafka_endpoints(base: dict) -> tuple[str, str]:
     with ECONNREFUSED, no matter what host it originally dialed. The DOCKER listener
     (broker_port, advertised at view_host) doesn't have that problem — it's the exact listener
     the Striim app already uses — so KafkaAdmin uses it too whenever the base host was
-    redirected.
+    redirected. It dials that redirected host, not view_host (which is the Striim side's).
     """
     out_of_docker = base.get("host") not in (None, "localhost", "127.0.0.1")
     if out_of_docker:
-        return (f"{base['view_host']}:{base['broker_port']}",
-                f"http://{base['view_host']}:{base['registry_port']}")
+        return (f"{base['host']}:{base['broker_port']}",
+                f"http://{base['host']}:{base['registry_port']}")
     return f"{base['host']}:{base['port']}", f"http://{base['host']}:{base['registry_port']}"
 
 
@@ -1753,7 +1784,17 @@ def _upload_dest_name(from_name: str, to_spec: str | None, tid: str, tokens: dic
     # never drift apart. to_spec is None for the back-compat plain-string form -> the
     # original per-test f"{TID}<basename>" prefix; otherwise it's the author's `to`
     # template, token-rendered (e.g. "${NS}-<basename>").
-    return f"{tid}{Path(from_name).name}" if to_spec is None else render(to_spec, tokens)
+    name = f"{tid}{Path(from_name).name}" if to_spec is None else render(to_spec, tokens)
+    if not upload_name_ok(name):
+        raise ValueError(f"op.upload 'to' renders to {name!r}: not a file name in UploadedFiles/")
+    return name
+
+
+def _run_scoped_uploads(names: list, tokens: dict) -> list:
+    """The upload names that carry this case's ${TID} or ${NS}. A bare `to:` name may be another
+    run's file, so teardown never deletes it."""
+    marks = [v for v in (tokens.get("TID"), tokens.get("TID_UPPER"), tokens.get("NS")) if v]
+    return [n for n in names if any(v in n for v in marks)]
 
 def upload_op_uploads(m: TestManifest, ctx, tokens: dict) -> tuple[list[Path], dict[str, str]]:
     """Per-test render+rename of `op.upload` files (spec §B.3): read each upload's bytes
@@ -2038,6 +2079,7 @@ class LiveItem(pytest.Item):
 
     def runtest(self):
         self._slt_cleanup_active = False
+        self._slt_interrupted = False
         return _interrupt_teardown(self._runtest, self)
 
     def _runtest(self):
@@ -2316,7 +2358,7 @@ class LiveItem(pytest.Item):
                     # test a clean slate. Parallel (xdist): ensure_setup runs exactly ONCE
                     # across workers and reset_test_objects wipes only THIS test's ${TID}
                     # prefix tables (spec §C.4).
-                    _mysql = MySQLAdmin(resolved.base, role="source")
+                    _mysql = MySQLAdmin(resolved.base, role="source", live=resolved.mode == "live")
                     # run-scoped ${TID} reset only, serial included.
                     if _parallel(os.environ):
                         ensure_provisioned_once("mysql-setup", _mysql.ensure_setup)
@@ -2512,6 +2554,8 @@ class LiveItem(pytest.Item):
             op_jar_names: list[str] = []
             op_files: list = []
             upload_renames: dict = {}
+            # Before registration: a LOAD can be where the OP class loader's poison is logged.
+            poison_marks = _node_log_marks(ctx) if m.modules else {}
             if m.modules:
                 try:
                     _report(m.name, "building OP/UDF jar(s)")
@@ -2736,7 +2780,7 @@ class LiveItem(pytest.Item):
             # A server_files `load: open_processor` jar is registered like a module jar, so its
             # test has the same stake in it.
             if m.modules or any(_ld == "open_processor" for *_x, _ld in m.server_files):
-                _in_use = opregistry.in_use()
+                _in_use = opregistry.in_use(progress=lambda msg: _report(m.name, msg))
                 _in_use.__enter__()
                 in_use_held = True
             # Set BEFORE deploy_tql: a DEPLOY/START statement failure raises mid-import
@@ -2769,7 +2813,7 @@ class LiveItem(pytest.Item):
                     client.await_running(app, timeout=min(m.timeout, 90),
                                          progress=_hb("waiting for app RUNNING"))
                 except Exception as e:
-                    if _sp.op_loader_poisoned(_node_log_tail(ctx)):
+                    if _sp.op_loader_poisoned(_node_log_since(ctx, poison_marks)):
                         if os.environ.get("SLT_PARALLEL"):
                             # Parallel (spec §C.5): do NOT restart_app_nodes here — it restarts
                             # the SHARED app nodes and would kill every other worker's running
@@ -2787,6 +2831,9 @@ class LiveItem(pytest.Item):
                                 f"[slt-op-poisoned] {m.name}: OP class-loader poisoned by a prior "
                                 f"OP crash (parallel mode: shared app-node restart deferred to the "
                                 f"orchestrator)")
+                        _refusal = _op_poison_restart_refusal(self.config)
+                        if _refusal:
+                            raise RuntimeError(f"[slt-op-poisoned] {m.name}: OP class-loader poisoned; {_refusal}")
                         print(f"[slt] {m.name}: OP class-loader poisoned (prior OP crash) — "
                               f"restarting app nodes and retrying the deploy once")
                         _sp.restart_app_nodes(client)
@@ -2821,7 +2868,7 @@ class LiveItem(pytest.Item):
                                 _register_op_jar(ctx, client, _b)
                         # Re-take it for the rest of the test: the retried deploy below runs
                         # an app against the artifact, so a sibling must not reload under it.
-                        _in_use = opregistry.in_use()
+                        _in_use = opregistry.in_use(progress=lambda msg: _report(m.name, msg))
                         _in_use.__enter__()
                         in_use_held = True
                         client.deploy_tql(_rendered_tql(m, tokens, upload_renames))
@@ -3678,26 +3725,27 @@ class LiveItem(pytest.Item):
             succeeded = True
         finally:
             _tx_cleanup_error = None
-            if _fault_target is not None:
-                try:
-                    _fault_target.close()
-                except Exception as e:
-                    _tx_cleanup_error = e
-                finally:
-                    client.configure_failover([])
-            if _snapshot_observer is not None:
-                try:
-                    import sys
-                    _abandon_snapshot(_snapshot_observer, self._slt_records,
-                        str(sys.exc_info()[1] or "case ended before snapshot assertions"))
-                except Exception as e:
-                    _tx_cleanup_error = e
-            if _tx_pool is not None:
-                try:
-                    _tx_pool.close()
-                except Exception as e:
-                    _tx_cleanup_error = e
-            self._slt_cleanup_active = True
+            # Sets the cleanup flag first, and keeps these closes from spending ownership cleanup's budget.
+            with _pre_cleanup_budget(self):
+                if _fault_target is not None:
+                    try:
+                        _fault_target.close()
+                    except Exception as e:
+                        _tx_cleanup_error = e
+                    finally:
+                        client.configure_failover([])
+                if _snapshot_observer is not None:
+                    try:
+                        import sys
+                        _abandon_snapshot(_snapshot_observer, self._slt_records,
+                            str(sys.exc_info()[1] or "case ended before snapshot assertions"))
+                    except Exception as e:
+                        _tx_cleanup_error = e
+                if _tx_pool is not None:
+                    try:
+                        _tx_pool.close()
+                    except Exception as e:
+                        _tx_cleanup_error = e
             # Stop the run-level progress line before teardown emits its own output.
             _clear_progress()
             # C7.6: cleanup deletes only this identity's confirmed ledger
@@ -3774,7 +3822,8 @@ class LiveItem(pytest.Item):
                 try:
                     _unowned = teardown_unowned(admins, m.ddl_files, tokens, gcs_cleanup, kafka_cleanup,
                                                 m.assert_.get("file"), lambda _p: clear_server_files(ctx, _p),
-                                                _slt_upload_names(), lambda _n: opartifacts.delete_artifacts(ctx, _n),
+                                                _run_scoped_uploads(_slt_upload_names(), tokens),
+                                                lambda _n: opartifacts.delete_artifacts(ctx, _n),
                                                 oracle_observer_failed=bool(_observers["failed"]))
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
@@ -3896,6 +3945,110 @@ def pytest_xdist_node_collection_finished(node, ids):
     config = getattr(node, "config", None)
     if _slt_infra.declare_for_distributed_selection(config, ids) is not None:
         _slt_report_leftovers(config)
+
+
+def _slt_report_worker_teardown(config) -> None:
+    """xdist worker: what this process brought up, for the controller's session teardown."""
+    out = getattr(config, "workeroutput", None)
+    if out is None:
+        return
+    started = getattr(config, "_slt_started", set())
+    release = getattr(config, "_slt_release", None)
+    out["slt_teardown"] = {
+        "services": sorted(n for n, d in getattr(config, "_slt_defs", {}).items()
+                           if d.compose and d.container in started),
+        "striim": bool(getattr(config, "_slt_striim_provisioned", False)),
+        "release": {str(k): str(v) for k, v in release.items()} if isinstance(release, dict) else None,
+        "keep": bool(getattr(config, "_slt_keep_resources", False)),
+    }
+
+
+def _slt_adopt_worker_teardown(config, workeroutput, node_id=None) -> None:
+    """Controller of an exclusive xdist run: its workers skip session teardown, so it takes over what
+    each one reports. A worker that reported nothing (it crashed) leaves the teardown to the stack's identity."""
+    infra = _slt_infra.of(config) if config is not None else None
+    if infra is None or infra.ownership != "exclusive":
+        return
+    rep = (workeroutput or {}).get("slt_teardown")
+    if rep is None:
+        config._slt_unreported_worker = True
+        return
+    config.__dict__.setdefault("_slt_nodes_reported", set()).add(node_id)
+    started = config.__dict__.setdefault("_slt_started", set())
+    defs = config.__dict__.setdefault("_slt_defs", {})
+    for name in rep.get("services") or ():
+        try:
+            defn = load_service(name)
+        except Exception as e:          # noqa: BLE001 - reported as a failed teardown
+            _slt_infra.teardown_failed(config, f"service {name}", e)
+            continue
+        defs[name] = defn
+        started.add(defn.container)
+    if rep.get("striim"):
+        config._slt_striim_provisioned = True
+    if rep.get("release") and getattr(config, "_slt_release", None) is None:
+        config._slt_release = rep["release"]
+    if rep.get("keep"):
+        config._slt_keep_resources = True
+
+
+def _slt_adopt_exclusive_stack(config, run=None) -> None:
+    """Every container of the exclusive run's allocated prefix is the run's own: queue it for teardown."""
+    from livetest.registry import all_services
+    prefix = stack.prefix()
+    if not prefix:
+        return
+    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    try:
+        r = run(["docker", "ps", "-a", "--filter", f"name=^{prefix}-slt-", "--format", "{{.Names}}"])
+        if getattr(r, "returncode", 1):
+            raise RuntimeError((getattr(r, "stderr", "") or "").strip()[-300:] or "docker ps failed")
+    except Exception as e:              # noqa: BLE001 - reported as a failed teardown
+        _slt_infra.teardown_failed(config, f"exclusive stack {prefix}", RuntimeError(
+            f"{e}; stop it with: SLT_STACK_PREFIX={prefix} python -m livetest.cli stop all"))
+        return
+    names = set((getattr(r, "stdout", "") or "").split())
+    if names & set(stack.cluster_containers()):
+        config._slt_striim_provisioned = True
+    started = config.__dict__.setdefault("_slt_started", set())
+    defs = config.__dict__.setdefault("_slt_defs", {})
+    for name in all_services():
+        try:
+            defn = load_service(name)
+        except Exception:               # noqa: BLE001 - a broken definition started nothing
+            continue
+        if defn.compose and defn.container in names:
+            defs[name] = defn
+            started.add(defn.container)
+
+
+def _slt_exclusive_stack_unaccounted(config, exitstatus) -> bool:
+    """Controller of an exclusive xdist run whose workers did not all report (a crash, or Ctrl-C, where
+    xdist stops before any worker's report arrives): only the stack's identity says what is left."""
+    infra = _slt_infra.of(config)
+    if infra is None or infra.ownership != "exclusive" or hasattr(config, "workerinput"):
+        return False
+    ready = getattr(config, "_slt_nodes_ready", set())
+    return bool(getattr(config, "_slt_unreported_worker", False)
+                or ready - getattr(config, "_slt_nodes_reported", set())
+                or (exitstatus == pytest.ExitCode.INTERRUPTED and (ready or getattr(config, "_slt_distributed", False))))
+
+
+def _slt_node_id(node):
+    return getattr(getattr(node, "gateway", None), "id", None) or id(node)
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodeready(node):
+    config = getattr(node, "config", None)
+    if config is not None:
+        config.__dict__.setdefault("_slt_nodes_ready", set()).add(_slt_node_id(node))
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    _slt_adopt_worker_teardown(getattr(node, "config", None), getattr(node, "workeroutput", None),
+                               _slt_node_id(node))
 
 
 def pytest_unconfigure(config):
@@ -4082,9 +4235,18 @@ def pytest_sessionfinish(session, exitstatus):
     # inspection). Also skip teardown entirely for xdist workers (spec §C.4): under -n each
     # worker reaches sessionfinish independently, and the first to finish must not tear the
     # shared cluster + services out from under its siblings — teardown is deferred to the
-    # operator / next serial run.
+    # operator / next serial run, or, in an exclusive run, to the controller (from the workers' reports).
+    _slt_report_worker_teardown(config)
+    unaccounted = not _skip_shared_teardown(os.environ) and _slt_exclusive_stack_unaccounted(config, exitstatus)
+    if unaccounted and (os.environ.get("SLT_KEEP_RESOURCES") or os.environ.get("SLT_KEEP_RESOURCES_ON_ERROR")):
+        # A crash or an interrupt is a failure, so either keep setting keeps the stack.
+        config._slt_keep_resources = True
+        print(f"[slt] keeping exclusive stack {stack.prefix()} (SLT_KEEP_RESOURCES*); stop it with: "
+              f"SLT_STACK_PREFIX={stack.prefix()} python -m livetest.cli stop all")
     if _skip_shared_teardown(os.environ) or getattr(config, "_slt_keep_resources", False):
         return
+    if unaccounted:
+        _slt_adopt_exclusive_stack(config)
     started = getattr(config, "_slt_started", set())
     for defn in getattr(config, "_slt_defs", {}).values():
         if defn.container in started and defn.compose:
