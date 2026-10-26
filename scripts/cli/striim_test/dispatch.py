@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import uuid
@@ -438,6 +439,61 @@ def map_exit(rc, sel, res, collect_only) -> tuple[int, str]:
     return CONFIG, f"pytest-exit:{rc}"
 
 
+# Covers the engine's documented signal teardown: up to 90 s of closes, then 90 s of cleanup.
+TIER_CANCEL_WAIT_S = 200.0
+TIER_STOP_WAIT_S = 10.0
+
+
+def _stop(proc, sig) -> None:
+    try:
+        proc.send_signal(sig)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def wait_tier(proc, label: str, cancel_wait: float | None = None):
+    """The tier's exit code, or None when it was cancelled.
+
+    Ctrl-C reaches the tier too (same process group), so on the first interrupt the tier is left to
+    run its own cleanup, up to ``TIER_CANCEL_WAIT_S``. A SIGTERM sent to striim-test alone is passed on
+    to the tier first. A second interrupt, or the bound, stops it: SIGTERM, then SIGKILL."""
+    cancel_wait = TIER_CANCEL_WAIT_S if cancel_wait is None else cancel_wait
+    terminated = []
+
+    def on_term(sig, frame):
+        terminated.append(sig)
+        raise KeyboardInterrupt("SIGTERM")
+    try:
+        previous, installed = signal.signal(signal.SIGTERM, on_term), True
+    except ValueError:                  # not the main thread: no handler, plain waits
+        previous, installed = None, False
+    try:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            pass
+        if terminated:
+            _stop(proc, signal.SIGTERM)
+        _say(f"{label}: cancelling: waiting for cleanup, up to {cancel_wait:.0f}s; "
+             f"press Ctrl-C again to stop now")
+        try:
+            proc.wait(timeout=cancel_wait)
+            return None
+        except (KeyboardInterrupt, subprocess.TimeoutExpired):
+            pass
+        _say(f"{label}: stopping without waiting for cleanup")
+        _stop(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=TIER_STOP_WAIT_S)
+        except (KeyboardInterrupt, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait()
+        return None
+    finally:
+        if installed:
+            signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+
+
 def run_tier(ctx: Ctx, tier: str, path: Path, *, label: str, cases=(), collect_only: bool,
              parallel=False, keep=False) -> TierOutcome:
     tier_dir = ctx.run / label
@@ -451,11 +507,8 @@ def run_tier(ctx: Ctx, tier: str, path: Path, *, label: str, cases=(), collect_o
         # The tier's output goes to its log, not the console: say how to watch it while it runs.
         _say(f"{label}: follow it with: tail -f {shlex.quote(str(tier_dir / 'stdout.log'))}")
     with open(tier_dir / "stdout.log", "wb") as so, open(tier_dir / "stderr.log", "wb") as se:
-        try:
-            rc = subprocess.run(argv, cwd=tier_dir, env=env, stdin=subprocess.DEVNULL,
-                                stdout=so, stderr=se).returncode
-        except KeyboardInterrupt:
-            rc = None
+        proc = subprocess.Popen(argv, cwd=tier_dir, env=env, stdin=subprocess.DEVNULL, stdout=so, stderr=se)
+        rc = wait_tier(proc, label)
     sel = _selection(tier_dir)
     res = _read_json(tier_dir / "results.json")
     code, reason = (CANCELLED, "interrupted") if rc is None else map_exit(rc, sel, res, collect_only)

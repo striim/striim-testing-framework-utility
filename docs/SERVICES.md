@@ -81,9 +81,10 @@ SLT_PG_ADMIN_PASSWORD=...
   `STRIIM_URL`, plus unused ports for its other published endpoints, as described in
   [SET-UP-YOUR-OWN-REPO.md](SET-UP-YOUR-OWN-REPO.md#several-checkouts-or-people-on-one-machine).
 - On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds, after up to
-  90 seconds closing an injected node fault or open transactions) before it exits non-zero. A
-  caller that kills the run sooner cuts this short: striim-test's `cancelGrace` (30 seconds by
-  default) or xdist stopping its workers. `python -m livetest.ownership replay` reclaims what is left.
+  90 seconds closing an injected node fault or open transactions) before it exits non-zero. Under
+  `striim-test run` the first Ctrl-C (or a SIGTERM to striim-test) waits up to 200 seconds for this;
+  a second Ctrl-C stops the run at once. That, or anything else killing the run sooner, leaves objects
+  behind: `python -m livetest.ownership replay` reclaims them.
 
 ## Striim peer API for node faults
 
