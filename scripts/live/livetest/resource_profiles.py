@@ -57,6 +57,9 @@ _DEFAULT_COMPOSE = "compose.yaml"
 # .gitignore ignores them too).
 _EXCLUDED_DIRS = frozenset({"deps", "__pycache__"})
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".log", ".DS_Store")
+# Build-input records striim_provision writes into the striim recipe's files/ at provision time.
+_EXCLUDED_PATHS = frozenset({"images/striim/files/slt-optional-jars.json",
+                             "images/striim/files/slt-installer-identity.json"})
 
 # Build inputs a Dockerfile bind-mounts that the CONSUMER supplies (verified through SLT_STRIIM_DEPS_MANIFEST and staged into the owned workspace).
 _EXTERNAL_BUILD_INPUTS = frozenset({"deps"})
@@ -179,6 +182,8 @@ def scan_assets(origin: Path, *, tier: str = "?", name: str = "?", skip=frozense
                 continue
             p = d / n
             rel = p.relative_to(origin).as_posix()
+            if rel in _EXCLUDED_PATHS:
+                continue
             if p.is_symlink():
                 if not p.exists():
                     raise ProfileError(f"{tier}/{name}: dangling symlink {rel}")

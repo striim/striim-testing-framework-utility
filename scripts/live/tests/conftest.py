@@ -35,6 +35,14 @@ def _op_jar_store(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_release_matrix(monkeypatch, tmp_path):
+    """A developer's STRIIM_BUILD_* matrix (shell or project .env) must not change jar names."""
+    for key in [k for k in os.environ if k.startswith("STRIIM_BUILD_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("FTC_PUBLISHER_RELEASES_ENV", str(tmp_path / "no-release-matrix.env"))
+
+
+@pytest.fixture(autouse=True)
 def _no_pre_up(monkeypatch):
     from livetest import prestart
     monkeypatch.setenv("SLT_PRE_UP", "0")

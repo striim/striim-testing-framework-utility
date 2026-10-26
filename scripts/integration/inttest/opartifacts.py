@@ -108,8 +108,7 @@ def op_name_for(jar_name: str, series: str) -> str:
     suffix = f"-{series}.jar"
     if not jar_name.endswith(suffix):
         raise OpBuildFailed(
-            f"built jar {jar_name!r} does not end with the expected {suffix!r} "
-            f"suffix for STRIIM_SERIES={series!r}")
+            f"built jar {jar_name!r} does not end with the expected {suffix!r} suffix")
     return jar_name[: -len(suffix)]
 
 
@@ -380,25 +379,30 @@ def prebuilt_env_var(module_ref: str) -> str:
     return "SLT_PREBUILT_JAR_" + re.sub(r"[^A-Z0-9]", "_", module_name(module_ref).upper())
 
 
-def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
+def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None) -> tuple[Path, str] | None:
     """The prebuilt jar to use instead of building `module_ref`, and the variable that chose it;
     None when no prebuilt variable is set. A directory must hold exactly one jar of THIS module
-    for `series` ("<module>[V<version>]-<series>.jar", searched recursively); another module's
-    jar never stands in for it."""
+    for `suffix` ("<module>[V<version>]-<suffix>.jar", searched recursively), or else for the
+    plain `series` a shipped jar carries; another module's jar never stands in for it."""
     for var in (prebuilt_env_var(module_ref), "SLT_PREBUILT_JAR", "SLT_PREBUILT_DIR"):
         value = os.environ.get(var)
         if value:
             break
     else:
         return None
+    names = [suffix] + ([series] if series and series != suffix else [])
     path = Path(value).resolve()
     if path.is_dir():
         mod = module_name(module_ref)
-        own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(series)}\.jar", re.IGNORECASE)
-        matches = sorted(p for p in path.rglob("*.jar")
-                         if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
+        for name in names:
+            own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?-{re.escape(name)}\.jar", re.IGNORECASE)
+            matches = sorted(p for p in path.rglob("*.jar")
+                             if own.fullmatch(p.name) and not opjarrelease.is_private_cache(p))
+            if matches:
+                break
         if not matches:
-            raise OpArtifactError(f"{var}: no {mod} jar for series {series} in {path}")
+            wanted = f"{suffix} or series {names[1]}" if len(names) > 1 else f"series {suffix}"
+            raise OpArtifactError(f"{var}: no {mod} jar for {wanted} in {path}")
         if len(matches) > 1:
             raise OpArtifactError(f"{var}: multiple candidates for {mod} in {path}: "
                                   f"{[p.name for p in matches]}")
@@ -412,8 +416,8 @@ def _prebuilt_jar(module_ref: str, series: str) -> tuple[Path, str] | None:
                 f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
         # No entry (UDF jars carry none): the file name must name the module, as in a folder. A
         # name without the series suffix is left to op_name_for's error.
-        suffix = f"-{series}.jar"
-        if not mod_id and path.name.endswith(suffix) and not own.fullmatch(path.name[: -len(suffix)]):
+        ending = next((f"-{n}.jar" for n in names if path.name.endswith(f"-{n}.jar")), None)
+        if not mod_id and ending and not own.fullmatch(path.name[: -len(ending)]):
             raise OpArtifactError(
                 f"{var}: {path.name} has no Striim-Module-Name and is not named for module "
                 f"{mod!r}: {path}")
@@ -447,10 +451,10 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         raise OpArtifactError(f"release is missing STRIIM_SERIES: {release!r}")
     # File identity may extend the series; the build environment keeps the real series.
     versions = opjarrelease.configured_versions(_root())
-    series = opjarrelease.jar_suffix(release, versions)
+    suffix = opjarrelease.jar_suffix(release, versions)
     fingerprint = _build_fingerprint(release)
     java_release = release.get("JAVA_RELEASE")
-    chosen = _prebuilt_jar(module_ref, series)
+    chosen = _prebuilt_jar(module_ref, suffix, series)
     if chosen:
         prebuilt, var = chosen
         corrupt = _jar_unreadable(prebuilt)
@@ -458,12 +462,17 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
         _assert_jar_java_version(prebuilt, java_release, module_dir)
         jar_name = prebuilt.name
-        op_name = op_name_for(jar_name, series)
+        ending = next((n for n in (suffix, series) if jar_name.endswith(f"-{n}.jar")), None)
+        if ending is None:
+            wanted = " or ".join(repr(f"-{n}.jar") for n in dict.fromkeys((suffix, series)))
+            raise OpArtifactError(
+                f"prebuilt jar {jar_name!r} does not end with the expected {wanted} suffix")
+        op_name = op_name_for(jar_name, ending)
         digest = file_sha256(prebuilt)
         notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
         return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest)
 
-    existing = _release_jar_candidates(module_dir, series)
+    existing = _release_jar_candidates(module_dir, suffix)
     # >1 candidate is stale build output, not a broken repo: a version bump changes the
     # pom's finalName, and `mvn package` writes the new jar BESIDE the old one instead of
     # replacing it. Treated as a clean-rebuild trigger below rather than an error, because
@@ -496,7 +505,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         _assert_jar_java_version(jar, java_release, module_dir)
         trigger = _stale_trigger(jar, module_dir)
         if trigger is None:
-            return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, series))
+            return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix))
         clean = False   # a source edit in the same environment -> incremental rebuild
         try:
             changed = trigger.relative_to(module_dir)
@@ -510,24 +519,24 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         clean = True
         reason = f"{jar.name} is not a readable jar ({corrupt}) -> clean rebuild"
     elif ambiguous:
-        # Several *-<series>.jar in target/ (typically a version bump: V1B alongside V1C).
+        # Several *-<suffix>.jar in target/ (typically a version bump: V1B alongside V1C).
         # `clean` is mandatory -- a plain `package` leaves the stale jar in place and the
         # next run is ambiguous again.
         clean = True
-        reason = (f"multiple *-{series}.jar in target/ "
+        reason = (f"multiple *-{suffix}.jar in target/ "
                   f"({', '.join(p.name for p in existing)}) -> clean rebuild")
     else:
-        # No jar for this series. If target/ still holds a DIFFERENT release's compiled output,
+        # No jar for this suffix. If target/ still holds a DIFFERENT release's compiled output,
         # clean it -- mvn's compiler skips unchanged sources, so a plain `package` could shade
         # stale .class files (e.g. Java-17 bytecode into a nominally-5.0 jar). A fresh checkout
         # (no target/classes) needs no clean.
         clean = (module_dir / "target" / "classes").is_dir()
-        reason = (f"no *-{series}.jar and stale target/classes present -> clean rebuild"
-                  if clean else f"no *-{series}.jar found -> initial build")
+        reason = (f"no *-{suffix}.jar and stale target/classes present -> clean rebuild"
+                  if clean else f"no *-{suffix}.jar found -> initial build")
 
     run = run or _default_run
-    if series != release["STRIIM_SERIES"] or len(versions) > 1:
-        run = opjarrelease.release_runner(run, module_dir, release, series)
+    if suffix != series or len(versions) > 1:
+        run = opjarrelease.release_runner(run, module_dir, release, suffix)
     build_env = {**os.environ, **{k: str(v) for k, v in release.items() if v is not None}}
     _verify_striim_home(build_env, release)
     if java_release:
@@ -545,7 +554,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     if getattr(r, "returncode", 1) != 0:
         out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
         raise OpBuildFailed(f"mvn package failed in {module_dir}:\n{out}")
-    existing = _release_jar_candidates(module_dir, series)
+    existing = _release_jar_candidates(module_dir, suffix)
     if len(existing) != 1 and not clean:
         # An INCREMENTAL build can itself create the ambiguity the branch above only
         # catches on the NEXT run: a version bump changes the pom's finalName, so
@@ -553,18 +562,18 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         # and the run that performed the bump-rebuild then dies here. Retrying with
         # `clean` -- which empties target/ -- resolves it in the SAME run, so a version
         # bump costs one extra build rather than one failed run plus a manual retry.
-        notify(f"ambiguous *-{series}.jar after incremental build "
+        notify(f"ambiguous *-{suffix}.jar after incremental build "
                f"({', '.join(p.name for p in existing)}) -> clean rebuild")
         r = run(["mvn", "-q", "clean", "package", "-DskipTests=true"], str(module_dir), build_env)
         if getattr(r, "returncode", 1) != 0:
             out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
             raise OpBuildFailed(f"mvn clean package failed in {module_dir}:\n{out}")
-        existing = _release_jar_candidates(module_dir, series)
+        existing = _release_jar_candidates(module_dir, suffix)
     if len(existing) != 1:
         raise OpBuildFailed(
-            f"build succeeded but no unambiguous *-{series}.jar found in "
+            f"build succeeded but no unambiguous *-{suffix}.jar found in "
             f"{module_dir / 'target'} (found: {[p.name for p in existing]})")
     jar = existing[0]
     # The MANIFEST stamp is written by the pom during the build, not here; verify what landed.
     _assert_jar_java_version(jar, java_release, module_dir)
-    return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, series))
+    return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix))

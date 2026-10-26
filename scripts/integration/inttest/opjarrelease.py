@@ -19,10 +19,12 @@ _VERSION = r'\d+(?:\.\d+)+(?:[A-Za-z]\w*)?'
 
 
 def configured_versions(root: Path, env=None) -> set[str]:
-    """Read the existing build matrix and installed siblings, best effort.
+    """Read the existing build matrix, best effort.
 
     Use the same matrix file selection and STRIIM_BUILD_<version> grammar as the
     console. An annotation without an install path does not configure a release.
+    Installs that are not in the matrix do not count, so the names depend on
+    configuration rather than on what else is installed on the host.
     No configuration is written, imported from a consumer, or executed.
     """
     env = os.environ if env is None else env
@@ -58,19 +60,6 @@ def configured_versions(root: Path, env=None) -> set[str]:
                 except OSError:
                     actual = []
                 versions.add(actual[0] if len(actual) == 1 else version)
-    roots = set()
-    if env.get('STRIIM_HOME'):
-        roots.add(Path(env['STRIIM_HOME']).expanduser().parent)
-    if env.get('FTC_RELEASE_INSTALL_ROOT'):
-        roots.add(Path(env['FTC_RELEASE_INSTALL_ROOT']).expanduser())
-    for install_root in roots:
-        try:
-            for marker in install_root.glob('*/lib/Platform-*.jar'):
-                version = marker.name[len('Platform-'):-len('.jar')]
-                if re.fullmatch(_VERSION, version):
-                    versions.add(version)
-        except OSError:
-            continue
     return versions
 
 
