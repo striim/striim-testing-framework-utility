@@ -350,3 +350,37 @@ def test_selected_striim_home_outside_matrix_is_counted(tmp_path):
     env = {'STRIIM_HOME': str(tmp_path / 'selected')}
     assert opjarrelease.configured_versions(tmp_path, env) == {'5.4.2', '5.4.4.0'}
 
+
+@pytest.mark.parametrize('package', ['livetest', 'inttest'])
+def test_next_build_removes_temporary_pom_of_a_killed_build(tmp_path, package):
+    import subprocess
+    import sys
+    import time
+    opjarrelease = importlib.import_module(package + '.opjarrelease')
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    (module / 'pom.xml').write_text('<project><build/></project>')
+    dead = subprocess.run([sys.executable, '-c', 'import os; print(os.getpid())'],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    old = time.time() - 2 * 3600
+    killed = module / f'.release-build-{dead}-abc.xml'
+    running = module / f'.release-build-{os.getpid()}-def.xml'
+    recent = module / f'.release-build-{dead}-ghi.xml'
+    for pom in [killed, running, recent]:
+        pom.write_text('<project/>')
+    os.utime(killed, (old, old))
+    os.utime(running, (old, old))
+    seen = []
+
+    def run(argv, cwd, env):
+        seen.append(sorted(p.name for p in module.glob('.release-build-*.xml')))
+        output = Path(ET.parse(argv[argv.index('-f') + 1]).findtext('build/directory'))
+        _jar(output / 'ExampleOpV1-5.4.jar', '5.4.2')
+        return SimpleNamespace(returncode=0)
+
+    invoke = opjarrelease.release_runner(run, module, {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                                         '5.4.2')
+    assert invoke(['mvn', 'package'], str(module), {}).returncode == 0
+    assert killed.name not in seen[0]
+    assert {running.name, recent.name} <= set(seen[0])
+    assert sorted(p.name for p in module.glob('.release-build-*.xml')) == sorted([running.name, recent.name])

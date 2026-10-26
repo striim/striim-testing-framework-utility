@@ -11,11 +11,14 @@ import re
 import shlex
 import shutil
 import tempfile
+import time
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 
 _VERSION = r'\d+(?:\.\d+)+(?:[A-Za-z]\w*)?'
+_POM_PREFIX = '.release-build-'
+_POM_STALE_S = 3600   # a leftover temporary POM older than this, of a dead process, is removed
 
 
 def _install_version(home: Path) -> str | None:
@@ -98,6 +101,7 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
     output = module_dir / 'target' / '.releases' / release['STRIIM_VERSION']
 
     def invoke(argv, cwd, env):
+        _remove_abandoned_poms(module_dir)
         tree = ET.parse(module_dir / 'pom.xml')
         project = tree.getroot()
         ns = project.tag.removesuffix('project')
@@ -111,7 +115,7 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
         if directory is None:
             directory = ET.SubElement(build, ns + 'directory')
         directory.text = str(output)
-        with tempfile.NamedTemporaryFile(prefix='.release-build-', suffix='.xml',
+        with tempfile.NamedTemporaryFile(prefix=f'{_POM_PREFIX}{os.getpid()}-', suffix='.xml',
                                          dir=module_dir, delete=False) as f:
             pom = Path(f.name)
         try:
@@ -159,6 +163,27 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
             pom.unlink(missing_ok=True)
 
     return invoke
+
+
+def _remove_abandoned_poms(module_dir: Path) -> None:
+    """Remove temporary POMs left by a killed build: its process is gone and the file is old.
+
+    A live build in another process keeps its POM.
+    """
+    for pom in module_dir.glob(f'{_POM_PREFIX}*.xml'):
+        pid = pom.name[len(_POM_PREFIX):].partition('-')[0]
+        try:
+            if time.time() - pom.stat().st_mtime < _POM_STALE_S:
+                continue
+            if pid.isdigit():
+                os.kill(int(pid), 0)
+                continue
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # PermissionError: another user's live process; anything else: leave it.
+            continue
+        pom.unlink(missing_ok=True)
 
 
 def is_private_cache(path: Path) -> bool:

@@ -73,6 +73,13 @@ Builds on machines with multiple known releases keep separate Maven output direc
 building or cleaning one release preserves the others' jars, including across different series.
 The deployed operator name stays the same.
 
+Such a build runs Maven on a temporary `.release-build-*.xml` beside the module's `pom.xml` and
+removes it afterwards. A build that is killed can leave it behind; the module's next build
+removes it, and a `.gitignore` entry for `.release-build-*.xml` keeps it out of `git status`
+meanwhile. Jars named for an earlier suffix stay in `target/` until `mvn clean`: the run cannot
+tell them from jars your own builds put there, and the release stamped in each jar's manifest
+keeps one built for another release from being used.
+
 [TEST-YAML.md](TEST-YAML.md), "`op:` / `udf:`", has every key.
 
 ## Showing what your code did
