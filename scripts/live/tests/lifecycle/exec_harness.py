@@ -522,6 +522,14 @@ if SC.get("op_stub"):                                      # an op module whose 
         (mod, SimpleNamespace(name="stub-op.jar", op_name="StubOp", path=_stub_op, content_tag="",
                               sha256="sha256:" + "0" * 64))
         for mod in m.modules]
+if SC.get("op_build"):                                     # the module build fails, or cannot start
+    _build_error = (getattr(P.opartifacts, "OpBuildFailed", P.opartifacts.OpArtifactError)
+                    if SC["op_build"] == "failed" else P.opartifacts.OpArtifactError)
+
+    def _failing_build(m, release, report=None):
+        raise _build_error("mvn package failed in StubOp: cannot find symbol" if SC["op_build"] == "failed"
+                           else "cannot run mvn to build StubOp: No such file or directory: 'mvn'")
+    P.build_modules = _failing_build
 if SC.get("op_poison"):
     P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
     P._sp.restart_app_nodes = lambda client: log("restart_app_nodes")

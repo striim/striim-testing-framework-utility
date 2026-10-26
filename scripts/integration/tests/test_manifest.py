@@ -542,6 +542,22 @@ assert:
         load_manifest(manifest_path)
 
 
+@pytest.mark.parametrize("tier", ["dataa", "rowcount", "diff"])
+def test_unknown_assert_tier_raises(tmp_path, tier):
+    # A misspelled tier used to load and check nothing.
+    text = f"""
+name: bad-tier
+op:
+  jar: some/module
+assert:
+  smoke: true
+  {tier}: []
+"""
+    manifest_path, _ = _write(tmp_path, text)
+    with pytest.raises(ManifestError, match=r"'assert' has unknown tier\(s\) \['" + tier):
+        load_manifest(manifest_path)
+
+
 def test_op_unknown_key_raises(tmp_path):
     text = """
 name: op-unknown-key

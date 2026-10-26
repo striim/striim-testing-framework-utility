@@ -190,22 +190,38 @@ def test_duplicate_archive_entry_refused(tmp_path):
 
 def test_wrong_prefix_release_refused(tmp_path):
     objects = _objects()
-    with pytest.raises(CliError, match="release mismatch"):
+    with pytest.raises(CliError, match="release mismatch") as e:
         fetch_bundle("gs://test-bucket/ExampleUdf/5.4.0", tmp_path / "out", read=objects.__getitem__)
+    assert e.value.code == 2                               # a settings mistake
 
 
-def test_emulator_failure_is_a_cli_error(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error", ["not-found", "unreachable"])
+def test_emulator_failure_is_a_cli_error(tmp_path, monkeypatch, error):
     import google.cloud
+    import requests
     from google.api_core.exceptions import NotFound
     fake = types.ModuleType("google.cloud.storage")
     def fail():
-        raise NotFound("not seeded")
+        raise NotFound("not seeded") if error == "not-found" else requests.ConnectionError("refused")
     fake.Client = lambda **kw: SimpleNamespace(bucket=lambda _: SimpleNamespace(blob=lambda _:
         SimpleNamespace(download_as_bytes=fail)))
     monkeypatch.setattr(google.cloud, "storage", fake, raising=False)
     monkeypatch.setitem(sys.modules, "google.cloud.storage", fake)
-    with pytest.raises(CliError, match="emulator download failed"):
+    with pytest.raises(CliError, match="emulator download failed") as e:
         fetch_bundle("gs://test-bucket/ExampleUdf/5.4.2", tmp_path / "out", "http://localhost:4443")
+    assert e.value.code == 3                               # the download failed, not the settings
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("error", [subprocess.CalledProcessError(1, ["gcloud"], stderr=b"network"),
+                                   FileNotFoundError("gcloud")], ids=["gcloud-failed", "gcloud-missing"])
+def test_gcloud_failure_is_unavailable_not_a_settings_mistake(tmp_path, monkeypatch, error):
+    def gcloud(argv, **kw):
+        raise error
+    monkeypatch.setattr(subprocess, "check_output", gcloud)
+    with pytest.raises(CliError, match="gcloud download of manifest.json failed") as e:
+        fetch_bundle("gs://test-bucket/ExampleUdf/5.4.2", tmp_path / "out")
+    assert e.value.code == 3 and not (tmp_path / "out").exists()
 
 
 @pytest.mark.parametrize("module", ["OtherUdf", "", None, "../x"])

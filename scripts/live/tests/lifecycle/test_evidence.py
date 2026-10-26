@@ -116,6 +116,19 @@ def test_final_outcome_single_source_of_truth():
     assert evidence.final_outcome("passed", _good_state(), {"status": "ok"}, verified) == ("passed", True, None)
 
 
+@pytest.mark.parametrize("flip,reason", [
+    (lambda lc, res: lc.update(ready={"reason": "deadline"}), "readiness witness not satisfied"),
+    (lambda lc, res: lc.update(completion={"reason": "deadline"}), "completion witness not satisfied"),
+    (lambda lc, res: res.update(verificationGaps=["owned-dir unverified"]), "verification gaps: ['owned-dir unverified']"),
+    (lambda lc, res: lc.update(faultInjected=True), "a lifecycle fault was injected"),
+])
+def test_final_outcome_each_disqualifier(flip, reason):
+    lc, res = _good_state().to_dict(), {"cleanupVerified": True, "verificationGaps": []}
+    assert evidence.final_outcome("passed", lc, {"status": "ok"}, res) == ("passed", True, None)
+    flip(lc, res)
+    assert evidence.final_outcome("passed", lc, {"status": "ok"}, res) == ("passed", False, reason)
+
+
 def test_qualifies_false_for_legacy_skipped_and_unverified():
     ok, verified = {"status": "ok"}, {"cleanupVerified": True, "verificationGaps": []}
     legacy = lifecycle.State("legacy")

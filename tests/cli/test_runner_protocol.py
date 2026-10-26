@@ -63,8 +63,10 @@ def _result(r, name):
     ("zero-tests", 1, "report-zero-tests"),
     ("malformed", 1, "report-malformed"),
     ("skip", 1, "required-skip:1"),
+    ("exit0-report-error", 1, "report-failures:1"),
+    ("truncated", 1, "report-malformed"),
 ], ids=["pass", "fail-exit", "exit0-report-fail", "exit1-report-pass", "missing-report", "stale-report",
-        "zero-tests", "malformed", "skip"])
+        "zero-tests", "malformed", "skip", "exit0-report-error", "truncated"])
 def test_runner_outcome(tmp_path, elsewhere, mode, code, reason):
     manifest = _consumer(tmp_path, [_spec(mode, [sys.executable, str(FAKE), mode, REPORT])])
     if mode == "stale-report":
@@ -102,6 +104,14 @@ def test_launch_failure_is_3(tmp_path, elsewhere):
     r = run_cli(["run", "--suite", "launch-fail", "--targets", manifest], cwd=elsewhere)
     assert r.rc == 3 and _result(r, "launch-fail")["reason"] == "launch-failed"
     assert "runner launch-fail: launch-failed" in r.stderr
+
+
+def test_failure_beside_a_skip_exits_1(tmp_path, elsewhere):
+    manifest = _consumer(tmp_path, [_spec("fails", [sys.executable, str(FAKE), "exit0-report-fail", REPORT]),
+                                    _spec("absent", [str(tmp_path / "no-such-runner")])])
+    r = run_cli(["run", "--tier", "unit", "--targets", manifest], cwd=elsewhere)
+    assert (_result(r, "fails")["exit"], _result(r, "absent")["exit"]) == (1, 3)
+    assert r.rc == 1, r.stderr
 
 
 def test_prereq_failure_is_3_and_runner_not_launched(tmp_path, elsewhere):

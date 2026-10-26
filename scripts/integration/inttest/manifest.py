@@ -597,10 +597,19 @@ def _normalize_field_paths(item: dict, key: str, idx: int, path) -> tuple:
     return tuple(out)
 
 
+_ASSERT_TIERS = {"smoke", "data", "gcs_objects", "target", "expect_error", "expect_log", "monitor",
+                 "jmx", "acked", "restarts", "replayed", "exception_store"}
+
+
 def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
                       is_target: bool = False) -> AssertSpec:
     if not isinstance(raw, dict) or not raw:
         raise ManifestError(f"{path}: 'assert' is required and must be a non-empty mapping")
+    # A misspelled tier would otherwise check nothing and still pass.
+    unknown = sorted(set(raw) - _ASSERT_TIERS)
+    if unknown:
+        raise ManifestError(
+            f"{path}: 'assert' has unknown tier(s) {unknown} -- allowed: {sorted(_ASSERT_TIERS)}")
 
     smoke = raw.get("smoke", False)
     if not isinstance(smoke, bool):

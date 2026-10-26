@@ -78,6 +78,8 @@ def test_concurrent_parsed_identically_for_both_types(tmp_path):
     ("    concurrent:\n      - loop.sql\n", "must be a dict"),
     ("    concurrent:\n      - file: loop.sql\n", "must have 'db' key"),
     ("    concurrent:\n      - db: postgres-source\n", "must have 'file' key"),
+    ("    concurrent:\n      - {db: postgres_source, file: loop.sql}\n", "is not a route of a service in 'requires'"),
+    ("    concurrent:\n      - {db: mysql-source, file: loop.sql}\n", "is not a route of a service in 'requires'"),
 ])
 def test_concurrent_rejects(tmp_path, conc, match):
     with pytest.raises(ManifestError, match=match):

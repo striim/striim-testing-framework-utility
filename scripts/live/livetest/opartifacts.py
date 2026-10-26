@@ -45,6 +45,9 @@ _UPLOADED = "/opt/striim/UploadedFiles"
 class OpArtifactError(Exception):
     pass
 
+class OpBuildFailed(OpArtifactError):
+    """The build ran and failed: the module's code or pom is broken, not the environment."""
+
 @dataclass(frozen=True)
 class BuiltArtifact:
     path: Path    # absolute path to the built, series-suffixed jar
@@ -95,7 +98,7 @@ def _release_jar_candidates(module_dir: Path, series: str) -> list[Path]:
 def op_name_for(jar_name: str, series: str) -> str:
     suffix = f"-{series}.jar"
     if not jar_name.endswith(suffix):
-        raise OpArtifactError(
+        raise OpBuildFailed(
             f"built jar {jar_name!r} does not end with the expected {suffix!r} "
             f"suffix for STRIIM_SERIES={series!r}")
     return jar_name[: -len(suffix)]
@@ -766,10 +769,13 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # `mvn` step in the live console is explained (and a surprise rebuild is visible).
     notify(reason)
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
-    r = run(goals, str(module_dir), build_env)
+    try:
+        r = run(goals, str(module_dir), build_env)
+    except FileNotFoundError as e:
+        raise OpArtifactError(f"cannot run mvn to build {module_dir}: {e}") from e
     if getattr(r, "returncode", 1) != 0:
         out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
-        raise OpArtifactError(f"mvn package failed in {module_dir}:\n{out}")
+        raise OpBuildFailed(f"mvn package failed in {module_dir}:\n{out}")
     existing = _release_jar_candidates(module_dir, series)
     if len(existing) != 1 and not clean:
         # A non-clean build can itself create the ambiguity the branch above only catches
@@ -785,10 +791,10 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         r = run(["mvn", "-q", "clean", "package", "-DskipTests=true"], str(module_dir), build_env)
         if getattr(r, "returncode", 1) != 0:
             out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
-            raise OpArtifactError(f"mvn clean package failed in {module_dir}:\n{out}")
+            raise OpBuildFailed(f"mvn clean package failed in {module_dir}:\n{out}")
         existing = _release_jar_candidates(module_dir, series)
     if len(existing) != 1:
-        raise OpArtifactError(
+        raise OpBuildFailed(
             f"build succeeded but no unambiguous *-{series}.jar found in "
             f"{module_dir / 'target'} (found: {[p.name for p in existing]})")
     jar = existing[0]

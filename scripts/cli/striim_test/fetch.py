@@ -15,13 +15,18 @@ import zipfile
 
 import yaml
 
-from striim_test.errors import CONFIG, CliError
+from striim_test.errors import CONFIG, INFRA, CliError
 
 _LIMIT = 128 * 1024 * 1024
 
 
 def _fail(message):
     raise CliError(CONFIG, f"fetch: {message}")
+
+
+def _unavailable(message):
+    """The download itself failed (network, gcloud, emulator): exit 3, not a settings mistake."""
+    raise CliError(INFRA, f"fetch: {message}")
 
 
 def _path(name):
@@ -64,12 +69,15 @@ def _download(bucket, prefix, endpoint):
             from google.api_core.exceptions import GoogleAPIError
             try:
                 return client.bucket(bucket).blob(f"{prefix}/{name}").download_as_bytes()
-            except GoogleAPIError as exc:
-                _fail(f"emulator download failed ({type(exc).__name__}); check endpoint and seeded objects")
+            except (GoogleAPIError, OSError) as exc:
+                _unavailable(f"emulator download failed ({type(exc).__name__}); check endpoint and seeded objects")
         return read
     def read(name):
-        return subprocess.check_output(["gcloud", "storage", "cat", f"gs://{bucket}/{prefix}/{name}"],
-                                       stderr=subprocess.PIPE)
+        try:
+            return subprocess.check_output(["gcloud", "storage", "cat", f"gs://{bucket}/{prefix}/{name}"],
+                                           stderr=subprocess.PIPE)
+        except (OSError, subprocess.SubprocessError) as exc:
+            _unavailable(f"gcloud download of {name} failed: {type(exc).__name__}: {exc}")
     return read
 
 

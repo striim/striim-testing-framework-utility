@@ -36,6 +36,9 @@ Framework pin: <commit>; read README.md before running
 For a bundle in a local storage emulator, add `--endpoint http://localhost:4443`; it then uses
 anonymous credentials, not your `gcloud` sign-in.
 
+A download that fails (network, `gcloud`, emulator) exits 3; a bad prefix, destination or bundle
+exits 2.
+
 ## 2. Use the framework at that commit
 
 Check out the printed commit in your framework clone and install it:

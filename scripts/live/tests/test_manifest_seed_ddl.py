@@ -60,6 +60,21 @@ def test_unknown_manifest_keys_are_rejected(tmp_path, key):
     with pytest.raises(ManifestError, match="unknown manifest key"):
         load_manifest(_write(tmp_path, _BASE + key + "\n"))
 
+@pytest.mark.parametrize("tier", ["dataa: []", "rowcount: []", "target: []"])
+def test_unknown_assert_tier_is_rejected(tmp_path, tier):
+    # A misspelled tier used to load and check nothing, so the case passed on smoke alone.
+    with pytest.raises(ManifestError, match=r"'assert' has unknown tier\(s\)"):
+        load_manifest(_write(tmp_path, "name: x\ntql: app.tql\nassert:\n  smoke: true\n  " + tier + "\n"))
+
+
+def test_every_documented_assert_tier_is_accepted():
+    import re
+    from pathlib import Path
+    from livetest.manifest import VALID_ASSERT_TIERS
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "TEST-YAML.md").read_text()
+    row = next(ln for ln in doc.splitlines() if ln.startswith("| `assert` |"))
+    assert set(re.findall(r"`(\w+)`", row.split("at least one tier", 1)[1])) == VALID_ASSERT_TIERS
+
 def test_every_documented_key_is_accepted(tmp_path):
     # The guard is only safe if the allow-list is complete -- a key the loader reads but the set
     # omits would start rejecting valid manifests.
