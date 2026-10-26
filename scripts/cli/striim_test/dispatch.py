@@ -24,6 +24,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -76,7 +77,10 @@ class Ctx:
 
 
 def _say(msg: str) -> None:
-    print(f"striim-test: {msg}", file=sys.stderr, flush=True)
+    try:
+        print(f"striim-test: {msg}", file=sys.stderr, flush=True)
+    except OSError:                     # the terminal hung up; the cancel still has to run
+        pass
 
 
 def _read_json(p: Path):
@@ -452,56 +456,108 @@ def _signal_tier(proc, sig) -> None:
         pass
 
 
+def _reap_group(proc, grace: float = 2.0) -> None:
+    """Members of the tier's group still running after the tier ended: SIGTERM, then SIGKILL."""
+    _signal_tier(proc, signal.SIGTERM)
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(proc.pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.05)
+    _signal_tier(proc, signal.SIGKILL)
+
+
+def _child_setup(mask):
+    """Runs in the tier after fork: undo the parent's launch-time signal block, and on Linux have the
+    kernel send SIGTERM when striim-test dies without forwarding anything (SIGKILL)."""
+    prctl, parent = None, os.getpid()
+    if sys.platform.startswith("linux"):
+        try:
+            import ctypes
+            prctl = ctypes.CDLL(None, use_errno=True).prctl
+        except (OSError, AttributeError):
+            prctl = None
+
+    def setup():
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+        if prctl is not None:
+            prctl(1, int(signal.SIGTERM))        # PR_SET_PDEATHSIG
+            if os.getppid() != parent:
+                os.kill(os.getpid(), signal.SIGTERM)
+    return setup
+
+
+# Signals that end striim-test: each is passed on to the tier as SIGTERM, then the tier gets its cleanup.
+_FORWARDED = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+
+
 def run_tier_process(argv, label: str, cancel_wait: float | None = None, **popen_kw):
     """Run the tier and return its exit code, or None when it was cancelled.
 
     The tier gets its own process group, so striim-test alone decides which signal reaches it: the
-    first Ctrl-C (or SIGTERM to striim-test) is passed on to the whole group (pytest, its xdist workers
-    and the docker CLIs they run) as the same signal, and the tier is left to run its own cleanup, up
-    to ``TIER_CANCEL_WAIT_S``. Another interrupt, or the bound, stops it: SIGTERM to the group,
-    ``TIER_STOP_WAIT_S``, then SIGKILL. However it ends, the tier is not left running."""
+    first Ctrl-C is passed on to the whole group (pytest, its xdist workers and the docker CLIs they
+    run) as SIGINT, and a SIGTERM, SIGHUP or SIGQUIT to striim-test as SIGTERM; the tier is then left
+    to run its own cleanup, up to ``TIER_CANCEL_WAIT_S``. Another interrupt, or the bound, stops it:
+    SIGTERM to the group, ``TIER_STOP_WAIT_S``, then SIGKILL. However it ends, nothing of the tier's
+    group is left running."""
     cancel_wait = TIER_CANCEL_WAIT_S if cancel_wait is None else cancel_wait
-    term = []
+    caught = []
 
-    def on_term(sig, frame):
-        term.append(sig)
-        raise KeyboardInterrupt("SIGTERM")
+    def on_signal(sig, frame):
+        caught.append(sig)
+        raise KeyboardInterrupt(signal.Signals(sig).name)
+    previous, orig = {}, signal.pthread_sigmask(signal.SIG_BLOCK, set())
+    proc, stage = None, "run"
     try:
-        previous, installed = signal.signal(signal.SIGTERM, on_term), True
-    except ValueError:                  # not the main thread: no handler, plain waits
-        previous, installed = None, False
-    proc = None
-    try:
-        proc = subprocess.Popen(argv, start_new_session=True, **popen_kw)
+        try:
+            for sig in _FORWARDED:
+                previous[sig] = signal.signal(sig, on_signal)
+        except ValueError:              # not the main thread: no handlers, plain waits
+            pass
+        # Blocked around the launch, so no signal can land between fork and `proc` being set.
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, *_FORWARDED})
+        try:
+            proc = subprocess.Popen(argv, start_new_session=True, preexec_fn=_child_setup(orig), **popen_kw)
+        finally:
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, orig)
+            except KeyboardInterrupt:   # one that arrived during the launch
+                if proc is None:
+                    raise
+                stage = "cancel"
         if hasattr(proc, "_sigint_wait_secs"):
             proc._sigint_wait_secs = 0  # so a second Ctrl-C right after the first is not swallowed
-        try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            pass
-        _signal_tier(proc, signal.SIGTERM if term else signal.SIGINT)
-        _say(f"{label}: cancelling: waiting for cleanup, up to {cancel_wait:.0f}s; "
-             f"press Ctrl-C again to stop now")
-        try:
-            proc.wait(timeout=cancel_wait)
-            return None
-        except (KeyboardInterrupt, subprocess.TimeoutExpired):
-            pass
-        _say(f"{label}: stopping without waiting for cleanup")
-        _signal_tier(proc, signal.SIGTERM)
-        try:
-            proc.wait(timeout=TIER_STOP_WAIT_S)
-        except (KeyboardInterrupt, subprocess.TimeoutExpired):
-            pass
+        order = ("run", "cancel", "stop", "kill")
+        while stage != "kill":
+            try:
+                if stage == "run":
+                    return proc.wait()
+                if stage == "cancel":
+                    _signal_tier(proc, signal.SIGTERM if caught else signal.SIGINT)
+                    _say(f"{label}: cancelling: waiting for cleanup, up to {cancel_wait:.0f}s; "
+                         f"press Ctrl-C again to stop now")
+                    proc.wait(timeout=cancel_wait)
+                    return None
+                _say(f"{label}: stopping without waiting for cleanup")
+                _signal_tier(proc, signal.SIGTERM)
+                proc.wait(timeout=TIER_STOP_WAIT_S)
+                return None
+            except (KeyboardInterrupt, subprocess.TimeoutExpired):
+                stage = order[order.index(stage) + 1]
         return None
-    except KeyboardInterrupt:           # before the launch, or a further interrupt between the waits
+    except KeyboardInterrupt:           # before the launch, or while the handlers were installed
         return None
     finally:
-        if proc is not None and proc.poll() is None:
-            _signal_tier(proc, signal.SIGKILL)
-            proc.wait()
-        if installed:
-            signal.signal(signal.SIGTERM, previous if previous is not None else signal.SIG_DFL)
+        if proc is not None:
+            if proc.poll() is None:
+                _signal_tier(proc, signal.SIGKILL)
+                proc.wait()
+            _reap_group(proc)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler if handler is not None else signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_SETMASK, orig)
 
 
 def run_tier(ctx: Ctx, tier: str, path: Path, *, label: str, cases=(), collect_only: bool,
