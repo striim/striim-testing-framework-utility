@@ -11,19 +11,34 @@ import re
 import shlex
 import shutil
 import tempfile
+import time
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 
 _VERSION = r'\d+(?:\.\d+)+(?:[A-Za-z]\w*)?'
+_POM_PREFIX = '.release-build-'
+_POM_STALE_S = 3600   # a leftover temporary POM older than this, of a dead process, is removed
+
+
+def _install_version(home: Path) -> str | None:
+    """The release an install holds, from its one lib/Platform-<version>.jar."""
+    try:
+        found = [p.name[len('Platform-'):-len('.jar')] for p in (home / 'lib').glob('Platform-*.jar')]
+    except OSError:
+        return None
+    found = [v for v in found if re.fullmatch(_VERSION, v)]
+    return found[0] if len(found) == 1 else None
 
 
 def configured_versions(root: Path, env=None) -> set[str]:
-    """Read the existing build matrix and installed siblings, best effort.
+    """Read the existing build matrix and the selected STRIIM_HOME, best effort.
 
     Use the same matrix file selection and STRIIM_BUILD_<version> grammar as the
     console. An annotation without an install path does not configure a release.
-    No configuration is written, imported from a consumer, or executed.
+    No configuration is written, imported from a consumer, or executed. Other
+    installs beside STRIIM_HOME are not counted, so one matrix gives the same
+    names on every host.
     """
     env = os.environ if env is None else env
     matrix = Path(env.get('FTC_PUBLISHER_RELEASES_ENV') or '.env').expanduser()
@@ -51,26 +66,11 @@ def configured_versions(root: Path, env=None) -> set[str]:
                     home = matrix.parent / home
                 # Matrix keys are labels (5.4.4 can name a 5.4.4.0 install).
                 # Count the install's actual identity once, just as release resolution does.
-                try:
-                    actual = [p.name[len('Platform-'):-len('.jar')]
-                              for p in (home / 'lib').glob('Platform-*.jar')
-                              if re.fullmatch(_VERSION, p.name[len('Platform-'):-len('.jar')])]
-                except OSError:
-                    actual = []
-                versions.add(actual[0] if len(actual) == 1 else version)
-    roots = set()
+                versions.add(_install_version(home) or version)
     if env.get('STRIIM_HOME'):
-        roots.add(Path(env['STRIIM_HOME']).expanduser().parent)
-    if env.get('FTC_RELEASE_INSTALL_ROOT'):
-        roots.add(Path(env['FTC_RELEASE_INSTALL_ROOT']).expanduser())
-    for install_root in roots:
-        try:
-            for marker in install_root.glob('*/lib/Platform-*.jar'):
-                version = marker.name[len('Platform-'):-len('.jar')]
-                if re.fullmatch(_VERSION, version):
-                    versions.add(version)
-        except OSError:
-            continue
+        selected = _install_version(Path(env['STRIIM_HOME']).expanduser())
+        if selected:
+            versions.add(selected)
     return versions
 
 
@@ -101,7 +101,11 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
     output = module_dir / 'target' / '.releases' / release['STRIIM_VERSION']
 
     def invoke(argv, cwd, env):
-        tree = ET.parse(module_dir / 'pom.xml')
+        _remove_abandoned_poms(module_dir)
+        try:
+            tree = ET.parse(module_dir / 'pom.xml')
+        except ET.ParseError as e:
+            return SimpleNamespace(returncode=1, stderr=f"cannot read {module_dir / 'pom.xml'}: {e}")
         project = tree.getroot()
         ns = project.tag.removesuffix('project')
         if ns:
@@ -114,7 +118,7 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
         if directory is None:
             directory = ET.SubElement(build, ns + 'directory')
         directory.text = str(output)
-        with tempfile.NamedTemporaryFile(prefix='.release-build-', suffix='.xml',
+        with tempfile.NamedTemporaryFile(prefix=f'{_POM_PREFIX}{os.getpid()}-', suffix='.xml',
                                          dir=module_dir, delete=False) as f:
             pom = Path(f.name)
         try:
@@ -162,6 +166,27 @@ def release_runner(run, module_dir: Path, release: dict, suffix: str):
             pom.unlink(missing_ok=True)
 
     return invoke
+
+
+def _remove_abandoned_poms(module_dir: Path) -> None:
+    """Remove temporary POMs left by a killed build: its process is gone and the file is old.
+
+    A live build in another process keeps its POM.
+    """
+    for pom in module_dir.glob(f'{_POM_PREFIX}*.xml'):
+        pid = pom.name[len(_POM_PREFIX):].partition('-')[0]
+        try:
+            if time.time() - pom.stat().st_mtime < _POM_STALE_S:
+                continue
+            if pid.isdigit():
+                os.kill(int(pid), 0)
+                continue
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # PermissionError: another user's live process; anything else: leave it.
+            continue
+        pom.unlink(missing_ok=True)
 
 
 def is_private_cache(path: Path) -> bool:

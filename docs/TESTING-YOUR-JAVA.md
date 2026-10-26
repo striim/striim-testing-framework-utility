@@ -64,12 +64,21 @@ udf:
   several modules, give each a `token:` (`token: MAP` gives `${MAP_NAME}`, `${MAP_JAR}`).
 
 Jar filenames normally end in the Striim series, such as `ReferenceOpV1-5.4.jar`. When
-configured or installed releases share that series, both engines use the shortest unique version
-prefix: 5.4.2 and 5.4.4.0 use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four
-parts. The existing `STRIIM_BUILD_<version>` build matrix and installed siblings of `STRIIM_HOME`
-supply the release set automatically. If it cannot be determined, naming stays at the series.
+configured releases share that series, both engines use the shortest unique version prefix:
+5.4.2 and 5.4.4.0 use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four parts.
+The existing `STRIIM_BUILD_<version>` build matrix and the selected `STRIIM_HOME` supply the
+release set automatically; other installs beside `STRIIM_HOME` do not count, so one matrix gives
+the same names on every machine. If the set cannot be determined, naming stays at the series.
 Builds on machines with multiple known releases keep separate Maven output directories, so
-building or cleaning one release preserves the others' jars, including across different series. The deployed operator name stays the same.
+building or cleaning one release preserves the others' jars, including across different series.
+The deployed operator name stays the same.
+
+Such a build runs Maven on a temporary `.release-build-*.xml` beside the module's `pom.xml` and
+removes it afterwards. A build that is killed can leave it behind; the module's next build
+removes it, and a `.gitignore` entry for `.release-build-*.xml` keeps it out of `git status`
+meanwhile. Jars named for an earlier suffix stay in `target/` until `mvn clean`: the run cannot
+tell them from jars your own builds put there, and the release stamped in each jar's manifest
+keeps one built for another release from being used.
 
 [TEST-YAML.md](TEST-YAML.md), "`op:` / `udf:`", has every key.
 
@@ -100,8 +109,8 @@ An editor started from a desktop launcher does not inherit your shell's environm
 
 To test the exact jar you ship, rather than one the run builds from your sources, point the run at
 it. The case still names its module with `jar:`; the run uses your file instead of running
-`mvn package`, in live and integration cases alike. Use the filename suffix selected above for
-the release being tested, including when supplying a prebuilt jar.
+`mvn package`, in live and integration cases alike. Build the jar once per Striim series and test
+that file on each release of the series.
 
 | Variable | Selects |
 |---|---|
@@ -111,12 +120,13 @@ the release being tested, including when supplying a prebuilt jar.
 
 The first one set wins, in that order. Set them in the shell; `.env` does not hold them.
 
-- **A folder**, which any of the three may name, must hold exactly one jar for the module and the
-  release's selected suffix, named `<module>[V<version>]-<suffix>.jar` (for example `ReferenceOpV1-5.4.jar`),
-  in it or below it. No match, or more than one, is an error and the case does not run; another
-  module's jar is never used.
-- **A named file** must end in `-<suffix>.jar` for the release's selected suffix (for example
-  `ReferenceOpV1-5.4.jar`); otherwise the case does not run.
+- **A folder**, which any of the three may name, must hold exactly one jar for the module named
+  `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`) or named for the
+  release's suffix selected above (`ReferenceOpV1-5.4.2.jar`), in it or below it. No match, or
+  more than one (a release-named jar beside a series-named one included), is an error and the case
+  does not run; another module's jar is never used.
+- **A named file** must end in `-<series>.jar` or the release's selected suffix (for example
+  `ReferenceOpV1-5.4.jar` or `ReferenceOpV1-5.4.2.jar`); otherwise the case does not run.
 - **A shared named file** selected by `SLT_PREBUILT_JAR` is refused if its `Striim-Module-Name`
   manifest entry names another module. The entry must match the module folder's name, optionally
   followed by `V<version>`, ignoring case. A jar without the entry (every UDF jar) must instead be
