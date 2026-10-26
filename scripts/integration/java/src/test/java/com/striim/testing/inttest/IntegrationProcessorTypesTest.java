@@ -48,6 +48,7 @@ class IntegrationProcessorTypesTest {
         File stubJar = buildStubTypeOpJar(tempDir);
 
         WAEvent input = new WAEvent();
+        input.metadata = new java.util.HashMap<>();
         input.metadata.put("TableName", "SRC.TBL");
 
         Map<String, Object> types = Map.of("SRC.TBL", List.of("COL_A", "COL_B", "COL_C"));
@@ -69,6 +70,7 @@ class IntegrationProcessorTypesTest {
         File stubJar = buildStubTypeOpJar(tempDir);
 
         WAEvent input = new WAEvent();
+        input.metadata = new java.util.HashMap<>();
         input.metadata.put("TableName", "SRC.TBL");
         Map<String, Object> types = Map.of("SRC.TBL", List.of("COL_A", "COL_B", "COL_C"));
 
@@ -102,6 +104,7 @@ class IntegrationProcessorTypesTest {
         File stubJar = buildStubTypeOpJar(tempDir);
 
         WAEvent input = new WAEvent();
+        input.metadata = new java.util.HashMap<>();
         input.metadata.put("TableName", "SRC.TBL");
         Map<String, Object> types = Map.of("SRC.TBL", List.of("COL_A", "COL_B", "COL_C"));
 
@@ -125,6 +128,7 @@ class IntegrationProcessorTypesTest {
         File stubJar = buildStubTypeOpJar(tempDir);
 
         WAEvent input = new WAEvent();
+        input.metadata = new java.util.HashMap<>();
         input.metadata.put("TableName", "SRC.TBL");
 
         List<WAEvent> output = IntegrationProcessor.drive(stubJar, Map.of(), List.of(input), null, "ns", "src");

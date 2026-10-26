@@ -317,9 +317,12 @@ def docker_ls(pattern: str, nodes=None) -> list:
     """The listed matches on every node; ``InventoryError`` when any node's listing cannot be read."""
     found = set()
     for n in (nodes if nodes is not None else _nodes()):
-        r = _docker(["docker", "exec", n, "sh", "-c", f"ls -1d {pattern} 2>/dev/null; echo {_LS_DONE}"])
+        r = _docker(["docker", "exec", n, "sh", "-c", f"LC_ALL=C ls -1d {pattern}; echo {_LS_DONE}"])
         lines = [ln.strip() for ln in (getattr(r, "stdout", "") or "").splitlines() if ln.strip()]
-        if getattr(r, "returncode", 1) != 0 or not lines or lines[-1] != _LS_DONE:
+        # A pattern that matches nothing is "No such file"; any other ls error is an unreadable listing.
+        errors = [ln for ln in (getattr(r, "stderr", "") or "").splitlines()
+                  if ln.strip() and "No such file or directory" not in ln]
+        if getattr(r, "returncode", 1) != 0 or not lines or lines[-1] != _LS_DONE or errors:
             raise InventoryError(f"listing {pattern} on {n} could not be read (rc {getattr(r, 'returncode', None)}): "
                                  f"{(getattr(r, 'stderr', '') or '').strip()}")
         found.update(lines[:-1])

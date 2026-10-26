@@ -67,6 +67,18 @@ def _admin(rows=None, description=None):
     return admin
 
 
+def _executed(admin):
+    """Record every statement the admin executes, across all the connections it opens."""
+    conns = []
+
+    def fake_get_conn(attempts=30, delay=2.0):
+        conns.append(FakeConn())
+        return conns[-1]
+
+    admin._get_conn = fake_get_conn
+    return lambda: [st for c in conns if hasattr(c, "last_cursor") for st in c.last_cursor.executed]
+
+
 # ---- identifier validation --------------------------------------------------
 
 def test_check_safe_identifier():
@@ -153,8 +165,9 @@ def test_select_rows_with_explicit_schema():
 
 def test_run_sql_executes_single_statement():
     admin = _admin()
+    executed = _executed(admin)
     admin.run_sql("CREATE TABLE test (id INT)")
-    # Verify it was executed
+    assert executed() == ["CREATE TABLE test (id INT)"]
 
 
 def test_run_sql_executes_multiple_statements():
@@ -164,8 +177,9 @@ def test_run_sql_executes_multiple_statements():
     INSERT INTO t1 VALUES (1);
     INSERT INTO t1 VALUES (2);
     """
+    executed = _executed(admin)
     admin.run_sql(sql)
-    # Verify multiple statements were split and executed
+    assert executed() == ["CREATE TABLE t1 (id INT)", "INSERT INTO t1 VALUES (1)", "INSERT INTO t1 VALUES (2)"]
 
 
 def test_run_sql_ignores_empty_string():
@@ -182,8 +196,9 @@ def test_run_sql_strips_comments():
     CREATE TABLE t (id INT);
     -- Another comment
     """
+    executed = _executed(admin)
     admin.run_sql(sql)
-    # Should handle comments gracefully
+    assert executed() == ["CREATE TABLE t (id INT)"]
 
 
 def test_run_sql_does_not_split_on_a_semicolon_inside_a_comment():
@@ -233,11 +248,18 @@ def test_reset_test_objects_drops_tid_tables():
     ]
 
     admin = MySQLAdmin(config)
-    admin._get_conn = lambda attempts=30, delay=2.0: FakeConn(found_tables, [("SCHEMA",), ("TABLE",)])
+    conns = []
 
-    # This should construct DROP statements for only mytst_* tables
+    def fake_get_conn(attempts=30, delay=2.0):
+        conns.append(FakeConn(found_tables, [("SCHEMA",), ("TABLE",)]))
+        return conns[-1]
+
+    admin._get_conn = fake_get_conn
     admin.reset_test_objects("mytst_")
-    # If the method ran without error, it worked (fake connection doesn't really drop)
+    drops = [st for c in conns for st in c.last_cursor.executed if st.startswith("DROP")]
+    assert sorted(drops) == ["DROP TABLE IF EXISTS `qasource`.`mytst_events`",
+                             "DROP TABLE IF EXISTS `qasource`.`mytst_users`",
+                             "DROP TABLE IF EXISTS `qatarget`.`mytst_output`"]
 
 
 def test_reset_test_objects_sanitizes_tid():
@@ -276,14 +298,16 @@ def test_reset_test_objects_handles_no_matching_tables():
 
 def test_create_schema_executes_create_statement():
     admin = _admin()
+    executed = _executed(admin)
     admin.create_schema("myschema")
-    # Verify CREATE SCHEMA statement was executed
+    assert executed()[0] == "CREATE SCHEMA IF NOT EXISTS myschema"
 
 
 def test_drop_schema_executes_drop_statement():
     admin = _admin()
+    executed = _executed(admin)
     admin.drop_schema("myschema")
-    # Verify DROP SCHEMA statement was executed
+    assert executed() == ["DROP SCHEMA IF EXISTS myschema"]
 
 
 # ---- ensure_setup (idempotent provisioning) ---------------------------------
@@ -301,8 +325,12 @@ def test_ensure_setup_idempotent():
 def test_reset_schemas_drops_and_recreates():
     """reset_schemas provides a clean slate by dropping and recreating schemas."""
     admin = _admin()
-    # Should not raise
+    executed = _executed(admin)
     admin.reset_schemas()
+    stmts = executed()
+    for schema in ("qasource", "qatarget"):
+        drop, create = stmts.index(f"DROP SCHEMA IF EXISTS {schema}"), stmts.index(f"CREATE SCHEMA {schema}")
+        assert drop < create
 
 
 # ---- drop_test_tables (teardown hook used by plugin.teardown_ddl_tables) -----

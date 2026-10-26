@@ -55,6 +55,10 @@ class ExactReadError(Exception):
         self.code = code
 
 
+class ExactNotYet(ExactReadError):
+    """Nothing to read yet: a legacy case polls again, a lifecycle case fails."""
+
+
 def parse_manifest_block(raw: dict, path, lifecycle=None) -> dict | None:
     """C8.1 at load. ``lifecycle`` is accepted for the load order only; ownership is a run-time check."""
     try:
@@ -331,6 +335,10 @@ def _drive(kind: str, prepared: list, m, *, lifecycle: bool, collector, status_p
                 p.done(p.evaluate(max(0.05, remaining)))
                 if p.result[0] or lifecycle:
                     pending.remove(p)
+            except ExactNotYet as e:
+                p.error(e.code, str(e))
+                if lifecycle:
+                    pending.remove(p)
             except (canon.CanonError, ExactReadError) as e:
                 p.error(e.code, str(e))
                 pending.remove(p)
@@ -539,6 +547,9 @@ def assert_exact_file(exact_specs: list, m, *, tokens: dict, owned, lifecycle: b
                         if posixpath.dirname(found) == parent
                     }
                     files += [(node, by_name[name]) for name in _output_names(base, by_name)]
+                if not files:
+                    # Never equal, even to a header-only golden.
+                    raise ExactNotYet("exact-file-missing", f"no output file matches {path}*")
                 if decl.order == "sequence" and len(files) != 1:
                     raise ExactReadError("order-source-ambiguous",
                                          f"order: sequence needs exactly one file on one node for {path}*, found "

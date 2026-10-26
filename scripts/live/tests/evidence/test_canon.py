@@ -208,6 +208,43 @@ def test_timestamptz_equivalent_offsets_equal():
     assert one("timestamptz", actual=dt.datetime(2026, 3, 1, 8, 0, 0, 1, tzinfo=UTC)) != want
 
 
+def test_timestamp_nanoseconds_are_compared():
+    nanos = pytest.importorskip("google.api_core.datetime_helpers").DatetimeWithNanoseconds
+    a = nanos(2026, 3, 1, 8, 0, 0, nanosecond=123456789, tzinfo=UTC)
+    b = nanos(2026, 3, 1, 8, 0, 0, nanosecond=123456001, tzinfo=UTC)
+    assert one("timestamptz", actual=a) == [["c", "timestamptz", "2026-03-01T08:00:00.123456789Z"]]
+    assert one("timestamptz", actual=a) != one("timestamptz", actual=b)
+    assert one("timestamptz", "2026-03-01T08:00:00.123456789Z", a) == \
+        [["c", "timestamptz", "2026-03-01T08:00:00.123456789Z"]] * 2
+    assert one("timestamp", "2026-03-01T08:00:00.123456789", nanos(2026, 3, 1, 8, 0, 0, nanosecond=123456789)) == \
+        [["c", "timestamp", "2026-03-01T08:00:00.123456789"]] * 2
+    # whole microseconds keep the six-digit form, so existing digests do not move
+    assert one("timestamptz", "2026-03-01T08:00:00.123456000Z",
+               nanos(2026, 3, 1, 8, 0, 0, nanosecond=123456000, tzinfo=UTC)) == \
+        [["c", "timestamptz", "2026-03-01T08:00:00.123456Z"]] * 2
+    refused("invalid-value:expected:c", lambda: one("timestamptz", expected="2026-03-01T08:00:00.1234567890Z"))
+
+
+def test_date_golden_and_actual():
+    assert one("date", "2026-09-01", dt.date(2026, 9, 1)) == [["c", "date", "2026-09-01"]] * 2
+    refused("invalid-value:expected:c", lambda: one("date", expected="2026-9-1"))
+    refused("invalid-value:expected:c", lambda: one("date", expected="2026-02-30"))
+    refused("invalid-value:expected:c", lambda: one("date", expected="2026-09-01T00:00:00"))
+    # a datetime is not silently truncated to its date
+    refused("invalid-value:actual:c", lambda: one("date", actual=dt.datetime(2026, 9, 1, 8)))
+
+
+@pytest.mark.parametrize("data, code", [(b"", "golden-empty"), (b"id,id\n1,2\n", "golden-header"),
+                                        (b"id,\n1,2\n", "golden-header"), (b"id,name\n1\n", "golden-ragged")])
+def test_golden_shape_is_refused(data, code):
+    refused(code, lambda: canon.parse_golden(data, db_route=True))
+
+
+def test_decimal_beyond_working_precision_is_refused():
+    refused("invalid-value:actual:c", lambda: one("decimal:2", actual=D("1E+80")))
+    refused("invalid-value:expected:c", lambda: one("decimal:2", expected="1e80"))
+
+
 @pytest.mark.parametrize("case", ["naive-aware", "aware-naive"])
 def test_timestamp_zone_mismatch_refused(case):
     if case == "naive-aware":           # a timestamptz column given a naive value on either side

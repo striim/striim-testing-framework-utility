@@ -58,6 +58,12 @@ public final class IntegrationSeams {
                 return null;
             case "pageSize":
                 return 42;
+            case "namespace":
+                return properties.get("striim.op.namespace");
+            case "passwordClass":
+                return properties.get("Pw").getClass().getName();
+            case "putAndRead":
+                return String.valueOf(properties.put("Mutated", "yes"));
             default:
                 throw new IllegalArgumentException("no channel seam for " + methodName);
         }

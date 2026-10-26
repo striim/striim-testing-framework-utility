@@ -345,3 +345,13 @@ def test_recapture_with_no_value_yet_is_a_miss_not_an_error():
 def test_parse_refuses_bad_recapture(recap):
     with pytest.raises(MonitorSpecError, match="recapture"):
         parse_monitor_specs([{"component": "Src", "recapture": recap, "metrics": {"input": 1}}])
+
+
+def test_an_absent_only_spec_fails_on_an_empty_mon_body():
+    # A misresolved component reads as {}: every figure "absent", which proves nothing.
+    with pytest.raises(AssertionFailed, match="MON returned no figures"):
+        assert_monitor(FakeTree({}), "NS.App", [{"component": "Src", "metrics": {
+            "lastErrorPosition": {"absent": True}}}], timeout=0, poll=0)
+    records = assert_monitor(FakeTree({"NS.Src": {"input": "5"}}), "NS.App", [{"component": "Src", "metrics": {
+        "lastErrorPosition": {"absent": True}}}], timeout=0, poll=0)
+    assert records[0]["status"] == "passed"

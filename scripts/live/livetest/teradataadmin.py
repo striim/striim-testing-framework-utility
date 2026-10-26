@@ -220,7 +220,12 @@ class TeradataAdmin:
         # assertion confirms with this (assertions/data.py _committed). NOWAIT fails at once if
         # the writer still holds the table, which the poll loop treats as "not yet".
         t = self._qualified(table)
-        _, rows = self._query(f"LOCKING TABLE {t} FOR READ NOWAIT SELECT COUNT(*) FROM {t}")
+        try:
+            _, rows = self._query(f"LOCKING TABLE {t} FOR READ NOWAIT SELECT COUNT(*) FROM {t}")
+        except Exception as e:
+            if "[Error 7423]" in str(e):
+                raise NotYetReadable(f"{t} is locked by a writer") from e
+            raise
         return int(rows[0][0])
 
     def select_rows(self, table: str) -> list[dict]:

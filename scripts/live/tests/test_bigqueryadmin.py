@@ -44,7 +44,7 @@ def test_table_scope_preserves_case():
 @pytest.fixture
 def peer():
     state = SimpleNamespace(mode="normal", requests=[], fields=[{"name": "id", "type": "INTEGER"}],
-                            rows=[{"f": [{"v": "9007199254740993"}]}])
+                            rows=[{"f": [{"v": "9007199254740993"}]}], pending=0)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -62,6 +62,9 @@ def peer():
         def do_GET(self):
             if "/tables/" in self.path:
                 self.reply({"schema": {"fields": state.fields}})
+            elif "/queries/" in self.path and state.pending > 0:
+                state.pending -= 1
+                self.reply({"jobComplete": False})
             else:
                 if state.mode == "slow-query":
                     time.sleep(2.2)
@@ -355,7 +358,16 @@ def test_run_sql_preserves_googlesql_quoted_semicolons(monkeypatch):
     assert sent == statements
 
 
-def test_incomplete_job_poll_cap_is_a_timeout(peer):
+def test_incomplete_job_is_a_timeout_at_the_callers_deadline(peer):
     peer.mode = 'incomplete'
-    with pytest.raises(BigQueryError, match='exact-read-timeout: .*job remained incomplete'):
-        peer.admin.select_rows('slt.t', remaining=12)
+    started = time.monotonic()
+    with pytest.raises(BigQueryError, match='exact-read-timeout'):
+        peer.admin.select_rows('slt.t', remaining=4)
+    assert time.monotonic() - started >= 3
+
+
+def test_a_slow_job_completes_within_the_deadline_after_many_polls(peer):
+    # More incomplete polls than the old fixed cap of 128, well inside the caller's budget.
+    peer.pending = 150
+    assert peer.admin.select_rows('slt.t', remaining=30) == [{'id': 9007199254740993}]
+    assert len([p for p in peer.requests if "/queries/" in p]) == 151

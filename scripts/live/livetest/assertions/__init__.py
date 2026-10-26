@@ -8,6 +8,14 @@ class NotYetReadable(Exception):
     writer's batch stays open."""
 
 
+class PartialRead(NotYetReadable):
+    """A read whose budget ran out before every captured offset was read. ``rows`` is what was
+    read: a lower bound, so enough for `min_rows`, never a count."""
+    def __init__(self, detail, rows):
+        super().__init__(detail)
+        self.rows = rows
+
+
 class AssertionFailed(AssertionError):
     """Raised by an assert_* function when its assertion fails. Carries the structured
     per-spec records built so far so the plugin can still write them to the sidecar,

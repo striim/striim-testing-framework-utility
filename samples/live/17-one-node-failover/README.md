@@ -57,7 +57,7 @@ or unreadable parent cannot qualify as a running owner.
 
 Owner selection finishes before the seed. Progress polling reads status and count; once the window opens, one bounded check reads flow MON plus the selected server's DESCRIBE and STATUS, then rechecks count before issuance. Evidence retains the window-opening value/time and the post-interruption count. The target table CHECK sleeps 10ms per inserted row without changing its values; the 2400-row window therefore lasts about 24 seconds with one writer. The check belongs to the owned table and disappears when that table is dropped. If the window still closes, the case fails and retains both observations.
 
-The recovery cases share the reviewed CSV in `samples/live/14-progress-recovery/expected/rows.csv`.
-From the framework checkout, run `python3 tools/prepare-recovery-goldens.py` before
-copying or running these cases. Test environment setup also prepares the copies.
+Each recovery case carries a byte-identical copy of the reviewed CSV in
+`samples/live/14-progress-recovery/expected/rows.csv`. After a reviewed change to it, run
+`python3 tools/prepare-recovery-goldens.py --write` from the framework checkout to update the copies.
 The shared rows follow `(n, row-n)` for every integer from 1 through 5000.

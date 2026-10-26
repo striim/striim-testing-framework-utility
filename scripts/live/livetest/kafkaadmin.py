@@ -180,7 +180,8 @@ class KafkaAdmin:
             return self._consumer_factory(group)
         from confluent_kafka import Consumer
         return Consumer({"bootstrap.servers": self.dsn["broker"], "group.id": group,
-                         "auto.offset.reset": "earliest", "enable.auto.commit": False})
+                         "auto.offset.reset": "earliest", "enable.auto.commit": False,
+                         "enable.partition.eof": True})
 
     # ---- schema helpers -----------------------------------------------------
 
@@ -398,8 +399,9 @@ class KafkaAdmin:
                        strict_json=False, payload="avro", strict=False) -> list[dict]:
         """Read keys and typed values; strict snapshots bound metadata and require every offset.
 
-        Legacy assertions leave strict off: a not-yet-created topic is empty and poll_budget
-        starts after metadata/watermarks, so their outer assertion timeout remains authoritative.
+        Legacy assertions leave strict off: a missing topic or an incomplete read raises
+        NotYetReadable and poll_budget starts after metadata/watermarks, so their outer
+        assertion timeout remains authoritative.
         """
         def decode(message):
             if payload == "json":
@@ -427,7 +429,7 @@ class KafkaAdmin:
         # manifest `timeout`, so that outer loop is authoritative; a small per-call budget keeps
         # a single read from overrunning a short manifest timeout (the old hardcoded 30s could
         # overrun a `timeout: 15` test ~2x before the outer deadline was even checked).
-        from confluent_kafka import TopicPartition
+        from confluent_kafka import KafkaError, TopicPartition
         c = self._consumer(f"slt-read-{topic}-{int(time.monotonic()*1000)}")
         try:
             deadline = time.monotonic() + poll_budget if strict else 0
@@ -441,7 +443,8 @@ class KafkaAdmin:
             if t is None or t.error is not None:
                 if strict:
                     raise RuntimeError("kafka_record topic metadata unavailable")
-                return []
+                from livetest.assertions import NotYetReadable
+                raise NotYetReadable(f"topic {topic} does not exist")
             # Assign each partition at its LOW watermark and count (hi - lo). Cleared
             # topics start at 0, but a reused/live broker may have a non-zero low
             # (retention/compaction) — assuming 0 would over-count and wait out the
@@ -460,18 +463,27 @@ class KafkaAdmin:
                 deadline = time.monotonic() + poll_budget
             while remaining > 0 and time.monotonic() < deadline:
                 msg = c.poll(min(1.0, budget()) if strict else 1.0)
-                if msg is None or msg.error() is not None:
+                if msg is None:
                     continue
-                if strict:
-                    p, offset = msg.partition(), msg.offset()
-                    if p not in captured:
+                if msg.error() is not None:
+                    # End of partition: every offset below hi was fetched, including ones that
+                    # deliver no message (transaction markers, aborted or compacted records).
+                    if msg.error().code() == KafkaError._PARTITION_EOF and msg.partition() in captured:
+                        next_offset, hi = captured[msg.partition()]
+                        remaining -= max(0, hi - next_offset)
+                        captured[msg.partition()][0] = max(next_offset, hi)
+                    continue
+                p, offset = msg.partition(), msg.offset()
+                if p not in captured:
+                    if strict:
                         raise RuntimeError("kafka_record received an uncaptured partition")
-                    next_offset, hi = captured[p]
-                    if offset < next_offset or offset >= hi:
-                        continue
-                    # Offset positions, not message count, bound each partition.
-                    remaining -= min(offset + 1, hi) - next_offset
-                    captured[p][0] = offset + 1
+                    continue
+                next_offset, hi = captured[p]
+                if offset < next_offset or offset >= hi:
+                    continue
+                # Offset positions, not message count, bound each partition.
+                remaining -= min(offset + 1, hi) - next_offset
+                captured[p][0] = offset + 1
                 size += len(msg.value() or b"") + len(msg.key() or b"")
                 if max_bytes is not None and size > max_bytes:
                     from livetest.canon import CanonError
@@ -480,10 +492,12 @@ class KafkaAdmin:
                 if max_rows is not None and len(rows) > max_rows:
                     from livetest.canon import CanonError
                     raise CanonError("canonical-limit-exceeded", "Kafka decoded rows exceed max_rows")
-                if not strict:
-                    remaining -= 1
             if strict and remaining:
                 raise RuntimeError(f"kafka_record snapshot incomplete: {remaining} captured message(s) unread; refusing partial results")
+            if remaining > 0:
+                # A partial read is not a count: the caller's poll loop retries until its deadline.
+                from livetest.assertions import PartialRead
+                raise PartialRead(f"topic {topic}: {remaining} offset(s) unread within {poll_budget}s", rows)
             return rows
         finally:
             c.close()

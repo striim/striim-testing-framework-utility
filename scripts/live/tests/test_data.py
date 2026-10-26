@@ -378,3 +378,69 @@ def test_a_diagnostic_that_cannot_read_does_not_replace_the_real_failure(tmp_pat
     assert "rows=2, want exactly 0" in msg
     assert "could not be read: connection went away" in msg
 
+
+
+# ---- min_rows reads committed rows; short golden rows are refused --------------------------
+
+class DirtyPg(FakePg):
+    """mssql/teradata shape: count_rows sees executed rows, count_rows_committed committed ones."""
+    def __init__(self, dirty, committed): super().__init__(dirty, []); self.committed = committed
+    def count_rows_committed(self, t): return self.committed
+
+
+def test_min_rows_is_not_satisfied_by_uncommitted_rows(tmp_path):
+    with pytest.raises(AssertionFailed, match="not yet committed"):
+        assert_data(DirtyPg(5, 0), [{"target": "dbo.x", "min_rows": 5}], tmp_path, timeout=0)
+
+
+def test_min_rows_passes_once_enough_rows_are_committed(tmp_path):
+    records = assert_data(DirtyPg(6, 5), [{"target": "dbo.x", "min_rows": 5}], tmp_path, timeout=0)
+    assert records[0]["status"] == "passed"
+
+
+def test_a_long_golden_row_is_refused(tmp_path):
+    p = tmp_path / "rows.csv"
+    p.write_text("id,name\n1,a,b\n")
+    with pytest.raises(DataSpecError, match="data row 1 has more cells than the header"):
+        load_golden(p)
+
+
+def test_a_short_golden_rows_missing_trailing_cells_are_null(tmp_path):
+    # Field goldens rely on this (spanner-google-allow-commit-timestamp: "DO NOT FIX THE SHORT ROW").
+    p = tmp_path / "rows.csv"
+    p.write_text("id,name,ts\n1,a\n")
+    assert load_golden(p) == [{"id": "1", "name": "a", "ts": None}]
+
+
+def test_a_count_that_is_not_yet_readable_keeps_polling_and_fails_at_the_deadline(tmp_path):
+    from livetest.assertions import NotYetReadable
+
+    class Unready(FakePg):
+        def count_rows(self, t): raise NotYetReadable("topic t does not exist")
+
+    with pytest.raises(AssertionFailed, match="not readable yet: topic t does not exist"):
+        assert_data(Unready(0, []), [{"target": "t", "db": "kafka", "rows": 0}], tmp_path, timeout=0)
+
+
+class LockedPg(DirtyPg):
+    """A streaming writer that holds its lock on every committed read."""
+    def count_rows_committed(self, t):
+        from livetest.assertions import NotYetReadable
+        raise NotYetReadable("t1 is locked by a writer")
+
+
+def test_min_rows_against_a_writer_that_never_releases_its_lock_uses_the_dirty_count_at_the_deadline(tmp_path):
+    records = assert_data(LockedPg(9, 0), [{"target": "t1", "min_rows": 5}], tmp_path, timeout=0)
+    assert records[0]["status"] == "passed" and "dirty count" in records[0]["detail"]
+
+
+def test_exact_rows_never_falls_back_to_the_dirty_count(tmp_path):
+    with pytest.raises(AssertionFailed, match="committed count not readable"):
+        assert_data(LockedPg(5, 0), [{"target": "t1", "rows": 5}], tmp_path, timeout=0)
+
+
+def test_a_committed_read_error_is_named_not_reported_as_uncommitted(tmp_path):
+    class Denied(DirtyPg):
+        def count_rows_committed(self, t): raise PermissionError("SELECT permission denied on t1")
+    with pytest.raises(AssertionFailed, match="committed count could not be read: PermissionError"):
+        assert_data(Denied(9, 0), [{"target": "t1", "min_rows": 5}], tmp_path, timeout=0)

@@ -10,8 +10,10 @@ One entry per release, newest first: the pull requests it contains.
   fails `fault-missed`. Keep work in flight at the boundary, or use a bounded
   progress trigger. Progress recovery also refuses a target that reaches its upper
   bound while the interruption takes effect. (#22)
-- **Tags affect selection:** `-k` also matches manifest tags and can select more
-  cases. Each tag has a `tag_<name>` pytest marker, for example `-m tag_p1`. (#27, #34)
+- **Tags affect selection:** in a direct pytest run of the engine, `-k` also matches
+  manifest tags and can select more cases. Each tag has a `tag_<name>` pytest marker,
+  for example `-m tag_p1`. `striim-test run` takes neither flag; its PATH, `--suite`
+  and `--case` selection is unchanged. (#27, #34)
 - A DEPLOY/START refusal with `expect_halt: true` no longer passes while silently
   skipping declared post-start work, lifecycle or assertions. Use a matching
   `expect_halt_contains` for an intentional startup refusal; evidence records what

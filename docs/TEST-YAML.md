@@ -23,7 +23,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `kafka_cleanup_topics` | list[string] | no | `[]` | extra Kafka topics the test's **app** creates that the framework didn't derive itself — e.g. a persisted stream's derived `<ns>_<streamName>` data topic and its `<topic>_CHECKPOINT` companion. Each entry is `${...}`-token-rendered (embed `${NS}`/`${TID}` for per-test uniqueness) and appended to the same best-effort per-test topic delete that already removes the derived `${KAFKA_SRC_TOPIC}`/`${KAFKA_TGT_TOPIC}` at teardown. Requires `kafka` in `requires` (loader fails loud otherwise). Absent/empty (every test that doesn't set it) is a strict no-op |
 | `ddl` | string \| list | no | none | schema setup, run once before seed/deploy. Plain string (or a bare list item) → the default `postgres-source` route. List form — entries in the same style `upload:`/`server_files:` use: `- file: <name>` plus an optional `db: <route>` (default `postgres-source`), applied in order. Routes are `<svc>-source`/`<svc>-target` (fixed `qasource`/`qatarget` schemas) plus the emulator routes (`spanner-*`, `gcs`, `kafka`) — see `SERVICES.md`. **Deprecated** (still parses, warns naming the file): the route-keyed entry `{source_db\|target_db: <route>, file: <name>}` — the route value already carries the direction; write `db:` |
 | `seed` | string \| list | no | none | data setup, same shape/back-compat as `ddl`, plus two per-entry keys `ddl` does not take: **`when`** (`pre_deploy` (default) \| `post_start` \| `post_recover`) and **`after`** — see below |
-| `action` | list | no | `[]` | app lifecycle operations run in order after every `post_start` seed and before every assertion tier. Five types: **`stop_start_cycle`** (`cycles`, `delay_before_stop`, `stop_duration`, optional `concurrent:` SQL loops on background threads); **`drop_recreate_app`** (`app` — token-rendered so a multi-app manifest names just the piece it rebuilds; `delay_before_stop`, `recreate_wait`, `seed`, and `capture`/`stopped_seed`/`tokens`, see [below](#action-drop_recreate_app--rebuild-the-app-from-its-tql)) which STOPs, `DROP APPLICATION … FORCE`s via `StriimClient._force_drop`, then rebuilds the app from its own `CREATE OR REPLACE APPLICATION … END` block in the rendered TQL and waits for RUNNING; **`service_outage`** (see [below](#action-service_outage--take-a-required-service-down-mid-run)) which stops a required service's container mid-run and starts it again; **`capture`** ([below](#action-capture--read-a-value-into-a-token)), which reads a `DESCRIBE` or `MON` field into a token; and **`alter_recompile`** ([below](#action-alter_recompile--replace-components-in-place)), the in-place `ALTER APPLICATION … RECOMPILE` upgrade. Gallery: `framework-action`, `framework-drop-recreate` |
+| `action` | list | no | `[]` | app lifecycle operations run in order after every `post_start` seed and before every assertion tier. Five types: **`stop_start_cycle`** (`cycles`, `delay_before_stop`, `stop_duration`, optional `concurrent:` SQL loops on background threads, each `{db, file, loop_interval}`: `db` must be a route of a `requires:` service, and the case fails if a loop never succeeds or any of its statements errors); **`drop_recreate_app`** (`app` — token-rendered so a multi-app manifest names just the piece it rebuilds; `delay_before_stop`, `recreate_wait`, `seed`, and `capture`/`stopped_seed`/`tokens`, see [below](#action-drop_recreate_app--rebuild-the-app-from-its-tql)) which STOPs, `DROP APPLICATION … FORCE`s via `StriimClient._force_drop`, then rebuilds the app from its own `CREATE OR REPLACE APPLICATION … END` block in the rendered TQL and waits for RUNNING; **`service_outage`** (see [below](#action-service_outage--take-a-required-service-down-mid-run)) which stops a required service's container mid-run and starts it again; **`capture`** ([below](#action-capture--read-a-value-into-a-token)), which reads a `DESCRIBE` or `MON` field into a token; and **`alter_recompile`** ([below](#action-alter_recompile--replace-components-in-place)), the in-place `ALTER APPLICATION … RECOMPILE` upgrade. Gallery: `framework-action`, `framework-drop-recreate` |
 | `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
 | `example` | string | no | none | app directory, relative to the project root (`SLT_PROJECT_ROOT`, this clone when unset), with or without an OP/UDF. When set, `tql`/`ddl`/`seed`/`upload` are read from THERE; only `expected/*.csv` and entries marked [`local: true`](#local-true--test-only-files-beside-an-example) stay test-local. Absent → everything is relative to the test dir (self-contained regression style) |
 | `op` | mapping \| list | no | none | build + upload OpenProcessor jar(s), registered via `LOAD OPEN PROCESSOR` — single mapping or a list, see below |
@@ -31,12 +31,12 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `server_files` | list | no | `[]` | place test-dir files onto the Striim server before deploy or after RUNNING, or upload and register a prebuilt jar (`load:`, from the test dir or outside it) — see below |
 | `timeout` | int | no | `120` | seconds an `assert:` tier polls before failing |
 | `fixture_timeout` | number | no | unset | Opt-in Postgres fixture statement deadline in seconds, independent of assertion `timeout`; positive finite value up to `2147483.647`, applies to DDL/slot setup and seed SQL including action seeds. Overrides `SLT_PG_FIXTURE_TIMEOUT`; if both are unset, server statement/lock policy is retained. An enabled budget also sets the lock deadline to min(15 seconds, half the statement budget). Concurrent action DML retains its previous unbounded behavior. |
-| `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, p1]`); `-k p1` uses case-insensitive substring matching against paths, tags and markers, while `-m tag_p1` selects the exact tag marker (case is preserved). Markers are registered automatically as `tag_<name>`, replacing each character outside ASCII letters, digits and `_` with `_` (e.g. `slow-path` becomes `tag_slow_path`); tags that sanitise to the same name share a marker |
+| `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, p1]`). `striim-test run` does not select by tag. In a direct pytest run of the engine, `-k p1` uses case-insensitive substring matching against paths, tags and markers, while `-m tag_p1` selects the exact tag marker (case is preserved). Markers are registered automatically as `tag_<name>`, replacing each character outside ASCII letters, digits and `_` with `_` (e.g. `slow-path` becomes `tag_slow_path`); tags that sanitise to the same name share a marker |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
 | `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
 | `expect_halt` | bool | no | `false` | `true` => the app is expected to reach a terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) instead of RUNNING -- a raise-path test. This can be satisfied at any phase: a synchronous failure during DEPLOY/START itself (the TQL-import call raises before the app is even running), the app never reaching RUNNING during startup, or a later terminal transition while the app is running (polled the same way as any other `assert:` tier). Alone, `expect_halt: true` satisfies the manifest's "at least one assertion" requirement -- no `assert:` block is needed. To also pin *why* it halted, add `expect_halt_contains`. A DEPLOY/START failure skips everything the case declares to run after start: `post_start` seeds, generate specs and server files, `lifecycle:`, and every `assert:` tier. If the case declares any of these, a DEPLOY/START failure fails the case and names them, unless `expect_halt_contains` matches the failure text. Set `expect_halt_contains` when a startup refusal is the expected outcome. The passing record then lists what was skipped. |
-| `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
+| `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: only the server-log text written since this case deployed is searched (a node whose log size could not be read at deploy is not searched). It is not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text written meanwhile could produce a false pass. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
 | `recover` | mapping | no | — | interrupt the app after `post_start` work begins and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
 | `exact` | mapping | no | none | turns on exact comparison for the `data`, `diff` and `file` specs that carry their own `exact:`: every row counted, values compared by declared type. See **`exact:`** below |
 | `audit` | mapping | no | none | `{version: 1}` enables audited exact specs; each names its append writer, and Spanner also names its sink-generated delivery key |
@@ -966,7 +966,7 @@ action:
 | `cycles` | stop/start repetitions (with `RESTART`: restarts) |
 | `delay_before`, `down_for`, `ready_timeout`, `settle` | durations (`3`, `"500ms"`, `"2m"`); `0` is legal |
 | `signal` | `KILL`: `docker kill -s KILL`, no shutdown at all. `TERM`: graceful stop via `docker stop`, which sends the image's stop signal and KILLs after the grace period. The postgres image's stop signal is SIGINT, a fast shutdown that sends `57P01` (admin_shutdown) to every session, so the app sees a different error than under `KILL`. A service whose PID 1 ignores that signal sets `graceful_stop` (see `YOUR-OWN-SERVICES.md`); `TERM` then runs it in the container and waits up to `graceful_stop_timeout` for the container to exit, and fails the test (after a KILL) if it does not. mssql sets it: its PID 1 is a bash wrapper, so `docker stop` would end in SIGKILL. `RESTART`: the container keeps running; the service's `restart_in_place` command (see `YOUR-OWN-SERVICES.md`) restarts the server inside it and returns once it is back, for a server whose container cannot be stopped without harm (the Teradata VM). The manifest fails to load if the service has no `restart_in_place`, and refuses `down_for` and `ready_timeout`. A hook that fails or does not return within `restart_in_place_timeout` fails the test and leaves the container running: it is never KILLed |
-| `concurrent` | as for `stop_start_cycle`: SQL loops on background threads for the whole action |
+| `concurrent` | as for `stop_start_cycle`: SQL loops on background threads for the whole action. Errors on a route of the stopped `service` are expected and do not fail the case; each loop must still succeed at least once |
 
 Per cycle: wait `delay_before`, stop the container and confirm it is not running, wait `down_for`,
 `docker start` it and wait for its healthcheck to report healthy (5 s after running if it has
@@ -1325,8 +1325,8 @@ columns need no entry.
 | `number` | `1.25` | a finite numeric value; quoted numbers and booleans fail |
 | `decimal:<s>` (s 0 to 38) | `118.00` | the value at `s` places; a value that does not fit exactly is `lossy-decimal`, never rounded |
 | `boolean` | `true` or `false` | the value |
-| `timestamptz` | ISO 8601 with `Z` or `±hh:mm` (`2026-09-01T08:00:00+00:00`) | the instant, in UTC |
-| `timestamp` | ISO 8601 without an offset | the local date and time |
+| `timestamptz` | ISO 8601 with `Z` or `±hh:mm` (`2026-09-01T08:00:00+00:00`), up to nine fractional digits | the instant, in UTC, to the nanosecond |
+| `timestamp` | ISO 8601 without an offset, up to nine fractional digits | the local date and time |
 | `date` | `2026-09-01` | the date |
 | `binary:hex`, `binary:base64` | the bytes in that encoding | the bytes |
 | `json` | JSON text | the JSON, with keys sorted; numbers keep their exact text (`1.0` is not `1.00`) |
@@ -1369,7 +1369,8 @@ existing parsing and comparison behavior.
   when the test requires a single total order. Wire bytes and decoded rows are bounded.
   An incomplete captured Kafka snapshot fails rather than returning a matching subset. Each partition is bounded by its captured high offset; later messages cannot hide unread captured rows. Missing or erroneous topic metadata is a read failure.
   Other routes are refused at load (`exact-route-unsupported`).
-- `file`: Docker mode only; the file is read from the cluster's nodes. With `order: sequence` the
+- `file`: Docker mode only; the file is read from the cluster's nodes. No matching output file fails
+  (`exact-file-missing`), even with a header-only golden. With `order: sequence` the
   path must match exactly one file on one node (`order-source-ambiguous`).
 - With a `lifecycle:` block, every table an exact spec reads (a diff's source too) must be one this
   test's `ddl:` created, and every file must be under `${OWNED_DIR}/` (`exact-target-not-owned`).
@@ -1435,7 +1436,7 @@ The declaration follows the value returned by the reader, not the formatted text
 | Spanner BOOL / Avro boolean | `boolean` | strings are not booleans |
 | Spanner STRING / Avro string or enum | `text` (or native undeclared text outside strict mode) | strict mode requires the declaration |
 | Spanner DATE / Avro logical date | `date` | compare the calendar date |
-| Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | this canonical profile uses microseconds; golden fractions have at most six digits. Project a separate integer/text field to check finer precision |
+| Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | compared to the nanosecond; golden fractions have at most nine digits |
 | Spanner BYTES / Avro bytes or fixed | `binary:hex` or `binary:base64` | a byte value needs its declared encoding |
 | Spanner JSON, compatible arrays / Avro nested records or arrays | `json` | every nested value must be JSON-compatible; arrays of raw bytes or dates need a supported projection. Spanner client JSON decoding can round numbers, merge duplicate keys and conflate JSON null with SQL NULL; project raw text to check those distinctions |
 | nullable field / Avro union with null | the non-null value's declaration | `<null>` is null; incompatible mixed scalar branches need a supported projection |
@@ -1729,7 +1730,8 @@ This catches typos (`timout: 30` never applied its timeout) and keys dropped in 
 both of which used to load silently and take the default — which is how a CDC test ends up
 seeding before its reader starts and failing for a reason the manifest does not show.
 
-The same rule already applied inside `op:`/`udf:` entries; it now applies at the top level too.
+The same rule applies inside `op:`/`udf:` entries and to `assert:` tier names, in live and
+integration cases alike.
 
 ## `op:` / `udf:` — building/uploading OpenProcessor or UDF jars
 
@@ -1864,7 +1866,15 @@ assert:
 ```
 Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `match` compares
 *stringified* values; use `<null>` in the golden CSV for SQL/JSON null. By default it compares
-distinct sets; pin `rows: N` too if cardinality matters.
+distinct sets; pin `rows: N` too if cardinality matters. A golden row's missing trailing cells
+are NULL (prefer `<null>`); a row with more cells than the header is refused.
+On mssql and teradata, `rows` and `min_rows` count committed rows only; if the writer still holds
+the table lock at `timeout`, a `min_rows` spec passes on the uncommitted count, so it gives no
+committed-row guarantee where a writer may roll back or retry; use `rows:` for that.
+A Kafka count reads every offset up to the high watermark taken when the read starts (offsets
+that hold no message, such as transaction markers, count as read). It keeps polling while the
+topic does not exist or offsets are unread, and fails at `timeout`; a missing topic never counts
+as 0 rows. A partial read can satisfy `min_rows`, never `rows` or `match`.
 
 Database data specs can add `exact:` as described above. Kafka typed comparison
 uses `project: kafka_record` with full `key.*`/`value.*` projection paths. Its
@@ -2110,8 +2120,9 @@ For each shared key, the JSON column is compared *semantically*: object keys are
 order-independent, and arrays are canonicalized (elements recursively sorted by their
 canonical serialized form) before comparing, so writer-side array order never causes a
 flake. The first differing path is reported, e.g.
-`user_data key=('1',): questions[0].answers[0].RESPONSE (expected 'R1', got None)`. Polls
-until every key matches or the manifest `timeout` expires.
+`user_data key=('1',): questions[0].answers[0].RESPONSE (expected 'R1', got None)`. A boolean
+equals only a boolean: `true` is not `1`. Polls until every key matches or the manifest `timeout`
+expires.
 
 ### `monitor` — what Striim's monitor shows for a component
 
@@ -2145,7 +2156,7 @@ other keys, a non-numeric bound, or `min > max`. Counts only: rates and clock fi
 `target:` and `component:` are exclusive. `component:` names any component in the app's `MON` tree
 (a name with a dot is used as is; a name the tree does not list is read as `${NS}.<name>`). Matchers
 check a figure's form when its value differs run to run: `{present: true}` (not null, not empty),
-`{absent: true}` (missing or null) and `{matches: <regex>}`. Strings, patterns and component names are
+`{absent: true}` (missing or null; an empty `MON` body fails instead) and `{matches: <regex>}`. Strings, patterns and component names are
 token-rendered when the tier runs, so they can carry a token captured earlier; inside `matches` a
 token's value is regex-escaped, so `"^\\^ ${RESTART}$"` matches that position literally. A matcher is a
 mapping with exactly one of these keys; a pattern is compiled at load unless it carries a token.
@@ -2167,8 +2178,10 @@ assert:
   checkpoint_history: nonempty    # or: empty
 ```
 
-Polls `SHOW <app> CHECKPOINT HISTORY;` until it shows at least one checkpoint (`nonempty`) or none
-(`empty`). Use it to tell an app with a `RECOVERY` clause from one without.
+Polls `SHOW <app> CHECKPOINT HISTORY;`. `nonempty` passes once a checkpoint is shown. `empty`
+reads until `timeout` and fails as soon as one is shown, so set `timeout` longer than the
+`RECOVERY` interval it must rule out. Use it to tell an app with a `RECOVERY` clause from one
+without.
 
 #### `predates` — prove a `recover:` case replayed a seed
 

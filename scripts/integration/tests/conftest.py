@@ -8,6 +8,14 @@ os.environ["SLT_PRE_UP"] = "0"
 
 
 @pytest.fixture(autouse=True)
+def _no_release_matrix(monkeypatch):
+    """A developer's matrix or STRIIM_HOME must not change jar names; tests that need a release set
+    pass one explicitly."""
+    from inttest import opjarrelease
+    monkeypatch.setattr(opjarrelease, "configured_versions", lambda *a, **k: set())
+
+
+@pytest.fixture(autouse=True)
 def _no_pre_up(monkeypatch):
     monkeypatch.setenv("SLT_PRE_UP", "0")
     # The tier reads the project manifest's servicesRoots (inttest.resources.consumer_roots):

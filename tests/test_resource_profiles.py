@@ -715,6 +715,20 @@ def test_finder_ds_store_files_are_not_assets(tmp_path, tier):
     assert after.definition_hash == before.definition_hash
 
 
+def test_provision_build_input_records_are_not_assets(tmp_path):
+    # striim_provision writes these into the checkout's recipe on every provision; git ignores them.
+    root = _write(tmp_path / "services", DEMO)
+    before = rp.select_profile("live", "demo", services_dir=root)
+    _write(root, {"demo/images/striim/files/slt-optional-jars.json": "{}\n",
+                  "demo/images/striim/files/slt-installer-identity.json": "{}\n"})
+    after = rp.select_profile("live", "demo", services_dir=root)
+    assert after.definition_hash == before.definition_hash
+    # Only at that path: the same name elsewhere is an ordinary asset.
+    _write(root, {"demo/sql/slt-optional-jars.json": "{}\n"})
+    assert "sql/slt-optional-jars.json" in {rel for rel, _m, _s in
+                                            rp.select_profile("live", "demo", services_dir=root).assets}
+
+
 @pytest.mark.parametrize("tier", ["live", "integration"])
 def test_absent_file_like_source_is_still_refused(tmp_path, tier):
     root = _write(tmp_path / "services", _mounting("./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro"))

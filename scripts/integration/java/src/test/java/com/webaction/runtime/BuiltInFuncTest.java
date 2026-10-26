@@ -2,6 +2,7 @@ package com.webaction.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -31,9 +32,9 @@ class BuiltInFuncTest {
         event.metadata = new java.util.HashMap<>();
         event.metadata.put("TableName", table);
         event.data = new Object[columnCount];
-        event.dataPresenceBitMap = new byte[(columnCount + 7) / 8];
+        event.dataPresenceBitMap = new byte[columnCount / 7 + 1];
         event.before = new Object[columnCount];
-        event.beforePresenceBitMap = new byte[(columnCount + 7) / 8];
+        event.beforePresenceBitMap = new byte[columnCount / 7 + 1];
         return event;
     }
 
@@ -56,14 +57,42 @@ class BuiltInFuncTest {
     }
 
     @Test
-    void isPresentOutOfRangeIsFalseNotAnException() {
+    void isPresentPastTheBitmapThrowsAsTheRealOneDoes() {
         WAEvent event = eventWithColumns("T", 1);
         assertFalse(BuiltInFunc.IS_PRESENT(event, event.data, 5));
+        assertThrows(ArrayIndexOutOfBoundsException.class, () -> BuiltInFunc.IS_PRESENT(event, event.data, 7));
     }
 
     @Test
-    void isPresentNullEventIsFalse() {
-        assertFalse(BuiltInFunc.IS_PRESENT(null, new Object[0], 0));
+    void isPresentNullEventThrowsAsTheRealOneDoes() {
+        assertThrows(NullPointerException.class, () -> BuiltInFunc.IS_PRESENT(null, new Object[0], 0));
+    }
+
+    @Test
+    void isPresentOnAnImageThatIsNeitherDataNorBeforeIsFalse() {
+        WAEvent event = eventWithColumns("T", 2);
+        event.setData(0, "x");
+        assertFalse(BuiltInFunc.IS_PRESENT(event, event.data.clone(), 0));
+    }
+
+    @Test
+    void isPresentWithANullBitmapThrowsAsTheRealOneDoes() {
+        WAEvent event = new WAEvent();
+        event.data = new Object[] { "a" };
+        assertThrows(NullPointerException.class, () -> BuiltInFunc.IS_PRESENT(event, event.data, 0));
+    }
+
+    @Test
+    void isPresentReadsSevenColumnsPerByte() {
+        WAEvent event = eventWithColumns("T", 9);
+        for (int i = 0; i < 9; i++) {
+            if (i != 7) {
+                event.setData(i, "v");
+            }
+        }
+        assertFalse(BuiltInFunc.IS_PRESENT(event, event.data, 7));
+        assertTrue(BuiltInFunc.IS_PRESENT(event, event.data, 8));
+        assertTrue(BuiltInFunc.IS_PRESENT(event, event.data, 6));
     }
 
     // --- getIndexOfColumn ---

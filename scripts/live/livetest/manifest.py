@@ -21,6 +21,9 @@ VALID_TOPOLOGIES = {"single", "agent", "cluster"}
 XFAIL_TIERS_ALLOWED = frozenset(
     {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx", "placement"})
 XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED - {"placement"}
+# The `assert:` tiers runtest reads; any other key would check nothing.
+VALID_ASSERT_TIERS = frozenset(
+    {"smoke", "data", "diff", "file", "gcs", "json", "monitor", "checkpoint_history", "jmx", "placement"})
 VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # Every key load_manifest reads. Anything else is a typo or a key dropped in a schema change,
 # and both used to load silently: `timout: 30` simply never applied its timeout, and a manifest
@@ -555,7 +558,7 @@ def _normalize_module_entry(mod: dict, key: str, i: int | None, path) -> dict:
             "agent-side placement")
     return {"jar": jar, "token": token, "kind": key, "upload": upload, "on_agent": on_agent}
 
-def _parse_concurrent(action: dict, i: int, path) -> list:
+def _parse_concurrent(action: dict, i: int, path, requires) -> list:
     """An action's optional `concurrent:` SQL loops, run on background threads."""
     concurrent_raw = action.get("concurrent", [])
     concurrent_ops = []
@@ -571,6 +574,11 @@ def _parse_concurrent(action: dict, i: int, path) -> list:
             if not op_db:
                 raise ManifestError(
                     f"{path}: action[{i}] concurrent[{j}] must have 'db' key")
+            if not any(op_db == s or str(op_db).startswith(f"{s}-") for s in requires):
+                raise ManifestError(
+                    f"{path}: action[{i}] concurrent[{j}] db {op_db!r} is not a route of a "
+                    f"service in 'requires' {requires} (routes are '<service>-<role>', e.g. "
+                    f"postgres-source)")
             op_file = op.get("file")
             if not op_file:
                 raise ManifestError(
@@ -1137,6 +1145,10 @@ def load_manifest(path: Path) -> TestManifest:
     if not assert_ and not expect_halt:
         raise ManifestError(
             f"{path}: 'assert' must declare at least one assertion (e.g. smoke: true)")
+    if isinstance(assert_, dict) and set(assert_) - VALID_ASSERT_TIERS:
+        raise ManifestError(
+            f"{path}: 'assert' has unknown tier(s) {sorted(set(assert_) - VALID_ASSERT_TIERS)} -- "
+            f"allowed: {sorted(VALID_ASSERT_TIERS)}")
     # T4-MON. Validated at load so a clock is refused before any stack boots for it.
     if assert_ and assert_.get("monitor") is not None:
         from livetest.assertions.monitor import MonitorSpecError, parse_monitor_specs
@@ -1337,7 +1349,7 @@ def load_manifest(path: Path) -> TestManifest:
                 stop_duration = _parse_zeroable_duration(
                     action.get("stop_duration", 2), "stop_duration", path)
 
-                concurrent_ops = _parse_concurrent(action, i, path)
+                concurrent_ops = _parse_concurrent(action, i, path, requires)
 
                 action_specs.append({
                     "type": "stop_start_cycle",
@@ -1466,7 +1478,7 @@ def load_manifest(path: Path) -> TestManifest:
                         action.get("ready_timeout", 120), "ready_timeout", path),
                     "settle": _parse_zeroable_duration(
                         action.get("settle", 30), "settle", path),
-                    "concurrent": _parse_concurrent(action, i, path),
+                    "concurrent": _parse_concurrent(action, i, path, requires),
                 })
             else:
                 raise ManifestError(f"{path}: action[{i}] unknown type {action_type!r}")

@@ -355,7 +355,7 @@ def docker(argv):
         script, done = cmd[2], ""
         if script.endswith("; echo slt-ls-done"):
             script, done = script[:-len("; echo slt-ls-done")], "slt-ls-done\n"
-        pats = script[len("ls -1d "):-len(" 2>/dev/null")].split()
+        pats = script[len("LC_ALL=C ls -1d "):].split()
         found = sorted({f for f in list(FILES) + list(DIRS) for p in pats if fnmatch.fnmatch(f, p)})
         return SimpleNamespace(returncode=0, stdout="".join(f"{f}\n" for f in found) + done, stderr="")
     raise AssertionError(argv)
@@ -539,6 +539,28 @@ if SC.get("op_stub"):                                      # an op module whose 
         (mod, SimpleNamespace(name="stub-op.jar", op_name="StubOp", path=_stub_op, content_tag="",
                               sha256="sha256:" + "0" * 64))
         for mod in m.modules]
+if SC.get("op_build") == "no_striim_home":                 # the real build, STRIIM_HOME unset, pom default empty
+    _pom = Path("java/OpenProcessors/StubOp/pom.xml")
+    _pom.parent.mkdir(parents=True, exist_ok=True)
+    _pom.write_text("<project><properties><STRIIM_HOME>/nonexistent-striim</STRIIM_HOME></properties>"
+                    "<systemPath>${STRIIM_HOME}/lib/Platform-5.4.0.6.jar</systemPath></project>")
+    P.opartifacts._root = lambda: Path.cwd()
+    P.opartifacts.resolve_build_java_home = lambda *a, **k: None
+
+    def _mvn(argv, cwd, env):
+        log("mvn", striim_home=env.get("STRIIM_HOME"))
+        return SimpleNamespace(returncode=1, stdout="", stderr="Could not find artifact com.striim:Platform:jar")
+    P.opartifacts._default_run = _mvn
+elif SC.get("op_build"):                                   # the module build fails, or cannot start
+    _build_error, _build_message = {
+        "failed": ("OpBuildFailed", "mvn package failed in StubOp: cannot find symbol"),
+        "rejected": ("OpJarRejected", "prebuilt jar (SLT_PREBUILT_JAR) x.jar: does not end with '-5.4.jar'"),
+    }.get(SC["op_build"], ("OpArtifactError", "cannot run mvn to build StubOp: No such file or directory: 'mvn'"))
+    _build_error = getattr(P.opartifacts, _build_error, P.opartifacts.OpArtifactError)
+
+    def _failing_build(m, release, report=None):
+        raise _build_error(_build_message)
+    P.build_modules = _failing_build
 if SC.get("op_poison"):
     P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
     P._node_log_since = lambda ctx, marks, run=None: "java.util.zip.ZipException: invalid LOC header (bad signature)"

@@ -8,7 +8,7 @@ INFRA = 3         # unavailable infrastructure (a selected item skipped, a prere
 CANCELLED = 4     # cancelled / interrupted / timeout
 NO_TESTS = 5      # no tests selected (explicit non-success)
 
-_PRECEDENCE = (CONFIG, CANCELLED, INFRA, FAILED)
+_PRECEDENCE = (CONFIG, CANCELLED, FAILED, INFRA)
 
 
 class CliError(Exception):
@@ -19,7 +19,7 @@ class CliError(Exception):
 
 
 def aggregate(codes) -> int:
-    """2 > 4 > 3 > 1; all 5 -> 5; otherwise (0s, possibly with 5s) -> 0."""
+    """2 > 4 > 1 > 3 (a failure beats a skip); all 5 -> 5; otherwise (0s, possibly with 5s) -> 0."""
     codes = list(codes)
     for c in _PRECEDENCE:
         if c in codes:

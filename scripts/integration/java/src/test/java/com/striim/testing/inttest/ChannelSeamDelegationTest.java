@@ -204,6 +204,20 @@ class ChannelSeamDelegationTest {
         assertTrue(e.getMessage().contains("appQualifiedName"), e.getMessage());
     }
 
+    @Test
+    void aChannelSeamSeesTheSameEnrichedPropertiesAConstructorSeamDoes() {
+        Map<String, Object> raw = props();
+        raw.put("Pw", "hunter2");
+        SourceCore.ChannelSeams seams = SourceCore.channelSeamsFor(GOOD + ".Processor", WideChannel.class,
+                raw, List.of("Pw"), "ns1", "src1", thisLoader());
+        assertEquals("ns1", seams.valueFor("namespace", String.class));
+        assertEquals("com.webaction.security.Password", seams.valueFor("passwordClass", String.class));
+        // A copy per call: a seam that writes cannot change the case or the next answer.
+        assertEquals("null", seams.valueFor("putAndRead", String.class));
+        assertEquals("null", seams.valueFor("putAndRead", String.class));
+        assertTrue(!raw.containsKey("Mutated"));
+    }
+
     /** A reader channel that also receives positioned emissions (recovery design r2). */
     public interface PositionedChannel {
         void emit(WAEvent event) throws Exception;
