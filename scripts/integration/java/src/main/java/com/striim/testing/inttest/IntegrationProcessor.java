@@ -84,6 +84,11 @@ public final class IntegrationProcessor {
          */
         public List<String> passwordProperties;
         /**
+         * Optional. On failure the exception chain is written here, so {@code expect_error:} matches
+         * what the operator threw rather than everything it printed.
+         */
+        public String errorFile;
+        /**
          * Optional {@code udf:} block (docs/INTEGRATION-TESTS.md). When present, {@code
          * opJar} is driven as a bare UDF pipeline ({@link UdfCore}) instead of as an
          * OpenProcessor {@code Processor} ({@link OperatorCore}).
@@ -116,14 +121,42 @@ public final class IntegrationProcessor {
             System.exit(2);
             return;
         }
+        Request request = null;
         try {
-            Request request = new ObjectMapper().readValue(new File(args[0]), Request.class);
+            request = new ObjectMapper().readValue(new File(args[0]), Request.class);
             run(request);
         } catch (Exception e) {
             System.err.println("IntegrationProcessor failed: " + e);
             e.printStackTrace();
+            if (request != null && request.errorFile != null) {
+                try {
+                    Files.writeString(Path.of(request.errorFile), failureChain(e));
+                } catch (Exception ignored) {
+                    // stderr above still carries the failure
+                }
+            }
             System.exit(1);
         }
+    }
+
+    /** {@code toString()} of the failure, each cause and each suppressed exception, one per line. */
+    static String failureChain(Throwable failure) {
+        StringBuilder out = new StringBuilder();
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.Deque<Throwable> pending = new java.util.ArrayDeque<>();
+        pending.add(failure);
+        while (!pending.isEmpty()) {
+            Throwable t = pending.poll();
+            if (!seen.add(t)) {
+                continue;
+            }
+            out.append(t).append('\n');
+            if (t.getCause() != null) {
+                pending.add(t.getCause());
+            }
+            pending.addAll(java.util.Arrays.asList(t.getSuppressed()));
+        }
+        return out.toString();
     }
 
     /**
@@ -802,10 +835,9 @@ public final class IntegrationProcessor {
     }
 
     /**
-     * A {@code BuiltInFuncs} mock. {@code IS_PRESENT} reads the passed mock {@link WAEvent}'s
-     * own presence bitmap directly (comparing the {@code image} argument against the event's
-     * {@code data}/{@code before} array by reference to know which bitmap to consult) — no
-     * {@code types:} schema needed for that call, matching docs/INTEGRATION-TESTS.md
+     * A {@code BuiltInFuncs} mock. {@code IS_PRESENT} is the platform's static {@code
+     * BuiltInFunc.IS_PRESENT}, as in production — no {@code types:} schema needed for that call,
+     * matching docs/INTEGRATION-TESTS.md
      *
      * <p>
      * {@code getFieldsArray}/{@code getAliasFieldName} are seeded from {@code columnsByUuid}
@@ -829,15 +861,10 @@ public final class IntegrationProcessor {
     static Object newBuiltInFuncsProxy(Class<?> iface, Map<UUID, List<String>> columnsByUuid, URLClassLoader child) {
         InvocationHandler handler = (proxy, method, methodArgs) -> {
             switch (method.getName()) {
-                case "IS_PRESENT": {
-                    WAEvent event = (WAEvent) methodArgs[0];
-                    Object[] image = (Object[]) methodArgs[1];
-                    int index = (Integer) methodArgs[2];
-                    if (image == event.before) {
-                        return event.isBeforePresent(index);
-                    }
-                    return event.isDataPresent(index);
-                }
+                case "IS_PRESENT":
+                    // Production BuiltInFuncResolver delegates to the platform static.
+                    return com.webaction.runtime.BuiltInFunc.IS_PRESENT(
+                            (WAEvent) methodArgs[0], (Object[]) methodArgs[1], (Integer) methodArgs[2]);
                 case "getFieldsArray": {
                     List<String> columns = columnsByUuid.get((UUID) methodArgs[0]);
                     if (columns != null) {

@@ -29,17 +29,9 @@ import com.webaction.proc.events.WAEvent;
  * constructor parameter (a {@link java.lang.reflect.Proxy} seam {@code
  * IntegrationProcessor.newBuiltInFuncsProxy} intercepts per-instance), there is no
  * per-instance seam here to proxy: the class itself must exist on the classpath with real
- * method bodies. {@code IS_PRESENT} is written to be byte-for-byte behaviorally identical
- * to {@code newBuiltInFuncsProxy}'s existing {@code IS_PRESENT} case (same reference-
- * compare-then-delegate, including the no-null-guard edge case -- see that method's own
- * javadoc) -- but it is a genuinely NEW static descriptor on the classpath, not merely an
- * internal refactor: OPs may already call {@code
- * BuiltInFunc.IS_PRESENT} statically, and before this addition those calls threw {@code
- * NoSuchMethodError} against this mock (a loud harness gap) rather than resolving. No
- * fixture drives either OP today, so nothing currently observes the change, but the OP
- * path is not categorically "unaffected" the way {@code getIndexOfColumn} is -- confirm
- * the new semantics are still correct for a given OP's actual call sites before authoring
- * its integration fixture. {@code getIndexOfColumn} resolves a column name against {@link
+ * method bodies. {@code IS_PRESENT} reproduces the real 5.4.0.6C body, and {@code
+ * newBuiltInFuncsProxy}'s {@code IS_PRESENT} delegates to it.
+ * {@code getIndexOfColumn} resolves a column name against {@link
  * #columnSchemas}, a small static registry seeded ONLY by {@code UdfCore.build} from a
  * {@code test.yaml}'s {@code types:} block (the same source {@code
  * newBuiltInFuncsProxy}'s {@code getFieldsArray}/{@code getAliasFieldName} cases already
@@ -119,26 +111,21 @@ public final class BuiltInFunc {
     }
 
     /**
-     * Whether the column at {@code index} is present in {@code image} (matched to {@code
-     * event.data}/{@code event.before} by reference). Delegates straight to the mock
-     * {@link WAEvent}'s own bitmap read helpers -- this mock's {@code IS_PRESENT} must be
-     * internally consistent with the mock {@code WAEvent}'s bit layout, not with the real
-     * platform class's, exactly like {@code IntegrationProcessor.newBuiltInFuncsProxy}'s
-     * existing {@code IS_PRESENT} case.
+     * The real 5.4.0.6C body: {@code image} picks the bitmap by reference ({@code data} first,
+     * then {@code before}); any other array is absent. A null event or bitmap, or an index past
+     * the bitmap, throws as the real one does.
      */
     public static boolean IS_PRESENT(WAEvent event, Object[] image, int index) {
-        if (event == null) {
-            return false;
+        int byteIndex = index / 7;
+        int bit = index % 7;
+        int present = 0;
+        byte mask = (byte) (1 << bit);
+        if (image == event.data) {
+            present = (event.dataPresenceBitMap[byteIndex] & mask) >> bit;
+        } else if (image == event.before) {
+            present = (event.beforePresenceBitMap[byteIndex] & mask) >> bit;
         }
-        // No `image != null` guard: `newBuiltInFuncsProxy`'s existing IS_PRESENT case has
-        // none either, so `image == event.before` correctly (and harmlessly) evaluates
-        // true when BOTH are null -- omitting the guard here, not adding one, is what
-        // keeps this static byte-for-byte behaviorally identical to that proxy case for
-        // every input, including a null image against a before-less (insert) event.
-        if (image == event.before) {
-            return event.isBeforePresent(index);
-        }
-        return event.isDataPresent(index);
+        return present == 1;
     }
 
     /**
@@ -263,6 +250,7 @@ public final class BuiltInFunc {
         for (int i = 0; i < root.size(); i++) {
             com.fasterxml.jackson.databind.JsonNode node = root.get(i);
             WAEvent event = new WAEvent();
+            event.metadata = new java.util.HashMap<>();
             com.fasterxml.jackson.databind.JsonNode metadata = node.path("metadata");
             java.util.Iterator<String> names = metadata.fieldNames();
             while (names.hasNext()) {
@@ -283,10 +271,10 @@ public final class BuiltInFunc {
         }
         if (isData) {
             event.data = new Object[image.size()];
-            event.dataPresenceBitMap = new byte[(image.size() + 7) / 8];
+            event.dataPresenceBitMap = new byte[image.size() / 7 + 1];
         } else {
             event.before = new Object[image.size()];
-            event.beforePresenceBitMap = new byte[(image.size() + 7) / 8];
+            event.beforePresenceBitMap = new byte[image.size() / 7 + 1];
         }
         for (int i = 0; i < image.size(); i++) {
             // EVERY element is PRESENT, including a JSON null. The production dialect has no

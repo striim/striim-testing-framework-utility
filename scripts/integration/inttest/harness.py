@@ -23,10 +23,12 @@ import shutil
 import subprocess
 import time
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 from . import manifest as manifest_mod
 from . import paths
+from . import waevent as waevent_mod
 
 
 def _extra_jars() -> list:
@@ -64,7 +66,14 @@ _JAVA_POM = _JAVA_DIR / "pom.xml"
 
 
 class HarnessError(Exception):
-    """Raised when the IntegrationProcessor subprocess fails (non-zero exit)."""
+    """Raised when the IntegrationProcessor subprocess fails (non-zero exit).
+
+    `failure` is the exception chain the run ended with (one `Class: message` per line), or
+    None when it never got that far -- a timeout, a build failure, a handshake error."""
+
+    def __init__(self, *args, failure: str | None = None):
+        super().__init__(*args)
+        self.failure = failure
 
 
 def _files_under(directory: Path) -> list[Path]:
@@ -87,17 +96,38 @@ def _candidate_jars() -> list[Path]:
         and not p.name.endswith(("-sources.jar", "-javadoc.jar")))
 
 
-def _is_stale(jar: Path) -> bool:
-    jar_mtime = jar.stat().st_mtime
+def _sources() -> list[Path]:
     sources = _files_under(_JAVA_SRC)
     if _JAVA_POM.exists():
         sources.append(_JAVA_POM)
+    return sources
+
+
+def _source_record(jar: Path) -> Path:
+    """The source paths the jar was built from. Mtimes cannot see a DELETED source."""
+    return jar.with_name(jar.name + ".sources")
+
+
+def _source_names(sources: list[Path]) -> list[str]:
+    return sorted(os.path.relpath(p, _JAVA_DIR) for p in sources)
+
+
+def _is_stale(jar: Path) -> bool:
+    jar_mtime = jar.stat().st_mtime
+    sources = _sources()
+    try:
+        recorded = _source_record(jar).read_text().splitlines()
+    except OSError:
+        return True
+    if recorded != _source_names(sources):
+        return True
     return any(p.stat().st_mtime > jar_mtime for p in sources)
 
 
 def ensure_harness_jar() -> Path:
-    """Locate the built harness jar, (re)building it with `mvn package` when
-    it is missing or older than the harness's own Java sources/pom.
+    """Locate the built harness jar, (re)building it with `mvn clean package` when
+    it is missing, older than the harness's own Java sources/pom, or its source record
+    differs from them (a deleted source).
 
     Returns the absolute path to the shaded jar. Raises `HarnessError` if the
     build fails or produces no unambiguous `inttest-harness-*.jar`."""
@@ -116,8 +146,10 @@ def ensure_harness_jar() -> Path:
 
 
 def _build_harness_jar() -> Path:
+    # `clean`: a deleted source's class stays in target/classes and would be shaded back in.
+    sources = _source_names(_sources())
     r = subprocess.run(
-        ["mvn", "-q", "-f", str(_JAVA_POM), "package"],
+        ["mvn", "-q", "-f", str(_JAVA_POM), "clean", "package"],
         cwd=str(_JAVA_DIR), capture_output=True, text=True)
     if r.returncode != 0:
         out = (r.stderr or r.stdout or "")[-4000:]
@@ -128,6 +160,7 @@ def _build_harness_jar() -> Path:
         raise HarnessError(
             f"harness build succeeded but no unambiguous inttest-harness-*.jar found in "
             f"{_JAVA_DIR / 'target'} (found: {[p.name for p in built]})")
+    _source_record(built[0]).write_text("\n".join(sources) + "\n")
     return built[0]
 
 
@@ -315,9 +348,10 @@ def drive(op_jar, properties: dict, input_events, types: dict | None = None,
             input_file = tempdir / "input.json"
             # A `source:` case has no input fixture at all; the Java side still wants a
             # readable inputFile, and asserts the list it holds is empty.
-            input_file.write_text(json.dumps([] if input_events is None else list(input_events)))
+            input_file.write_text(waevent_mod.dump([] if input_events is None else list(input_events)))
 
         output_file = tempdir / "output.json"
+        error_file = tempdir / "error.txt"
         request = {
             "opJar": str(op_jar),
             "properties": {k: str(v) for k, v in (properties or {}).items()},
@@ -328,6 +362,7 @@ def drive(op_jar, properties: dict, input_events, types: dict | None = None,
             "udf": manifest_mod.udf_to_wire(udf),
             "source": manifest_mod.source_to_wire(source),
             "target": manifest_mod.target_to_wire(target),
+            "errorFile": str(error_file),
         }
         jmx_file = tempdir / "jmx.json"
         if jmx is not None:
@@ -393,7 +428,8 @@ def drive(op_jar, properties: dict, input_events, types: dict | None = None,
         if r.returncode != 0:
             raise HarnessError(
                 f"IntegrationProcessor exited {r.returncode} driving {op_jar}\n"
-                f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}")
+                f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}",
+                failure=error_file.read_text() if error_file.is_file() else None)
 
         if not output_file.is_file():
             raise HarnessError(
@@ -415,6 +451,7 @@ def drive(op_jar, properties: dict, input_events, types: dict | None = None,
             jmx_sink.append(json.loads(jmx_file.read_text()) if jmx_file.is_file() else {
                 "error": f"IntegrationProcessor exited 0 but wrote no JMX snapshot ({jmx_file})"})
 
-        return json.loads(output_file.read_text())
+        # Emitted events keep their decimals exact for waevent.compare; a target's report is counts.
+        return json.loads(output_file.read_text(), parse_float=(float if target is not None else Decimal))
     finally:
         shutil.rmtree(tempdir, ignore_errors=True)

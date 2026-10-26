@@ -116,6 +116,8 @@ def test_unique_or_unknown_set_reuses_series_name(engine, tmp_path, matrix):
     (tmp_path / '.env').write_text(matrix)
     jar = tmp_path / 'ExampleOp/target/ExampleOpV1-5.4.jar'
     _jar(jar, '5.4.2')
+    if hasattr(engine, '_write_source_record'):   # integration reuses only a jar that records its sources
+        engine._write_source_record(jar, tmp_path / 'ExampleOp')
     built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4',
                                          'JAVA_RELEASE': '17'},
                              run=lambda *a: pytest.fail('series jar should be reused'))

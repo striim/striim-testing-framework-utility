@@ -6,98 +6,81 @@ import com.webaction.event.Event;
 import com.webaction.uuid.UUID;
 
 /**
- * Mock of the real Striim {@code com.webaction.proc.events.WAEvent}, matching its
- * public shape on 5.4. Reproduces exactly the public
- * fields and methods ReferenceOp and {@code WAEventJsonFactory} touch:
- * {@code data}/{@code before} images, {@code metadata}/{@code userdata} maps,
- * {@code typeUUID}/{@code sourceUUID}, presence bitmaps, {@code setData}/{@code
- * setBefore} (allocate + flip the presence bit), {@code putUserdata}, and {@code
- * makeCopy} (deep copy of the images/bitmaps, fresh maps).
+ * Mock of the real Striim {@code com.webaction.proc.events.WAEvent}. Every method the real
+ * class declares here behaves as the 5.4.0.6C bytecode does: the constructors allocate only
+ * the presence bitmaps ({@code n/7+1} bytes, 7 columns per byte), never {@code data}/{@code
+ * before} or the maps; {@code setData}/{@code setBefore}/{@code unsetData} never grow, so a
+ * missing or short image throws NPE/AIOOBE as in production; {@code getPayload} returns
+ * {@code {data, metadata}}; {@code makeCopy} copies what the real one copies.
  *
  * <p>
- * <b>Deviation from the real class</b> (see {@link Event}'s javadoc): the real
- * {@code WAEvent} extends {@code SourceEvent} (which owns the real {@code sourceUUID}
- * field), several classes above {@code Event} in the hierarchy. Nothing in the
- * operators this harness drives references {@code SourceEvent}/{@code SimpleEvent}/
- * {@code SizedEvent} by name, so this mock collapses the chain to {@code WAEvent
- * extends Event} directly and hosts {@code sourceUUID} straight on {@code WAEvent}.
- * The real class also has no public presence-bitmap *read* helper beyond the raw
- * {@code byte[]} fields; this mock adds {@link #isDataPresent(int)}/{@link
- * #isBeforePresent(int)} so {@code WAEventJsonFactory} and the {@code BuiltInFuncs}
- * mock proxy don't need to duplicate bit arithmetic.
+ * Deviations: the hierarchy is collapsed to {@code WAEvent extends Event} (see {@link Event}),
+ * so {@code sourceUUID} and {@code originTimeStamp} live here; {@link #isDataPresent}/{@link
+ * #isBeforePresent} are harness-only read helpers (an op compiled against the real jar cannot
+ * call them); methods the harness never needs (Kryo, JSON, size accounting) are absent.
  */
 public class WAEvent extends Event {
 
     public Object[] data;
+    public HashMap<String, Object> metadata;
+    public HashMap<String, Object> userdata;
     public Object[] before;
-    public HashMap<String, Object> metadata = new HashMap<>();
-    public HashMap<String, Object> userdata = new HashMap<>();
-    public UUID typeUUID;
-    public UUID sourceUUID;
     public byte[] dataPresenceBitMap;
     public byte[] beforePresenceBitMap;
-    /**
-     * The source's commit clock, epoch millis. On the real class this lives on
-     * {@code SimpleEvent}, two supers up, and every CDC reader stamps it; a field reference in
-     * the op jar resolves through the hierarchy, so declaring it here satisfies the same
-     * {@code getfield}. Zero (never stamped) is what a fixture without {@code originTimeStamp}
-     * yields, and is what a writer must treat as "no source time".
-     */
+    public UUID typeUUID;
+    public UUID sourceUUID;
+    /** The source's commit clock, epoch millis; {@code SimpleEvent} on the real class. Zero means none. */
     public long originTimeStamp;
 
     public WAEvent() {
     }
 
     public WAEvent(int columnCount, UUID sourceUUID) {
-        this.data = new Object[columnCount];
-        this.dataPresenceBitMap = new byte[bitmapBytes(columnCount)];
         this.sourceUUID = sourceUUID;
+        int bytes = columnCount / 7 + 1;
+        this.dataPresenceBitMap = new byte[bytes];
+        this.beforePresenceBitMap = new byte[bytes];
     }
 
-    /** Allocates (or grows) the data image and flips the presence bit at {@code index}. */
     public void setData(int index, Object value) {
-        data = ensureCapacity(data, index);
-        dataPresenceBitMap = ensureBitmap(dataPresenceBitMap, index);
         data[index] = value;
-        setBit(dataPresenceBitMap, index);
+        int byteIndex = index / 7;
+        byte mask = (byte) (1 << (index % 7));
+        dataPresenceBitMap[byteIndex] = (byte) (dataPresenceBitMap[byteIndex] | mask);
     }
 
-    /** Allocates (or grows) the before image and flips the presence bit at {@code index}. */
-    public void setBefore(int index, Object value) {
-        before = ensureCapacity(before, index);
-        beforePresenceBitMap = ensureBitmap(beforePresenceBitMap, index);
-        before[index] = value;
-        setBit(beforePresenceBitMap, index);
-    }
-
-    /** Clears the value and presence bit at {@code index} in the data image. */
     public void unsetData(int index) {
-        if (data != null && index < data.length) {
-            data[index] = null;
-        }
-        if (dataPresenceBitMap != null) {
-            clearBit(dataPresenceBitMap, index);
-        }
+        data[index] = null;
+        int byteIndex = index / 7;
+        byte mask = (byte) ~(1 << (index % 7));
+        dataPresenceBitMap[byteIndex] = (byte) (dataPresenceBitMap[byteIndex] & mask);
     }
 
-    /** Presence read helper: whether {@code index} is set in the data image. */
+    public void setBefore(int index, Object value) {
+        before[index] = value;
+        int byteIndex = index / 7;
+        byte mask = (byte) (1 << (index % 7));
+        beforePresenceBitMap[byteIndex] = (byte) (beforePresenceBitMap[byteIndex] | mask);
+    }
+
+    /** Harness-only: whether {@code index} is set in the data bitmap; false when out of range. */
     public boolean isDataPresent(int index) {
         return isBitSet(dataPresenceBitMap, index);
     }
 
-    /** Presence read helper: whether {@code index} is set in the before image. */
+    /** Harness-only: whether {@code index} is set in the before bitmap; false when out of range. */
     public boolean isBeforePresent(int index) {
         return isBitSet(beforePresenceBitMap, index);
     }
 
-    public void putUserdata(String key, Object value) {
+    public synchronized void putUserdata(String key, Object value) {
         if (userdata == null) {
             userdata = new HashMap<>();
         }
         userdata.put(key, value);
     }
 
-    public void removeUserData(String key) {
+    public synchronized void removeUserData(String key) {
         if (userdata != null) {
             userdata.remove(key);
         }
@@ -108,71 +91,41 @@ public class WAEvent extends Event {
     }
 
     public Object[] getPayload() {
-        return data;
+        return new Object[] { data, metadata };
     }
 
-    /** Deep-copies data/before images and presence bitmaps; fresh metadata/userdata maps. */
     public static WAEvent makeCopy(WAEvent src) {
         if (src == null) {
-            return null;
+            return src;
         }
-        WAEvent copy = new WAEvent();
-        copy.data = src.data == null ? null : src.data.clone();
-        copy.before = src.before == null ? null : src.before.clone();
-        copy.dataPresenceBitMap = src.dataPresenceBitMap == null ? null : src.dataPresenceBitMap.clone();
-        copy.beforePresenceBitMap = src.beforePresenceBitMap == null ? null : src.beforePresenceBitMap.clone();
-        copy.metadata = src.metadata == null ? new HashMap<>() : new HashMap<>(src.metadata);
-        copy.userdata = src.userdata == null ? new HashMap<>() : new HashMap<>(src.userdata);
+        int columns = src.data != null ? src.data.length : 0;
+        WAEvent copy = new WAEvent(columns, src.sourceUUID);
         copy.typeUUID = src.typeUUID;
-        copy.sourceUUID = src.sourceUUID;
+        if (src.data != null) {
+            copy.data = src.data.clone();
+            if (src.dataPresenceBitMap != null) {
+                copy.dataPresenceBitMap = src.dataPresenceBitMap.clone();
+            }
+        }
+        if (src.before != null) {
+            copy.before = src.before.clone();
+            if (src.beforePresenceBitMap != null) {
+                copy.beforePresenceBitMap = src.beforePresenceBitMap.clone();
+            }
+        }
+        if (src.metadata != null) {
+            copy.metadata = new HashMap<>(src.metadata);
+        }
+        if (src.userdata != null) {
+            copy.userdata = new HashMap<>(src.userdata);
+        }
         return copy;
     }
 
-    private static int bitmapBytes(int columnCount) {
-        return (columnCount + 7) / 8;
-    }
-
-    private static Object[] ensureCapacity(Object[] array, int index) {
-        if (array == null) {
-            return new Object[index + 1];
-        }
-        if (array.length <= index) {
-            Object[] bigger = new Object[index + 1];
-            System.arraycopy(array, 0, bigger, 0, array.length);
-            return bigger;
-        }
-        return array;
-    }
-
-    private static byte[] ensureBitmap(byte[] bitmap, int index) {
-        int needed = (index / 8) + 1;
-        if (bitmap == null) {
-            return new byte[needed];
-        }
-        if (bitmap.length < needed) {
-            byte[] bigger = new byte[needed];
-            System.arraycopy(bitmap, 0, bigger, 0, bitmap.length);
-            return bigger;
-        }
-        return bitmap;
-    }
-
-    private static void setBit(byte[] bitmap, int index) {
-        bitmap[index / 8] |= (byte) (1 << (index % 8));
-    }
-
-    private static void clearBit(byte[] bitmap, int index) {
-        bitmap[index / 8] &= (byte) ~(1 << (index % 8));
-    }
-
     private static boolean isBitSet(byte[] bitmap, int index) {
-        if (bitmap == null) {
+        if (bitmap == null || index < 0 || index / 7 >= bitmap.length) {
             return false;
         }
-        int byteIndex = index / 8;
-        if (byteIndex >= bitmap.length) {
-            return false;
-        }
-        return (bitmap[byteIndex] & (1 << (index % 8))) != 0;
+        return (bitmap[index / 7] & (1 << (index % 7))) != 0;
     }
 }

@@ -549,15 +549,28 @@ final class UdfCore implements EventDriver {
         return event.userdata == null ? null : event.userdata.get(m.group(2));
     }
 
+    /** WAEvent.setData never grows the image, so name the slot rather than surface an AIOOBE. */
+    private static void requireSlotInImage(Object[] image, int idx, String slot) {
+        int size = image == null ? 0 : image.length;
+        if (idx >= size) {
+            throw new IllegalStateException("udf.target " + slot + " is outside the event's "
+                    + size + "-column image; the target slot must name an existing column");
+        }
+    }
+
     private static void writeSlot(WAEvent event, String slot, Object value) {
         Matcher m = SLOT_RE.matcher(slot);
         if (!m.matches()) {
             throw new IllegalStateException("invalid slot: " + slot);
         }
         if (slot.startsWith("data[")) {
-            event.setData(Integer.parseInt(m.group(1)), value);
+            int idx = Integer.parseInt(m.group(1));
+            requireSlotInImage(event.data, idx, slot);
+            event.setData(idx, value);
         } else if (slot.startsWith("before[")) {
-            event.setBefore(Integer.parseInt(m.group(1)), value);
+            int idx = Integer.parseInt(m.group(1));
+            requireSlotInImage(event.before, idx, slot);
+            event.setBefore(idx, value);
         } else {
             event.putUserdata(m.group(2), value);
         }

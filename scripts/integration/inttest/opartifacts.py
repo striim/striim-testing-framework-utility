@@ -146,10 +146,29 @@ def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
     # whereas a false negative (missing a real dependency) silently ships a stale jar.
     # The one module exempted is Common itself -- its own build already covers its own
     # tree, and folding it in again is a no-op.
+    #
+    # Mtimes cannot see a DELETED source, so the jar's source record (`_source_record`) is
+    # compared too: a missing record, or a recorded path that is gone, returns a path that does
+    # not exist, which `build_jar` answers with a clean rebuild.
     try:
         jar_mtime = jar.stat().st_mtime
     except FileNotFoundError:
         return jar
+    srcs = _sources(module_dir)
+    record = _source_record(jar)
+    try:
+        recorded = set(record.read_text().splitlines())
+    except OSError:
+        return record
+    names = {p: os.path.relpath(p, module_dir) for p in srcs}
+    removed = sorted(recorded - set(names.values()))
+    if removed:
+        return module_dir / removed[0]
+    newer = [p for p in srcs if p.stat().st_mtime > jar_mtime or names[p] not in recorded]
+    return max(newer, key=lambda p: p.stat().st_mtime) if newer else None
+
+
+def _sources(module_dir: Path) -> list[Path]:
     # src/test is deliberately EXCLUDED: tests are compiled but never packaged, so no edit
     # there can change the jar's bytes, and including it made a test-only edit trigger a
     # full rebuild that could not alter the artifact. Trade-off: the build's `-DskipTests`
@@ -163,8 +182,16 @@ def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
     common = _common_dir()
     if module_dir.resolve() != common.resolve():
         srcs.extend(_files_under(common / "src" / "main"))
-    newer = [p for p in srcs if p.stat().st_mtime > jar_mtime]
-    return max(newer, key=lambda p: p.stat().st_mtime) if newer else None
+    return srcs
+
+
+def _source_record(jar: Path) -> Path:
+    return jar.with_name(jar.name + ".sources")
+
+
+def _write_source_record(jar: Path, module_dir: Path) -> None:
+    names = sorted(os.path.relpath(p, module_dir) for p in _sources(module_dir))
+    _source_record(jar).write_text("".join(n + "\n" for n in names))
 
 
 def _running_java_major(run=None) -> str | None:
@@ -503,6 +530,14 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         except ValueError:
             changed = trigger
         reason = f"source changed ({changed} is newer than {jar.name}) -> incremental rebuild"
+        if trigger == _source_record(jar):
+            # Built by an older framework or by hand: what it was built from is unknown.
+            clean = True
+            reason = f"no source record for {jar.name} -> clean rebuild"
+        elif not trigger.exists():
+            # A removed source's class or resource stays in target/classes; only clean drops it.
+            clean = True
+            reason = f"source removed ({changed} was built into {jar.name}) -> clean rebuild"
     elif corrupt is not None:
         # The interrupted build that truncated the jar may have left target/classes
         # half-written too, and shade would fold those into a plain `package` -- only
@@ -567,4 +602,5 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     jar = existing[0]
     # The MANIFEST stamp is written by the pom during the build, not here; verify what landed.
     _assert_jar_java_version(jar, java_release, module_dir)
+    _write_source_record(jar, module_dir)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, series))

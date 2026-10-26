@@ -933,7 +933,7 @@ def run_measured_iteration(
         # e.g. ${TID} must not silently reach the operator as the literal token text).
         if manifest.source is None:
             input_file = iter_dir / "input.json"
-            input_file.write_text(json.dumps(preflight_result.input_events))
+            input_file.write_text(waevent_mod.dump(preflight_result.input_events))
         else:
             input_file = None   # a reader is ticked, not fed
 
