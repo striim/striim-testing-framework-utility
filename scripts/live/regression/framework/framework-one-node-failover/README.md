@@ -55,7 +55,7 @@ Flow MON need not contain status. The owner check uses the flow deployment and
 the parent application's RUNNING state reported by that same server. A stopped
 or unreadable parent cannot qualify as a running owner.
 
-The recovery cases share the reviewed CSV in `samples/live/14-progress-recovery/expected/rows.csv`.
-From the framework checkout, run `python3 tools/prepare-recovery-goldens.py` before
-copying or running these cases. Test environment setup also prepares the copies.
+Each recovery case carries a byte-identical copy of the reviewed CSV in
+`samples/live/14-progress-recovery/expected/rows.csv`. After a reviewed change to it, run
+`python3 tools/prepare-recovery-goldens.py --write` from the framework checkout to update the copies.
 The shared rows follow `(n, row-n)` for every integer from 1 through 5000.

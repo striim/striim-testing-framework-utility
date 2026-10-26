@@ -58,12 +58,17 @@ step in detail, with the output to expect and what to do when something fails.
 | `16-recovery-sentinel` | fresh route proof after recovery and before assertions | Postgres CDC; STOP/restore |
 | `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data | Postgres CDC; Docker cluster, two app nodes and agent; published survivor API; **kills one shared app node** |
 | `18-kafka-nothing` | no output in a bounded window after a Kafka sentinel; fresh owned topics | Postgres CDC; Kafka |
-| `bigquery-legacy-append` | finite legacy REST streaming into the local BigQuery emulator, with exact values and multiplicity | BigQuery emulator |
-| `bigquery-batch-load` | finite direct CSV batch loads with default writer settings and typed exact rows; installed-client exact-boundary exclusion applies | BigQuery emulator |
-| `bigquery-batch-merge` | bounded batch CDC MERGE with same-writer insert/delete witnesses and owned staging dataset | BigQuery emulator |
+| `bigquery-legacy-append` | finite legacy REST streaming into the local BigQuery emulator, with exact values and multiplicity | Postgres; a BigQuery emulator image you supply in `SLT_BIGQUERY_IMAGE` |
+| `bigquery-batch-load` | finite direct CSV batch loads with default writer settings and typed exact rows; installed-client exact-boundary exclusion applies | Postgres; a BigQuery emulator image you supply in `SLT_BIGQUERY_IMAGE` |
+| `bigquery-batch-merge` | bounded batch CDC MERGE with same-writer insert/delete witnesses and owned staging dataset | Postgres; a BigQuery emulator image you supply in `SLT_BIGQUERY_IMAGE` |
 
 They are in `samples/live/`, each with a README. `samples/code/` holds two more that build and load
 your own Java: an Open Processor and a UDF.
+
+The framework does not build the BigQuery emulator image; supply one that meets
+[scripts/live/services/bigquery/README.md](scripts/live/services/bigquery/README.md). Without
+`SLT_BIGQUERY_IMAGE` the BigQuery samples are skipped (exit 3). `striim-test run samples/live`
+exits 0 only when every prerequisite in the table is in place.
 
 ## Where to go next
 
