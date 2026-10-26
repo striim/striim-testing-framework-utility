@@ -239,7 +239,7 @@ def test_the_same_case_name_in_two_live_case_roots_is_refused(clone, tmp_path, e
     _case(proj / "cases", "same"); _case(extra / "svc", "same")
     r = run_cli(["list", "--tier", "live"], cwd=elsewhere,
                 env=_env(clone, SLT_LIVE_CASES=f"{proj / 'cases'}{os.pathsep}{extra}", SLT_PROJECT_ROOT=proj))
-    assert r.rc != 0 and "same" in (r.stderr + r.stdout) and "duplicate" in (r.stderr + r.stdout).lower()
+    assert r.rc == 2 and "duplicate-case" in r.stderr and "same" in r.stderr, r.stderr
 
 
 def test_an_external_case_id_does_not_change_with_the_selected_suite(project, tmp_path, elsewhere):

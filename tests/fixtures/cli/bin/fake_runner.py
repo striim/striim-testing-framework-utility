@@ -1,7 +1,7 @@
 """Synthetic C2 external runner. Usage: fake_runner.py <mode> <report> [<pidfile>]
 
 Modes: pass, fail-exit, exit0-report-fail, exit1-report-pass, timeout, missing-report,
-stale-report, zero-tests, malformed, skip, env-dump, marker.
+stale-report, zero-tests, malformed, skip, env-dump, marker, exit0-report-error, truncated.
 """
 import json
 import os
@@ -24,6 +24,11 @@ elif mode == "fail-exit":
     sys.exit(1)
 elif mode == "exit0-report-fail":
     junit([("a", ""), ("b", '<failure message="synthetic"/>')])
+elif mode == "exit0-report-error":
+    junit([("a", ""), ("b", '<error message="synthetic"/>')])
+elif mode == "truncated":
+    with open(report, "w") as f:
+        f.write('<testsuite name="synthetic" tests="5"><testcase classname="synthetic" name="a"/></testsuite>')
 elif mode == "exit1-report-pass":
     junit([("a", "")])
     sys.exit(1)

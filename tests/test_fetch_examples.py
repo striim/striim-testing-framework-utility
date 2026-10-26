@@ -190,22 +190,46 @@ def test_duplicate_archive_entry_refused(tmp_path):
 
 def test_wrong_prefix_release_refused(tmp_path):
     objects = _objects()
-    with pytest.raises(CliError, match="release mismatch"):
+    with pytest.raises(CliError, match="release mismatch") as e:
         fetch_bundle("gs://test-bucket/ExampleUdf/5.4.0", tmp_path / "out", read=objects.__getitem__)
+    assert e.value.code == 2                               # a settings mistake
 
 
-def test_emulator_failure_is_a_cli_error(tmp_path, monkeypatch):
+@pytest.mark.parametrize("error,code,match", [("not-found", 2, "nothing published at gs://test-bucket/ExampleUdf/5.4.2/manifest.json"),
+                                              ("unreachable", 3, "emulator download failed")])
+def test_emulator_failure_is_a_cli_error(tmp_path, monkeypatch, error, code, match):
     import google.cloud
+    import requests
     from google.api_core.exceptions import NotFound
     fake = types.ModuleType("google.cloud.storage")
     def fail():
-        raise NotFound("not seeded")
+        raise NotFound("not seeded") if error == "not-found" else requests.ConnectionError("refused")
     fake.Client = lambda **kw: SimpleNamespace(bucket=lambda _: SimpleNamespace(blob=lambda _:
         SimpleNamespace(download_as_bytes=fail)))
     monkeypatch.setattr(google.cloud, "storage", fake, raising=False)
     monkeypatch.setitem(sys.modules, "google.cloud.storage", fake)
-    with pytest.raises(CliError, match="emulator download failed"):
+    with pytest.raises(CliError, match=match) as e:
         fetch_bundle("gs://test-bucket/ExampleUdf/5.4.2", tmp_path / "out", "http://localhost:4443")
+    assert e.value.code == code                            # nothing published is a prefix mistake
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("error,code,match", [
+    (subprocess.CalledProcessError(1, ["gcloud"], stderr=b"ERROR: (gcloud.storage.cat) There was a problem "
+                                   b"refreshing your current auth tokens"), 3, "failed \\(exit 1\\): .*auth tokens"),
+    (FileNotFoundError("gcloud"), 3, "gcloud download of manifest.json failed: FileNotFoundError"),
+    (subprocess.CalledProcessError(1, ["gcloud"], stderr=b"ERROR: (gcloud.storage.cat) The following URLs "
+                                   b"matched no objects or files"), 2, "nothing published at .*matched no objects"),
+    (subprocess.CalledProcessError(1, ["gcloud"], stderr=b"Traceback (most recent call last):\n"
+                                   b"ModuleNotFoundError: No module named 'google'"), 3, "(?s)failed \\(exit 1\\): .*ModuleNotFoundError"),
+], ids=["gcloud-auth", "gcloud-missing", "nothing-published", "gcloud-broken"])
+def test_gcloud_failure_classified(tmp_path, monkeypatch, error, code, match):
+    def gcloud(argv, **kw):
+        raise error
+    monkeypatch.setattr(subprocess, "check_output", gcloud)
+    with pytest.raises(CliError, match=match) as e:
+        fetch_bundle("gs://test-bucket/ExampleUdf/5.4.2", tmp_path / "out")
+    assert e.value.code == code and not (tmp_path / "out").exists()
 
 
 @pytest.mark.parametrize("module", ["OtherUdf", "", None, "../x"])

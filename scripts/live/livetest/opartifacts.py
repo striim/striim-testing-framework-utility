@@ -45,6 +45,12 @@ _UPLOADED = "/opt/striim/UploadedFiles"
 class OpArtifactError(Exception):
     pass
 
+class OpBuildFailed(OpArtifactError):
+    """The build ran and failed: the module's code or pom is broken, not the environment."""
+
+class OpJarRejected(OpArtifactError):
+    """A prebuilt jar (SLT_*_JAR / SLT_PREBUILT_DIR) whose name lacks the expected -<series>.jar suffix."""
+
 @dataclass(frozen=True)
 class BuiltArtifact:
     path: Path    # absolute path to the built, series-suffixed jar
@@ -447,6 +453,26 @@ def resolve_build_java_home(java_release: str, run=None, platform: str | None = 
         raise OpArtifactError(f"{var}={home} has no bin/java")
     return home
 
+def _require_platform_home(module_dir: Path, build_env: dict, release: dict) -> None:
+    """With STRIIM_HOME unset, a pom that needs it falls back to its own default (often /opt/striim,
+    or an empty ${env.STRIIM_HOME}). If that holds no Platform jar, mvn would fail for a missing
+    prerequisite, not a broken module: refuse here so the case skips instead of failing."""
+    version = release.get("STRIIM_VERSION")
+    if "STRIIM_HOME" in build_env or not version:
+        return
+    try:
+        pom = (module_dir / "pom.xml").read_text()
+    except OSError:
+        return
+    if "${STRIIM_HOME}" not in pom:                   # declared but never used: needs no install
+        return
+    m = re.search(r"<STRIIM_HOME>\s*([^<$\s]+)\s*</STRIIM_HOME>", pom)
+    if m is None or not (Path(m.group(1)) / "lib" / f"Platform-{version}.jar").exists():
+        default = m.group(1) if m else "none"
+        raise OpArtifactError(
+            f"STRIIM_HOME is unset and {module_dir / 'pom.xml'}'s default ({default}) has no "
+            f"lib/Platform-{version}.jar; set STRIIM_HOME to the Striim {version} install to build it")
+
 def _default_run(argv, cwd, env):
     return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
 
@@ -678,7 +704,10 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
         _assert_jar_java_version(prebuilt, java_release, module_dir)
         jar_name = prebuilt.name
-        op_name = op_name_for(jar_name, suffix, series)
+        try:
+            op_name = op_name_for(jar_name, suffix, series)
+        except OpArtifactError as e:
+            raise OpJarRejected(f"prebuilt jar ({var}) {prebuilt}: {e}") from None
         digest = file_sha256(prebuilt)
         mod_id = jar_module_name(prebuilt)
         notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
@@ -763,6 +792,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         if (candidate_home / "lib" / f"Platform-{release.get('STRIIM_VERSION')}.jar").exists():
             build_env["STRIIM_HOME"] = str(candidate_home)
     _verify_striim_home(build_env, release)
+    _require_platform_home(module_dir, build_env, release)
     if java_release:
         java_home = resolve_build_java_home(str(java_release))
         if java_home:
@@ -775,10 +805,13 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # `mvn` step in the live console is explained (and a surprise rebuild is visible).
     notify(reason)
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
-    r = run(goals, str(module_dir), build_env)
+    try:
+        r = run(goals, str(module_dir), build_env)
+    except FileNotFoundError as e:
+        raise OpArtifactError(f"cannot run mvn to build {module_dir}: {e}") from e
     if getattr(r, "returncode", 1) != 0:
         out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
-        raise OpArtifactError(f"mvn package failed in {module_dir}:\n{out}")
+        raise OpBuildFailed(f"mvn package failed in {module_dir}:\n{out}")
     existing = _release_jar_candidates(module_dir, suffix)
     if len(existing) != 1 and not clean:
         # A non-clean build can itself create the ambiguity the branch above only catches
@@ -794,10 +827,10 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         r = run(["mvn", "-q", "clean", "package", "-DskipTests=true"], str(module_dir), build_env)
         if getattr(r, "returncode", 1) != 0:
             out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
-            raise OpArtifactError(f"mvn clean package failed in {module_dir}:\n{out}")
+            raise OpBuildFailed(f"mvn clean package failed in {module_dir}:\n{out}")
         existing = _release_jar_candidates(module_dir, suffix)
     if len(existing) != 1:
-        raise OpArtifactError(
+        raise OpBuildFailed(
             f"build succeeded but no unambiguous *-{suffix}.jar found in "
             f"{module_dir / 'target'} (found: {[p.name for p in existing]})")
     jar = existing[0]

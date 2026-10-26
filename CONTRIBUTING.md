@@ -37,7 +37,8 @@ and `pip`, using public PyPI only. It does not download Python. The helper works
 `requirements-test.in` lists runtime dependencies and test tools, including the build tools for
 the editable install. `requirements-test.txt` pins Linux x86_64;
 `requirements-test.macos-arm64.txt` pins macOS arm64. Each generated header records the exact
-`uv pip compile` command to refresh it. The macOS compile requires a binary `pymssql` wheel.
+`uv pip compile` command to refresh it. The macOS compile requires a binary `pymssql` wheel;
+those exist for macOS 14 or later, so the macOS lock targets 14.0.
 The optional Teradata driver is omitted; tests needing it skip with a reason.
 
 ## Tests
@@ -51,8 +52,9 @@ unset PYTHONPATH PYTHONHOME
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 DOCKER_HOST=unix:///nonexistent
 ```
 
-If reusing an environment after updating the checkout, run
-`python3 tools/prepare-recovery-goldens.py` to prepare the shared recovery CSV copies.
+The recovery cases commit copies of one reviewed CSV. After changing
+`samples/live/14-progress-recovery/expected/rows.csv`, run
+`python3 tools/prepare-recovery-goldens.py --write`; without `--write` it checks the copies.
 
 Run the suites for whatever you touch. These framework tests use pytest directly; use `striim-test` when running app cases.
 

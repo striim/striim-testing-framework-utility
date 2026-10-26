@@ -29,7 +29,8 @@ striim-test run <dir>                    # deploys apps, creates and drops table
 ```
 
 Exit codes: 0 passed, 1 a test failed, 2 a settings or `test.yaml` mistake, 3 something needed was
-missing so tests were **skipped** (not a pass), 4 cancelled, 5 nothing selected.
+missing so tests were **skipped** (not a pass), 4 cancelled, 5 nothing selected. When several
+apply, the run exits with the first of 2, 4, 1, 3: a failure is never reported as a skip.
 
 ## Writing a test
 
@@ -49,8 +50,8 @@ Follow [docs/WRITING-TESTS.md](docs/WRITING-TESTS.md). The rules:
   [route matrix](docs/WHAT-IS-SUPPORTED.md#check-routes) for other checks; Postgres tests
   also use `lifecycle:` to prove completion. CDC sentinel sinks also support Spanner,
   Kafka and Docker files with a Postgres SQL source. Other database routes use documented `data` or `diff`.
-- Use only the `assert:` tiers listed in `docs/TEST-YAML.md`. An unknown tier name is silently
-  ignored, so the test checks less than it says.
+- Use only the `assert:` tiers listed in `docs/TEST-YAML.md`. An unknown tier name is a `test.yaml`
+  mistake: `doctor` reports it (exit 2), and a run fails the case.
 - `purpose:` is one line naming the one behaviour the test proves.
 
 ## Never, unless the user says so

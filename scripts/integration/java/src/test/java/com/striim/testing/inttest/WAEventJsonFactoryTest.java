@@ -119,6 +119,21 @@ class WAEventJsonFactoryTest {
         }
     }
 
+    @Test
+    void aFixtureEventIsBuiltAsAReaderBuildsIt() throws Exception {
+        String fixture = """
+                [ { "metadata": { "TableName": "T", "OperationName": "INSERT" },
+                    "data": { "values": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+                              "present": [true, true, true, true, true, true, true, false, true] } } ]
+                """;
+        WAEvent e = WAEventJsonFactory.readEvents(fixture).get(0);
+        // The real layout: 7 columns per byte, both bitmaps allocated, before image left null.
+        assertArrayEquals(new byte[] { 0x7f, 0x02 }, e.dataPresenceBitMap);
+        assertArrayEquals(new byte[2], e.beforePresenceBitMap);
+        assertNull(e.before);
+        assertFalse(com.webaction.runtime.BuiltInFunc.IS_PRESENT(e, e.before, 0));
+    }
+
     // ------------------------------------------------------------- absent slot holding a value
 
     @Test

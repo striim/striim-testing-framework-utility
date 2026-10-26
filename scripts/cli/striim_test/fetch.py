@@ -15,13 +15,18 @@ import zipfile
 
 import yaml
 
-from striim_test.errors import CONFIG, CliError
+from striim_test.errors import CONFIG, INFRA, CliError
 
 _LIMIT = 128 * 1024 * 1024
 
 
 def _fail(message):
     raise CliError(CONFIG, f"fetch: {message}")
+
+
+def _unavailable(message):
+    """The download itself failed (network, gcloud, emulator): exit 3, not a settings mistake."""
+    raise CliError(INFRA, f"fetch: {message}")
 
 
 def _path(name):
@@ -61,15 +66,25 @@ def _download(bucket, prefix, endpoint):
         client = storage.Client(project="example-fetch", credentials=AnonymousCredentials(),
                                 client_options={"api_endpoint": endpoint})
         def read(name):
-            from google.api_core.exceptions import GoogleAPIError
+            from google.api_core.exceptions import GoogleAPIError, NotFound
             try:
                 return client.bucket(bucket).blob(f"{prefix}/{name}").download_as_bytes()
-            except GoogleAPIError as exc:
-                _fail(f"emulator download failed ({type(exc).__name__}); check endpoint and seeded objects")
+            except NotFound:
+                _fail(f"nothing published at gs://{bucket}/{prefix}/{name} on the emulator; check the prefix")
+            except (GoogleAPIError, OSError) as exc:
+                _unavailable(f"emulator download failed ({type(exc).__name__}); check endpoint and seeded objects")
         return read
     def read(name):
-        return subprocess.check_output(["gcloud", "storage", "cat", f"gs://{bucket}/{prefix}/{name}"],
-                                       stderr=subprocess.PIPE)
+        try:
+            return subprocess.check_output(["gcloud", "storage", "cat", f"gs://{bucket}/{prefix}/{name}"],
+                                           stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or b"").decode("utf-8", "replace").strip()[-1000:]
+            if re.search(r"matched no objects|\b404\b", err, re.IGNORECASE):
+                _fail(f"nothing published at gs://{bucket}/{prefix}/{name}; check the prefix: {err}")
+            _unavailable(f"gcloud download of {name} failed (exit {exc.returncode}): {err}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            _unavailable(f"gcloud download of {name} failed: {type(exc).__name__}: {exc}")
     return read
 
 

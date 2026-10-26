@@ -1,22 +1,23 @@
-"""Shared recovery expectations remain reviewed input, including local edits."""
+"""Every recovery case ships the one reviewed golden, byte for byte."""
 import runpy
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
+TOOL = runpy.run_path(str(ROOT / "tools/prepare-recovery-goldens.py"))
 
 
-def test_preparation_preserves_modified_expectations(tmp_path):
-    prepare = runpy.run_path(str(ROOT / "tools/prepare-recovery-goldens.py"))["prepare"]
-    source = tmp_path / "samples/live/14-progress-recovery/expected/rows.csv"
+def test_committed_copies_match_the_source():
+    assert len(TOOL["targets"](ROOT)) == 7
+    assert TOOL["check"](ROOT) == []
+
+
+def test_check_reports_and_write_repairs(tmp_path):
+    source = tmp_path / TOOL["SOURCE"]
     source.parent.mkdir(parents=True)
-    source.write_bytes((ROOT / source.relative_to(tmp_path)).read_bytes())
-    prepare(tmp_path)
-    copies = list(tmp_path.rglob("rows.csv"))
-    assert len(copies) == 8 and all(p.read_bytes() == source.read_bytes() for p in copies)
-    changed = next(p for p in copies if p != source)
+    source.write_bytes((ROOT / TOOL["SOURCE"]).read_bytes())
+    assert len(TOOL["check"](tmp_path)) == 7
+    TOOL["write"](tmp_path)
+    assert TOOL["check"](tmp_path) == []
+    changed = TOOL["targets"](tmp_path)[0]
     changed.write_text("id,msg\n1,hand-edited\n")
-    with pytest.raises(SystemExit, match="Refusing to overwrite a modified golden"):
-        prepare(tmp_path)
-    assert changed.read_text() == "id,msg\n1,hand-edited\n"
+    assert TOOL["check"](tmp_path) == [changed]

@@ -597,10 +597,19 @@ def _normalize_field_paths(item: dict, key: str, idx: int, path) -> tuple:
     return tuple(out)
 
 
+_ASSERT_TIERS = {"smoke", "data", "gcs_objects", "target", "expect_error", "expect_log", "monitor",
+                 "jmx", "acked", "restarts", "replayed", "exception_store"}
+
+
 def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
                       is_target: bool = False) -> AssertSpec:
     if not isinstance(raw, dict) or not raw:
         raise ManifestError(f"{path}: 'assert' is required and must be a non-empty mapping")
+    # A misspelled tier would otherwise check nothing and still pass.
+    unknown = sorted(set(raw) - _ASSERT_TIERS)
+    if unknown:
+        raise ManifestError(
+            f"{path}: 'assert' has unknown tier(s) {unknown} -- allowed: {sorted(_ASSERT_TIERS)}")
 
     smoke = raw.get("smoke", False)
     if not isinstance(smoke, bool):
@@ -2003,6 +2012,14 @@ def load_manifest(path) -> TestManifest:
             f"this case has {len(assert_.data)}. Each entry drives the reader again, and the seed "
             f"is committed only for the first -- later drives would see an empty source and fail "
             f"on the event count. Split them into separate cases.")
+    # The same reason, for `matrix:`: every permutation after the first re-runs `seed:` before
+    # its reader starts, so a change stream never sees it.
+    if source is not None and source.seed_when == "post_start" and matrix:
+        raise ManifestError(
+            f"{path}: 'source.seed_when: post_start' cannot be combined with 'matrix:'. The seed "
+            f"is committed while the FIRST permutation's reader runs; later permutations would "
+            f"re-seed before their reader starts, which a change stream never sees. Give each "
+            f"permutation its own case.")
     if source is not None and not assert_.data:
         raise ManifestError(
             f"{path}: 'source' needs 'assert.data' -- a smoke-only case never drives the "

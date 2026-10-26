@@ -151,7 +151,8 @@ public final class WAEventJsonFactory {
             throw new IllegalArgumentException("WAEvent fixture requires an object 'metadata' field");
         }
 
-        WAEvent event = new WAEvent();
+        // As a reader does: new WAEvent(columns, ...) allocates both bitmaps, never the images.
+        WAEvent event = new WAEvent(Math.max(imageSize(node.get("data")), imageSize(node.get("before"))), null);
         event.typeUUID = UUID.genCurTimeUUID();
         event.metadata = toMap(metadataNode);
 
@@ -193,6 +194,11 @@ public final class WAEventJsonFactory {
         return event;
     }
 
+    private static int imageSize(JsonNode imageNode) {
+        JsonNode values = imageNode == null ? null : imageNode.get("values");
+        return values != null && values.isArray() ? values.size() : 0;
+    }
+
     private static void applyImage(JsonNode imageNode, WAEvent event, boolean isData) {
         JsonNode valuesNode = imageNode.get("values");
         JsonNode presentNode = imageNode.get("present");
@@ -204,14 +210,12 @@ public final class WAEventJsonFactory {
             throw new IllegalArgumentException("'values' (" + n + ") and 'present' (" + presentNode.size() + ") must be equal length");
         }
 
-        // Pre-size the image and bitmap directly (public fields). Present slots go through
-        // setData/setBefore; an absent slot's value, if any, is written raw with its bit clear.
+        // The image is allocated here, as a reader must before setData/setBefore. Present slots go
+        // through those; an absent slot's value, if any, is written raw with its bit clear.
         if (isData) {
             event.data = new Object[n];
-            event.dataPresenceBitMap = new byte[(n + 7) / 8];
         } else {
             event.before = new Object[n];
-            event.beforePresenceBitMap = new byte[(n + 7) / 8];
         }
 
         for (int i = 0; i < n; i++) {

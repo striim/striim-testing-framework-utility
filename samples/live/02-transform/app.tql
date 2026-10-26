@@ -11,9 +11,9 @@ CREATE OR REPLACE SOURCE CustomerSource USING Global.DatabaseReader (
   Tables: '${PG_SOURCE_SCHEMA}.${TID}src'
 ) OUTPUT TO RawCustomerRows;
 
-CREATE STREAM TransformedCustomerRows OF Global.WAEvent;
+CREATE STREAM DoubledCustomerRows OF Global.WAEvent;
 CREATE OR REPLACE CQ DoubleAmount
-  INSERT INTO TransformedCustomerRows
+  INSERT INTO DoubledCustomerRows
   SELECT row_event FROM RawCustomerRows row_event
   MODIFY(data[2] = TO_DOUBLE(row_event.data[2]) * 2.0);
 
@@ -24,7 +24,7 @@ CREATE OR REPLACE TARGET CustomerTarget USING Global.DatabaseWriter (
   Tables: '${PG_SOURCE_SCHEMA}.${TID}src,${PG_TARGET_SCHEMA}.${TID}tgt',
   BatchPolicy: 'EventCount:100,Interval:1',
   CommitPolicy: 'EventCount:100,Interval:1'
-) INPUT FROM TransformedCustomerRows;
+) INPUT FROM DoubledCustomerRows;
 
 END APPLICATION ${APP};
 

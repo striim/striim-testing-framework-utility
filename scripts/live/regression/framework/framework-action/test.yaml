@@ -2,7 +2,7 @@ name: framework-action
 # Fixture SQL has its own budget, separate from assertion polling.
 fixture_timeout: 600
 depth: smoke
-purpose: The action phase really stops and restarts a running app N times, a concurrent SQL script really runs on its own thread throughout (its rows are counted, since its failures only log), and rows committed before the first stop survive both cycles
+purpose: The action phase really stops and restarts a running app N times, a concurrent SQL script really runs on its own thread throughout (its rows are counted), and rows committed before the first stop survive both cycles
 
 tql: app.tql
 
@@ -51,8 +51,8 @@ action:
         loop_interval: 1s
 
 # Two assertions, each for what the other cannot see. `data: rows: 8` (3 seeded + 5 from the
-# script) proves the concurrent script RAN: its failures are logged rather than failed, so
-# source and target would be trivially equal if it never inserted anything. The diff proves
+# script) proves the concurrent script's rows arrived: the framework fails the case if the script
+# never succeeds or errors, but source and target would be trivially equal without a count. The diff proves
 # the eight rows are intact after two STOPs -- a count of 8 would also pass with eight wrong rows.
 assert:
   smoke: true
