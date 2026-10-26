@@ -217,6 +217,7 @@ def op_and_common(tmp_path, monkeypatch):
     target.mkdir()
     jar = target / "SomeOp-5.4.jar"
     jar.write_bytes(b"jar")
+    opartifacts._write_source_record(jar, module_dir)   # what build_jar leaves beside its jar
 
     return module_dir, common_dir, jar, op_src_file, common_src_file
 
@@ -285,6 +286,7 @@ def test_stale_trigger_common_itself_not_double_folded(tmp_path, monkeypatch):
     jar = common_dir / "target" / "OpenProcessorCommon-5.4.jar"
     jar.parent.mkdir(parents=True)
     jar.write_bytes(b"jar")
+    opartifacts._write_source_record(jar, common_dir)
 
     base = 1_700_000_000.0
     _touch(jar, base)
@@ -392,7 +394,9 @@ def test_build_jar_fails_when_the_clean_rebuild_itself_fails(tmp_path, monkeypat
     _mk(mod / "src" / "main" / "java" / "X.java", 2000)      # newer than the jar -> rebuild
     old = mod / "target" / "ReferenceOpV1-5.4.jar"
     _jar(old, fp=_fp(RELEASE_54), major=61)
+    opartifacts._write_source_record(old, mod)
     os.utime(old, (1000, 1000))
+    _mk(mod / "src" / "main" / "java" / "X.java", 2000)
     goals = []
 
     def fake_run(argv, cwd, env):
@@ -443,6 +447,7 @@ def test_build_jar_reuses_a_valid_up_to_date_jar(tmp_path, monkeypatch):
     _mk(mod / "src" / "main" / "java" / "X.java", 1000)
     jar = mod / "target" / "ReferenceOpV1-5.4.jar"
     _jar(jar, fp=_fp(RELEASE_54), major=61)
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))
     reasons = []
     built = opartifacts.build_jar(
@@ -464,6 +469,7 @@ def test_build_jar_still_reuses_a_valid_jar_with_no_stamp_and_no_own_classes(tmp
     jar.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(jar, "w") as z:
         z.writestr("com/other/Dep.class", b"x")   # valid zip, nothing determinable
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))                   # newer than every source
     opartifacts.build_jar(MODULE, RELEASE_54, run=lambda *a: pytest.fail("must not build"))
 

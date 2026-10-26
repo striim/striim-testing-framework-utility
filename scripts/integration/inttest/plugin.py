@@ -61,6 +61,7 @@ from . import dbroutes as dbroutes_mod
 from . import harness as harness_mod
 from . import pgclient as pgclient_mod
 from . import waevent as waevent_mod
+from . import redact as redact_mod
 from . import tokens as tokens_mod
 from .tokens import build_tokens as _build_tokens
 
@@ -1462,6 +1463,25 @@ def pytest_collect_file(parent, file_path):
     return IntYamlFile.from_parent(parent, path=file_path)
 
 
+def _redacted_failure(item, excinfo):
+    """The failure text with known secrets masked. It quotes the operator's stdout/stderr, which
+    can carry a rendered connection URL or password, and it reaches the terminal and JUnit."""
+    m, tokens = item.manifest, getattr(item, "tokens", None) or {}
+    extra = set(redact_mod.credentials_in(tokens))
+    for key in m.password_properties or ():
+        raw = m.properties.get(key)
+        if isinstance(raw, str):
+            extra.add(raw)
+            try:
+                extra.add(tokens_mod.render(raw, tokens))
+            except Exception:  # noqa: BLE001 - an unrendered value is still masked as written
+                pass
+    for variant in m.variants or ():
+        extra |= redact_mod.credentials_in(variant.tokens)
+    return redact_mod.redact_text(str(pytest.Item.repr_failure(item, excinfo)),
+                                  redact_mod.known_secrets(extra=extra))
+
+
 class IntYamlFile(pytest.File):
     """A pytest.File subclass for test.yaml manifests (SPEC §3). Parsing/normalization
     is entirely `inttest.manifest.load_manifest`'s job; this class only turns a parse
@@ -1518,6 +1538,9 @@ class IntYamlItem(pytest.Item):
                 self.add_marker(pytest.mark.spanner)
             elif svc == "gcs":
                 self.add_marker(pytest.mark.gcs)
+
+    def repr_failure(self, excinfo):
+        return _redacted_failure(self, excinfo)
 
     def runtest(self):
         """Execute SPEC §5 steps 1-6 for this test.yaml (step 8/cleanup is the
@@ -1881,6 +1904,10 @@ class IntYamlItem(pytest.Item):
         except harness_mod.HarnessError as e:
             if "no `java` executable found" in str(e):
                 pytest.skip(f"{m.name}: {e}")
+            # ⚠ Matched against what the operator THREW, never the whole error: that also holds
+            # everything it printed and the jar path, so a refusal logged as a WARN before an
+            # unrelated failure -- or a timeout -- would pass. No exception chain, no match.
+            refusal = e.failure
             # ⚠ §84. RENDERED with this run's tokens, so a variant can supply its own expected
             # text. Matched raw, this pinned a whole class of cases to one engine: a case that
             # asserts a DRIVER's message can never fan out, because every engine words the same
@@ -1889,7 +1916,7 @@ class IntYamlItem(pytest.Item):
             # common sqlState either (23502 / 23000 / 23000). Rendering costs nothing for a case
             # with no tokens in its expect_error, which is all of them today.
             expected = tokens_mod.render(m.assert_.expect_error, self._variant_tokens(variant))
-            if expected in str(e):
+            if refusal is not None and expected in refusal:
                 # Refused, for the stated reason. Now check what the failure LEFT BEHIND: a
                 # rollback is only proved by the database, not by the exception.
                 self._assert_target_rows(m, at, variant)
@@ -1897,7 +1924,9 @@ class IntYamlItem(pytest.Item):
             pytest.fail(
                 f"{m.name}{at}: the drive failed as expected, but not for the stated reason.\n"
                 f"  expect_error: {expected!r}\n"
-                f"  actual failure did not contain it:\n{e}")
+                f"  the operator's exception chain did not contain it:\n"
+                f"{refusal if refusal is not None else '(none: the drive ended without one)'}\n"
+                f"--- harness error ---\n{e}")
         pytest.fail(
             f"{m.name}{at}: expected the drive to be REFUSED with a failure containing "
             f"{tokens_mod.render(m.assert_.expect_error, self._variant_tokens(variant))!r}, "
@@ -2397,6 +2426,9 @@ class PerfYamlItem(pytest.Item):
                 self.add_marker(pytest.mark.spanner)
             elif svc == "gcs":
                 self.add_marker(pytest.mark.gcs)
+
+    def repr_failure(self, excinfo):
+        return _redacted_failure(self, excinfo)
 
     def runtest(self):
         """Execute PERF_SPEC.md §5 for every `run_size × measured_runs` of this
