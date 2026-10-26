@@ -75,6 +75,8 @@ def test_a_failed_docker_exec_is_not_a_mark_of_zero():
     assert plugin._node_log_marks(_Ctx(), run=failed) == {}
     junk = lambda argv: SimpleNamespace(returncode=0, stdout="wc: unexpected\n", stderr="")  # noqa: E731
     assert plugin._node_log_marks(_Ctx(), run=junk) == {}
+    digits_but_failed = lambda argv: SimpleNamespace(returncode=1, stdout="0\n", stderr="")  # noqa: E731
+    assert plugin._node_log_marks(_Ctx(), run=digits_but_failed) == {}
 
 
 def test_an_empty_log_at_the_mark_is_read_from_its_start():

@@ -1862,7 +1862,8 @@ Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `ma
 distinct sets; pin `rows: N` too if cardinality matters. A golden row's missing trailing cells
 are NULL (prefer `<null>`); a row with more cells than the header is refused.
 On mssql and teradata, `rows` and `min_rows` count committed rows only; if the writer still holds
-the table lock at `timeout`, a `min_rows` spec uses the uncommitted count.
+the table lock at `timeout`, a `min_rows` spec passes on the uncommitted count, so it gives no
+committed-row guarantee where a writer may roll back or retry; use `rows:` for that.
 A Kafka count reads every offset up to the high watermark taken when the read starts (offsets
 that hold no message, such as transaction markers, count as read). It keeps polling while the
 topic does not exist or offsets are unread, and fails at `timeout`; a missing topic never counts
