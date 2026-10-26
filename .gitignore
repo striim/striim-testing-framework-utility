@@ -42,3 +42,6 @@ externaljars/
 # ---- striim-test run directories and ownership ledgers (default state dir: scripts/live) ----
 scripts/live/runs/
 scripts/live/lifecycle/
+
+# Temporary POM of a release build that was killed (the next build removes it)
+.release-build-*.xml

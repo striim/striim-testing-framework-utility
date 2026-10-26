@@ -25,13 +25,13 @@ def test_shortest_unique_suffix(versions, version, expected):
     assert opjarrelease.jar_suffix({'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'}, versions) == expected
 
 
-def test_discover_existing_matrix_and_install_siblings(tmp_path):
+def test_discover_existing_matrix_and_selected_install(tmp_path):
     from inttest import opjarrelease
     matrix = tmp_path / 'matrix.env'
     matrix.write_text('export STRIIM_BUILD_5_4_2="install one"\n'
                       'STRIIM_BUILD_5_4_4_0=install-two\n'
                       'STRIIM_BUILD_5_4_4_0_JAVA=17\nSTRIIM_BUILD_5_4_9_JAVA=17\n')
-    lib = tmp_path / 'installs' / 'third' / 'lib'
+    lib = tmp_path / 'installs' / 'selected' / 'lib'
     lib.mkdir(parents=True)
     (lib / 'Platform-5.4.4.1.jar').touch()
     (lib / 'Platform-5.4.4.1-sources.jar').touch()
@@ -109,6 +109,60 @@ def test_prebuilt_directory_selects_release_suffix(engine, tmp_path, monkeypatch
                              run=lambda *a: pytest.fail('prebuilt must not build'))
     assert built.name == 'ExampleOpV1-5.4.2.jar'
     assert built.op_name == 'ExampleOpV1'
+
+
+@pytest.mark.parametrize('how', ['dir', 'file'])
+def test_prebuilt_series_jar_is_accepted_beside_another_release(engine, tmp_path, monkeypatch, how):
+    # The shipped jar is named for the series; it tests on every release of it without renaming.
+    shipped = tmp_path / 'ship' / 'ExampleOpV1-5.4.jar'
+    _jar(shipped, '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_DIR' if how == 'dir' else 'SLT_PREBUILT_JAR',
+                       str(shipped.parent if how == 'dir' else shipped))
+    for version in ['5.4.2', '5.4.4.0']:
+        built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'},
+                                 run=lambda *a: pytest.fail('prebuilt must not build'))
+        assert (built.path, built.op_name) == (shipped, 'ExampleOpV1')
+
+
+def test_prebuilt_directory_refuses_a_release_jar_beside_a_series_jar(engine, tmp_path, monkeypatch):
+    # Under a matrix, earlier runs leave release-named copies in target/ beside the series jar.
+    folder = tmp_path / 'prebuilt'
+    _jar(folder / 'ExampleOpV1-5.4.jar', '5.4.2')
+    _jar(folder / 'ExampleOpV1-5.4.2.jar', '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_DIR', str(folder))
+    release = {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'}
+    with pytest.raises(engine.OpArtifactError, match='multiple candidates'):
+        engine.build_jar('ExampleOp', release, run=lambda *a: pytest.fail('prebuilt must not build'))
+    (folder / 'ExampleOpV1-5.4.jar').unlink()
+    assert engine.build_jar('ExampleOp', release,
+                            run=lambda *a: pytest.fail('prebuilt must not build')).name == 'ExampleOpV1-5.4.2.jar'
+    (folder / 'ExampleOpV1-5.4.2.jar').unlink()
+    with pytest.raises(engine.OpArtifactError, match=r'no ExampleOp jar for release suffix 5\.4\.2 or series 5\.4 in'):
+        engine.build_jar('ExampleOp', release, run=lambda *a: pytest.fail('prebuilt must not build'))
+
+
+def test_wrong_jar_name_error_does_not_call_the_suffix_a_series(engine, tmp_path, monkeypatch):
+    unnamed = tmp_path / 'ship' / 'ExampleOpV1.jar'
+    _jar(unnamed, '5.4.2')
+    monkeypatch.setenv('SLT_PREBUILT_JAR', str(unnamed))
+    with pytest.raises(Exception, match="does not end with the expected") as err:
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                         run=lambda *a: pytest.fail('prebuilt must not build'))
+    assert 'STRIIM_SERIES' not in str(err.value)
+    assert "'-5.4.2.jar' or '-5.4.jar'" in str(err.value)
+    # The integration tier fails (not skips) a misnamed jar, as op_name_for always did.
+    if engine.__name__.startswith('inttest'):
+        assert isinstance(err.value, engine.OpBuildFailed)
+
+
+def test_unreadable_pom_under_a_matrix_is_a_build_failure(engine, tmp_path):
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    (module / 'pom.xml').write_text('not xml')
+    with pytest.raises(engine.OpArtifactError, match='cannot read .*pom.xml'):
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4',
+                                     'JAVA_RELEASE': '17'},
+                         run=lambda *a: pytest.fail('maven must not run on an unreadable pom'))
 
 
 @pytest.mark.parametrize('matrix', ['', 'STRIIM_BUILD_5_4_2=one\nSTRIIM_BUILD_5_2_0_8=two\n'])
@@ -283,3 +337,94 @@ def test_build_then_prebuilt_lookup_ignores_private_cache(engine, tmp_path, monk
     _jar(module / 'target/published/ExampleOpV2-5.4.jar', '5.4.2')
     with pytest.raises(engine.OpArtifactError, match='multiple candidates'):
         engine.build_jar('ExampleOp', release, run=run)
+
+
+@pytest.mark.parametrize('route', ['SLT_PREBUILT_JAR', 'SLT_PREBUILT_DIR'])
+def test_series_named_prebuilt_is_accepted_on_multi_release_matrix(engine, tmp_path, monkeypatch, route):
+    # Maven names the shipped jar for the series; build it once and test it on each release.
+    shipped = tmp_path / 'ship' / 'ExampleOpV1-5.4.jar'
+    _jar(shipped, '5.4.2')
+    monkeypatch.setenv(route, str(shipped if route == 'SLT_PREBUILT_JAR' else shipped.parent))
+    for version in ['5.4.2', '5.4.4.0']:
+        built = engine.build_jar('ExampleOp', {'STRIIM_VERSION': version, 'STRIIM_SERIES': '5.4'},
+                                 run=lambda *a: pytest.fail('prebuilt must not build'))
+        assert (built.path, built.name, built.op_name) == (shipped, shipped.name, 'ExampleOpV1')
+
+
+@pytest.mark.parametrize('route', ['SLT_PREBUILT_JAR', 'SLT_PREBUILT_DIR'])
+def test_prebuilt_named_for_another_release_is_refused(engine, tmp_path, monkeypatch, route):
+    other = tmp_path / 'ship' / 'ExampleOpV1-5.4.4.jar'
+    _jar(other, '5.4.4.0')
+    monkeypatch.setenv(route, str(other if route == 'SLT_PREBUILT_JAR' else other.parent))
+    with pytest.raises(engine.OpArtifactError, match=r"5\.4\.2.*5\.4\b") as error:
+        engine.build_jar('ExampleOp', {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                         run=lambda *a: pytest.fail('prebuilt must not build'))
+    assert 'STRIIM_SERIES=' not in str(error.value)
+    assert 'series 5.4.2' not in str(error.value)
+
+
+@pytest.mark.parametrize('package', ['livetest', 'inttest'])
+def test_sibling_installs_do_not_change_jar_names(tmp_path, package):
+    opjarrelease = importlib.import_module(package + '.opjarrelease')
+
+    def host(name, siblings):
+        root = tmp_path / name
+        for folder, version in [('one', '5.4.2'), ('two', '5.4.4.0'), *siblings]:
+            lib = root / 'installs' / folder / 'lib'
+            lib.mkdir(parents=True)
+            (lib / f'Platform-{version}.jar').touch()
+        (root / '.env').write_text('STRIIM_BUILD_5_4_2=installs/one\nSTRIIM_BUILD_5_4_4=installs/two\n')
+        env = {'STRIIM_HOME': str(root / 'installs' / 'two'),
+               'FTC_RELEASE_INSTALL_ROOT': str(root / 'installs')}
+        versions = opjarrelease.configured_versions(root, env)
+        return versions, [opjarrelease.jar_suffix({'STRIIM_SERIES': '5.4', 'STRIIM_VERSION': v}, versions)
+                          for v in ['5.4.2', '5.4.4.0']]
+
+    plain = host('a', [])
+    assert plain == ({'5.4.2', '5.4.4.0'}, ['5.4.2', '5.4.4'])
+    assert host('b', [('old', '5.4.4.1'), ('older', '5.4.2.1')]) == plain
+
+
+def test_selected_striim_home_outside_matrix_is_counted(tmp_path):
+    from inttest import opjarrelease
+    lib = tmp_path / 'selected' / 'lib'
+    lib.mkdir(parents=True)
+    (lib / 'Platform-5.4.4.0.jar').touch()
+    (tmp_path / '.env').write_text('STRIIM_BUILD_5_4_2=elsewhere\n')
+    env = {'STRIIM_HOME': str(tmp_path / 'selected')}
+    assert opjarrelease.configured_versions(tmp_path, env) == {'5.4.2', '5.4.4.0'}
+
+
+@pytest.mark.parametrize('package', ['livetest', 'inttest'])
+def test_next_build_removes_temporary_pom_of_a_killed_build(tmp_path, package):
+    import subprocess
+    import sys
+    import time
+    opjarrelease = importlib.import_module(package + '.opjarrelease')
+    module = tmp_path / 'ExampleOp'
+    module.mkdir()
+    (module / 'pom.xml').write_text('<project><build/></project>')
+    dead = subprocess.run([sys.executable, '-c', 'import os; print(os.getpid())'],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    old = time.time() - 2 * 3600
+    killed = module / f'.release-build-{dead}-abc.xml'
+    running = module / f'.release-build-{os.getpid()}-def.xml'
+    recent = module / f'.release-build-{dead}-ghi.xml'
+    for pom in [killed, running, recent]:
+        pom.write_text('<project/>')
+    os.utime(killed, (old, old))
+    os.utime(running, (old, old))
+    seen = []
+
+    def run(argv, cwd, env):
+        seen.append(sorted(p.name for p in module.glob('.release-build-*.xml')))
+        output = Path(ET.parse(argv[argv.index('-f') + 1]).findtext('build/directory'))
+        _jar(output / 'ExampleOpV1-5.4.jar', '5.4.2')
+        return SimpleNamespace(returncode=0)
+
+    invoke = opjarrelease.release_runner(run, module, {'STRIIM_VERSION': '5.4.2', 'STRIIM_SERIES': '5.4'},
+                                         '5.4.2')
+    assert invoke(['mvn', 'package'], str(module), {}).returncode == 0
+    assert killed.name not in seen[0]
+    assert {running.name, recent.name} <= set(seen[0])
+    assert sorted(p.name for p in module.glob('.release-build-*.xml')) == sorted([running.name, recent.name])

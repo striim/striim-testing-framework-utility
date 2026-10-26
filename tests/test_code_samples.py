@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from livetest import manifest, opartifacts, releases
+from livetest import manifest, opartifacts, opjarrelease, releases
 
 _REPO = Path(__file__).resolve().parents[1]
 
-# (sample dir, case dir, module kind, expected jar name without the "-<series>.jar" suffix)
+# (sample dir, case dir, module kind, expected jar name without the "-<suffix>.jar" ending)
 SAMPLES = [
     ("samples/code/udf", "referenceudf-mark-processed", "udf", "ReferenceUdfV1"),
     ("samples/code/op", "referenceop-copy-adds-userdata", "op", "ReferenceOpV1"),
@@ -81,9 +81,10 @@ _HAS_PLATFORM_JAR = bool(_STRIIM_HOME) and any(Path(_STRIIM_HOME, "lib").glob("P
 def test_sample_builds_its_jar(sample, case, kind, jar):
     [mod] = _load(sample, case).modules
     release = releases.resolve_release(dict(os.environ))
-    series = release["STRIIM_SERIES"]
+    # The series, or a longer release prefix when the build matrix holds another release of it.
+    suffix = opjarrelease.jar_suffix(release, opjarrelease.configured_versions(opartifacts._root()))
     artifact = opartifacts.build_jar(mod["jar"], release)
-    assert artifact.name == f"{jar}-{series}.jar"
+    assert artifact.name == f"{jar}-{suffix}.jar"
     assert artifact.op_name == jar
     assert artifact.path.is_file()
     assert _inside(artifact.path, _REPO / sample)
