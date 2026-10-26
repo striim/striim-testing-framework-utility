@@ -51,3 +51,6 @@ scripts/live/lifecycle/
 /scripts/live/regression/framework/framework-progress-recovery/expected/rows.csv
 /scripts/live/regression/framework/framework-fault-evidence/expected/rows.csv
 /scripts/live/regression/framework/framework-recovery-sentinel/expected/rows.csv
+
+# Temporary POM of a release build that was killed (the next build removes it)
+.release-build-*.xml
