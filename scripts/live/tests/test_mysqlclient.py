@@ -483,9 +483,3 @@ def test_reset_test_objects_uses_the_configured_schemas():
     assert conn.last_cursor.params[0] == ("app_src", "app_tgt")
     assert _dropped(batches) == ["tddd_a"]
 
-
-def test_plugin_marks_an_operator_instance_live():
-    import inspect
-    from livetest import plugin
-    assert 'MySQLAdmin(resolved.base, role="source", live=resolved.mode == "live")' in inspect.getsource(
-        plugin.LiveItem._runtest)

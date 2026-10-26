@@ -81,9 +81,25 @@ def test_shared_service_lock_uses_the_waiting_acquire(monkeypatch, tmp_path):
     assert resolved == "ok" and len(acquired) == 1
 
 
-def test_preflight_passes_the_waiting_acquire_not_a_5s_timeout():
-    import inspect
+
+def test_preflight_waits_out_a_bring_up_elsewhere_on_the_shared_lock(monkeypatch, tmp_path):
+    from types import SimpleNamespace
     from livetest import preflight
-    src = inspect.getsource(preflight._bring_up_services)
-    assert 'lock_options["acquire_lock"]' in src and "recovery.acquire(" in src
-    assert 'lock_options["lock_timeout"]' not in src
+    clock = _Clock()
+    lock = _BusyLock(busy=4, clock=clock)()        # the shared provisioning lock, held ~20 s elsewhere
+
+    def resolve_service(infra, svc, env, started, resolve_fn, progress=None, **lock_options):
+        assert "lock_timeout" not in lock_options
+        lock_options["acquire_lock"](lock)
+        return SimpleNamespace(base={})
+    monkeypatch.setattr(preflight._slt_infra, "resolve_service", resolve_service)
+    monkeypatch.setattr(preflight, "load_service", lambda svc: SimpleNamespace(name=svc))
+    monkeypatch.setattr(preflight._prestart, "prepare_selected", lambda *a, **k: None)
+    monkeypatch.setattr(preflight, "missing_port_overrides", lambda *a: [])
+    ctx = h.RecoveryContext(tmp_path / "ev", "run", "op", "lane", clock=clock, log=lambda *a: None)
+    outcomes = {}
+    with h.preflight_context(ctx):
+        preflight._bring_up_services(["kafka"], {}, apply_gate=False, infra=SimpleNamespace(ownership="shared"),
+                                     outcomes=outcomes)
+    assert outcomes == {"kafka": {"status": "ready", "reason": ""}}
+    assert lock.held and len(lock.timeouts) == 5

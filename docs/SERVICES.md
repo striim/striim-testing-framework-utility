@@ -80,7 +80,8 @@ SLT_PG_ADMIN_PASSWORD=...
   To provision a separate cluster instead, select an unused HTTP host port and matching
   `STRIIM_URL`, plus unused ports for its other published endpoints, as described in
   [SET-UP-YOUR-OWN-REPO.md](SET-UP-YOUR-OWN-REPO.md#several-checkouts-or-people-on-one-machine).
-- On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds) before it
+- On SIGTERM or SIGINT a run still cleans up its apps and objects (within 90 seconds, after up to
+  90 seconds closing an injected node fault or open transactions) before it
   exits non-zero.
 
 ## Striim peer API for node faults
@@ -367,8 +368,10 @@ Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `Kaf
   compares topics.
 - A topic your app creates that the framework does not know about (a persisted stream's topic, for
   example) goes in `kafka_cleanup_topics:` so it is removed at the end.
-- `KAFKA_ZOOKEEPER` is the ZooKeeper address Striim reaches (`host.docker.internal:2181` for the
-  Docker stack, following `SLT_ZOOKEEPER_CLIENT_PORT`; `SLT_KAFKA_HOST:SLT_ZOOKEEPER_PORT` for your own).
+- `KAFKA_ZOOKEEPER` is the ZooKeeper address Striim reaches: `host.docker.internal:2181` for the
+  Docker stack, following `SLT_ZOOKEEPER_CLIENT_PORT`. For your own Kafka it is the host Striim
+  reaches the broker by (`SLT_KAFKA_HOST`; for a `localhost` broker, `SLT_KAFKA_VIEW_HOST` or else
+  `SLT_STRIIM_VIEW_HOST`) with `SLT_ZOOKEEPER_PORT`.
 - **A runner inside a container** (`SLT_SERVICES_HOST`): the framework connects to the broker's
   Docker listener at `SLT_SERVICES_HOST`, and the broker then redirects it to the advertised
   `host.docker.internal`. That name must resolve inside the runner's container: Docker Desktop provides

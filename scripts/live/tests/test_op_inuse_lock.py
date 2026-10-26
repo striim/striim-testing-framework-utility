@@ -121,3 +121,24 @@ def test_a_waiting_reload_goes_before_tests_that_arrive_after_it(tmp_path):
         t.join(20)
     assert order == ["first", "reload", "late"]
     assert time.monotonic() - t0 < 10
+
+
+def test_a_test_held_behind_a_pending_reload_says_so(tmp_path):
+    import threading
+    notes, started = [], threading.Event()
+
+    def reload():
+        with opregistry.exclusive_reload(tmp_path):
+            started.set()
+            time.sleep(0.5)
+
+    t = threading.Thread(target=reload)
+    t.start()
+    started.wait(5)
+    with opregistry.in_use(tmp_path, progress=notes.append):
+        pass
+    t.join(5)
+    assert len(notes) == 1 and "waiting for a pending OP/UDF jar reload" in notes[0]
+    with opregistry.in_use(tmp_path, progress=notes.append):
+        pass
+    assert len(notes) == 1                  # an uncontended start is silent

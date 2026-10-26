@@ -1757,7 +1757,7 @@ udf:
     - from: customer_lookup.json  # explicit rename
       to: customer_lookup.json
 ```
-- Plain string — uploaded as `f"{TID}<name>"` (auto per-test-isolated; empty prefix when serial). The test's own TQL must reference that literal `${TID}`-prefixed name.
+- Plain string — uploaded as `f"{TID}<name>"` (per-test; `${TID}` is never empty, serial runs included). The test's own TQL must reference that literal `${TID}`-prefixed name.
 - `{from, to}` — `from` is the example/test-dir-relative source file; `to` is the uploaded name, token-rendered if it contains any `${...}` (e.g. `${NS}-<name>`), fully author-controlled (no automatic prefix). If the TQL contains a literal `UploadedFiles/<from>` reference (e.g. a shipped example's clean, untokenized `ConfigFile:` line), the runner rewrites it to `UploadedFiles/<rendered to>` before deploy — so a customer-facing example can keep an untokenized `ConfigFile` while the test controls the uploaded name directly. **`to` is not auto-tokenized**: if several tests can run concurrently and upload the same basename (e.g. `products_lookup.json`), give `to` a `${NS}`/`${TID}` prefix to keep them from clobbering each other in the shared `UploadedFiles/`; a bare `to` (matching `from`) is only safe when nothing else uploads that same name at the same time. `to` must render to a plain file name: a `/`, `\`, `.` or `..` is refused. Teardown deletes an uploaded file only when its name carries the case's `${TID}` or `${NS}`; a bare name is left in `UploadedFiles/`.
 
 A single `op:`/`udf:` mapping normalizes internally to one module with the default token

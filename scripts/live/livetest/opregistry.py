@@ -452,10 +452,16 @@ def _gate(path: Path) -> Path:
 
 
 @contextmanager
-def _shared_after_gate(path: Path, timeout: float = _LOCK_TIMEOUT_S):
+def _shared_after_gate(path: Path, timeout: float = _LOCK_TIMEOUT_S, progress=None):
     deadline = time.monotonic() + timeout
-    with _flock(_gate(path), fcntl.LOCK_EX, timeout):
-        pass
+    try:
+        with _flock(_gate(path), fcntl.LOCK_EX, 0):
+            pass
+    except LockTimeout:
+        if progress:
+            progress(f"waiting for a pending OP/UDF jar reload to finish (up to {timeout:.0f}s; {_gate(path)})")
+        with _flock(_gate(path), fcntl.LOCK_EX, timeout):
+            pass
     with _flock(path, fcntl.LOCK_SH, max(0.0, deadline - time.monotonic())):
         yield
 
@@ -468,10 +474,11 @@ def _exclusive_with_gate(path: Path, timeout: float = _LOCK_TIMEOUT_S):
             yield
 
 
-def in_use(registry_dir=None, env=None):
+def in_use(registry_dir=None, env=None, progress=None):
     """Shared lock held for the lifetime of a running test: many tests at once, but no
-    reload while any of them is up. A test that arrives while a reload waits waits behind it."""
-    return _shared_after_gate(_use_lock(registry_dir, env))
+    reload while any of them is up. A test that arrives while a reload waits waits behind it,
+    and says so through ``progress(message)``."""
+    return _shared_after_gate(_use_lock(registry_dir, env), progress=progress)
 
 
 def exclusive_reload(registry_dir=None, env=None):
