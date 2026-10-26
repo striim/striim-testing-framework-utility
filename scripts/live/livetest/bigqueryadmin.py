@@ -355,8 +355,8 @@ def _worker(req):
         query.update(parameterMode="NAMED", queryParameters=req["parameters"])
     api("POST", root + "/jobs", data={"jobReference": {"projectId": req["project"], "jobId": req["job"]},
         "configuration": {"query": query}})
-    rows, schema, token, row_bytes = [], None, None, 0
-    for _ in range(128):
+    rows, schema, token, row_bytes, pages = [], None, None, 0, 0
+    while pages < 128:
         params = {"maxResults": min(1000, req["max_rows"] + 1 - len(rows)), "timeoutMs": 100, "formatOptions.useInt64Timestamp": "true"}
         if token:
             params["pageToken"] = token
@@ -364,8 +364,9 @@ def _worker(req):
         if page.get("errors"):
             raise BigQueryError("exact-read-error", str(page["errors"])[:500])
         if not page.get("jobComplete", False):
-            time.sleep(0.02)
+            time.sleep(0.02)    # bounded by the caller's deadline: api() raises exact-read-timeout
             continue
+        pages += 1
         schema = page.get("schema", schema or {"fields": []})
         batch = page.get("rows", [])
         row_bytes += len(json.dumps(batch, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -379,8 +380,6 @@ def _worker(req):
             return {"schema": schema, "rows": rows}
         if not isinstance(token, str) or len(token) > 4096:
             raise BigQueryError("exact-read-error", "invalid page token")
-    if not page.get("jobComplete", False):
-        raise BigQueryError("exact-read-timeout", "job remained incomplete after 128 REST polls")
     raise BigQueryError("canonical-limit-exceeded", "REST page cap exceeded")
 
 

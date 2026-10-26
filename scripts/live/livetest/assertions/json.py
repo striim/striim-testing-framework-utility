@@ -75,7 +75,8 @@ def _diff_path(actual, expected, path: str = ""):
                 return d
         return None
 
-    if actual != expected:
+    # bool is an int subclass: True == 1 would otherwise pass.
+    if isinstance(actual, bool) != isinstance(expected, bool) or actual != expected:
         return f"{path or '<root>'} (expected {expected!r}, got {actual!r})"
     return None
 

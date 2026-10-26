@@ -44,7 +44,7 @@ _INCOMPATIBLE = ("rows", "min_rows", "ordered", "project")
 _TYPE = re.compile(r"^(text|number|integer|boolean|timestamptz|timestamp|date|json|binary:hex|binary:base64|decimal:(0|[1-9][0-9]?))$")
 _INT = re.compile(r"^-?[0-9]+$")
 _DEC = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$")
-_TS = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?(?P<tz>Z|[+-][0-9]{2}:[0-9]{2})?$")
+_TS = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.(?P<frac>[0-9]{1,9}))?)?(?P<tz>Z|[+-][0-9]{2}:[0-9]{2})?$")
 _DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 _HEX = re.compile(r"^([0-9a-fA-F]{2})*$")
 _UTC = _dt.timezone.utc
@@ -369,20 +369,28 @@ def _typed(typ: str, value, side: str, col: str, observed: bool = False) -> str:
             match = _TS.match(value)
             if not match:
                 raise _invalid(side, col, f"{value!r} is not an ISO 8601 timestamp")
+            frac = match.group("frac") or ""
+            sub_us = int(frac[6:].ljust(3, "0")) if len(frac) > 6 else 0
+            if len(frac) > 6:
+                value = value[:match.start("frac") + 6] + value[match.end("frac"):]
             try:
                 value = _dt.datetime.fromisoformat(value)
             except ValueError as e:
                 raise _invalid(side, col, str(e)) from None
         elif not isinstance(value, _dt.datetime):
             raise _invalid(side, col, f"{type(value).__name__} is not a datetime")
+        else:
+            # Spanner's DatetimeWithNanoseconds: keep the digits below a microsecond.
+            sub_us = (getattr(value, "nanosecond", 0) or 0) % 1000
+        nanos = f"{sub_us:03d}" if sub_us else ""
         aware = value.tzinfo is not None and value.utcoffset() is not None
         if typ == "timestamptz":
             if not aware:
                 raise CanonError(f"timestamp-without-zone:{side}:{col}", "timestamptz needs an offset")
-            return value.astimezone(_UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            return value.astimezone(_UTC).strftime("%Y-%m-%dT%H:%M:%S.%f") + nanos + "Z"
         if aware:
             raise CanonError(f"timestamp-with-zone:{side}:{col}", "timestamp must not carry an offset")
-        return value.strftime("%Y-%m-%dT%H:%M:%S.%f")
+        return value.strftime("%Y-%m-%dT%H:%M:%S.%f") + nanos
     if typ == "date":
         if expected:
             if not _DATE.match(value):

@@ -36,7 +36,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
 | `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
 | `expect_halt` | bool | no | `false` | `true` => the app is expected to reach a terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) instead of RUNNING -- a raise-path test. This can be satisfied at any phase: a synchronous failure during DEPLOY/START itself (the TQL-import call raises before the app is even running), the app never reaching RUNNING during startup, or a later terminal transition while the app is running (polled the same way as any other `assert:` tier). Alone, `expect_halt: true` satisfies the manifest's "at least one assertion" requirement -- no `assert:` block is needed. To also pin *why* it halted, add `expect_halt_contains`. A DEPLOY/START failure skips everything the case declares to run after start: `post_start` seeds, generate specs and server files, `lifecycle:`, and every `assert:` tier. If the case declares any of these, a DEPLOY/START failure fails the case and names them, unless `expect_halt_contains` matches the failure text. Set `expect_halt_contains` when a startup refusal is the expected outcome. The passing record then lists what was skipped. |
-| `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: the tail is the **last 20KB of the shared app-node server log**, not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text could produce a false pass, and under heavy log volume the real reason could be evicted past 20KB. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
+| `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: only the server-log text written since this case deployed is searched (a node whose log size could not be read at deploy is not searched). It is not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text written meanwhile could produce a false pass. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
 | `recover` | mapping | no | — | interrupt the app after `post_start` work begins and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
 | `exact` | mapping | no | none | turns on exact comparison for the `data`, `diff` and `file` specs that carry their own `exact:`: every row counted, values compared by declared type. See **`exact:`** below |
 | `audit` | mapping | no | none | `{version: 1}` enables audited exact specs; each names its append writer, and Spanner also names its sink-generated delivery key |
@@ -1325,8 +1325,8 @@ columns need no entry.
 | `number` | `1.25` | a finite numeric value; quoted numbers and booleans fail |
 | `decimal:<s>` (s 0 to 38) | `118.00` | the value at `s` places; a value that does not fit exactly is `lossy-decimal`, never rounded |
 | `boolean` | `true` or `false` | the value |
-| `timestamptz` | ISO 8601 with `Z` or `±hh:mm` (`2026-09-01T08:00:00+00:00`) | the instant, in UTC |
-| `timestamp` | ISO 8601 without an offset | the local date and time |
+| `timestamptz` | ISO 8601 with `Z` or `±hh:mm` (`2026-09-01T08:00:00+00:00`), up to nine fractional digits | the instant, in UTC, to the nanosecond |
+| `timestamp` | ISO 8601 without an offset, up to nine fractional digits | the local date and time |
 | `date` | `2026-09-01` | the date |
 | `binary:hex`, `binary:base64` | the bytes in that encoding | the bytes |
 | `json` | JSON text | the JSON, with keys sorted; numbers keep their exact text (`1.0` is not `1.00`) |
@@ -1369,7 +1369,8 @@ existing parsing and comparison behavior.
   when the test requires a single total order. Wire bytes and decoded rows are bounded.
   An incomplete captured Kafka snapshot fails rather than returning a matching subset. Each partition is bounded by its captured high offset; later messages cannot hide unread captured rows. Missing or erroneous topic metadata is a read failure.
   Other routes are refused at load (`exact-route-unsupported`).
-- `file`: Docker mode only; the file is read from the cluster's nodes. With `order: sequence` the
+- `file`: Docker mode only; the file is read from the cluster's nodes. No matching output file fails
+  (`exact-file-missing`), even with a header-only golden. With `order: sequence` the
   path must match exactly one file on one node (`order-source-ambiguous`).
 - With a `lifecycle:` block, every table an exact spec reads (a diff's source too) must be one this
   test's `ddl:` created, and every file must be under `${OWNED_DIR}/` (`exact-target-not-owned`).
@@ -1435,7 +1436,7 @@ The declaration follows the value returned by the reader, not the formatted text
 | Spanner BOOL / Avro boolean | `boolean` | strings are not booleans |
 | Spanner STRING / Avro string or enum | `text` (or native undeclared text outside strict mode) | strict mode requires the declaration |
 | Spanner DATE / Avro logical date | `date` | compare the calendar date |
-| Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | this canonical profile uses microseconds; golden fractions have at most six digits. Project a separate integer/text field to check finer precision |
+| Spanner TIMESTAMP / Avro logical timestamp | `timestamptz` or `timestamp`, matching whether an offset is present | compared to the nanosecond; golden fractions have at most nine digits |
 | Spanner BYTES / Avro bytes or fixed | `binary:hex` or `binary:base64` | a byte value needs its declared encoding |
 | Spanner JSON, compatible arrays / Avro nested records or arrays | `json` | every nested value must be JSON-compatible; arrays of raw bytes or dates need a supported projection. Spanner client JSON decoding can round numbers, merge duplicate keys and conflate JSON null with SQL NULL; project raw text to check those distinctions |
 | nullable field / Avro union with null | the non-null value's declaration | `<null>` is null; incompatible mixed scalar branches need a supported projection |
@@ -1859,7 +1860,15 @@ assert:
 ```
 Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `match` compares
 *stringified* values; use `<null>` in the golden CSV for SQL/JSON null. By default it compares
-distinct sets; pin `rows: N` too if cardinality matters.
+distinct sets; pin `rows: N` too if cardinality matters. A golden row's missing trailing cells
+are NULL (prefer `<null>`); a row with more cells than the header is refused.
+On mssql and teradata, `rows` and `min_rows` count committed rows only; if the writer still holds
+the table lock at `timeout`, a `min_rows` spec passes on the uncommitted count, so it gives no
+committed-row guarantee where a writer may roll back or retry; use `rows:` for that.
+A Kafka count reads every offset up to the high watermark taken when the read starts (offsets
+that hold no message, such as transaction markers, count as read). It keeps polling while the
+topic does not exist or offsets are unread, and fails at `timeout`; a missing topic never counts
+as 0 rows. A partial read can satisfy `min_rows`, never `rows` or `match`.
 
 Database data specs can add `exact:` as described above. Kafka typed comparison
 uses `project: kafka_record` with full `key.*`/`value.*` projection paths. Its
@@ -2105,8 +2114,9 @@ For each shared key, the JSON column is compared *semantically*: object keys are
 order-independent, and arrays are canonicalized (elements recursively sorted by their
 canonical serialized form) before comparing, so writer-side array order never causes a
 flake. The first differing path is reported, e.g.
-`user_data key=('1',): questions[0].answers[0].RESPONSE (expected 'R1', got None)`. Polls
-until every key matches or the manifest `timeout` expires.
+`user_data key=('1',): questions[0].answers[0].RESPONSE (expected 'R1', got None)`. A boolean
+equals only a boolean: `true` is not `1`. Polls until every key matches or the manifest `timeout`
+expires.
 
 ### `monitor` — what Striim's monitor shows for a component
 
@@ -2140,7 +2150,7 @@ other keys, a non-numeric bound, or `min > max`. Counts only: rates and clock fi
 `target:` and `component:` are exclusive. `component:` names any component in the app's `MON` tree
 (a name with a dot is used as is; a name the tree does not list is read as `${NS}.<name>`). Matchers
 check a figure's form when its value differs run to run: `{present: true}` (not null, not empty),
-`{absent: true}` (missing or null) and `{matches: <regex>}`. Strings, patterns and component names are
+`{absent: true}` (missing or null; an empty `MON` body fails instead) and `{matches: <regex>}`. Strings, patterns and component names are
 token-rendered when the tier runs, so they can carry a token captured earlier; inside `matches` a
 token's value is regex-escaped, so `"^\\^ ${RESTART}$"` matches that position literally. A matcher is a
 mapping with exactly one of these keys; a pattern is compiled at load unless it carries a token.
@@ -2162,8 +2172,10 @@ assert:
   checkpoint_history: nonempty    # or: empty
 ```
 
-Polls `SHOW <app> CHECKPOINT HISTORY;` until it shows at least one checkpoint (`nonempty`) or none
-(`empty`). Use it to tell an app with a `RECOVERY` clause from one without.
+Polls `SHOW <app> CHECKPOINT HISTORY;`. `nonempty` passes once a checkpoint is shown. `empty`
+reads until `timeout` and fails as soon as one is shown, so set `timeout` longer than the
+`RECOVERY` interval it must rule out. Use it to tell an app with a `RECOVERY` clause from one
+without.
 
 #### `predates` — prove a `recover:` case replayed a seed
 

@@ -180,3 +180,28 @@ def test_select_rows_reads_at_low_deadlock_priority():
         return types.SimpleNamespace(cursor=lambda: cur, close=lambda: None)
     MssqlAdmin(_target_dsn(), connect=connect, role="target").select_rows("qatarget.T1")
     assert executed[-1].startswith("SET DEADLOCK_PRIORITY LOW; SELECT * FROM")
+
+
+def _connect_failing_counts_with(error):
+    def connect(server, port, user, password, database, autocommit):
+        def execute(sql, *args):
+            if "COUNT(*)" in sql:
+                raise error
+        cur = types.SimpleNamespace(execute=execute, fetchone=lambda: (0,), fetchall=lambda: [], close=lambda: None)
+        return types.SimpleNamespace(cursor=lambda: cur, close=lambda: None)
+    return connect
+
+
+@pytest.mark.parametrize("number", [1222, 1205])
+def test_committed_count_refused_by_a_writer_lock_is_not_yet(number):
+    from livetest.assertions import NotYetReadable
+    adm = MssqlAdmin(_target_dsn(), connect=_connect_failing_counts_with(_ServerError(number, b"lock")), role="target")
+    with pytest.raises(NotYetReadable, match=str(number)):
+        adm.count_rows_committed("qatarget.T1")
+
+
+def test_committed_count_raises_other_server_errors_unchanged():
+    adm = MssqlAdmin(_target_dsn(), connect=_connect_failing_counts_with(_ServerError(229, b"permission denied")),
+                     role="target")
+    with pytest.raises(_ServerError):
+        adm.count_rows_committed("qatarget.T1")

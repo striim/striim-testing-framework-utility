@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import csv
-import io
 import json
 import time
 from collections import Counter
 from pathlib import Path
 
 from livetest.assertions import AssertionFailed
-from livetest.assertions.data import apply_null, distinct_set, normalized_row, sorted_rows_for_display, strip_absent   # reuse the exact distinct-set compare
+from livetest.assertions.data import apply_null, distinct_set, normalized_row, read_golden_csv, sorted_rows_for_display, strip_absent   # reuse the exact distinct-set compare
 from livetest.assertions.expected import load_expected_text
 from livetest.resultschema import build_assertion_result
 
@@ -226,7 +224,10 @@ def _load_golden_rows(basedir, spec: dict, tokens: dict | None = None) -> list[d
     # Two markers, two halves of the same problem: <absent> drops the key so the row can
     # describe a record that lacks it, <null> makes the cell a real None so it can describe
     # one that carries it with a null value (8.128).
-    return apply_null(strip_absent([dict(r) for r in csv.DictReader(io.StringIO(text))]))
+    rows, ragged = read_golden_csv(text)
+    if ragged:
+        raise FileSpecError(f"{spec['path']}: golden {path}: {ragged}")
+    return apply_null(strip_absent(rows))
 
 
 def _load_golden(basedir, spec: dict, tokens: dict | None = None):

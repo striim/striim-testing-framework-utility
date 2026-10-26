@@ -35,6 +35,34 @@ def _default_connect(**kw):
         dsn=f'{kw["host"]}:{int(kw["port"])}/{kw["service"]}',
     )
 
+def _number_converter(precision, scale):
+    """The driver's default int/float choice (so `42.0` and `1e-05` keep their spelling), with
+    the exact Decimal kept only where a float would drop digits."""
+    import decimal
+    as_int = scale == 0 or (scale == -127 and not precision)
+
+    def convert(d):
+        if as_int and d == d.to_integral_value():
+            return int(d)
+        f = float(d)
+        return f if decimal.Decimal(repr(f)) == d else d
+    return convert
+
+
+def _exact_output(cursor, metadata):
+    """Fetch NUMBER exactly and LOBs as values (a LOB locator cannot be read once the
+    connection closes)."""
+    import decimal
+    import oracledb
+    if metadata.type_code is oracledb.DB_TYPE_NUMBER:
+        return cursor.var(decimal.Decimal, arraysize=cursor.arraysize,
+                          outconverter=_number_converter(metadata.precision, metadata.scale))
+    as_type = {oracledb.DB_TYPE_CLOB: oracledb.DB_TYPE_LONG,
+               oracledb.DB_TYPE_NCLOB: oracledb.DB_TYPE_LONG_NVARCHAR,
+               oracledb.DB_TYPE_BLOB: oracledb.DB_TYPE_LONG_RAW}.get(metadata.type_code)
+    return None if as_type is None else cursor.var(as_type, arraysize=cursor.arraysize)
+
+
 def _check(ident: str) -> str:
     if not _IDENT.match(ident):
         raise ValueError(f"unsafe identifier: {ident!r}")
@@ -270,10 +298,12 @@ class OraAdmin:
         # force case-sensitive matching).
         return ".".join(_check(p) for p in parts)
 
-    def _query(self, sql: str):
+    def _query(self, sql: str, exact: bool = False):
         conn = self._open()
         try:
             cur = conn.cursor()
+            if exact:
+                cur.outputtypehandler = _exact_output
             try:
                 cur.execute(sql)
                 cols = [d[0] for d in (cur.description or [])]
@@ -288,7 +318,7 @@ class OraAdmin:
         return int(rows[0][0])
 
     def select_rows(self, table: str) -> list[dict]:
-        cols, rows = self._query(f"SELECT * FROM {self._qualified(table)}")
+        cols, rows = self._query(f"SELECT * FROM {self._qualified(table)}", exact=True)
         out = []
         for r in rows:
             out.append({c: coerce_cell(v) for c, v in zip(cols, r)})

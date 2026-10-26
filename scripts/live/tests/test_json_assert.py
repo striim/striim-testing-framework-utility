@@ -67,6 +67,18 @@ def test_string_vs_number_not_equal():
     assert diff is not None
 
 
+@pytest.mark.parametrize("actual, expected", [
+    (1, True), (0, False), (True, 1), ({"flag": 1}, {"flag": True}), ([0, 1], [False, True]),
+    ({"a": [{"b": 1}]}, {"a": [{"b": True}]})])
+def test_bool_is_not_equal_to_int_at_any_depth(actual, expected):
+    ok, diff = json_equal(actual, expected)
+    assert not ok and diff
+
+
+def test_bool_equals_bool():
+    assert json_equal({"a": [True, False]}, {"a": [False, True]}) == (True, None)
+
+
 def test_nested_array_in_array_equal_when_key_reordered():
     a = {
         "ID": "1",

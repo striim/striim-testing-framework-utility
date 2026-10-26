@@ -818,18 +818,21 @@ def _node_log_marks(ctx, run=None) -> dict:
     for node in stack.app_nodes():
         try:
             r = run(["docker", "exec", node, "sh", "-c", f"wc -c < {_NODE_LOG} 2>/dev/null || echo 0"])
-            marks[node] = int((getattr(r, "stdout", "") or "0").strip() or 0)
+            size = (getattr(r, "stdout", "") or "").strip()
+            # A failed exec is no mark: _node_log_since will not read this node.
+            if getattr(r, "returncode", 1) == 0 and size.isdigit():
+                marks[node] = int(size)
         except Exception:
-            marks[node] = 0
+            pass
     return marks
 
 
 def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000) -> str:
-    """Each app node's server log from `marks` onward, falling back to the fixed tail.
+    """Each app node's server log from `marks` onward.
 
-    Falls back when there is no mark for a node, or when the log is now SHORTER than the mark
-    -- it rotated or was truncated mid-test, so the offset is meaningless and a fixed tail is
-    the best available answer rather than nothing.
+    A node without a mark is not read: its tail would include earlier cases' text. Falls back
+    to the fixed tail when the log is now SHORTER than the mark -- it rotated or was truncated
+    mid-test, so everything in it was written after the mark.
     """
     if getattr(ctx, "mode", None) != "docker":
         return ""
@@ -837,15 +840,14 @@ def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000) -> str:
     out = []
     for node in stack.app_nodes():
         mark = marks.get(node)
+        if mark is None:
+            continue
         try:
-            if mark:
-                # +N is 1-based, so mark+1 starts at the first byte written after the mark.
-                r = run(["docker", "exec", node, "sh", "-c",
-                         f"if [ $(wc -c < {_NODE_LOG}) -ge {mark} ]; "
-                         f"then tail -c +{mark + 1} {_NODE_LOG}; "
-                         f"else tail -c {nbytes} {_NODE_LOG}; fi"])
-            else:
-                r = run(["docker", "exec", node, "tail", "-c", str(nbytes), _NODE_LOG])
+            # +N is 1-based, so mark+1 starts at the first byte written after the mark.
+            r = run(["docker", "exec", node, "sh", "-c",
+                     f"if [ $(wc -c < {_NODE_LOG}) -ge {mark} ]; "
+                     f"then tail -c +{mark + 1} {_NODE_LOG}; "
+                     f"else tail -c {nbytes} {_NODE_LOG}; fi"])
             out.append(getattr(r, "stdout", "") or "")
         except Exception:
             pass

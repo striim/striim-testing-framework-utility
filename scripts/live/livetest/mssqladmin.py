@@ -23,6 +23,8 @@ _TRANSIENT = ("20009", "18456", "Login failed", "not currently available",
               "Adaptive Server connection failed", "Connection refused")
 # SQL Server's "chosen as the deadlock victim" error number (pymssql puts it in args[0]).
 _DEADLOCK_VICTIM = 1205
+# "Lock request time out period exceeded" (SET LOCK_TIMEOUT).
+_LOCK_TIMEOUT = 1222
 
 
 def _split_statements(sql: str) -> list[str]:
@@ -322,6 +324,10 @@ class MssqlAdmin:
             cur.execute("SET LOCK_TIMEOUT 5000; SET DEADLOCK_PRIORITY LOW; "
                         f"SELECT COUNT(*) FROM {_check_table(table)}")
             return int(cur.fetchone()[0])
+        except Exception as e:
+            if e.args and e.args[0] in (_LOCK_TIMEOUT, _DEADLOCK_VICTIM):
+                raise NotYetReadable(f"{table}: the writer holds the lock ({e.args[0]})") from e
+            raise
         finally:
             conn.close()
 

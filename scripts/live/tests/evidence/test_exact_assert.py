@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from livetest import canon, exactdata, inputs, lifecycle, ownership, resultschema
+from livetest import canon, evidence, exactdata, inputs, lifecycle, ownership, resultschema
 from livetest.assertions import AssertionFailed
 from livetest.assertions import diff as diff_assertion
 from livetest.manifest import load_manifest
@@ -492,6 +492,42 @@ def test_file_rollover_name_is_the_output(tmp_path, monkeypatch):
                                            lifecycle=True, inputs=snap, mode="docker", nodes=["slt-striim"],
                                            run=run, collector=[])
     assert record["status"] == "passed" and reads == [d + "/out.00.json"]
+
+
+@pytest.mark.parametrize("listed, ok", [([], False), (["out.json"], True)])
+def test_header_only_golden_needs_an_output_file(tmp_path, monkeypatch, listed, ok):
+    m, snap = case(tmp_path, "exact-file-sequence", golden=("events.csv", "id,name\n"),
+                   edit=lambda y: y.replace('{order: sequence, columns: {price: "decimal:2"}}', "true"))
+    d = TOKENS["OWNED_DIR"]
+    monkeypatch.setattr(ownership, "docker_ls", lambda pattern, nodes=None: [d + "/" + f for f in listed])
+    specs = exactdata.partition(m.assert_["file"], m, "file")[1]
+    collector = []
+    call = lambda: exactdata.assert_exact_file(   # noqa: E731
+        specs, m, tokens=TOKENS, owned=owns(("owned-file", None, d + "/out.json")), lifecycle=True, inputs=snap,
+        mode="docker", nodes=["slt-striim"], collector=collector,
+        run=lambda argv, timeout: SimpleNamespace(returncode=0, stdout=b"", stderr=b""))
+    if ok:
+        assert call()[0]["status"] == "passed"
+    else:
+        detail = failed(call).records[0]["detail"]
+        assert detail.startswith("exact-file-missing") and "no output file matches" in detail
+    evidence._check_comparison(collector[0], 0)
+
+
+def test_legacy_file_case_polls_until_the_output_file_appears(tmp_path, monkeypatch):
+    m, snap = case(tmp_path, "exact-file-sequence", golden=("events.csv", "id,name\n"),
+                   edit=lambda y: y.replace('{order: sequence, columns: {price: "decimal:2"}}', "true"), timeout=5)
+    d, listings = TOKENS["OWNED_DIR"], [[], [], ["out.json"]]
+    monkeypatch.setattr(ownership, "docker_ls",
+                        lambda pattern, nodes=None: [d + "/" + f for f in (listings.pop(0) if len(listings) > 1 else listings[0])])
+    specs = exactdata.partition(m.assert_["file"], m, "file")[1]
+    collector = []
+    [record] = exactdata.assert_exact_file(
+        specs, m, tokens=TOKENS, owned=owns(("owned-file", None, d + "/out.json")), lifecycle=False, inputs=snap,
+        mode="docker", nodes=["slt-striim"], collector=collector, poll=0.01,
+        run=lambda argv, timeout: SimpleNamespace(returncode=0, stdout=b"", stderr=b""))
+    assert record["status"] == "passed" and listings == [["out.json"]]
+    evidence._check_comparison(collector[0], 0)
 
 
 # ---------------------------------------------------------------- timing

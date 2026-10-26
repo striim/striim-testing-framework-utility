@@ -158,11 +158,11 @@ def assert_checkpoint_predates(witness: CheckpointWitness, spec: dict) -> list[d
 
 def assert_checkpoint_history(client, app: str, expected: str, timeout: int,
                               poll: float = 2.0, status_probe=None, progress=None) -> list[dict]:
-    """Polls `SHOW <app> CHECKPOINT HISTORY;` until it shows what `expected` says, or the
-    deadline expires. `nonempty` needs the wait -- a RECOVERY-clause app's first checkpoint
-    lands on its own interval, not the instant the app reaches RUNNING. `empty` does not
-    strictly need to poll, but does anyway so a case that races the two arms (a shared
-    `recover:`/settle window) sees the same timeout budget on both sides."""
+    """Polls `SHOW <app> CHECKPOINT HISTORY;`. `nonempty` passes on the first read that shows a
+    checkpoint, or fails at the deadline -- a RECOVERY-clause app's first checkpoint lands on its
+    own interval, not the instant the app reaches RUNNING. `empty` must hold for the whole
+    `timeout`: it fails on the first read that shows a checkpoint and passes only at the
+    deadline, since an early empty read cannot tell a plain app from one not yet checkpointed."""
     deadline = time.monotonic() + timeout
     rows: list = []
     while True:
@@ -170,7 +170,7 @@ def assert_checkpoint_history(client, app: str, expected: str, timeout: int,
             status_probe()
         rows = client.checkpoint_history(app)
         ok = bool(rows) if expected == "nonempty" else not rows
-        if ok or time.monotonic() >= deadline:
+        if (ok if expected == "nonempty" else not ok) or time.monotonic() >= deadline:
             break
         if progress:
             try:
@@ -181,7 +181,8 @@ def assert_checkpoint_history(client, app: str, expected: str, timeout: int,
             time.sleep(poll)
     shown = "nonempty" if rows else "empty"
     detail = None if ok else (
-        f"SHOW {app} CHECKPOINT HISTORY shows {shown} within {timeout}s, expected {expected}")
+        f"SHOW {app} CHECKPOINT HISTORY shows {shown} within {timeout}s, expected {expected}"
+        + (" for the whole timeout" if expected == "empty" else ""))
     record = build_assertion_result(
         type="checkpoint_history", status="passed" if ok else "failed",
         spec={"checkpoint_history": expected}, target=app, db=None,
