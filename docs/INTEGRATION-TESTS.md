@@ -142,6 +142,9 @@ connection-only `teradata`/`servicenow`; see [SERVICES.md](SERVICES.md)), `ddl:`
 string reason). `assert.smoke: true` substitutes for `assert.data` when the case only proves the
 operator constructs and runs.
 
+**`assert.data` is exact and type-strict.** `true` is not `1`, `5.0` is not `5`, and decimals are
+compared digit for digit, never through a float.
+
 **`types:`** declares the source schema for each `metadata.TableName` an operator will see:
 column names, in the order they occupy `data[]`/`before[]`. The harness mints a type UUID per
 declared table, stamps it onto matching input events, and serves it back through both the
@@ -242,7 +245,9 @@ assert:
 ### Execution model
 
 `inttest/plugin.py` collects each `test.yaml` (`pytest_collect_file` → `IntYamlFile`/`IntYamlItem`),
-`mvn package`s the module jar if it is missing or built against a different Striim release,
+`mvn package`s the module jar if it is missing, built against a different Striim release, or
+older than its sources (a deleted source counts: the jar's `.sources` record beside it lists what it
+was built from, and a missing record forces a clean rebuild),
 provisions/resets any `requires:` services, then runs the shared Java harness
 (`java/`, `com.striim.testing.inttest.IntegrationProcessor`) as a subprocess. The harness loads the jar
 in a child classloader, reflectively constructs the op's `Processor` via its canonical
@@ -250,6 +255,15 @@ in a child classloader, reflectively constructs the op's `Processor` via its can
 type — feeds it each input `WAEvent` through `EventProcessor.processEvent`, and serializes every
 emitted event back to JSON for comparison against `expected/`. No live Striim server and no Striim
 install on the classpath at run time (only to build the jar).
+
+The harness's `WAEvent` and `BuiltInFunc.IS_PRESENT` behave as Striim 5.4.0.6C's: `new WAEvent(n,
+uuid)` allocates only the presence bitmaps (7 columns per byte), never `data`/`before` or the maps;
+`setData`/`setBefore` past the image, or on an image the op never allocated, throw as in production;
+`IS_PRESENT` on an array that is neither `data` nor `before` is `false`.
+
+A failure's text, which quotes the operator's stdout and stderr, has known secrets masked (secret-named
+environment variables, credential tokens and `password_properties:` values) before it reaches the
+terminal or JUnit.
 
 ## Feeding an Operator Whose Input Is Not a `WAEvent` (`kind: avro`)
 
@@ -413,6 +427,8 @@ seed SQL and writes `seed.go`.
 - **Exactly one `assert.data` entry** is allowed with `post_start`, and a second is rejected at
   manifest load. Each entry drives the reader again in a fresh temp directory while the seed has
   already been committed, so a later drive would see an empty source and fail on the event count.
+- **`matrix:` is rejected with `post_start`** for the same reason: later permutations would re-seed
+  before their reader starts.
 - ⚠ **This is the one place a reader case has a wall clock.** The handshake has a timeout, derived
   from the case's own `timeout:` so the Java side always gives up first and reports the handshake
   rather than letting a generic "timed out" blame the operator. It bounds a *handshake*, never an
@@ -590,8 +606,8 @@ assert:
 - A key may not appear in both `properties:` and `matrix:` (which wins is not something an author
   should have to know), and a value list needs at least two distinct entries.
 - **It is not target-only.** An OpenProcessor or reader case can matrix over its own
-  `properties:` the same way. Only a `udf:` case is refused: a UDF is a bare static function with
-  no `properties:`, so every permutation would be identical.
+  `properties:` the same way. A `udf:` case is refused: a UDF is a bare static function with
+  no `properties:`, so every permutation would be identical. So is a `seed_when: post_start` reader.
 
 ### `assert.expect_error:` — proving a REFUSAL
 
@@ -607,8 +623,10 @@ assert:
 
 - **The drive must fail.** Succeeding fails the case, and says so: *"expected the drive to be
   REFUSED … but it SUCCEEDED. A refusal that stopped happening is a behaviour change."*
-- **And fail for the stated reason.** A different failure is reported as *"failed as expected, but
-  not for the stated reason"*, quoting both.
+- **And fail for the stated reason.** The substring is matched against the exception the operator
+  threw (`Class: message` for it and each cause), not its log output: a refusal it only logged
+  before failing otherwise does not count, and a timeout never satisfies `expect_error`. A different
+  failure is reported as *"failed as expected, but not for the stated reason"*, quoting both.
 - **A substring broad enough to match anything is rejected at load** — `Error`, `exception`,
   `failed`. A case that cannot tell the refusal it is testing from the harness failing to start is
   worse than no case.

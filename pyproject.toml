@@ -13,7 +13,7 @@ dependencies = ["pyyaml>=6", "requests>=2.31", "psycopg2-binary>=2.9", "oracledb
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-mock>=3", "pytest-xdist>=3"]
-# Teradata's own licence governs the driver: see the README, "Use your own Teradata".
+# Teradata's own licence governs the driver: see docs/SERVICES.md, "Teradata".
 teradata = ["teradatasql>=20"]
 
 [project.scripts]

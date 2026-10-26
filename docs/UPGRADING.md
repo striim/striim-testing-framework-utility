@@ -12,10 +12,13 @@ at the configured time, or use a bounded progress trigger.
 
 ### Tag-aware selection (breaking)
 
-`-k` now matches manifest tags as well as test names and paths. Review scripts
-that use it to select a module: cases elsewhere with a matching tag can join
-the run. Use explicit case paths for a fixed selection, or `-m tag_<name>`
-when a tag is intended. Confirm selection before deploying apps.
+This affects only scripts that run the engine with pytest directly
+([internals/ENGINE.md](internals/ENGINE.md)). There, `-k` now matches manifest
+tags as well as test names and paths, so cases elsewhere with a matching tag can
+join the run; `-m tag_<name>` selects one tag exactly. `striim-test run` takes
+neither flag and does not select by tag: it selects by PATH, `--suite` or
+`--case` (case name or dir), which are unchanged. Confirm selection with
+`--dry-run` before deploying apps.
 
 ### Startup halt checks (breaking)
 

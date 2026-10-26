@@ -100,20 +100,24 @@ final class SourceCore implements EventDriver {
                 namespace, sourceName);
         Class<?> channelIface = discoverChannel(loaded.coreClass, loaded.coreClassName);
         return of(loaded.instance, loaded.coreClass, channelIface,
-                channelSeamsFor(loaded.coreClassName, channelIface, properties,
-                        loaded.coreClass.getClassLoader()));
+                channelSeamsFor(loaded.coreClassName, channelIface, properties, passwordProperties,
+                        namespace, sourceName, loaded.coreClass.getClassLoader()));
     }
 
     /**
      * Delegation to the op's {@code IntegrationSeams} for any channel method beyond
-     * {@code emit}/{@code checkpoint}. {@code null} when there is no op jar to ask.
+     * {@code emit}/{@code checkpoint}. Each call gets its own copy of the enriched properties a
+     * constructor seam gets, so the two cannot see different views of the case.
      */
-    private static ChannelSeams channelSeamsFor(String coreClassName, Class<?> channelIface,
-            Map<String, Object> properties, ClassLoader child) {
+    static ChannelSeams channelSeamsFor(String coreClassName, Class<?> channelIface,
+            Map<String, Object> properties, List<String> passwordProperties, String namespace,
+            String sourceName, ClassLoader child) {
         int lastDot = coreClassName.lastIndexOf('.');
         String corePackage = (lastDot < 0) ? "" : coreClassName.substring(0, lastDot);
         return (methodName, returnType) -> IntegrationSeamsLookup.channelValueFor(
-                corePackage, channelIface.getName(), methodName, returnType, properties, child);
+                corePackage, channelIface.getName(), methodName, returnType,
+                IntegrationProcessor.enrichedProperties(properties, passwordProperties, namespace, sourceName),
+                child);
     }
 
     /** What answers a channel method the harness itself does not implement. */

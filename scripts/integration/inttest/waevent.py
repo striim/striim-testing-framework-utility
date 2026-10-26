@@ -14,6 +14,9 @@ shapes, which is all Python-side comparison needs.
   element-wise AND `values[]` element-wise, null distinct from absent;
   a section present on only one side (e.g. one event has `before`, the
   other doesn't) is itself a diff;
+- values compare type-strictly: a boolean is not a number, an integer is not
+  a decimal (`5` is not `5.0`), and decimals compare exactly (`load` parses them
+  as `Decimal`, never `float`);
 - the FIRST differing path is reported: event index, section, and column
   index or map key, expected-vs-got.
 """
@@ -22,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
 
@@ -49,15 +53,48 @@ def load(path_or_str) -> list[dict]:
     else:
         raise TypeError(f"load() expects a path or JSON string, got {type(path_or_str)!r}")
 
-    data = json.loads(text)
+    data = json.loads(text, parse_float=Decimal)
     if not isinstance(data, list):
         raise ValueError(f"WAEvent JSON fixture must be a top-level array; got {type(data).__name__}")
     return data
 
 
 def dump(events: list[dict]) -> str:
-    """Serialize a list of event dicts back to the compact WAEvent-JSON array form."""
-    return json.dumps(list(events))
+    """Serialize a list of event dicts back to the compact WAEvent-JSON array form.
+
+    A `Decimal` from `load` is written as the number it was, digit for digit."""
+    return _dumps(list(events))
+
+
+def _dumps(value) -> str:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{json.dumps(str(k))}: {_dumps(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_dumps(v) for v in value) + "]"
+    return json.dumps(value)
+
+
+def _exact(number) -> Decimal:
+    return number if isinstance(number, Decimal) else Decimal(repr(number))
+
+
+def _same(a, b) -> bool:
+    """Type-strict JSON value equality. Python's `==` says `True == 1` and `5.0 == 5`; an
+    operator that emits a Boolean or a Double where an Integer was expected has changed type,
+    and the writer downstream will notice even if `==` does not."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, int) or isinstance(b, int):
+        return type(a) is type(b) and a == b
+    if isinstance(a, (float, Decimal)) and isinstance(b, (float, Decimal)):
+        return _exact(a) == _exact(b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    return type(a) is type(b) and a == b
 
 
 def _describe(value) -> str:
@@ -80,7 +117,7 @@ def _compare_map(event_idx: int, section: str, emitted: dict | None, expected: d
         if key not in emitted:
             raise WAEventMismatch(
                 f"event {event_idx}: {section} is missing key {key!r} (expected {_describe(expected[key])})")
-        if emitted[key] != expected[key]:
+        if not _same(emitted[key], expected[key]):
             raise WAEventMismatch(
                 f"event {event_idx}: {section}[{key!r}]: expected {_describe(expected[key])}, "
                 f"got {_describe(emitted[key])}")
@@ -140,7 +177,7 @@ def _compare_section(event_idx: int, section: str, emitted: dict | None, expecte
                 f"got {bool(e_presence[i])}")
         if i in ignored:
             continue    # value suppressed, presence above still compared
-        if e_values[i] != x_values[i]:
+        if not _same(e_values[i], x_values[i]):
             raise WAEventMismatch(
                 f"event {event_idx}: {section}.values[{i}]: expected {_describe(x_values[i])}, "
                 f"got {_describe(e_values[i])}")

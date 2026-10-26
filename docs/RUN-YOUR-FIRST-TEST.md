@@ -204,7 +204,10 @@ striim-test run samples/live --parallel            # concurrent selection skips 
 striim-test run samples/live/04-lifecycle-check --dry-run   # the selection, without running
 ```
 
-Read the [sample prerequisite table](../README.md) before selecting the whole directory.
+Read the [sample prerequisite table](../README.md) before selecting the whole directory. A case
+whose prerequisite is missing is skipped (exit 3), so the run cannot exit 0: the BigQuery samples skip
+unless `SLT_BIGQUERY_IMAGE` names an emulator image you supply. To run only what your setup
+supports, pass each sample's directory.
 Sample 17 kills one shared app node and requires a two-node Docker cluster plus
 an agent and the survivor API port. Coordinate other stack users first;
 `disabled_parallel` excludes a concurrent case but provides no lock.
