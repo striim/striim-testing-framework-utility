@@ -125,7 +125,8 @@ public final class IntegrationProcessor {
         try {
             request = new ObjectMapper().readValue(new File(args[0]), Request.class);
             run(request);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            // Throwable: an op's Error (an assertion, a linkage failure) is its refusal too.
             System.err.println("IntegrationProcessor failed: " + e);
             e.printStackTrace();
             if (request != null && request.errorFile != null) {
@@ -139,7 +140,10 @@ public final class IntegrationProcessor {
         }
     }
 
-    /** {@code toString()} of the failure, each cause and each suppressed exception, one per line. */
+    /**
+     * {@code toString()} of the failure, each cause, each suppressed exception and each
+     * {@code SQLException.getNextException()}, one per line.
+     */
     static String failureChain(Throwable failure) {
         StringBuilder out = new StringBuilder();
         java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
@@ -155,6 +159,9 @@ public final class IntegrationProcessor {
                 pending.add(t.getCause());
             }
             pending.addAll(java.util.Arrays.asList(t.getSuppressed()));
+            if (t instanceof java.sql.SQLException sql && sql.getNextException() != null) {
+                pending.add(sql.getNextException());
+            }
         }
         return out.toString();
     }

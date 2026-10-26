@@ -148,8 +148,8 @@ def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
     # tree, and folding it in again is a no-op.
     #
     # Mtimes cannot see a DELETED source, so the jar's source record (`_source_record`) is
-    # compared too: a missing record, or a recorded path that is gone, returns a path that does
-    # not exist, which `build_jar` answers with a clean rebuild.
+    # compared too: a missing record, or a recorded path that is gone, returns a path that is not
+    # a current source, which `build_jar` answers with a clean rebuild.
     try:
         jar_mtime = jar.stat().st_mtime
     except FileNotFoundError:
@@ -534,8 +534,10 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             # Built by an older framework or by hand: what it was built from is unknown.
             clean = True
             reason = f"no source record for {jar.name} -> clean rebuild"
-        elif not trigger.exists():
+        elif os.path.relpath(trigger, module_dir) not in {
+                os.path.relpath(p, module_dir) for p in _sources(module_dir)}:
             # A removed source's class or resource stays in target/classes; only clean drops it.
+            # By exact name, not exists(): a case-only rename still "exists" on macOS.
             clean = True
             reason = f"source removed ({changed} was built into {jar.name}) -> clean rebuild"
     elif corrupt is not None:

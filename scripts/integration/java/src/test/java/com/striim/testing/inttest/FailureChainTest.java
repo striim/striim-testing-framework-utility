@@ -16,4 +16,12 @@ class FailureChainTest {
                 + "java.lang.IllegalArgumentException: close failed\n",
                 IntegrationProcessor.failureChain(wrapper));
     }
+
+    @Test
+    void followsTheNextExceptionOfABatchFailure() {
+        java.sql.BatchUpdateException batch = new java.sql.BatchUpdateException("batch failed", new int[0]);
+        batch.setNextException(new java.sql.SQLException("value too long for column NAME"));
+        String chain = IntegrationProcessor.failureChain(new RuntimeException("flush failed", batch));
+        org.junit.jupiter.api.Assertions.assertTrue(chain.contains("value too long for column NAME"), chain);
+    }
 }

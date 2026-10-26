@@ -24,6 +24,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from . import dbroutes as dbroutes_mod
@@ -636,7 +637,7 @@ def launch_and_measure(*, java_bin: str, harness_jar: Path, op_jar: Path, reques
     result = None
     if result_file.is_file():
         try:
-            result = json.loads(result_file.read_text())
+            result = _read_result(result_file.read_text())
         except (OSError, ValueError):
             result = None
 
@@ -731,6 +732,15 @@ class CorrectnessOutcome:
     reason: str | None
     mode: str | None = None
     records_compared: int | None = None
+
+
+def _read_result(text: str) -> dict:
+    """The driver's result. Metrics stay float for the report's arithmetic; `comparedRecords`
+    keeps its decimals exact, as `waevent.load` does for the expected side."""
+    result = json.loads(text)
+    if isinstance(result, dict) and "comparedRecords" in result:
+        result["comparedRecords"] = json.loads(text, parse_float=Decimal).get("comparedRecords")
+    return result
 
 
 def check_correctness(perf_result: dict, events_in_file: int, run_size: int, correctness_mode: str,

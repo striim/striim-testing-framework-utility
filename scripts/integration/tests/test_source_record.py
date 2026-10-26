@@ -117,3 +117,19 @@ def test_a_harness_jar_without_a_source_record_is_stale(harness_dir):
     java, jar, _ = harness_dir
     _mk(jar, 2000)
     assert harness._is_stale(jar) is True
+
+
+def test_a_case_only_rename_is_a_removal_and_rebuilds_clean(built):
+    # On a case-insensitive FS the old name still "exists"; target/classes keeps its old .class.
+    mod, _, jar = built
+    src = mod / "src" / "main" / "java" / "x"
+    os.rename(src / "B.java", src / "b.java")
+    goals, reasons = [], []
+
+    def fake_run(argv, cwd, env):
+        goals.extend(argv)
+        _jar(jar, fp=_fp(RELEASE_54), major=61)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    opartifacts.build_jar(MODULE, RELEASE_54, run=fake_run, report=reasons.append)
+    assert "clean" in goals and "source removed" in reasons[0], reasons
