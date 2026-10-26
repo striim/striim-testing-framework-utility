@@ -1,4 +1,5 @@
 import io
+from types import SimpleNamespace
 import json
 
 import pytest
@@ -222,7 +223,7 @@ def test_record_view_refuses_matching_prefix_before_captured_high_watermark(monk
     admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
                        consumer_factory=lambda group: Consumer("slt_tgt", frames))
     monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
-    with pytest.raises(NotYetReadable, match="1 message.*unread"):
+    with pytest.raises(NotYetReadable, match="1 offset.*unread"):
         admin.select_rows("slt_tgt", poll_budget=1)
     now[0] = 0
     with pytest.raises(RuntimeError, match="1 captured message.*unread"):
@@ -272,9 +273,9 @@ def test_rows_zero_fails_when_written_messages_are_not_delivered_in_the_budget(t
 
     admin = KafkaAdmin({"broker": "x"}, consumer_factory=lambda g: Slow("tgt", [b"", b"", b""]))
     monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
-    with pytest.raises(NotYetReadable, match="3 message"):
+    with pytest.raises(NotYetReadable, match="3 offset"):
         admin.count_rows("tgt")
-    with pytest.raises(AssertionFailed, match="3 message.*unread"):
+    with pytest.raises(AssertionFailed, match="3 offset.*unread"):
         assert_data(admin, [{"target": "tgt", "db": "kafka", "rows": 0}], tmp_path, timeout=0)
 
 # ---- clear_topic delete-completion (fake admin client) ----------------------
@@ -392,3 +393,59 @@ def test_strict_snapshot_ignores_new_offsets_until_all_captured_partitions_are_r
     admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
         consumer_factory=lambda group: Consumer("slt_tgt", frames))
     assert [r["value"]["c0"] for r in admin.select_records("slt_tgt", strict=True)] == ["A", "B", "X"]
+
+
+# ---- offsets that deliver no message; topics larger than one read budget -------------------
+
+class _EofMsg:
+    """librdkafka's end-of-partition event (enable.partition.eof)."""
+    def __init__(self, partition=0): self._p = partition
+    def error(self):
+        from confluent_kafka import KafkaError
+        return SimpleNamespace(code=lambda: KafkaError._PARTITION_EOF)
+    def partition(self): return self._p
+
+
+class _MarkerConsumer(_FakeConsumer):
+    """Records at offsets 0..n-1 and a transaction COMMIT marker at n: hi = n+1, n deliverable;
+    the fetcher reaches hi and reports end of partition."""
+    def __init__(self, topic, frames):
+        super().__init__(topic, frames)
+        self._hi = len(frames) + 1
+    def get_watermark_offsets(self, tp, timeout=None, cached=False): return (0, self._hi)
+    def poll(self, t):
+        return super().poll(t) if self._frames else _EofMsg()
+
+
+def test_a_transaction_marker_is_not_an_unread_row(tmp_path):
+    from livetest.assertions.data import assert_data
+    frames = [_mk_frame(str(i), "x") for i in range(3)]
+    admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
+                       consumer_factory=lambda g: _MarkerConsumer("t", list(frames)))
+    assert admin.count_rows("t") == 3
+    assert assert_data(admin, [{"target": "t", "db": "kafka", "rows": 3}], tmp_path, timeout=0)[0]["status"] == "passed"
+
+
+def test_a_compaction_gap_is_not_an_unread_row():
+    class Gapped(_FakeConsumer):
+        def get_watermark_offsets(self, tp, timeout=None, cached=False): return (0, 6)
+        def poll(self, t):
+            msg = super().poll(t)
+            if msg is not None:
+                msg._offset = {0: 0, 1: 3, 2: 5}[msg._offset]
+            return msg
+    frames = [_mk_frame(str(i), "x") for i in range(3)]
+    admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)), consumer_factory=lambda g: Gapped("t", list(frames)))
+    assert admin.count_rows("t") == 3
+
+
+def test_min_rows_is_met_by_a_topic_too_large_for_one_read_budget(tmp_path, monkeypatch):
+    from livetest.assertions.data import assert_data
+    now = [0.0]
+    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now.__setitem__(0, now[0] + 0.01) or now[0])
+    frames = [_mk_frame(str(i), "x") for i in range(2000)]      # 8s budget at a simulated 100 msg/s
+    admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)), consumer_factory=lambda g: _FakeConsumer("t", list(frames)))
+    assert assert_data(admin, [{"target": "t", "db": "kafka", "min_rows": 3}], tmp_path, timeout=0)[0]["status"] == "passed"
+    # ...but a partial read is never an exact count
+    with pytest.raises(AssertionFailed, match="offset.*unread"):
+        assert_data(admin, [{"target": "t", "db": "kafka", "rows": 800}], tmp_path, timeout=0)

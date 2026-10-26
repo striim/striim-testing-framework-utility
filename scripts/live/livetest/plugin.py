@@ -818,9 +818,12 @@ def _node_log_marks(ctx, run=None) -> dict:
     for node in stack.app_nodes():
         try:
             r = run(["docker", "exec", node, "sh", "-c", f"wc -c < {_NODE_LOG} 2>/dev/null || echo 0"])
-            marks[node] = int((getattr(r, "stdout", "") or "0").strip() or 0)
+            size = (getattr(r, "stdout", "") or "").strip()
+            # A failed exec is no mark: _node_log_since will not read this node.
+            if getattr(r, "returncode", 1) == 0 and size.isdigit():
+                marks[node] = int(size)
         except Exception:
-            pass        # no mark: _node_log_since will not read this node
+            pass
     return marks
 
 

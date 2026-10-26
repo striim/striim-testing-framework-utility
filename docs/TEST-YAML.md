@@ -1859,10 +1859,14 @@ assert:
 ```
 Each spec needs `target` plus at least one of `min_rows` / `rows` / `match`. `match` compares
 *stringified* values; use `<null>` in the golden CSV for SQL/JSON null. By default it compares
-distinct sets; pin `rows: N` too if cardinality matters. A golden row with more or fewer cells
-than the header is refused. On mssql and teradata, `rows` and `min_rows` count committed rows
-only. A Kafka count or match keeps polling while the topic does not exist or messages below the
-high watermark are unread, and fails at `timeout`; a missing topic never counts as 0 rows.
+distinct sets; pin `rows: N` too if cardinality matters. A golden row's missing trailing cells
+are NULL (prefer `<null>`); a row with more cells than the header is refused.
+On mssql and teradata, `rows` and `min_rows` count committed rows only; if the writer still holds
+the table lock at `timeout`, a `min_rows` spec uses the uncommitted count.
+A Kafka count reads every offset up to the high watermark taken when the read starts (offsets
+that hold no message, such as transaction markers, count as read). It keeps polling while the
+topic does not exist or offsets are unread, and fails at `timeout`; a missing topic never counts
+as 0 rows. A partial read can satisfy `min_rows`, never `rows` or `match`.
 
 Database data specs can add `exact:` as described above. Kafka typed comparison
 uses `project: kafka_record` with full `key.*`/`value.*` projection paths. Its

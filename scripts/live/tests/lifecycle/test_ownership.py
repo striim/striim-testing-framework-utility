@@ -110,11 +110,11 @@ class Docker:
 
 
 def _ls(script, paths):
-    """``sh -c 'ls -1d <patterns>[; echo slt-ls-done]'`` over a set of paths."""
+    """``sh -c 'LC_ALL=C ls -1d <patterns>[; echo slt-ls-done]'`` over a set of paths."""
     body, done = script, ""
     if body.endswith("; echo slt-ls-done"):
         body, done = body[:-len("; echo slt-ls-done")], "slt-ls-done\n"
-    pats = body[len("ls -1d "):].split()
+    pats = body[len("LC_ALL=C ls -1d "):].split()
     out = sorted({f for f in paths for p in pats if fnmatch.fnmatch(f, p)})
     return SimpleNamespace(returncode=0, stdout="".join(f"{f}\n" for f in out) + done, stderr="")
 
@@ -1083,9 +1083,12 @@ def test_r5_witness_on_a_foreign_target_is_refused_before_any_poll(tmp_path, wor
     ("slt-ls-done\n", "ls: /d/*: No such file or directory\n", []),
     ("slt-ls-done\n", "ls: cannot open directory '/d': Permission denied\n", None)])
 def test_docker_ls_surfaces_listing_errors_but_not_an_empty_match(monkeypatch, stdout, stderr, result):
-    monkeypatch.setattr(ownership, "_docker", lambda argv: SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr))
+    calls = []
+    monkeypatch.setattr(ownership, "_docker",
+                        lambda argv: calls.append(argv) or SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr))
     if result is None:
         with pytest.raises(ownership.InventoryError, match="Permission denied"):
             ownership.docker_ls("/d/*", nodes=["n1"])
     else:
         assert ownership.docker_ls("/d/*", nodes=["n1"]) == result
+    assert calls[0][-1].startswith("LC_ALL=C ls ")    # the "No such file" text is not localized

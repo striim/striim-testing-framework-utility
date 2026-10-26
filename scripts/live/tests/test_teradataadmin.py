@@ -270,3 +270,10 @@ def test_drop_test_tables_retries_a_view_over_a_view_and_names_one_that_will_not
     drops = [sql for _, sql, _ in db.executed if sql.startswith("DROP")]
     assert drops == ["DROP VIEW qatarget.t1abc_a", "DROP VIEW qatarget.t1abc_b",
                      "DROP VIEW qatarget.t1abc_a"]
+
+
+def test_committed_count_refused_by_a_writer_lock_is_not_yet():
+    from livetest.assertions import NotYetReadable
+    adm = TeradataAdmin(_dsn(), connect=_WriterHoldsTarget().connect, role="target")
+    with pytest.raises(NotYetReadable, match="locked by a writer"):
+        adm.count_rows_committed("T1")

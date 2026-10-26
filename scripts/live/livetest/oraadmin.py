@@ -35,13 +35,29 @@ def _default_connect(**kw):
         dsn=f'{kw["host"]}:{int(kw["port"])}/{kw["service"]}',
     )
 
+def _number_converter(precision, scale):
+    """The driver's default int/float choice (so `42.0` and `1e-05` keep their spelling), with
+    the exact Decimal kept only where a float would drop digits."""
+    import decimal
+    as_int = scale == 0 or (scale == -127 and not precision)
+
+    def convert(d):
+        if as_int and d == d.to_integral_value():
+            return int(d)
+        f = float(d)
+        return f if decimal.Decimal(repr(f)) == d else d
+    return convert
+
+
 def _exact_output(cursor, metadata):
-    """Fetch NUMBER as Decimal (a float drops digits) and LOBs as values (a LOB locator
-    cannot be read once the connection closes)."""
+    """Fetch NUMBER exactly and LOBs as values (a LOB locator cannot be read once the
+    connection closes)."""
     import decimal
     import oracledb
-    as_type = {oracledb.DB_TYPE_NUMBER: decimal.Decimal,
-               oracledb.DB_TYPE_CLOB: oracledb.DB_TYPE_LONG,
+    if metadata.type_code is oracledb.DB_TYPE_NUMBER:
+        return cursor.var(decimal.Decimal, arraysize=cursor.arraysize,
+                          outconverter=_number_converter(metadata.precision, metadata.scale))
+    as_type = {oracledb.DB_TYPE_CLOB: oracledb.DB_TYPE_LONG,
                oracledb.DB_TYPE_NCLOB: oracledb.DB_TYPE_LONG_NVARCHAR,
                oracledb.DB_TYPE_BLOB: oracledb.DB_TYPE_LONG_RAW}.get(metadata.type_code)
     return None if as_type is None else cursor.var(as_type, arraysize=cursor.arraysize)

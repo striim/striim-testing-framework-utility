@@ -674,8 +674,8 @@ def test_ordering_spec_validation(bad):
         parse_file_specs([bad])
 
 
-def test_a_short_golden_row_is_refused_not_read_as_null(tmp_path):
+def test_a_long_golden_row_is_refused(tmp_path):
     from livetest.assertions.file import _load_golden_rows
-    (tmp_path / "g.csv").write_text("id,name\n1\n")
-    with pytest.raises(FileSpecError, match="data row 1 has fewer cells"):
+    (tmp_path / "g.csv").write_text("id,name\n1,a,b\n")
+    with pytest.raises(FileSpecError, match="data row 1 has more cells"):
         _load_golden_rows(tmp_path, {"path": "/tmp/out", "match": "g.csv"})
