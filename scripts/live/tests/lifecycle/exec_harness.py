@@ -525,7 +525,8 @@ if SC.get("op_stub"):                                      # an op module whose 
 if SC.get("op_build") == "no_striim_home":                 # the real build, STRIIM_HOME unset, pom default empty
     _pom = Path("java/OpenProcessors/StubOp/pom.xml")
     _pom.parent.mkdir(parents=True, exist_ok=True)
-    _pom.write_text("<project><properties><STRIIM_HOME>/nonexistent-striim</STRIIM_HOME></properties></project>")
+    _pom.write_text("<project><properties><STRIIM_HOME>/nonexistent-striim</STRIIM_HOME></properties>"
+                    "<systemPath>${STRIIM_HOME}/lib/Platform-5.4.0.6.jar</systemPath></project>")
     P.opartifacts._root = lambda: Path.cwd()
     P.opartifacts.resolve_build_java_home = lambda *a, **k: None
 

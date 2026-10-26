@@ -23,7 +23,8 @@ class _QuickJoin(threading.Thread):
         super().join(0.3 if timeout else None)
 
 
-def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1, file="op.sql", block=None):
+def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1, file="op.sql", block=None,
+         requires=("postgres", "mysql", "orders-db")):
     (tmp_path / "op.sql").write_text("INSERT INTO t VALUES (1)")
     calls = {"n": 0}
 
@@ -33,7 +34,7 @@ def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1
             block.wait(5)
         if fail(entry["admin"]):
             raise RuntimeError(f"{entry['admin']} refused")
-    ns = dict(m=SimpleNamespace(source_dir=tmp_path, name="c"),
+    ns = dict(m=SimpleNamespace(source_dir=tmp_path, name="c", requires=list(requires)),
               threading=SimpleNamespace(Event=threading.Event, Thread=_QuickJoin),
               admins={"postgres-source": {"admin": "pg"}, "mysql-source": {"admin": "my"},
                       "orders-db-source": {"admin": "orders"}},
@@ -79,6 +80,14 @@ def test_outage_tolerance_matches_a_hyphenated_service(tmp_path):
     assert _run(tmp_path, ["orders-db-source"], fail=lambda admin: next(flaky), down_service="postgres") is not None
 
 
+def test_outage_tolerance_is_for_the_routes_own_service_only(tmp_path):
+    # orders-db-source belongs to orders-db, not to a stopped service named orders.
+    flaky = iter([False, True] * 100)
+    problem = _run(tmp_path, ["orders-db-source"], fail=lambda admin: next(flaky), down_service="orders",
+                   requires=("orders", "orders-db"))
+    assert problem and "orders-db-source" in problem
+
+
 def test_outage_still_needs_one_success(tmp_path):
     problem = _run(tmp_path, ["postgres-source"], fail=lambda admin: True, down_service="postgres")
     assert problem and "0 run(s) succeeded" in problem
@@ -92,7 +101,8 @@ def test_unreadable_sql_file_names_the_cause(tmp_path):
 
 def test_a_first_run_still_going_is_reported_as_such(tmp_path):
     problem = _run(tmp_path, ["postgres-source"], block=threading.Event())
-    assert problem == "op.sql on postgres-source: its first run was still going 10 s after the action ended"
+    assert problem == ("op.sql on postgres-source: no run succeeded and one was still going 10 s after "
+                       "the action ended (0 failed)")
 
 
 def test_no_loops_is_no_problem(tmp_path):

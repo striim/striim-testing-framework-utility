@@ -1221,6 +1221,7 @@ def test_build_jar_module_prebuilt_variable_outranks_the_generic_ones(tmp_path, 
     ("<STRIIM_HOME>${{env.STRIIM_HOME}}</STRIIM_HOME>", {}, True, True),  # empty env reference
     ("<STRIIM_HOME>{home}</STRIIM_HOME>", {"STRIIM_HOME": "/x"}, False, False),  # set: _verify_striim_home's job
     ("", {}, False, False),                                               # pom needs no install
+    ("<STRIIM_HOME>/opt/none</STRIIM_HOME><!-- unused -->", {}, False, False),  # declared, never referenced
 ])
 def test_require_platform_home_before_mvn(tmp_path, prop, env, platform, raises):
     home = tmp_path / "striim"
@@ -1229,7 +1230,8 @@ def test_require_platform_home_before_mvn(tmp_path, prop, env, platform, raises)
         (home / "lib" / "Platform-5.4.0.6.jar").write_text("x")
     mod = tmp_path / "mod"
     mod.mkdir()
-    (mod / "pom.xml").write_text(f"<project><properties>{prop.format(home=home)}</properties></project>")
+    use = "<systemPath>${STRIIM_HOME}/lib/Platform-5.4.0.6.jar</systemPath>" if "{home}" in prop or "env." in prop else ""
+    (mod / "pom.xml").write_text(f"<project><properties>{prop.format(home=home)}</properties>{use}</project>")
     check = lambda: opartifacts._require_platform_home(mod, env, {"STRIIM_VERSION": "5.4.0.6"})
     if raises:
         with pytest.raises(OpArtifactError, match="STRIIM_HOME is unset") as e:

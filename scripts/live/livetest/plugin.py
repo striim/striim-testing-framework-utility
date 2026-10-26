@@ -3233,10 +3233,12 @@ class LiveItem(pytest.Item):
                             for _t in _action_threads:
                                 _op = _t.slt_op
                                 _errs = _op.get("errors", [])
-                                _expected = down_service and (_op["db"] == down_service or _op["db"].startswith(f"{down_service}-"))
+                                _owner = max((s for s in m.requires if _op["db"] == s or _op["db"].startswith(f"{s}-")),
+                                             key=len, default=None)
+                                _expected = down_service is not None and _owner == down_service
                                 if not _op.get("ok") and _t.is_alive():
-                                    problems.append(f"{_op['file']} on {_op['db']}: its first run was still "
-                                                    f"going 10 s after the action ended")
+                                    problems.append(f"{_op['file']} on {_op['db']}: no run succeeded and one was still "
+                                                    f"going 10 s after the action ended ({len(_errs)} failed)")
                                 elif not _op.get("ok") or (_errs and not _expected):
                                     problems.append(f"{_op['file']} on {_op['db']}: {_op.get('ok', 0)} run(s) "
                                                     f"succeeded, {len(_errs)} failed"

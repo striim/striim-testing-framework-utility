@@ -49,7 +49,7 @@ class OpBuildFailed(OpArtifactError):
     """The build ran and failed: the module's code or pom is broken, not the environment."""
 
 class OpJarRejected(OpArtifactError):
-    """A jar the run was told to use cannot be used: a mistake to fix, not a missing prerequisite."""
+    """A prebuilt jar (SLT_*_JAR / SLT_PREBUILT_DIR) whose name lacks the expected -<series>.jar suffix."""
 
 @dataclass(frozen=True)
 class BuiltArtifact:
@@ -461,7 +461,7 @@ def _require_platform_home(module_dir: Path, build_env: dict, release: dict) -> 
         pom = (module_dir / "pom.xml").read_text()
     except OSError:
         return
-    if "STRIIM_HOME" not in pom:
+    if "${STRIIM_HOME}" not in pom:                   # declared but never used: needs no install
         return
     m = re.search(r"<STRIIM_HOME>\s*([^<$\s]+)\s*</STRIIM_HOME>", pom)
     if m is None or not (Path(m.group(1)) / "lib" / f"Platform-{version}.jar").exists():

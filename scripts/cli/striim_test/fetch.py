@@ -80,7 +80,7 @@ def _download(bucket, prefix, endpoint):
                                            stderr=subprocess.PIPE)
         except subprocess.CalledProcessError as exc:
             err = (exc.stderr or b"").decode("utf-8", "replace").strip()[-1000:]
-            if re.search(r"matched no objects|not ?found|\b404\b", err, re.IGNORECASE):
+            if re.search(r"matched no objects|\b404\b", err, re.IGNORECASE):
                 _fail(f"nothing published at gs://{bucket}/{prefix}/{name}; check the prefix: {err}")
             _unavailable(f"gcloud download of {name} failed (exit {exc.returncode}): {err}")
         except (OSError, subprocess.SubprocessError) as exc:

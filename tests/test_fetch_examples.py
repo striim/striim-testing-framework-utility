@@ -220,7 +220,9 @@ def test_emulator_failure_is_a_cli_error(tmp_path, monkeypatch, error, code, mat
     (FileNotFoundError("gcloud"), 3, "gcloud download of manifest.json failed: FileNotFoundError"),
     (subprocess.CalledProcessError(1, ["gcloud"], stderr=b"ERROR: (gcloud.storage.cat) The following URLs "
                                    b"matched no objects or files"), 2, "nothing published at .*matched no objects"),
-], ids=["gcloud-auth", "gcloud-missing", "nothing-published"])
+    (subprocess.CalledProcessError(1, ["gcloud"], stderr=b"Traceback (most recent call last):\n"
+                                   b"ModuleNotFoundError: No module named 'google'"), 3, "(?s)failed \\(exit 1\\): .*ModuleNotFoundError"),
+], ids=["gcloud-auth", "gcloud-missing", "nothing-published", "gcloud-broken"])
 def test_gcloud_failure_classified(tmp_path, monkeypatch, error, code, match):
     def gcloud(argv, **kw):
         raise error
