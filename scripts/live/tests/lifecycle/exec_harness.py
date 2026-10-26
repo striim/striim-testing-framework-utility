@@ -548,11 +548,13 @@ if SC.get("op_poison"):
         P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
         P._node_log_since = lambda ctx, marks, run=None: ""
     if SC.get("op_poison_at_load"):                        # logged during the LOAD, before the deploy's mark
-        _marks = iter(range(1, 1000))
-        P._node_log_marks = lambda ctx, run=None: {"node": next(_marks)}
+        _built, _build = [], P.build_modules
+        P.build_modules = lambda *a, **k: _built.append(1) or _build(*a, **k)
+        P._node_log_marks = lambda ctx, run=None: {"node": "after-build" if _built else "before-build"}
         P._node_log_tail = lambda ctx: ""
         P._node_log_since = lambda ctx, marks, run=None: (
-            "java.util.zip.ZipException: invalid LOC header (bad signature)" if marks == {"node": 1} else "")
+            "java.util.zip.ZipException: invalid LOC header (bad signature)" if marks == {"node": "before-build"}
+            else "")
     P._sp.restart_app_nodes = lambda client: log("restart_app_nodes")
     _real_in_use = P.opregistry.in_use
     _real_exclusive_reload = P.opregistry.exclusive_reload

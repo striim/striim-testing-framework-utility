@@ -447,6 +447,9 @@ def _use_lock(registry_dir=None, env=None) -> Path:
     return stack.lock_path(_USE_LOCK, env).parent / _scoped(_USE_LOCK, env)
 
 
+_GATE_QUIET_S = 2.0
+
+
 def _gate(path: Path) -> Path:
     return path.with_name(path.name + ".gate")
 
@@ -455,12 +458,13 @@ def _gate(path: Path) -> Path:
 def _shared_after_gate(path: Path, timeout: float = _LOCK_TIMEOUT_S, progress=None):
     deadline = time.monotonic() + timeout
     try:
-        with _flock(_gate(path), fcntl.LOCK_EX, 0):
+        # Another test passes the gate in a moment; only a reload holds it for longer.
+        with _flock(_gate(path), fcntl.LOCK_EX, min(_GATE_QUIET_S, timeout)):
             pass
     except LockTimeout:
         if progress:
             progress(f"waiting for a pending OP/UDF jar reload to finish (up to {timeout:.0f}s; {_gate(path)})")
-        with _flock(_gate(path), fcntl.LOCK_EX, timeout):
+        with _flock(_gate(path), fcntl.LOCK_EX, max(0.0, deadline - time.monotonic())):
             pass
     with _flock(path, fcntl.LOCK_SH, max(0.0, deadline - time.monotonic())):
         yield

@@ -3919,7 +3919,7 @@ def _slt_report_worker_teardown(config) -> None:
     }
 
 
-def _slt_adopt_worker_teardown(config, workeroutput) -> None:
+def _slt_adopt_worker_teardown(config, workeroutput, node_id=None) -> None:
     """Controller of an exclusive xdist run: its workers skip session teardown, so it takes over what
     each one reports. A worker that reported nothing (it crashed) leaves the teardown to the stack's identity."""
     infra = _slt_infra.of(config) if config is not None else None
@@ -3929,7 +3929,7 @@ def _slt_adopt_worker_teardown(config, workeroutput) -> None:
     if rep is None:
         config._slt_unreported_worker = True
         return
-    config._slt_nodes_reported = getattr(config, "_slt_nodes_reported", 0) + 1
+    config.__dict__.setdefault("_slt_nodes_reported", set()).add(node_id)
     started = config.__dict__.setdefault("_slt_started", set())
     defs = config.__dict__.setdefault("_slt_defs", {})
     for name in rep.get("services") or ():
@@ -3984,22 +3984,27 @@ def _slt_exclusive_stack_unaccounted(config, exitstatus) -> bool:
     infra = _slt_infra.of(config)
     if infra is None or infra.ownership != "exclusive" or hasattr(config, "workerinput"):
         return False
-    ready = getattr(config, "_slt_nodes_ready", 0)
+    ready = getattr(config, "_slt_nodes_ready", set())
     return bool(getattr(config, "_slt_unreported_worker", False)
-                or ready > getattr(config, "_slt_nodes_reported", 0)
+                or ready - getattr(config, "_slt_nodes_reported", set())
                 or (exitstatus == pytest.ExitCode.INTERRUPTED and (ready or getattr(config, "_slt_distributed", False))))
+
+
+def _slt_node_id(node):
+    return getattr(getattr(node, "gateway", None), "id", None) or id(node)
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodeready(node):
     config = getattr(node, "config", None)
     if config is not None:
-        config._slt_nodes_ready = getattr(config, "_slt_nodes_ready", 0) + 1
+        config.__dict__.setdefault("_slt_nodes_ready", set()).add(_slt_node_id(node))
 
 
 @pytest.hookimpl(optionalhook=True)
 def pytest_testnodedown(node, error):
-    _slt_adopt_worker_teardown(getattr(node, "config", None), getattr(node, "workeroutput", None))
+    _slt_adopt_worker_teardown(getattr(node, "config", None), getattr(node, "workeroutput", None),
+                               _slt_node_id(node))
 
 
 def pytest_unconfigure(config):

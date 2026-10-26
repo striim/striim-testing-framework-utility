@@ -29,6 +29,10 @@ def _defn(name):
     return SimpleNamespace(name=name, container=f"xabc-slt-{name}", compose="compose.yaml")
 
 
+def _node(controller, wid, **kw):
+    return SimpleNamespace(config=controller, gateway=SimpleNamespace(id=wid), **kw)
+
+
 def _session(cfg):
     return SimpleNamespace(config=cfg, exitstatus=0)
 
@@ -53,8 +57,8 @@ def test_controller_tears_down_what_its_workers_brought_up(monkeypatch, calls):
     assert out["slt_teardown"]["services"] == ["postgres"]
     controller = _controller()
     monkeypatch.setattr(P.subprocess, "run", lambda *a, **k: pytest.fail("every worker reported; no prefix scan"))
-    P.pytest_testnodeready(SimpleNamespace(config=controller))
-    P.pytest_testnodedown(SimpleNamespace(config=controller, workeroutput=out), None)
+    P.pytest_testnodeready(_node(controller, "gw0"))
+    P.pytest_testnodedown(_node(controller, "gw0", workeroutput=out), None)
     P.pytest_sessionfinish(_session(controller), 0)
     assert calls == [("compose_down", "xabc-slt-postgres"), ("cluster_down", {"STRIIM_VERSION": "5.2.0"})]
 
@@ -106,8 +110,8 @@ def stack_on_docker(monkeypatch):
 def test_interrupted_controller_tears_down_by_stack_identity(calls, stack_on_docker):
     # Ctrl-C: xdist stops before any worker report arrives, so no testnodedown ever fires.
     controller = _controller()
-    for _ in range(2):
-        P.pytest_testnodeready(SimpleNamespace(config=controller))
+    for wid in ("gw0", "gw1"):
+        P.pytest_testnodeready(_node(controller, wid))
     P.pytest_sessionfinish(_session(controller), pytest.ExitCode.INTERRUPTED)
     assert calls == [("compose_down", "xabc-slt-kafka"), ("cluster_down", None)]
 
@@ -115,9 +119,9 @@ def test_interrupted_controller_tears_down_by_stack_identity(calls, stack_on_doc
 def test_a_worker_that_never_reported_triggers_the_identity_teardown(monkeypatch, calls, stack_on_docker):
     out = _worker(monkeypatch, calls)
     controller = _controller()
-    for _ in range(2):
-        P.pytest_testnodeready(SimpleNamespace(config=controller))
-    P.pytest_testnodedown(SimpleNamespace(config=controller, workeroutput=out), None)
+    for wid in ("gw0", "gw1"):
+        P.pytest_testnodeready(_node(controller, wid))
+    P.pytest_testnodedown(_node(controller, "gw0", workeroutput=out), None)
     P.pytest_sessionfinish(_session(controller), 1)
     assert ("compose_down", "xabc-slt-kafka") in calls and ("compose_down", "xabc-slt-postgres") in calls
     assert ("cluster_down", {"STRIIM_VERSION": "5.2.0"}) in calls
@@ -141,3 +145,15 @@ def test_interrupted_shared_controller_adopts_nothing(calls, stack_on_docker):
     P.pytest_testnodeready(SimpleNamespace(config=controller))
     P.pytest_sessionfinish(_session(controller), pytest.ExitCode.INTERRUPTED)
     assert calls == []
+
+
+def test_a_worker_reported_twice_does_not_hide_another_workers_missing_report(monkeypatch, calls, stack_on_docker):
+    # On KeyboardInterrupt xdist can call testnodedown twice for one worker (workerfinished, then errordown).
+    out = _worker(monkeypatch, calls)
+    controller = _controller()
+    for wid in ("gw0", "gw1"):
+        P.pytest_testnodeready(_node(controller, wid))
+    for _ in range(2):
+        P.pytest_testnodedown(_node(controller, "gw0", workeroutput=out), None)
+    P.pytest_sessionfinish(_session(controller), 1)
+    assert ("compose_down", "xabc-slt-kafka") in calls
