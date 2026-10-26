@@ -291,7 +291,9 @@ def resolve_target(targets: list[str], wanted: str | None, app: str) -> str:
 
 
 def _evaluate(body: dict, spec: dict):
-    misses = []
+    # An empty MON body shows every figure as absent; it is no evidence of an absent figure.
+    misses = [] if body else ["MON returned no figures for this component"]
+    body = body or {}
     for name, want in spec["metrics"].items():
         if _is_matcher(want):
             miss = _matcher_miss(want, body.get(name))

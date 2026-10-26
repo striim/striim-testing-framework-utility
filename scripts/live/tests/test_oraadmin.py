@@ -1,4 +1,6 @@
 import pytest
+from decimal import Decimal
+from types import SimpleNamespace
 from livetest.oraadmin import OraAdmin, _split_statements
 
 class FakeCursor:
@@ -126,3 +128,50 @@ def test_drop_test_tables_prefix_filters_and_a_failed_drop_does_not_raise():
     _drop_admin(state).drop_test_tables("TABC_")   # must not raise
     drops = [s for s in state["executed"] if s.startswith("DROP TABLE")]
     assert drops == ["DROP TABLE TABC_ORDERS CASCADE CONSTRAINTS PURGE"]   # OTHER untouched
+
+
+# ---- select_rows reads NUMBER exactly and LOBs while connected -------------------------------
+
+class _DriverCursor(FakeCursorRes):
+    """Applies outputtypehandler as python-oracledb does: NUMBER is a float, and a LOB a locator
+    that cannot be read after close, unless the handler asks for another type."""
+    def __init__(self, conn, values, types):
+        super().__init__([], [(f"C{i}", t) for i, t in enumerate(types)])
+        self.conn, self._values, self.arraysize, self.outputtypehandler = conn, values, 100, None
+    def var(self, typ, arraysize=1):
+        return typ
+    def fetchall(self):
+        import oracledb
+        row = []
+        for value, (_, typ) in zip(self._values, self.description):
+            want = self.outputtypehandler(self, SimpleNamespace(type_code=typ)) if self.outputtypehandler else None
+            if typ is oracledb.DB_TYPE_NUMBER:
+                row.append(Decimal(value) if want is Decimal else int(value) if value.isdigit() else float(value))
+            elif want is None:
+                row.append(_Lob(self.conn, value))
+            else:
+                row.append(value)
+        return [tuple(row)]
+
+
+class _Lob:
+    def __init__(self, conn, value): self.conn, self.value = conn, value
+    def __str__(self):
+        if self.conn.closed:
+            raise RuntimeError("DPY-1001: not connected to database")
+        return self.value
+
+
+class _DriverConn:
+    def __init__(self, values, types): self.values, self.types, self.closed = values, types, False
+    def cursor(self): return _DriverCursor(self, self.values, self.types)
+    def close(self): self.closed = True
+
+
+def test_select_rows_reads_number_exactly_and_lobs_before_close():
+    oracledb = pytest.importorskip("oracledb")
+    types = [oracledb.DB_TYPE_NUMBER, oracledb.DB_TYPE_NUMBER, oracledb.DB_TYPE_CLOB, oracledb.DB_TYPE_BLOB]
+    admin = OraAdmin({"host": "h", "port": 1, "service": "S", "source_user": "u", "source_password": "p"},
+                     connect=lambda **kw: _DriverConn(["12345678901234567.89", "7", "long text", b"\x00\xff"], types))
+    assert admin.select_rows("QATARGET.T") == [
+        {"C0": "12345678901234567.89", "C1": "7", "C2": "long text", "C3": "00ff"}]

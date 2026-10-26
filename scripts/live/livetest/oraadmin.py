@@ -35,6 +35,18 @@ def _default_connect(**kw):
         dsn=f'{kw["host"]}:{int(kw["port"])}/{kw["service"]}',
     )
 
+def _exact_output(cursor, metadata):
+    """Fetch NUMBER as Decimal (a float drops digits) and LOBs as values (a LOB locator
+    cannot be read once the connection closes)."""
+    import decimal
+    import oracledb
+    as_type = {oracledb.DB_TYPE_NUMBER: decimal.Decimal,
+               oracledb.DB_TYPE_CLOB: oracledb.DB_TYPE_LONG,
+               oracledb.DB_TYPE_NCLOB: oracledb.DB_TYPE_LONG_NVARCHAR,
+               oracledb.DB_TYPE_BLOB: oracledb.DB_TYPE_LONG_RAW}.get(metadata.type_code)
+    return None if as_type is None else cursor.var(as_type, arraysize=cursor.arraysize)
+
+
 def _check(ident: str) -> str:
     if not _IDENT.match(ident):
         raise ValueError(f"unsafe identifier: {ident!r}")
@@ -270,10 +282,12 @@ class OraAdmin:
         # force case-sensitive matching).
         return ".".join(_check(p) for p in parts)
 
-    def _query(self, sql: str):
+    def _query(self, sql: str, exact: bool = False):
         conn = self._open()
         try:
             cur = conn.cursor()
+            if exact:
+                cur.outputtypehandler = _exact_output
             try:
                 cur.execute(sql)
                 cols = [d[0] for d in (cur.description or [])]
@@ -288,7 +302,7 @@ class OraAdmin:
         return int(rows[0][0])
 
     def select_rows(self, table: str) -> list[dict]:
-        cols, rows = self._query(f"SELECT * FROM {self._qualified(table)}")
+        cols, rows = self._query(f"SELECT * FROM {self._qualified(table)}", exact=True)
         out = []
         for r in rows:
             out.append({c: coerce_cell(v) for c, v in zip(cols, r)})

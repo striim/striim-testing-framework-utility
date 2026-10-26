@@ -66,6 +66,23 @@ def test_empty_fails_once_a_checkpoint_shows_up():
     assert "shows nonempty within 0s, expected empty" in str(e.value)
 
 
+def test_empty_is_not_decided_by_a_read_taken_before_the_first_checkpoint():
+    # A RECOVERY app read the moment it is RUNNING shows nothing yet; its checkpoint lands later.
+    fake = FakeStriim([[], [], [{"serialNo": 1}]])
+    with pytest.raises(AssertionFailed, match="shows nonempty within 10s, expected empty"):
+        assert_checkpoint_history(fake, "NS.App", "empty", timeout=10, poll=0)
+    assert fake.polls == 3
+
+
+def test_empty_holds_for_the_whole_timeout(monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("livetest.assertions.checkpoint_history.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("livetest.assertions.checkpoint_history.time.sleep", lambda n: now.__setitem__(0, now[0] + n))
+    fake = FakeStriim([[]])
+    assert assert_checkpoint_history(fake, "NS.App", "empty", timeout=60, poll=2)[0]["status"] == "passed"
+    assert now[0] >= 60 and fake.polls == 31
+
+
 def test_status_probe_runs_every_poll():
     calls = []
     fake = FakeStriim([[{"serialNo": 1}]])

@@ -398,8 +398,9 @@ class KafkaAdmin:
                        strict_json=False, payload="avro", strict=False) -> list[dict]:
         """Read keys and typed values; strict snapshots bound metadata and require every offset.
 
-        Legacy assertions leave strict off: a not-yet-created topic is empty and poll_budget
-        starts after metadata/watermarks, so their outer assertion timeout remains authoritative.
+        Legacy assertions leave strict off: a missing topic or an incomplete read raises
+        NotYetReadable and poll_budget starts after metadata/watermarks, so their outer
+        assertion timeout remains authoritative.
         """
         def decode(message):
             if payload == "json":
@@ -441,7 +442,8 @@ class KafkaAdmin:
             if t is None or t.error is not None:
                 if strict:
                     raise RuntimeError("kafka_record topic metadata unavailable")
-                return []
+                from livetest.assertions import NotYetReadable
+                raise NotYetReadable(f"topic {topic} does not exist")
             # Assign each partition at its LOW watermark and count (hi - lo). Cleared
             # topics start at 0, but a reused/live broker may have a non-zero low
             # (retention/compaction) — assuming 0 would over-count and wait out the
@@ -484,6 +486,10 @@ class KafkaAdmin:
                     remaining -= 1
             if strict and remaining:
                 raise RuntimeError(f"kafka_record snapshot incomplete: {remaining} captured message(s) unread; refusing partial results")
+            if remaining > 0:
+                # A partial read is not a count: the caller's poll loop retries until its deadline.
+                from livetest.assertions import NotYetReadable
+                raise NotYetReadable(f"topic {topic}: {remaining} message(s) unread within {poll_budget}s")
             return rows
         finally:
             c.close()

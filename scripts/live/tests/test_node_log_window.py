@@ -49,15 +49,34 @@ def test_reads_forward_from_the_mark_not_a_fixed_tail():
         assert "tail -c 20000" in cmd, cmd
 
 
-def test_falls_back_to_a_fixed_tail_without_a_mark():
+def test_a_node_without_a_mark_is_not_read():
+    # Its fixed tail would hold an earlier case's halt reason and pass expect_halt_contains.
     cmds = []
 
     def _run(argv):
         cmds.append(argv)
+        return type("R", (), {"stdout": "Duplicate key from an earlier case", "returncode": 0})()
+
+    assert plugin._node_log_since(_Ctx(), {}, run=_run) == ""
+    assert cmds == []
+
+
+def test_a_mark_that_cannot_be_taken_is_left_out():
+    def _run(argv):
+        raise RuntimeError("docker exec failed")
+
+    assert plugin._node_log_marks(_Ctx(), run=_run) == {}
+
+
+def test_an_empty_log_at_the_mark_is_read_from_its_start():
+    cmds = []
+
+    def _run(argv):
+        cmds.append(argv[-1])
         return type("R", (), {"stdout": "x", "returncode": 0})()
 
-    plugin._node_log_since(_Ctx(), {}, run=_run)
-    assert cmds and all("tail" in c and "-c" in c and "20000" in c for c in cmds)
+    plugin._node_log_since(_Ctx(), {n: 0 for n in stack.app_nodes()}, run=_run)
+    assert cmds and all("tail -c +1 " in c for c in cmds)
 
 
 def test_covers_every_app_node():

@@ -355,7 +355,7 @@ def docker(argv):
         script, done = cmd[2], ""
         if script.endswith("; echo slt-ls-done"):
             script, done = script[:-len("; echo slt-ls-done")], "slt-ls-done\n"
-        pats = script[len("ls -1d "):-len(" 2>/dev/null")].split()
+        pats = script[len("ls -1d "):].split()
         found = sorted({f for f in list(FILES) + list(DIRS) for p in pats if fnmatch.fnmatch(f, p)})
         return SimpleNamespace(returncode=0, stdout="".join(f"{f}\n" for f in found) + done, stderr="")
     raise AssertionError(argv)

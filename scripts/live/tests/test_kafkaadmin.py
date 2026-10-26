@@ -4,6 +4,7 @@ import json
 import pytest
 import fastavro
 
+from livetest.assertions import AssertionFailed, NotYetReadable
 from livetest.kafkaadmin import (
     KafkaAdmin, _parse_dsv, _check_topic, _frame, _unframe, _SEED_SCHEMA,
 )
@@ -221,7 +222,8 @@ def test_record_view_refuses_matching_prefix_before_captured_high_watermark(monk
     admin = KafkaAdmin({}, sr=_FakeSR(json.dumps(_SEED_SCHEMA)),
                        consumer_factory=lambda group: Consumer("slt_tgt", frames))
     monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
-    assert len(admin.select_rows("slt_tgt", poll_budget=1)) == 4
+    with pytest.raises(NotYetReadable, match="1 message.*unread"):
+        admin.select_rows("slt_tgt", poll_budget=1)
     now[0] = 0
     with pytest.raises(RuntimeError, match="1 captured message.*unread"):
         admin.select_records("slt_tgt", poll_budget=1, strict=True)
@@ -245,10 +247,35 @@ def test_decode_multiframe_and_strips_striim_metadata():
     one_message = mk("1", "alpha") + mk("2", "bravo")   # two frames, one message value
     assert admin._decode(one_message) == [{"c0": "1", "c1": "alpha"}, {"c0": "2", "c1": "bravo"}]
 
-def test_select_rows_empty_when_topic_absent():
+def test_select_rows_refuses_a_missing_topic():
     admin = KafkaAdmin({"broker": "x", "registry_url": "y", "seed_topic": "slt_src"},
                        consumer_factory=lambda g: _FakeConsumer("other", []))
-    assert admin.select_rows("missing") == []
+    with pytest.raises(NotYetReadable, match="does not exist"):
+        admin.select_rows("missing")
+
+
+def test_rows_zero_fails_on_a_missing_topic(tmp_path):
+    from livetest.assertions.data import assert_data
+    admin = KafkaAdmin({"broker": "x"}, consumer_factory=lambda g: _FakeConsumer("other", []))
+    with pytest.raises(AssertionFailed, match="does not exist"):
+        assert_data(admin, [{"target": "misspelt", "db": "kafka", "rows": 0}], tmp_path, timeout=0)
+
+
+def test_rows_zero_fails_when_written_messages_are_not_delivered_in_the_budget(tmp_path, monkeypatch):
+    from livetest.assertions.data import assert_data
+    now = [0.0]
+
+    class Slow(_FakeConsumer):
+        def poll(self, t):
+            now[0] += 1.0
+            return None         # watermarks say 3, the broker delivers nothing
+
+    admin = KafkaAdmin({"broker": "x"}, consumer_factory=lambda g: Slow("tgt", [b"", b"", b""]))
+    monkeypatch.setattr("livetest.kafkaadmin.time.monotonic", lambda: now[0])
+    with pytest.raises(NotYetReadable, match="3 message"):
+        admin.count_rows("tgt")
+    with pytest.raises(AssertionFailed, match="3 message.*unread"):
+        assert_data(admin, [{"target": "tgt", "db": "kafka", "rows": 0}], tmp_path, timeout=0)
 
 # ---- clear_topic delete-completion (fake admin client) ----------------------
 

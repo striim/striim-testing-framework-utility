@@ -54,6 +54,21 @@ def strip_absent(rows: list[dict]) -> list[dict]:
     return [{k: v for k, v in row.items() if v != ABSENT} for row in rows]
 
 
+def read_golden_csv(text: str) -> tuple[list[dict], str | None]:
+    """Golden rows, and why the CSV is ragged (None when it is not).
+
+    DictReader fills a short row with None, which would assert NULL; a row whose cell count
+    differs from the header is a golden mistake, not a NULL.
+    """
+    reader = csv.DictReader(io.StringIO(text))
+    rows = [dict(row) for row in reader]
+    for n, row in enumerate(rows, start=1):
+        if None in row or None in row.values():
+            return rows, (f"data row {n} has {'more' if None in row else 'fewer'} cells than the"
+                          f" header {reader.fieldnames}; write {NULL} to assert a NULL")
+    return rows, None
+
+
 def load_golden(path: Path, tokens: dict | None = None) -> list[dict]:
     # NOT strip_absent: this is the `assert.data` path, which compares against SQL result
     # rows, and a SELECT always returns every column it names -- NULL arrives as None, never
@@ -63,7 +78,9 @@ def load_golden(path: Path, tokens: dict | None = None) -> list[dict]:
     # here and say which column and which file. The marker is a `file`-assertion feature; see
     # strip_absent and TEST-YAML.md.
     text = load_expected_text(path, tokens)
-    rows = [dict(row) for row in csv.DictReader(io.StringIO(text))]
+    rows, ragged = read_golden_csv(text)
+    if ragged:
+        raise DataSpecError(f"{path}: {ragged}")
     for row in rows:
         for col, val in row.items():
             if val == ABSENT:
@@ -171,24 +188,28 @@ def _load_want(spec: dict, basedir, tokens: dict | None = None):
     return rows, want
 
 
-def _committed(pg, specs: list[dict]) -> bool:
-    """True unless an exact `rows:` spec has a committed-read count that disagrees.
+def _uncommitted(pg, specs: list[dict]) -> int | None:
+    """Index of the first `rows:` or `min_rows:` spec whose committed-read count disagrees, else None.
 
-    Only an admin exposing `count_rows_committed` (mssql, whose `count_rows` reads uncommitted so it
-    cannot deadlock against the writer) is asked; every other admin's count is already committed.
+    Only an admin exposing `count_rows_committed` (mssql and teradata, whose `count_rows` can see
+    uncommitted rows) is asked; every other admin's count is already committed.
     A lock timeout counts as "not yet": the caller polls again.
     """
     confirm = getattr(pg, "count_rows_committed", None)
     if not callable(confirm):
-        return True
-    for spec in specs:
-        if "rows" in spec and spec.get("project") != "kafka_record":
-            try:
-                if confirm(spec["target"]) != int(spec["rows"]):
-                    return False
-            except Exception:      # noqa: BLE001 -- lock timeout or transient: poll again
-                return False
-    return True
+        return None
+    for i, spec in enumerate(specs):
+        if spec.get("project") == "kafka_record" or not ("rows" in spec or "min_rows" in spec):
+            continue
+        try:
+            committed = confirm(spec["target"])
+            if "rows" in spec and committed != int(spec["rows"]):
+                return i
+            if "min_rows" in spec and committed < int(spec["min_rows"]):
+                return i
+        except Exception:      # noqa: BLE001 -- lock timeout or transient: poll again
+            return i
+    return None
 
 
 
@@ -240,14 +261,16 @@ def _evaluate(pg, spec: dict, golden_rows, want):
     # for every spec, including the already-passing ones.
     target = spec["target"]
     projected_records = None
-    if spec.get("project") == "kafka_record":
-        reader = getattr(pg, "select_records", None)
-        if not callable(reader):
-            raise DataSpecError("project: kafka_record requires a Kafka target")
-        projected_records = [_record_projection(row, spec["keys"]) for row in reader(target)]
-        count = len(projected_records)
-    else:
-        count = pg.count_rows(target)
+    if spec.get("project") == "kafka_record" and not callable(getattr(pg, "select_records", None)):
+        raise DataSpecError("project: kafka_record requires a Kafka target")
+    try:
+        if spec.get("project") == "kafka_record":
+            projected_records = [_record_projection(row, spec["keys"]) for row in pg.select_records(target)]
+            count = len(projected_records)
+        else:
+            count = pg.count_rows(target)
+    except NotYetReadable as e:
+        return False, f"{target}: not readable yet: {e}", None, None
     expected = actual = None
 
     if "rows" in spec:
@@ -401,11 +424,13 @@ def assert_data(pg, specs: list[dict], basedir, timeout: int, poll: float = 2.0,
             status_probe()
         results = [_evaluate(pg, s, rows, want) for s, (rows, want) in zip(specs, goldens)]
         detail = next((d for ok, d, _, _ in results if not ok), None)
-        if detail is None and not _committed(pg, specs):
+        dirty = _uncommitted(pg, specs) if detail is None else None
+        if dirty is not None:
             # The count was satisfied by a dirty read (mssql): the rows are executed but not yet
             # committed, or a lock timed out. Keep polling; the clock keeps running until the
             # committed count agrees.
-            detail = "rows executed but not yet committed"
+            detail = f"{specs[dirty]['target']}: rows executed but not yet committed"
+            results[dirty] = (False, detail, *results[dirty][2:])
         if detail is None:
             elapsed = time.monotonic() - started
             return [
