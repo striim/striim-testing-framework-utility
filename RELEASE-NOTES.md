@@ -2,6 +2,62 @@
 
 One entry per release, newest first: the pull requests it contains.
 
+## v0.3.0 (2026-10-26)
+
+**Breaking changes and changed behaviour**
+
+- **Unknown `assert:` tiers are refused** at manifest load in both engines (the live run
+  fails the case; `striim-test doctor` exits 2). They were ignored, so a typo such as
+  `rowcount:` dropped the assertion and the run passed. For a row count use `data:` with
+  `rows:`. (#45)
+- **Exit codes:** a failure plus a skip exits 1, not 3 (precedence 2 > 4 > 1 > 3). A failed
+  OP/UDF build fails the case instead of skipping; missing prerequisites (no `mvn`, no JDK,
+  no Platform jar) still skip. A prebuilt jar without the expected suffix fails. (#45)
+- **Integration mock platform matches Striim 5.4.0.6C:** `WAEvent` allocates only its
+  presence bitmaps, `setData`/`setBefore` do not grow the arrays, and bitmaps hold 7 columns
+  per byte. An OP that relied on the old leniency now fails here as it would in production. (#46)
+- **Type-strict comparisons:** integration `assert.data`, perf correctness and `assert.json`
+  no longer treat `true` as `1` or `5.0` as `5`; decimals compare exactly. (#46, #47)
+- **Integration `expect_error`** matches only the exception chain the operator threw, not
+  log text or a harness timeout. (#46)
+- **Assertions that passed on missing data now fail:** a missing Kafka topic is not 0 rows;
+  an exact `assert.file` with no output file fails; `assert.monitor` fails on an empty
+  response; golden rows with more cells than the header are refused;
+  `checkpoint_history: empty` must hold for the whole `timeout`. (#47)
+- **SQL Server and Teradata `min_rows`** wait for committed rows; `rows:` always needs
+  committed rows. Oracle NUMBER values a float would round compare exactly, and timestamps
+  compare to the nanosecond. (#47)
+- **OP-loader poison:** a shared or undeclared run fails the case with `[slt-op-poisoned]`
+  and names `python -m livetest.preflight --restart-app-nodes`; app nodes are restarted only
+  on an exclusive run. (#48)
+- **MySQL on your own instance:** the framework creates only the configured schemas; it never
+  creates or alters accounts or grants privileges. Create the accounts yourself. (#48)
+- **Cancelling `striim-test run`:** Ctrl-C, SIGTERM, SIGHUP or SIGQUIT is passed to the tier,
+  which gets up to 200 s to clean up the shared stack; a second Ctrl-C stops it within about
+  10 s. (#48)
+- **`op.upload`:** `to:` must be a plain file name. **`action.concurrent`:** `db:` must be a
+  route of a `requires:` service. **`seed_when: post_start` with `matrix:`** is refused. (#45, #46, #48)
+
+**Operator jars**
+
+- With several releases of one Striim series in the `STRIIM_BUILD_*` matrix, each release's
+  jar is built in its own directory and published as `<Op>-<suffix>.jar` (the shortest unique
+  version, for example `-5.4.0.jar`). A shipped `-<series>.jar` is still accepted as a
+  prebuilt. Add `.release-build-*.xml` to your repo's `.gitignore`. (#37, #41)
+
+**Checks and fixes**
+
+- `assert.gcs` records `sha256:<hex>`, so a passing run writes valid evidence. (#39)
+- SQL Server: a deadlock-victim read (1205) during a diff poll is retried. (#40)
+- `checkpoint_history: {predates: <seed>}`; Teradata reads use `NOWAIT` and teardown drops
+  views. (#38)
+- `SLT_INFRA_OWNERSHIP=exclusive` with `--parallel` tears its stack down; `KAFKA_ZOOKEEPER`
+  follows the services host. (#48)
+- Recovery samples ship their goldens; selection advice says tags select only in a direct
+  pytest run. (#44)
+- macOS arm64 test lock: pymssql 2.4.2 (macOS 14 or later). (#43)
+- The docs describe unknown `assert:` tiers as refused. (#49)
+
 ## v0.2.0 (2026-10-19)
 
 **Breaking changes and changed behaviour**
