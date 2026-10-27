@@ -165,9 +165,9 @@ The reference for each is [TEST-YAML.md](TEST-YAML.md).
 | `expect_halt` / `expect_halt_contains`: the app must halt | **supported, not exercised here** (`framework-expect-halt`) |
 | `jmx`: an Open Processor's MBean attributes, read from the Striim nodes' JMX exporters | **supported, not exercised here**. Docker mode only; each spec names the MBean domain its bean is registered under. No shipped case uses it |
 
-**An `assert:` key that is not one of these tiers is not rejected, and never runs.** A typo there
-(`rowcount:` for `data:` with `rows:`) leaves the test checking less than it says, and neither the
-run nor `striim-test doctor` reports it. Check the tier names against this table.
+**An `assert:` key that is not a tier is refused at load** with `'assert' has unknown tier(s)` and
+the allowed names: a typo such as `rowcount:` (for `data:` with `rows:`) fails that case in the live
+tier, and in the integration tier stops the run at collection. `striim-test doctor --case` reports it.
 
 ### Everything else
 
@@ -236,7 +236,7 @@ run nor `striim-test doctor` reports it. Check the tier names against this table
 | `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
 | Snapshot rows/bytes | 100000 rows and 64 MiB by default; at most 1000000 and 512 MiB | Row budget covers all tables; byte budget applies per table |
 | `snapshot_observer.max_snapshots` | 10000 by default; at most 100000 | Exhaustion fails instead of truncating history |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` | `striim-test doctor --case` reports them. `assert:` tier names are not checked (above) |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` | `striim-test doctor --case` reports them. `assert:` tier names are checked too (above) |
 
 ## Check routes
 

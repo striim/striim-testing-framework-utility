@@ -348,7 +348,7 @@ a producer and a consumer; related tables share one writer.
 | Copies the target's contents into `expected/` | The test then proves nothing | A golden derived from the seed, row by row |
 | `localhost`, `5432`, `striim` in TQL or SQL | Breaks in Docker mode and with your own database | The service's tokens ([SERVICES.md](SERVICES.md)) |
 | Table names without `${TID}`, or with it at the end | Runs collide; clean-up misses suffixed names | `${TID}` first in every name, in TQL, SQL and `test.yaml` alike |
-| `assert: {rowcount: …}` or another made-up tier | Unknown tiers are ignored: the test checks less than it says | Tier names from [TEST-YAML.md](TEST-YAML.md) only |
+| `assert: {rowcount: …}` or another made-up tier | Refused at load (`unknown tier(s)`) | Tier names from [TEST-YAML.md](TEST-YAML.md) only |
 | CDC data seeded before deploy | The reader never sees it | `when: post_start` |
 | A numeric or date column without a type under `exact.columns` | The run stops with `undeclared-conversion` | Type every non-text column |
 | `lifecycle:` or `exact:` on Oracle, SQL Server or MySQL routes | those database routes are not supported by these checks; see the route matrix | `diff` or `data` with `rows:`, and `timeout` |
