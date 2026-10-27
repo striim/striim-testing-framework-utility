@@ -249,9 +249,11 @@ class WAEventJsonFactoryTest {
         List<WAEvent> events = WAEventJsonFactory.readEvents(FIXTURE);
         events.get(0).data = new Object[] {new BigDecimal("12500"), new BigDecimal("1.25E+4"), new BigDecimal("12500.00")};
         events.get(1).data = new Object[] {101, 7L, BigInteger.valueOf(12500)};
+        events.get(1).userdata.put("UNIT_PRICE", new BigDecimal("12500"));
 
         String out = WAEventJsonFactory.writeEvents(events);
         assertTrue(out.contains("\"values\":[12500.0,12500.0,12500.00]"), out);
         assertTrue(out.contains("\"values\":[101,7,12500]"), out);
+        assertTrue(out.contains("\"UNIT_PRICE\":12500.0"), out);
     }
 }
