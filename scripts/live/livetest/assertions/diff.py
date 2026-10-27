@@ -62,33 +62,39 @@ def _multiset(rows: list) -> "Counter":
     return Counter(frozenset(normalized_row(r).items()) for r in rows)
 
 
-def _target_behind(admins: dict, spec: dict, src_rows, want) -> str | None:
+def _counts(admin) -> bool:
+    """Whether this admin's `count_rows` counts exactly the rows its `select_rows` returns."""
+    return bool(getattr(admin, "diff_counts_rows", False))
+
+
+def _target_behind(admins: dict, spec: dict, n_src: int, n_want: int | None) -> str | None:
     """Why the target is certainly behind, from its row count alone; None to read it in full.
 
     ⚠ Measured 2026-10-27: a full read of a 20M-row PostgreSQL target took 485-581 s, so a poll
     that reads everything measures the check, not the writer. A count is cheap and, where it
     differs, proves the full read would fail. Only admins whose `count_rows` counts the rows
     `select_rows` returns opt in (`diff_counts_rows`); a count that fails is no evidence, and the
-    full read decides as before.
+    full read decides as before. `n_want` (distinct source rows) is None until the source has been
+    read; a non-exact spec always has it.
     """
     admin = _endpoint_admin(admins, spec, "target")
-    if not getattr(admin, "diff_counts_rows", False):
+    if not _counts(admin):
         return None
     try:
         n = admin.count_rows(spec["target"])
     except Exception:
         return None
     if spec.get("exact"):
-        if n != len(src_rows):
-            return f"{spec['target']} holds {n} rows, {spec['source']} {len(src_rows)}"
-    elif n < len(want):
-        return f"{spec['target']} has not caught up to {spec['source']}: |src|={len(want)} |tgt|<={n}"
+        if n != n_src:
+            return f"{spec['target']} holds {n} rows, {spec['source']} {n_src}"
+    elif n_want is not None and n < n_want:
+        return f"{spec['target']} has not caught up to {spec['source']}: |src|={n_want} |tgt|<={n}"
     return None
 
 
 def _evaluate(admins: dict, spec: dict, src_rows, want, *, count_first: bool = True):
     expected = {"kind": "rows", "rows": src_rows}
-    behind = _target_behind(admins, spec, src_rows, want) if count_first else None
+    behind = _target_behind(admins, spec, len(src_rows), len(want)) if count_first else None
     if behind is not None:
         return False, behind, expected, None
     try:
@@ -117,33 +123,86 @@ def _evaluate(admins: dict, spec: dict, src_rows, want, *, count_first: bool = T
     return True, None, expected, actual
 
 
+def _read_source(admins: dict, spec: dict, deadline: float, timeout: int, poll: float) -> list:
+    while True:
+        try:
+            return _folded(_endpoint_admin(admins, spec, "source").select_rows(spec["source"]), spec)
+        except NotYetReadable as e:
+            if time.monotonic() >= deadline:
+                raise AssertionFailed(
+                    f"diff source {spec['source']} not readable within {timeout}s: {e}", []) from e
+            time.sleep(poll or 0.05)
+
+
+def _source_count(admins: dict, spec: dict) -> int | None:
+    """The source's row count, when an `exact` spec may poll on counts before reading it; else None.
+
+    ⚠ A 20M-row source took minutes to read, and the first poll waited for it: a writer that
+    finished meanwhile measured 0.14 s. An exact spec needs only the count until the target's
+    count matches, so the full source read moves to that poll.
+    """
+    if not spec.get("exact"):
+        return None
+    src, tgt = _endpoint_admin(admins, spec, "source"), _endpoint_admin(admins, spec, "target")
+    if not (_counts(src) and _counts(tgt)):
+        return None
+    try:
+        return src.count_rows(spec["source"])
+    except Exception:
+        return None
+
+
 def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0,
-                 status_probe=None, *, db: str | None = None, progress=None) -> list[dict]:
-    # `admins` maps db-name -> admin (each exposing select_rows). Up-front: every
-    # source must be non-empty (an empty source asserts nothing). Source tables are
-    # seeded once and static, so caching the source rows is safe; the target is polled.
-    sources = []
+                 status_probe=None, *, db: str | None = None, progress=None,
+                 clock_start: float | None = None) -> list[dict]:
+    """Poll until every target holds its source; one passed record per spec, with `elapsed_s`.
+
+    `admins` maps db-name -> admin (each exposing select_rows). Every source must be non-empty (an
+    empty source asserts nothing). Source tables are seeded once and static, so caching the source
+    rows is safe; the target is polled.
+
+    §85.3. `elapsed_s` runs from `clock_start` (a `time.monotonic()` value: the harness passes when
+    the app was started or its last post_start input landed) to the poll that passed. Without it the
+    clock starts at the first poll. When the FIRST poll already passes, the target was equal before
+    anything measured it, so the time is only an upper bound and the record says so
+    (`elapsed_upper_bound`).
+    """
     read_deadline = time.monotonic() + timeout
+    # Per spec: [rows or None, distinct rows or None, row count]. An exact spec on counting admins
+    # starts with its count only (`_source_count`).
+    sources = []
     for s in specs:
-        while True:
-            try:
-                src_rows = _folded(_endpoint_admin(admins, s, "source").select_rows(s["source"]), s)
-                break
-            except NotYetReadable as e:
-                if time.monotonic() >= read_deadline:
-                    raise AssertionFailed(
-                        f"diff source {s['source']} not readable within {timeout}s: {e}", []) from e
-                time.sleep(poll or 0.05)
+        n = _source_count(admins, s)
+        if n is not None:
+            if n == 0:
+                raise AssertionError(f"source {s['source']} is empty; nothing to propagate")
+            sources.append([None, None, n])
+            continue
+        src_rows = _read_source(admins, s, read_deadline, timeout, poll)
         want = distinct_set(src_rows)
         if not want:
             raise AssertionError(f"source {s['source']} is empty; nothing to propagate")
-        sources.append((src_rows, want))
-    # §85.3. The clock starts at the FIRST poll, not at app start: everything before this --
-    # deploy, compile, source read -- is outside and is not attributed to the writer. Both arms of
-    # a paired comparison pay the same overheads either way, so it is the DIFFERENCE that carries
-    # the meaning, never the absolute value.
+        sources.append([src_rows, want, len(src_rows)])
     started = time.monotonic()
+    zero = started if clock_start is None else clock_start
     deadline = started + timeout
+    first = True
+    # A source read inside a poll (the lazy read below) can take minutes. When it delays the last
+    # spec's observation in the passing poll, or delayed the poll before it, the time is late by
+    # up to that read: report it as an upper bound rather than as a measurement.
+    lazy_read, lazy_before = [False], False
+
+    def evaluate(s, src, *, count_first=True):
+        if src[0] is None:
+            behind = _target_behind(admins, s, src[2], None) if count_first else None
+            if behind is not None:
+                return False, behind, {"kind": "count", "count": src[2]}, None
+            lazy_read[0] = True
+            src[0] = _read_source(admins, s, deadline, timeout, poll)
+            src[1] = distinct_set(src[0])
+            return _evaluate(admins, s, src[0], src[1], count_first=False)   # just counted
+        return _evaluate(admins, s, src[0], src[1], count_first=count_first)
+
     while True:
         if status_probe:
             status_probe()
@@ -151,26 +210,41 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
         # was equal by then or during its own read, and a full read of millions of rows must not
         # count as writer time. Taken per spec, since earlier specs' reads can take minutes.
         results, observed = [], time.monotonic()
-        for s, (src_rows, want) in zip(specs, sources):
+        lazy_in_poll = lazy_read_before_last = False
+        for s, src in zip(specs, sources):
+            lazy_read_before_last = lazy_in_poll
             observed = time.monotonic()
-            results.append(_evaluate(admins, s, src_rows, want))
+            lazy_read[0] = False
+            results.append(evaluate(s, src))
+            lazy_in_poll = lazy_in_poll or lazy_read[0]
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None:
             # ⚠ RESOLUTION IS THE POLL INTERVAL plus one failed poll. At the 2.0s default this is
             # ±2s, which is useless for comparing two writers that finish within seconds of each
             # other -- a paired measurement must lower `poll` or the number it reports is
             # quantisation. A failed poll is a count where `diff_counts_rows` allows it.
-            elapsed = observed - started
+            elapsed = observed - zero
+            upper = (first and clock_start is not None) or lazy_read_before_last or lazy_before
             return [
                 build_assertion_result(type="diff", status="passed", spec=s, target=s["target"], db=db,
-                                        detail="ok", expected=exp, actual=act, elapsed_s=elapsed)
+                                        detail="ok", expected=exp, actual=act, elapsed_s=elapsed,
+                                        elapsed_upper_bound=upper)
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
+        first, lazy_before = False, lazy_in_poll
         if time.monotonic() >= deadline:
             # A target the count rejected was never read: read it once now, so the failure
-            # carries its rows and, under `exact`, the missing and extra counts.
-            results = [r if r[3] is not None or r[0] else _evaluate(admins, s, src_rows, want, count_first=False)
-                       for r, s, (src_rows, want) in zip(results, specs, sources)]
+            # carries its rows and, under `exact`, the missing and extra counts. A source that
+            # cannot be read now keeps the count's answer: every spec's record still reaches the
+            # sidecar.
+            def reread(r, s, src):
+                if r[3] is not None or r[0]:
+                    return r
+                try:
+                    return evaluate(s, src, count_first=False)
+                except AssertionFailed:
+                    return r
+            results = [reread(r, s, src) for r, s, src in zip(results, specs, sources)]
             detail = next((d for ok, d, _, _ in results if not ok), detail)
             records = [
                 build_assertion_result(type="diff", status="passed" if ok else "failed", spec=s,

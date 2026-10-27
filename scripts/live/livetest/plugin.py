@@ -1036,7 +1036,7 @@ def testid_to_ns_app(m: TestManifest) -> tuple[str, str]:
 # (e.g. into tests/test_discovery.py), causing a spurious fixture error.
 testid_to_ns_app.__test__ = False
 
-def diff_kwargs(m) -> dict:
+def diff_kwargs(m, clock_start: float | None = None) -> dict:
     """The manifest-derived arguments for `assert_diff`.
 
     ⚠ A SEAM, so the wiring is testable. `diff_poll` reaching the assertion is invisible when it
@@ -1044,7 +1044,7 @@ def diff_kwargs(m) -> dict:
     default, `elapsed_s` becomes quantisation, and §85.3's comparison reports numbers that look
     fine. Nothing else in the tier would fail. Same hazard as `exact:` being dropped in transit.
     """
-    return {"timeout": m.timeout, "poll": m.diff_poll}
+    return {"timeout": m.timeout, "poll": m.diff_poll, "clock_start": clock_start}
 
 
 def substitute_targets(specs, tokens) -> list:
@@ -2190,6 +2190,7 @@ class LiveItem(pytest.Item):
 
     def _runtest(self):
         self._slt_records = []          # per-assertion structured records for the .slt.json sidecar
+        _diff_clock = None              # §85.3: set at deploy; None leaves a diff's clock at its first poll
         m = load_manifest(self.manifest_path)
         self._slt_topology = m.topology            # effective topology (Phase A: the manifest's)
         self._slt_services = list(m.requires)
@@ -2895,6 +2896,9 @@ class LiveItem(pytest.Item):
             # apply (see should_keep_resources).
             deploy_attempted = True
             expect_halt_early = None
+            # §85.3: a diff's `elapsed_s` runs from here (the TQL import starts the app), or from
+            # the last post_start input below, not from its own first poll.
+            _diff_clock = time.monotonic()
 
             def _accept_halt(exc):
                 # accept_expected_halt RAISES AssertionFailed when expect_halt_contains
@@ -2980,6 +2984,7 @@ class LiveItem(pytest.Item):
                         in_use_held = True
                         client.deploy_tql(_rendered_tql(m, tokens, upload_renames))
                         deployed = True
+                        _diff_clock = time.monotonic()   # the restart and redeploy are not lag
                     elif not deployed:
                         # deploy_tql itself failed for a NON-poison reason (a genuine hard
                         # deploy error). Re-raise loudly rather than fall through to a
@@ -3187,13 +3192,16 @@ class LiveItem(pytest.Item):
                             if _cp_witness is not None and _f == _cp_spec["predates"]:
                                 _cp_witness.capture("seed")
                             _run_files([(_db, _f)])
+                            _diff_clock = time.monotonic()
                     if _tx_pool is not None and _await_running_for_seed():
                         _tx_pool.run_phase(m.transaction_steps, "post_start")
+                        _diff_clock = time.monotonic()
                     # Generate post_start data once RUNNING, before the post_start
                     # server_files drop (same no-race ordering as the pre_deploy phase).
                     if (any(g["when"] == "post_start" for g in m.generate_specs)
                             and _await_running_for_seed()):
                         _run_generate_specs(m, "post_start", tokens, ctx, report=_report)
+                        _diff_clock = time.monotonic()
                     # Drop post_start server files after RUNNING (a FileReader tailing the dir
                     # picks up the newly-appeared file — the file-CDC analog of post_start seed).
                     if any(w == "post_start" for _, _, w, _ in m.server_files) and _await_running_for_seed():
@@ -3205,6 +3213,7 @@ class LiveItem(pytest.Item):
                                     place_server_file(ctx, _staged, render(_dest, tokens))
                                 finally:
                                     _slt_evidence.unstage(_staged)
+                        _diff_clock = time.monotonic()
 
                     # RECOVERY PHASE (opt-in, `recover:`). Sits HERE, after every post_start
                     # step and before every assertion, because that ordering is the test: the
@@ -3322,6 +3331,9 @@ class LiveItem(pytest.Item):
                                 last=_last,
                                 hb=_hb,
                                 report=lambda msg: _report(m.name, msg))
+                        # The outage and the post_recover inputs are not lag: the diff's clock
+                        # restarts when the last of them landed.
+                        _diff_clock = time.monotonic()
 
                     # ACTION PHASE (opt-in, `action:`). Runs app lifecycle control operations
                     # (e.g., stop/start cycles) after seeding and recovery, before assertions.
@@ -3643,6 +3655,8 @@ class LiveItem(pytest.Item):
                                 if _conc_problem:
                                     pytest.fail(f"{m.name}: action concurrent SQL: {_conc_problem}", pytrace=False)
                         ran = True
+                        # Lifecycle cycles and concurrent feeds are inputs too: the clock restarts.
+                        _diff_clock = time.monotonic()
 
                     # SLT_SKIP_VERIFY: the app is now deployed, started, and seeded — stop before
                     # any output verification and report the test as skipped. pytest.skip raises a
@@ -3738,7 +3752,7 @@ class LiveItem(pytest.Item):
                         admin_map = {db: e["admin"] for db, e in admins.items()}
                         # a legacy diff.exact true is also recorded as a legacy-text/1 comparison.
                         self._slt_records += _slt_exact.legacy_diff(
-                            assert_diff, admin_map, specs, collector=self._slt_data, **diff_kwargs(m),
+                            assert_diff, admin_map, specs, collector=self._slt_data, **diff_kwargs(m, _diff_clock),
                             status_probe=_terminal_probe, progress=_hb("asserting diff"))
                         ran = True
                     if m.assert_.get("file"):

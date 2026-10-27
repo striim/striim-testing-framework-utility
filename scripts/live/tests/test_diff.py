@@ -283,7 +283,8 @@ def test_diff_kwargs_carries_the_manifest_poll():
     from livetest.plugin import diff_kwargs
 
     kwargs = diff_kwargs(SimpleNamespace(timeout=90, diff_poll=0.25))
-    assert kwargs == {"timeout": 90, "poll": 0.25}, kwargs
+    assert kwargs == {"timeout": 90, "poll": 0.25, "clock_start": None}, kwargs
+    assert diff_kwargs(SimpleNamespace(timeout=90, diff_poll=0.25), 12.5)["clock_start"] == 12.5
 
 
 def test_fold_names_compares_columns_case_insensitively():
@@ -321,7 +322,7 @@ class _SlowCountingPg(FakePg):
 
     def count_rows(self, table):
         self.counts += 1
-        if self.behind > 0:
+        if self.behind > 0 and table != "s.src":
             self.behind -= 1
             return 0
         return len(self._t.get(table, []))
@@ -329,7 +330,8 @@ class _SlowCountingPg(FakePg):
     def select_rows(self, table):
         import time as _t
         self.reads.append(table)
-        _t.sleep(self.read_s)
+        if table != "s.src":
+            _t.sleep(self.read_s)
         return super().select_rows(table)
 
 
@@ -349,7 +351,7 @@ def test_a_count_that_differs_skips_the_full_read():
     assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
                 timeout=5, poll=0)
     assert pg.reads.count("s.tgt") == 1, pg.reads
-    assert pg.counts == 4
+    assert pg.counts == 5          # the source once, the target on each of four polls
 
 
 def test_a_matching_count_still_needs_the_rows_to_match():
@@ -422,3 +424,123 @@ def test_elapsed_with_several_specs_is_when_the_last_spec_was_read():
                        [{"source": "s.src", "target": "s.t1", "exact": True},
                         {"source": "s.src", "target": "s.t2", "exact": True}], timeout=5, poll=0)
     assert 0.25 < recs[0]["elapsed_s"] < 0.45, recs[0]["elapsed_s"]
+
+
+def test_elapsed_runs_from_the_clock_the_harness_passes():
+    import time as _t
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows}, behind_polls=2)
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0, clock_start=_t.monotonic() - 10)[0]
+    assert 10 <= rec["elapsed_s"] < 11, rec
+    assert "elapsed_upper_bound" not in rec
+
+
+def test_a_target_equal_at_the_first_poll_is_only_an_upper_bound():
+    """Measured 2026-10-27: a writer done before the first poll reported 0.14 s."""
+    import time as _t
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows})
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0, clock_start=_t.monotonic() - 3)[0]
+    assert rec["elapsed_upper_bound"] is True and rec["elapsed_s"] >= 3, rec
+
+
+def test_without_a_clock_nothing_is_called_an_upper_bound():
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows})
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0)[0]
+    assert "elapsed_upper_bound" not in rec
+
+
+def test_an_exact_source_is_read_only_once_the_target_count_matches():
+    """A 20M-row source took minutes to read before the first poll; counting it is enough until
+    the target's count matches."""
+    rows = [{"id": "1"}, {"id": "2"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows}, behind_polls=3)
+    seen = []
+    orig = pg.select_rows
+    pg.select_rows = lambda t: (seen.append((t, pg.behind)), orig(t))[1]
+    assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                timeout=5, poll=0)
+    assert seen[0] == ("s.src", 0), seen
+
+
+def test_an_empty_source_is_refused_from_its_count():
+    pg = _SlowCountingPg({"s.src": [], "s.tgt": []})
+    with pytest.raises(AssertionError, match="is empty"):
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                    timeout=100, poll=0)
+    assert pg.reads == []
+
+
+def test_the_upper_bound_flag_needs_its_time():
+    from livetest.resultschema import SchemaError, build_assertion_result
+    rec = build_assertion_result(type="diff", status="passed", spec={}, elapsed_s=1.0,
+                                 elapsed_upper_bound=True)
+    assert rec["elapsed_upper_bound"] is True
+    assert "elapsed_upper_bound" not in build_assertion_result(type="diff", status="passed", spec={},
+                                                               elapsed_s=1.0)
+    with pytest.raises(SchemaError):
+        build_assertion_result(type="diff", status="passed", spec={}, elapsed_upper_bound=True)
+
+
+def test_another_specs_source_read_makes_the_time_an_upper_bound():
+    """Spec A's source is read inside the passing poll, before spec B is observed: B's time is
+    late by up to that read."""
+    import time as _t
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.t1": rows, "s.t2": rows}, behind_polls=1)
+    recs = assert_diff({"postgres-source": pg},
+                       [{"source": "s.src", "target": "s.t1", "exact": True},
+                        {"source": "s.src", "target": "s.t2", "exact": True}],
+                       timeout=5, poll=0, clock_start=_t.monotonic())
+    assert recs[0]["elapsed_upper_bound"] is True, recs[0]
+
+
+def test_one_spec_read_in_its_passing_poll_is_still_a_measurement():
+    """A single exact spec: the count matched when the poll began, so the time is measured."""
+    import time as _t
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows}, behind_polls=1)
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0, clock_start=_t.monotonic())[0]
+    assert "elapsed_upper_bound" not in rec, rec
+
+
+def test_a_poll_after_a_source_read_that_failed_is_an_upper_bound():
+    """Counts matched before the content did: the source read delayed the next poll."""
+    import time as _t
+    pg = _SlowCountingPg({"s.src": [{"id": "1", "v": "a"}], "s.tgt": [{"id": "1", "v": "b"}]})
+    orig = pg.select_rows
+    calls = []
+
+    def select(t):
+        rows = orig(t)
+        if t == "s.tgt":
+            calls.append(t)
+            if len(calls) >= 2:
+                return [{"id": "1", "v": "a"}]
+        return rows
+    pg.select_rows = select
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0, clock_start=_t.monotonic())[0]
+    assert rec["elapsed_upper_bound"] is True, rec
+
+
+def test_a_source_unreadable_at_the_timeout_keeps_every_record():
+    from livetest.assertions import NotYetReadable
+    rows = [{"id": "1"}, {"id": "2"}]
+
+    class Unreadable(_SlowCountingPg):
+        def select_rows(self, table):
+            if table == "s.src":
+                raise NotYetReadable("locked")
+            return super().select_rows(table)
+    pg = Unreadable({"s.src": rows, "s.tgt": rows[:1]})
+    with pytest.raises(AssertionFailed) as ei:
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                    timeout=0, poll=0)
+    assert "diff not satisfied" in str(ei.value)
+    assert len(ei.value.records) == 1

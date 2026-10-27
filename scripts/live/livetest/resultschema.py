@@ -34,7 +34,7 @@ _ASSERTION_KEYS = {"type", "target", "db", "spec", "status", "detail", "expected
 # §85.3. OPTIONAL, and declared rather than smuggled: _require_keys refuses any key it has not
 # been told about, so an undeclared extra field fails validation at the call site. Absent on every
 # assertion type but `diff`, and absent on a diff that never converged.
-_ASSERTION_OPTIONAL_KEYS = {"elapsed_s"}
+_ASSERTION_OPTIONAL_KEYS = {"elapsed_s", "elapsed_upper_bound"}
 _VALUE_ALLOWED_KEYS = {"kind", "rows", "count", "size", "truncated"}
 
 
@@ -80,7 +80,8 @@ class AssertionResult:
     detail: str | None = None
     expected: dict | None = None
     actual: dict | None = None
-    # §85.3. Seconds from the first poll to convergence, on a `diff` assertion only. None
+    # §85.3. Seconds from the app's start (or its last post_start input) to convergence, on a
+    # `diff` assertion only (the first poll when the harness passes no start). None
     # everywhere else, and None on failure -- a run that never converged has no catch-up time,
     # and reporting the timeout as one would make the slower writer look like the faster.
     elapsed_s: float | None = None
@@ -226,6 +227,12 @@ def _validate_assertion(a, ctx: str) -> None:
                 or a["elapsed_s"] < 0:
             raise SchemaError(f"{ctx}: 'elapsed_s' must be a non-negative number, "
                               f"got {a['elapsed_s']!r}")
+    if "elapsed_upper_bound" in a:
+        # Present only as true, and only beside the time it qualifies: the target was already
+        # equal at the first poll, so `elapsed_s` is an upper bound, not a measurement.
+        if a["elapsed_upper_bound"] is not True or "elapsed_s" not in a:
+            raise SchemaError(f"{ctx}: 'elapsed_upper_bound' must be true and sit beside "
+                              f"'elapsed_s', got {a.get('elapsed_upper_bound')!r}")
 
 
 def _validate_test(t, ctx: str) -> None:
@@ -313,6 +320,7 @@ def build_assertion_result(
     expected: dict | None = None,
     actual: dict | None = None,
     elapsed_s: float | None = None,
+    elapsed_upper_bound: bool = False,
     max_rows: int = 200,
     max_bytes: int = 65536,
 ) -> dict:
@@ -352,6 +360,9 @@ def build_assertion_result(
         "expected": _finalize(expected),
         "actual": _finalize(actual),
     }
+    if elapsed_upper_bound and elapsed_s is None:
+        raise SchemaError("build_assertion_result(): 'elapsed_upper_bound' qualifies an "
+                          "'elapsed_s', and none was given")
     # §85.3. Omitted rather than carried as null, so every existing record and every consumer
     # that has not been taught about it is byte-identical to before.
     if elapsed_s is not None:
@@ -362,6 +373,8 @@ def build_assertion_result(
             raise SchemaError(f"build_assertion_result(): 'elapsed_s' must be a number, "
                               f"got {elapsed_s!r}")
         record["elapsed_s"] = round(float(elapsed_s), 3)
+        if elapsed_upper_bound:
+            record["elapsed_upper_bound"] = True
     _validate_assertion(record, "build_assertion_result()")
     return record
 
