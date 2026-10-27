@@ -484,3 +484,63 @@ def test_the_upper_bound_flag_needs_its_time():
                                                                elapsed_s=1.0)
     with pytest.raises(SchemaError):
         build_assertion_result(type="diff", status="passed", spec={}, elapsed_upper_bound=True)
+
+
+def test_another_specs_source_read_makes_the_time_an_upper_bound():
+    """Spec A's source is read inside the passing poll, before spec B is observed: B's time is
+    late by up to that read."""
+    import time as _t
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.t1": rows, "s.t2": rows}, behind_polls=1)
+    recs = assert_diff({"postgres-source": pg},
+                       [{"source": "s.src", "target": "s.t1", "exact": True},
+                        {"source": "s.src", "target": "s.t2", "exact": True}],
+                       timeout=5, poll=0, clock_start=_t.monotonic())
+    assert recs[0]["elapsed_upper_bound"] is True, recs[0]
+
+
+def test_one_spec_read_in_its_passing_poll_is_still_a_measurement():
+    """A single exact spec: the count matched when the poll began, so the time is measured."""
+    import time as _t
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows}, behind_polls=1)
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0, clock_start=_t.monotonic())[0]
+    assert "elapsed_upper_bound" not in rec, rec
+
+
+def test_a_poll_after_a_source_read_that_failed_is_an_upper_bound():
+    """Counts matched before the content did: the source read delayed the next poll."""
+    import time as _t
+    pg = _SlowCountingPg({"s.src": [{"id": "1", "v": "a"}], "s.tgt": [{"id": "1", "v": "b"}]})
+    orig = pg.select_rows
+    calls = []
+
+    def select(t):
+        rows = orig(t)
+        if t == "s.tgt":
+            calls.append(t)
+            if len(calls) >= 2:
+                return [{"id": "1", "v": "a"}]
+        return rows
+    pg.select_rows = select
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0, clock_start=_t.monotonic())[0]
+    assert rec["elapsed_upper_bound"] is True, rec
+
+
+def test_a_source_unreadable_at_the_timeout_keeps_every_record():
+    from livetest.assertions import NotYetReadable
+    rows = [{"id": "1"}, {"id": "2"}]
+
+    class Unreadable(_SlowCountingPg):
+        def select_rows(self, table):
+            if table == "s.src":
+                raise NotYetReadable("locked")
+            return super().select_rows(table)
+    pg = Unreadable({"s.src": rows, "s.tgt": rows[:1]})
+    with pytest.raises(AssertionFailed) as ei:
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                    timeout=0, poll=0)
+    assert "diff not satisfied" in str(ei.value)
+    assert len(ei.value.records) == 1

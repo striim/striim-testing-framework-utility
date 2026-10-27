@@ -80,7 +80,8 @@ class AssertionResult:
     detail: str | None = None
     expected: dict | None = None
     actual: dict | None = None
-    # §85.3. Seconds from the first poll to convergence, on a `diff` assertion only. None
+    # §85.3. Seconds from the app's start (or its last post_start input) to convergence, on a
+    # `diff` assertion only (the first poll when the harness passes no start). None
     # everywhere else, and None on failure -- a run that never converged has no catch-up time,
     # and reporting the timeout as one would make the slower writer look like the faster.
     elapsed_s: float | None = None

@@ -1934,10 +1934,11 @@ An empty source fails fast (asserts nothing). Polls until the target's distinct 
 the source's. On a SQL database target each poll counts the target first and reads it in full only
 when the count can match (`exact: true`: the source's row count; otherwise at least its distinct
 rows); with `exact: true` the source is also only counted until then. The time it reports
-(`elapsed_s`) runs from the app's start, or from the last `post_start` input (seed, generate,
-transaction step, server file), to when the poll that passed began reading its last target. A
-target already equal at the first poll gets `elapsed_upper_bound: true`: the writer finished
-before anything measured it, so the time is only an upper bound.
+(`elapsed_s`) runs from the app's start, or from the last input after it (a `post_start` seed,
+generate, transaction step or server file; the end of a `recover:` or `action:` phase), to when
+the poll that passed began reading its last target. `elapsed_upper_bound: true` marks a time that
+is only an upper bound: the target was already equal at the first poll, or a source read inside
+the polls delayed the observation.
 
 For a typed Spanner diff, both endpoints name the table within the selected
 service database, and every non-text column is declared. This checks counted

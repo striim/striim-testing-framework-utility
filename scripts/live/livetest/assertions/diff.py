@@ -187,12 +187,17 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
     zero = started if clock_start is None else clock_start
     deadline = started + timeout
     first = True
+    # A source read inside a poll (the lazy read below) can take minutes. When it delays the last
+    # spec's observation in the passing poll, or delayed the poll before it, the time is late by
+    # up to that read: report it as an upper bound rather than as a measurement.
+    lazy_read, lazy_before = [False], False
 
     def evaluate(s, src, *, count_first=True):
         if src[0] is None:
             behind = _target_behind(admins, s, src[2], None) if count_first else None
             if behind is not None:
                 return False, behind, {"kind": "count", "count": src[2]}, None
+            lazy_read[0] = True
             src[0] = _read_source(admins, s, deadline, timeout, poll)
             src[1] = distinct_set(src[0])
             return _evaluate(admins, s, src[0], src[1], count_first=False)   # just counted
@@ -205,9 +210,13 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
         # was equal by then or during its own read, and a full read of millions of rows must not
         # count as writer time. Taken per spec, since earlier specs' reads can take minutes.
         results, observed = [], time.monotonic()
+        lazy_in_poll = lazy_read_before_last = False
         for s, src in zip(specs, sources):
+            lazy_read_before_last = lazy_in_poll
             observed = time.monotonic()
+            lazy_read[0] = False
             results.append(evaluate(s, src))
+            lazy_in_poll = lazy_in_poll or lazy_read[0]
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None:
             # ⚠ RESOLUTION IS THE POLL INTERVAL plus one failed poll. At the 2.0s default this is
@@ -215,19 +224,27 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
             # other -- a paired measurement must lower `poll` or the number it reports is
             # quantisation. A failed poll is a count where `diff_counts_rows` allows it.
             elapsed = observed - zero
-            upper = first and clock_start is not None
+            upper = (first and clock_start is not None) or lazy_read_before_last or lazy_before
             return [
                 build_assertion_result(type="diff", status="passed", spec=s, target=s["target"], db=db,
                                         detail="ok", expected=exp, actual=act, elapsed_s=elapsed,
                                         elapsed_upper_bound=upper)
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
-        first = False
+        first, lazy_before = False, lazy_in_poll
         if time.monotonic() >= deadline:
             # A target the count rejected was never read: read it once now, so the failure
-            # carries its rows and, under `exact`, the missing and extra counts.
-            results = [r if r[3] is not None or r[0] else evaluate(s, src, count_first=False)
-                       for r, s, src in zip(results, specs, sources)]
+            # carries its rows and, under `exact`, the missing and extra counts. A source that
+            # cannot be read now keeps the count's answer: every spec's record still reaches the
+            # sidecar.
+            def reread(r, s, src):
+                if r[3] is not None or r[0]:
+                    return r
+                try:
+                    return evaluate(s, src, count_first=False)
+                except AssertionFailed:
+                    return r
+            results = [reread(r, s, src) for r, s, src in zip(results, specs, sources)]
             detail = next((d for ok, d, _, _ in results if not ok), detail)
             records = [
                 build_assertion_result(type="diff", status="passed" if ok else "failed", spec=s,

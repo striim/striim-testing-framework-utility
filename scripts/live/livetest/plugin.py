@@ -2984,6 +2984,7 @@ class LiveItem(pytest.Item):
                         in_use_held = True
                         client.deploy_tql(_rendered_tql(m, tokens, upload_renames))
                         deployed = True
+                        _diff_clock = time.monotonic()   # the restart and redeploy are not lag
                     elif not deployed:
                         # deploy_tql itself failed for a NON-poison reason (a genuine hard
                         # deploy error). Re-raise loudly rather than fall through to a
@@ -3330,6 +3331,9 @@ class LiveItem(pytest.Item):
                                 last=_last,
                                 hb=_hb,
                                 report=lambda msg: _report(m.name, msg))
+                        # The outage and the post_recover inputs are not lag: the diff's clock
+                        # restarts when the last of them landed.
+                        _diff_clock = time.monotonic()
 
                     # ACTION PHASE (opt-in, `action:`). Runs app lifecycle control operations
                     # (e.g., stop/start cycles) after seeding and recovery, before assertions.
@@ -3651,6 +3655,8 @@ class LiveItem(pytest.Item):
                                 if _conc_problem:
                                     pytest.fail(f"{m.name}: action concurrent SQL: {_conc_problem}", pytrace=False)
                         ran = True
+                        # Lifecycle cycles and concurrent feeds are inputs too: the clock restarts.
+                        _diff_clock = time.monotonic()
 
                     # SLT_SKIP_VERIFY: the app is now deployed, started, and seeded — stop before
                     # any output verification and report the test as skipped. pytest.skip raises a
