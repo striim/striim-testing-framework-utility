@@ -52,6 +52,8 @@ RENDERED_KEYS = {"role", "name", "templateSha256", "renderedSha256", "uses"}
 RUNTIME_KEYS = {"os", "arch", "python", "interpreter", "mode", "importPath", "resourceRoot", "stateDir", "hostId",
                 "jdk", "striim", "services"}
 OBSERVED_KEYS = {"url", "version", "container", "image", "imageId", "consoleReachable"}
+# runtime.striim.tryouts[] (livetest.tryout): optional on read, so envelopes written before it stay valid.
+TRYOUT_KEYS = {"file", "sha256", "target", "replaces", "scmVersion", "verifiedIn"}
 DATA_KEYS = {"profile", "canonicalSha256", "expectedSha256", "rowCount", "sampleTruncated", "normalization",
              "comparisons"}
 COMPARISON_KEYS = {"index", "type", "target", "route", "profile", "order", "declaration", "declarationSha256",
@@ -981,6 +983,23 @@ def _check_comparison(c: dict, i: int) -> None:
         _fail("evidence-invalid", f"{where}: an equal comparison has differing counts, logical digests or samples")
 
 
+def _check_tryouts(tryouts) -> None:
+    """runtime.striim.tryouts: [] for the stock image, the verified tryout records, or a non-qualifying form."""
+    if _is_form(tryouts):
+        return
+    if not isinstance(tryouts, list):
+        _fail("evidence-invalid", f"runtime.striim.tryouts must be a list or a non-qualifying form, got {tryouts!r}")
+    for i, t in enumerate(tryouts):
+        _keys(t, TRYOUT_KEYS, f"runtime.striim.tryouts[{i}]")
+        if not (_nonempty(t["file"]) and _nonempty(t["replaces"]) and t["target"] in ("server", "agent", "both")
+                and isinstance(t["sha256"], str) and _SHA.match(t["sha256"])
+                and (t["scmVersion"] is None or _nonempty(t["scmVersion"]))
+                and isinstance(t["verifiedIn"], list) and t["verifiedIn"]
+                and all(_nonempty(v) for v in t["verifiedIn"])):
+            _fail("evidence-invalid", f"runtime.striim.tryouts[{i}] needs file, sha256:<hex>, target, replaces, "
+                                      f"scmVersion and the containers it was verified in, got {t!r}")
+
+
 def validate_case(doc: dict, secrets=()) -> None:
     """The complete case envelope (C4 1.9.0). Raises EvidenceError."""
     from livetest import exactdata
@@ -1035,9 +1054,11 @@ def validate_case(doc: dict, secrets=()) -> None:
     runtime = doc["runtime"]
     _keys(runtime, RUNTIME_KEYS, "runtime")
     striim = runtime["striim"]
-    _keys(striim, {"expected", "observed"}, "runtime.striim")
+    _keys(striim, {"expected", "observed"} | ({"tryouts"} & set(striim) if isinstance(striim, dict) else set()),
+          "runtime.striim")
     if not _is_form(striim["observed"]):
         _keys(striim["observed"], OBSERVED_KEYS, "runtime.striim.observed")
+    _check_tryouts(striim.get("tryouts", []))
     _check_identities(doc)
     lc = doc["lifecycle"]
     for key in ("ready", "completion"):
@@ -1808,7 +1829,8 @@ def check(tier_dir, invocation: str, identity_path, *, label: str | None = None)
                     "results": _ref(tier_dir / "results.json"), "selection": _ref(sel_path) if sel_path else None},
         "selection": {"selected": [e["id"] for e in selected], "executed": [by_node.get(n, n) for n in executed],
                       "skipped": skipped, "deselected": deselected, "notExecuted": not_executed},
-        "cases": cases, "checks": checks, "valid": valid, "qualified": reason is None, "qualifiedReason": reason,
+        "cases": cases, "tryouts": run_tryouts(e.doc for _p, e in mine),
+        "checks": checks, "valid": valid, "qualified": reason is None, "qualifiedReason": reason,
         "installedWheel": mode == "wheel" and all(isinstance(fw.get(k), str) for k in ("wheelSha256", "lockSha256")),
     }
     record = redact(record, known_secrets())
@@ -1820,6 +1842,20 @@ def check(tier_dir, invocation: str, identity_path, *, label: str | None = None)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(dumps(record))
     return out, record
+
+
+def run_tryouts(docs) -> list:
+    """The distinct ``runtime.striim.tryouts`` entries of a run's case envelopes: [] when every case ran the
+    stock image. A non-qualifying form (tryouts set but not verified) is kept as an entry of its own."""
+    seen, out = set(), []
+    for doc in docs:
+        value = ((doc.get("runtime") or {}).get("striim") or {}).get("tryouts", [])
+        for item in (value if isinstance(value, list) else [value]):
+            key = json.dumps(item, sort_keys=True)
+            if key not in seen:
+                seen.add(key)
+                out.append(item)
+    return out
 
 
 def _now_iso() -> str:
