@@ -84,6 +84,7 @@ Browse the [documentation catalog](CATALOG.md) for every guide, grouped by audie
 | keep tests in your own repo | [SET-UP-YOUR-OWN-REPO.md](SET-UP-YOUR-OWN-REPO.md) |
 | use your own databases, or add one | [SERVICES.md](SERVICES.md), [YOUR-OWN-SERVICES.md](YOUR-OWN-SERVICES.md) |
 | test an Open Processor or UDF | [TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md), [INTEGRATION-TESTS.md](INTEGRATION-TESTS.md) |
+| run your tests against a patched Striim jar | [TRYOUT-JARS.md](TRYOUT-JARS.md) |
 | work with an AI coding assistant | [USING-AI.md](USING-AI.md#prompt-templates): generic prompt templates and review rules |
 | fix something | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 

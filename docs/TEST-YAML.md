@@ -1516,7 +1516,7 @@ lifecycle:
 
 | kind | for | keys | satisfied when |
 |---|---|---|---|
-| readiness `baseline-landed` | `initial-load` | `source: {db, table}`, and `target: {db, table}` (sink `db`) or `path:` (sink `file`) | the app is RUNNING and the target's row count, or the file's line count, equals the source's count taken before deploy |
+| readiness `baseline-landed` | `initial-load` | `source: {db, table}`, and `target: {db, table}` (sink `db`) or `path:` (sink `file`) | the app is RUNNING, or has already finished (below), and the target's row count, or the file's line count, equals the source's count taken before deploy |
 | readiness `source-progress` | `cdc` | `db: postgres-source` | the replication slot `${PG_SLOT}` is active |
 | readiness `sentinel` | `cdc`, sink `db`, `file` or `kafka` | none | the ready insert and delete were witnessed; append sinks acknowledge deletion with the declared signal |
 | completion `source-count` | `initial-load`, sink `db` | `source: {db, table}`, `target: {db, table}` | the target's count equals the source's, and is above 0 |
@@ -1527,6 +1527,16 @@ lifecycle:
 Zero is never proof: `expect: 0` and `lines: 0` are refused, and a source baseline of 0 fails the run
 with `zero-count`. For a test whose correct result is an empty target, use the `sentinel` kinds
 (`samples/live/04-lifecycle-check`).
+
+An initial-load app can load its rows and stop before the framework first reads its status: it
+is then `COMPLETED`, or `QUIESCED` on releases that quiesce it (a DatabaseReader with
+`QuiesceOnILCompletion: true`, for example). With `mode: initial-load` that status passes the
+RUNNING step, because the app has run; the readiness and completion counts still decide, so a
+finished app with missing rows fails. The smoke record names the status it saw, such as
+`COMPLETED (bounded source finished)`. With `mode: cdc`, an app that is `COMPLETED` or `QUIESCED`
+before it was seen RUNNING fails at once with `terminal-status:<status>`. Without `lifecycle:`,
+`assert.smoke` waits for RUNNING and fails an app that finishes before RUNNING is seen or
+within its one-second settle after it.
 
 ### The sentinel
 
