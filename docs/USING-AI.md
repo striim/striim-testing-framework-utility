@@ -10,7 +10,7 @@ This page covers:
 - what to give the assistant;
 - the guard rails to set;
 - the loop that works;
-- twelve prompt templates you can fill in for your own pipelines;
+- thirteen prompt templates you can fill in for your own pipelines;
 - the mistakes assistants make here, and how to review what one wrote.
 
 Before authorizing a live run, finish [RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md): check that `striim-test doctor`
@@ -340,6 +340,103 @@ Do not deploy or run anything.
 **Check the result:** the file parses in the Striim console; no property, function or clause
 is missing from docs/tql/REFERENCE.md or the adapter's docs.striim.com page; every stream has
 a producer and a consumer; related tables share one writer.
+
+### 13. Write tests for an application I already have
+
+For an application whose TQL and DDL you already have, such as an export from your Striim
+server. Fill in only the `ABOUT MY APPS` block; the rest stays the same for every
+application, so keep a copy and change only the block next time.
+
+```text
+=== ABOUT MY APPS (fill this in) ===
+Input folder: <folder with the TQL and DDL files>
+Apps:
+- <file.tql>: <what it does: reader and source, transformations (CQs, Open Processors),
+  writer and target, initial load or CDC>
+- <file.tql>: <...>
+DDL: <source DDL file> (source), <target DDL file> (target)
+Focus tables: <2-4 tables to test, with why each is representative; or "you choose">
+Behaviour to prove: <what must be true of the target rows: renames, transformations,
+  metadata columns, operation types, values that must be removed or converted>
+Run-dependent columns: <columns whose values change every run (timestamps, generated ids)>
+Custom Java: <Open Processors or UDFs that are not part of Striim, and where their jars are;
+  or "none">
+Striim: <Docker mode or my own server; Striim version>
+Anything else: <constraints, things not to test>
+=== END ===
+
+Write live tests for the apps described above, using the Striim testing framework.
+
+Read these first, from the framework checkout: AGENTS.md, docs/USING-AI.md,
+docs/WRITING-TESTS.md, docs/TEST-YAML.md, docs/SERVICES.md, docs/WHAT-IS-SUPPORTED.md,
+and docs/TESTING-YOUR-JAVA.md if custom Java is listed. Then read the samples under
+samples/live/ closest to my readers and writers. The docs are the contract; do not rely
+on memory. Work only in this repository and the framework checkout; do not search elsewhere.
+
+Step 1. Plan, then wait for my OK. Give me:
+- what each app does, in plain words;
+- which parts the framework can test as they are and which it cannot, citing the
+  WHAT-IS-SUPPORTED.md rows you used (reader, writer, initial load vs CDC lifecycle,
+  custom Java);
+- the closest sample for each test you propose;
+- the tables you will test (my focus tables, or your choice with a reason).
+
+Step 2. After my OK, write one folder per test under tests/live/<app>-<what>/:
+- Copy the app's TQL and cut it down to the chosen tables. Keep every other setting as
+  written (transformations, writer mode, batch policy, column mappings).
+- Replace every host, port, user, password, project, dataset, slot, key path and object
+  name with the framework's documented tokens. Never copy a credential, an IP, a project id
+  or a key path from the input folder into any file you write.
+- Write the source and target DDL for the chosen tables from my DDL files, tokenized.
+- Invent seed rows (fictional data) that exercise each behaviour I listed, including the
+  values a transformation should change or remove.
+- Write every expected row by hand from the seed and the app's logic, and explain each one.
+  Run-dependent columns go in exact.ignore or a documented presence check, never a copied
+  value. If nothing proves they are populated, say so in the coverage table.
+- Custom Java: follow TESTING-YOUR-JAVA.md. If a jar is not available, stop and tell me;
+  do not remove the component, replace it, or change what it does without my OK.
+- If a writer or lifecycle is not supported, propose a variant with a PostgreSQL target and
+  the same source and transformations, named ...-pg-target. State in its purpose: what it
+  proves (the transformation chain) and what it does not (the original writer).
+
+Step 3. Check offline only: striim-test list and striim-test run <case> --dry-run for each
+case. Show each command and its exit code. Do not run doctor or a live run until I say so.
+
+Finish with: the files you wrote, one line per test on what it proves, a table of which of
+my app's features are covered and which are not (and why), and the exact command to run
+each test live. Do not weaken an assertion to make anything pass.
+```
+
+**Check the result:** the plan cites WHAT-IS-SUPPORTED.md and waits for your OK; no file
+holds a host, password, project id or key path from your export; every expected row is
+explained from the seed; run-dependent columns are ignored or presence-checked, never copied;
+anything the framework cannot test is listed, not worked around.
+
+**Example.** The block filled in for a fictional warehouse pair, initial load and CDC, that
+writes to Snowflake:
+
+```text
+=== ABOUT MY APPS (fill this in) ===
+Input folder: app-input/
+Apps:
+- stock_il.tql: initial load. DatabaseReader on MySQL (8 tables in database warehouse)
+  -> Open Processor Global.SkuNormalizer -> SnowflakeWriter, append only, into
+  WAREHOUSE_RAW, with an AUDIT_SOURCE column set to 'IL'.
+- stock_cdc.tql: CDC. MySQLReader -> CQ adding userdata ChangedAt -> the same
+  SkuNormalizer and SnowflakeWriter, AUDIT_SOURCE set to the operation name.
+DDL: mysql_ddl.sql (source, MySQL), snowflake_ddl.sql (target, Snowflake)
+Focus tables: sites (lookup); stock_items (auto-increment key, foreign key to sites,
+  decimal(10,3), datetime); item_moves (two-column key)
+Behaviour to prove: each source row lands once; SkuNormalizer upper-cases SKU codes and
+  trims surrounding spaces; AUDIT_SOURCE is IL for the load and INSERT/UPDATE/DELETE
+  per CDC operation
+Run-dependent columns: CHANGED_AT
+Custom Java: Global.SkuNormalizer (Open Processor); jar at lib/skunormalizer.jar
+Striim: my own Striim server, Striim 5.4.2
+Anything else: Snowflake is not a framework service; use the ...-pg-target variant for
+  the Snowflake writer
+=== END ===
+```
 
 ## Mistakes assistants make here
 

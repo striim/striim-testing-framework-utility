@@ -427,6 +427,64 @@ docker logs --tail 100 slt-node                # the Striim server log (Docker m
    <li class="step" id="try-ai" data-tab="Add your own test"><h3>Add your own test with an AI assistant</h3>
     <p>Open your coding assistant in your repository. Its <code>AGENTS.md</code> tells the assistant that the framework is beside it, read-only at the pin, and to read the framework’s rules and guides before writing a test.</p>
     <p>Give it one prompt: template 2 in <a href="USING-AI.md">Using AI</a>, filled in for your app. Say what the app reads and writes, where its TQL is (or that you want one written), the input rows, and what should come out. <a href="#use-ai">Walkthrough step 04</a> shows the template and the Acme prompt it became.</p>
+    <p><strong>Already have an application?</strong> With its TQL and DDL in hand, use template 13 instead: fill in only the <code>ABOUT MY APPS</code> block and paste the rest as it is. The assistant plans first, waits for your OK, then writes the tests and checks them offline. Keep a copy: next time only the block changes. <a href="USING-AI.md#13-write-tests-for-an-application-i-already-have">Template 13</a> also has a filled-in example.</p>
+    <div class="codebox"><div class="code-label">USING-AI.md · 13. Write tests for an application I already have</div><pre><code>=== ABOUT MY APPS (fill this in) ===
+Input folder: &lt;folder with the TQL and DDL files&gt;
+Apps:
+- &lt;file.tql&gt;: &lt;what it does: reader and source, transformations (CQs, Open Processors),
+  writer and target, initial load or CDC&gt;
+- &lt;file.tql&gt;: &lt;...&gt;
+DDL: &lt;source DDL file&gt; (source), &lt;target DDL file&gt; (target)
+Focus tables: &lt;2-4 tables to test, with why each is representative; or "you choose"&gt;
+Behaviour to prove: &lt;what must be true of the target rows: renames, transformations,
+  metadata columns, operation types, values that must be removed or converted&gt;
+Run-dependent columns: &lt;columns whose values change every run (timestamps, generated ids)&gt;
+Custom Java: &lt;Open Processors or UDFs that are not part of Striim, and where their jars are;
+  or "none"&gt;
+Striim: &lt;Docker mode or my own server; Striim version&gt;
+Anything else: &lt;constraints, things not to test&gt;
+=== END ===
+
+Write live tests for the apps described above, using the Striim testing framework.
+
+Read these first, from the framework checkout: AGENTS.md, docs/USING-AI.md,
+docs/WRITING-TESTS.md, docs/TEST-YAML.md, docs/SERVICES.md, docs/WHAT-IS-SUPPORTED.md,
+and docs/TESTING-YOUR-JAVA.md if custom Java is listed. Then read the samples under
+samples/live/ closest to my readers and writers. The docs are the contract; do not rely
+on memory. Work only in this repository and the framework checkout; do not search elsewhere.
+
+Step 1. Plan, then wait for my OK. Give me:
+- what each app does, in plain words;
+- which parts the framework can test as they are and which it cannot, citing the
+  WHAT-IS-SUPPORTED.md rows you used (reader, writer, initial load vs CDC lifecycle,
+  custom Java);
+- the closest sample for each test you propose;
+- the tables you will test (my focus tables, or your choice with a reason).
+
+Step 2. After my OK, write one folder per test under tests/live/&lt;app&gt;-&lt;what&gt;/:
+- Copy the app's TQL and cut it down to the chosen tables. Keep every other setting as
+  written (transformations, writer mode, batch policy, column mappings).
+- Replace every host, port, user, password, project, dataset, slot, key path and object
+  name with the framework's documented tokens. Never copy a credential, an IP, a project id
+  or a key path from the input folder into any file you write.
+- Write the source and target DDL for the chosen tables from my DDL files, tokenized.
+- Invent seed rows (fictional data) that exercise each behaviour I listed, including the
+  values a transformation should change or remove.
+- Write every expected row by hand from the seed and the app's logic, and explain each one.
+  Run-dependent columns go in exact.ignore or a documented presence check, never a copied
+  value. If nothing proves they are populated, say so in the coverage table.
+- Custom Java: follow TESTING-YOUR-JAVA.md. If a jar is not available, stop and tell me;
+  do not remove the component, replace it, or change what it does without my OK.
+- If a writer or lifecycle is not supported, propose a variant with a PostgreSQL target and
+  the same source and transformations, named ...-pg-target. State in its purpose: what it
+  proves (the transformation chain) and what it does not (the original writer).
+
+Step 3. Check offline only: striim-test list and striim-test run &lt;case&gt; --dry-run for each
+case. Show each command and its exit code. Do not run doctor or a live run until I say so.
+
+Finish with: the files you wrote, one line per test on what it proves, a table of which of
+my app's features are covered and which are not (and why), and the exact command to run
+each test live. Do not weaken an assertion to make anything pass.</code></pre></div>
     <div class="codebox"><div class="code-label">What it writes, in your repository</div><pre><code>apps/&lt;name&gt;/app.tql                  the app, with connection tokens instead of hosts and passwords
 apps/&lt;name&gt;/fixtures/                its tables and input rows
 tests/live/&lt;name&gt;/test.yaml          what to set up, run and check
