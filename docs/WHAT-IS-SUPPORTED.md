@@ -165,9 +165,9 @@ The reference for each is [TEST-YAML.md](TEST-YAML.md).
 | `expect_halt` / `expect_halt_contains`: the app must halt | **supported, not exercised here** (`framework-expect-halt`) |
 | `jmx`: an Open Processor's MBean attributes, read from the Striim nodes' JMX exporters | **supported, not exercised here**. Docker mode only; each spec names the MBean domain its bean is registered under. No shipped case uses it |
 
-**An `assert:` key that is not one of these tiers is refused at load**, in both tiers: a typo such
-as `rowcount:` (for `data:` with `rows:`) fails the case with `'assert' has unknown tier(s)` and the
-allowed names, and `striim-test doctor --case` reports it.
+**An `assert:` key that is not a tier is refused at load** with `'assert' has unknown tier(s)` and
+the allowed names: a typo such as `rowcount:` (for `data:` with `rows:`) fails that case in the live
+tier, and in the integration tier stops the run at collection. `striim-test doctor --case` reports it.
 
 ### Everything else
 
