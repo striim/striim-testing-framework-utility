@@ -556,10 +556,17 @@ def cluster_image_ref(version: str = _DEFAULT_STRIIM_VERSION, tryouts=None, env=
 
 
 def tryout_reason(version: str, container: str | None = None, run=None) -> str | None:
-    """Why a running cluster does not match SLT_STRIIM_TRYOUT_JARS (livetest.tryout.running_reason), or None."""
+    """Why a running cluster does not match SLT_STRIIM_TRYOUT_JARS (livetest.tryout.running_reason), or None.
+    Every member (primary, second node, agent) is checked unless ``container`` names one."""
     from livetest import tryout
-    return tryout.running_reason(container or stack.striim_container(), image_ref(version),
+    return tryout.running_reason((container,) if container else stack.cluster_containers(), image_ref(version),
                                  tryout.configured(), run=run)
+
+
+def tryout_stock_check(run=None) -> tuple:
+    """(why the cluster's members are not all stock, members that could not be inspected): livetest.tryout."""
+    from livetest import tryout
+    return tryout.stock_check(stack.cluster_containers(), run=run)
 
 
 def image_present(version: str = _DEFAULT_STRIIM_VERSION, run=None) -> bool:

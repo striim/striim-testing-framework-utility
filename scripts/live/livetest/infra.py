@@ -812,6 +812,8 @@ def observe_tryouts(config):
     verified = getattr(config, "_slt_tryouts", None)
     if isinstance(verified, list) and verified:
         return [dict(r) for r in verified]
+    if isinstance(verified, dict):      # a stock run whose members could not all be inspected
+        return dict(verified)
     from livetest import tryout
     try:
         configured = bool(tryout.configured_value())

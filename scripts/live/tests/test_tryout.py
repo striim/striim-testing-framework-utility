@@ -434,6 +434,7 @@ def test_a_failed_verification_is_reported_and_records_nothing(tmp_path, monkeyp
     assert not hasattr(config, "_slt_tryouts")
     monkeypatch.setattr(plugin._sp, "tryout_reason", lambda v: "the running cluster does not run the tryout jars")
     assert "does not run" in plugin._verify_tryouts(config, ts)
+    monkeypatch.setattr(plugin._sp, "tryout_stock_check", lambda: (None, []))
     config2, _ = _config()
     assert plugin._verify_tryouts(config2, []) is None and config2._slt_tryouts == []
 
@@ -507,3 +508,97 @@ def test_the_run_record_lists_the_distinct_tryouts():
             {"runtime": {"striim": {"tryouts": {"unobserved": "x"}}}}]
     assert evidence.run_tryouts(docs) == [rec, {"unobserved": "x"}]
     assert evidence.run_tryouts([{"runtime": {"striim": {"tryouts": []}}}, {"runtime": {"striim": {}}}]) == []
+
+
+# --- every member's identity (round 2) -------------------------------------------------------
+
+class FakeCluster:
+    """Per-container image labels and IDs, the local image IDs, and each container's jar hashes."""
+
+    def __init__(self, members, images, sha):
+        self.members, self.images, self.sha, self.calls = members, images, sha, []
+
+    def __call__(self, argv, timeout=None):
+        self.calls.append(list(argv))
+        if argv[:3] == ["docker", "image", "inspect"]:
+            return _ns(stdout=self.images[argv[-1]]) if argv[-1] in self.images else _ns(1)
+        if argv[:3] == ["docker", "container", "inspect"]:
+            m = self.members.get(argv[-1])
+            return _ns(stdout=m["id"]) if m else _ns(1)
+        if argv[:2] == ["docker", "inspect"]:
+            ref = argv[-1]
+            if ref in self.members:
+                return _ns(stdout=json.dumps(self.members[ref]["labels"]))
+            for m in self.members.values():          # an image ref: the labels of the member running it
+                if self.images.get(ref) == m["id"]:
+                    return _ns(stdout=json.dumps(m["labels"]))
+            return _ns(1)
+        if argv[:2] == ["docker", "exec"]:
+            return _ns(stdout=f"{self.sha[argv[2]]}  {argv[-1]}\n")
+        raise AssertionError(f"unexpected docker call {argv}")
+
+
+def _image(tryouts, records):
+    return {tryout.LABEL_SET: tryout.set_digest(tryouts), tryout.LABEL_BASE: STOCK_ID,
+            tryout.LABEL_RECORDS: json.dumps(records)}
+
+
+def test_an_older_member_with_an_extra_patch_is_not_accepted(tmp_path, monkeypatch):
+    """Image A = both:Platform + agent:Agent; image B = both:Platform. Primary and node run B, the agent still
+    runs A. The Platform bytes match in all three, so per-jar hashes alone would accept it and report only
+    Platform; the agent's identity check refuses it."""
+    from livetest import plugin
+    platform = _jar(tmp_path / "Platform-1.0.0-SNAPSHOT.jar")
+    agent = _jar(tmp_path / "Agent-1.0.0-SNAPSHOT.jar", artifact="Agent")
+    set_b = tryout.load(f"both:{platform}")
+    set_a = tryout.load(f"both:{platform},agent:{agent}")
+    rec_b = tryout.resolve(set_b, V, _listing())
+    rec_a = tryout.resolve(set_a, V, _listing())
+    ref_b, ref_a = tryout.image_ref(STOCK, set_b), tryout.image_ref(STOCK, set_a)
+    b, a = {"id": "sha256:" + "b1" * 32, "labels": _image(set_b, rec_b)}, \
+        {"id": "sha256:" + "a1" * 32, "labels": _image(set_a, rec_a)}
+    fake = FakeCluster({"slt-striim": b, "slt-node": b, "slt-agent": a},
+                       {STOCK: STOCK_ID, ref_b: b["id"], ref_a: a["id"]},
+                       {c: set_b[0].sha256 for c in ("slt-striim", "slt-node", "slt-agent")})
+    monkeypatch.setattr(tryout, "_capture", fake)
+    monkeypatch.setenv(tryout.TRYOUT_ENV, f"both:{platform}")
+    config, _ = _config()
+    why = plugin._verify_tryouts(config, set_b)
+    assert why and "slt-agent" in why and not hasattr(config, "_slt_tryouts")
+    assert "slt-agent" in plugin._tryout_redeploy_reason(V, V)            # the reuse decision redeploys it
+    fake.members["slt-agent"] = b                                          # all three on B: accepted
+    assert plugin._verify_tryouts(config, set_b) is None
+    assert [r["replaces"] for r in config._slt_tryouts] == [f"Platform-{V}.jar"]
+    assert len(config._slt_tryouts[0]["verifiedIn"]) == 3
+
+
+def test_a_stock_primary_with_a_tryout_agent_is_not_recorded_as_stock(tmp_path, monkeypatch):
+    from livetest import plugin
+    ts = tryout.load(f"agent:{_jar(tmp_path / 'Agent-1.0.0-SNAPSHOT.jar', artifact='Agent')}")
+    stock = {"id": STOCK_ID, "labels": {}}
+    patched = {"id": TRYOUT_ID, "labels": _image(ts, tryout.resolve(ts, V, _listing()))}
+    fake = FakeCluster({"slt-striim": stock, "slt-node": stock, "slt-agent": patched}, {STOCK: STOCK_ID}, {})
+    monkeypatch.setattr(tryout, "_capture", fake)
+    config, _ = _config()
+    why = plugin._verify_tryouts(config, [])                              # the setting is unset
+    assert why and "slt-agent runs tryout jars" in why and not hasattr(config, "_slt_tryouts")
+    fake.members["slt-agent"] = stock
+    assert plugin._verify_tryouts(config, []) is None and config._slt_tryouts == []
+    del fake.members["slt-node"]                                            # cannot be inspected: not stock
+    assert plugin._verify_tryouts(config, []) is None
+    assert infra.observe_tryouts(config) == {"unobserved": "the tryout labels of slt-node could not be read"}
+
+
+def test_the_reuse_decision_inspects_every_member_when_tryouts_are_set(tmp_path, monkeypatch):
+    ts = tryout.load(f"both:{_jar(tmp_path / 'P.jar')}")
+    ref = tryout.image_ref(STOCK, ts)
+    good = {"id": TRYOUT_ID, "labels": _image(ts, tryout.resolve(ts, V, _listing()))}
+    fake = FakeCluster({"slt-striim": good, "slt-node": good, "slt-agent": {"id": STOCK_ID, "labels": {}}},
+                       {STOCK: STOCK_ID, ref: TRYOUT_ID}, {})
+    monkeypatch.setattr(tryout, "_capture", fake)
+    monkeypatch.setenv(tryout.TRYOUT_ENV, f"both:{ts[0].path}")
+    assert "slt-agent does not run the tryout jars" in sp.tryout_reason(V)
+    fake.members["slt-agent"] = good
+    assert sp.tryout_reason(V) is None
+    assert {c[-1] for c in fake.calls if c[:3] == ["docker", "container", "inspect"]} == \
+        {"slt-striim", "slt-node", "slt-agent"}

@@ -335,31 +335,48 @@ def build(stock_ref: str, version: str, tryouts, run=None, stream=None, progress
     return ref, records
 
 
-def running_reason(container: str, stock_ref: str, tryouts, run=None) -> str | None:
-    """Why a running cluster does not match the tryout setting, or None. With tryouts set, the container must
-    run the tryout image of this set, built FROM the current stock image. With none set, a container running
-    any tryout image does not match, so turning the setting off returns the cluster to the stock image."""
-    labels = image_labels(container, run=run)
+def stock_check(containers, run=None) -> tuple:
+    """(why the members are not all stock, the members whose labels could not be read). A member carrying
+    any tryout image's label is not stock; one that cannot be inspected is not known to be."""
+    unread = []
+    for c in containers:
+        labels = image_labels(c, run=run)
+        if labels is None:
+            unread.append(c)
+        elif labels.get(LABEL_SET):
+            return f"{c} runs tryout jars and {TRYOUT_ENV} is unset", unread
+    return None, unread
+
+
+def running_reason(containers, stock_ref: str, tryouts, run=None) -> str | None:
+    """Why a running cluster does not match the tryout setting, or None. ``containers`` is one container name or
+    several; every one is checked, so a member left on an older image cannot pass on the primary's identity.
+    With tryouts set, each must run the tryout image of this set, built FROM the current stock image. With none
+    set, a member running any tryout image does not match, so turning the setting off returns the cluster to
+    the stock image."""
+    containers = (containers,) if isinstance(containers, str) else tuple(containers)
     if not tryouts:
-        if labels and labels.get(LABEL_SET):
-            return f"the running cluster runs tryout jars and {TRYOUT_ENV} is unset"
-        return None
-    if labels is None:
-        return "the running cluster's image cannot be inspected for its tryout jars"
-    if labels.get(LABEL_SET) != set_digest(tryouts):
-        return f"the running cluster does not run the tryout jars {TRYOUT_ENV} names"
+        return stock_check(containers, run=run)[0]
     ref = image_ref(stock_ref, tryouts)
-    want = image_id(ref, run=run)
-    try:
-        r = run(["docker", "container", "inspect", "-f", "{{.Image}}", container]) if run is not None else \
-            _capture(["docker", "container", "inspect", "-f", "{{.Image}}", container], INSPECT_TIMEOUT_S)
-        got = (getattr(r, "stdout", "") or "").strip() if getattr(r, "returncode", 1) == 0 else None
-    except (OSError, subprocess.TimeoutExpired):
-        got = None
-    if not want or got != want:
-        return f"the running cluster's container image is not {ref}"
-    if labels.get(LABEL_BASE) != image_id(stock_ref, run=run):
-        return f"the tryout image {ref} was built from an older {stock_ref}"
+    want = stock_id = None
+    for container in containers:
+        labels = image_labels(container, run=run)
+        if labels is None:
+            return f"{container}'s image cannot be inspected for its tryout jars"
+        if labels.get(LABEL_SET) != set_digest(tryouts):
+            return f"{container} does not run the tryout jars {TRYOUT_ENV} names"
+        want = want or image_id(ref, run=run)
+        try:
+            argv = ["docker", "container", "inspect", "-f", "{{.Image}}", container]
+            r = run(argv) if run is not None else _capture(argv, INSPECT_TIMEOUT_S)
+            got = (getattr(r, "stdout", "") or "").strip() if getattr(r, "returncode", 1) == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            got = None
+        if not want or got != want:
+            return f"{container}'s container image is not {ref}"
+        stock_id = stock_id or image_id(stock_ref, run=run)
+        if labels.get(LABEL_BASE) != stock_id:
+            return f"the tryout image {ref} was built from an older {stock_ref}"
     return None
 
 

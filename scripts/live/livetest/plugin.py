@@ -465,25 +465,29 @@ def _redeploy_reason(running_version, want_version, striim_dir, ownership: str =
     path is the one flow that never
     reaches ensure_image -- so without this an edit stays invisible exactly where a developer
     is most likely to have just made one."""
-    running_tryout = bool(running_version) and _tryout.TAG_MARK in running_version
-    if running_version:
-        running_version = _tryout.strip_tag(running_version)
-    if running_version and want_version and running_version != want_version:
-        return f"running version {running_version} != required {want_version}"
-    # The tryout jars the cluster runs must be the ones SLT_STRIIM_TRYOUT_JARS names, and none when it is
-    # unset -- in every ownership mode, since a mismatch would label the run with the wrong jars. Unset, the
-    # running image's tag says it (no extra docker call on the stock path); set, the image is inspected.
-    try:
-        tryouts = _tryout.configured()
-        why = _sp.tryout_reason(want_version) if tryouts and want_version else None
-    except _tryout.TryoutError as e:
-        tryouts, why = True, str(e)
-    if not tryouts and running_tryout:
-        why = f"the running cluster runs tryout jars and {_tryout.TRYOUT_ENV} is unset"
+    if running_version and want_version and _tryout.strip_tag(running_version) != want_version:
+        return f"running version {_tryout.strip_tag(running_version)} != required {want_version}"
+    why = _tryout_redeploy_reason(running_version, want_version)
     if why:
         return why
     if ownership != "shared" and want_version and not _sp.image_inputs_match(want_version, striim_dir):
         return "the running cluster's image was built from different sources"
+    return None
+
+
+def _tryout_redeploy_reason(running_version, want_version) -> str | None:
+    """The tryout part of the reuse decision: the cluster must run the tryout jars SLT_STRIIM_TRYOUT_JARS names,
+    and none when it is unset -- in every ownership mode, since a mismatch would label the run with the wrong
+    jars. Unset, the primary's tag says it (no extra docker call on the stock path; _verify_tryouts checks every
+    member before the cluster is accepted); set, every member's image is inspected."""
+    try:
+        tryouts = _tryout.configured()
+        if tryouts:
+            return _sp.tryout_reason(want_version) if want_version else None
+    except _tryout.TryoutError as e:
+        return str(e)
+    if running_version and _tryout.TAG_MARK in running_version:
+        return f"the running cluster runs tryout jars and {_tryout.TRYOUT_ENV} is unset"
     return None
 
 
@@ -765,6 +769,22 @@ def _resolve_striim(config):
                                               _STRIIM_DIR, getattr(_slt_infra.of(config), "ownership", ""))
                     if reason and _slt_infra.forbid_redeploy(config, reason):
                         return None
+                else:
+                    # An undeclared caller reuses a booted cluster as before, except that its tryout jars must
+                    # match the setting: a booting tryout cluster with the setting unset (or the reverse) is
+                    # redeployed, as on the warm path.
+                    rel = _resolve_release(config)
+                    reason = _tryout_redeploy_reason(_running_striim_version(), rel.get("STRIIM_VERSION"))
+                    if reason:
+                        report, _clear_progress = _make_progress(config)
+                        report("cluster", f"{reason} — redeploying")
+                        try:
+                            _sp.cluster_down(_STRIIM_DIR, rel)
+                        except Exception:
+                            pass
+                        if not _provision(rel):
+                            return None
+                        provisioned = True
             elif _port_open(host, port):
                 return _fail(f"Striim on :{port} did not authenticate (check STRIIM_USER/STRIIM_PASS); "
                              f"not provisioning over an occupied port")
@@ -848,11 +868,17 @@ def _fail_on_hard_striim_failure(config, ctx) -> None:
 
 
 def _verify_tryouts(config, tryouts) -> str | None:
-    """After the Docker cluster is up: the containers run the tryout image of this set, and each replaced
+    """After the Docker cluster is up: every member runs the tryout image of this set, and each replaced
     jar's sha256 inside every container it went to is the tryout's. Records the verified tryouts for the
     evidence (``config._slt_tryouts``) and prints the TRYOUT banner. Returns why not, or None."""
     if not tryouts:
-        config._slt_tryouts = []
+        # A stock run is recorded as one only when no member (primary, second node, agent) carries a tryout
+        # image; a member that cannot be inspected leaves the record unobserved, never stock.
+        why, unread = _sp.tryout_stock_check()
+        if why:
+            return f"the cluster is not the stock image: {why}"
+        config._slt_tryouts = [] if not unread else {
+            "unobserved": f"the tryout labels of {', '.join(unread)} could not be read"}
         return None
     version = _resolve_release(config).get("STRIIM_VERSION", _sp._DEFAULT_STRIIM_VERSION)
     ref = _sp.cluster_image_ref(version, tryouts)

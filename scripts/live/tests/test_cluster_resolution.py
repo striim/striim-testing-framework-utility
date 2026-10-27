@@ -17,7 +17,8 @@ class Clock:
     def sleep(self, seconds): self.now += seconds
 
 
-def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reachable=True):
+def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reachable=True, probes=None,
+            running="5.4.2", before=None):
     clock, calls, progress = Clock(), [], []
     class Client:
         api = SimpleNamespace(post_tungsten_line=lambda *args, **kwargs: None)
@@ -28,9 +29,10 @@ def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reac
     monkeypatch.setattr(plugin.time, "sleep", clock.sleep)
     monkeypatch.setattr(plugin.paths, "setting", lambda key: "http://example.invalid:9080" if key == "STRIIM_URL" else None)
     monkeypatch.setenv("SLT_CLUSTER_SETTLE", "20")
-    monkeypatch.setattr(plugin, "probe_reachable", lambda *args: reachable)
+    answers = iter(probes or ())
+    monkeypatch.setattr(plugin, "probe_reachable", lambda *args: next(answers, reachable))
     monkeypatch.setattr(plugin, "_striim5_running", lambda: docker)
-    monkeypatch.setattr(plugin, "_running_striim_version", lambda: "5.4.2")
+    monkeypatch.setattr(plugin, "_running_striim_version", lambda: running)
     monkeypatch.setattr(plugin, "_resolve_release", lambda config: {"STRIIM_VERSION": "5.4.2"})
     monkeypatch.setattr(plugin, "_redeploy_reason", lambda *args: None)
     monkeypatch.setattr(plugin, "_cluster_provision_lock", lambda: tmp_path / "cluster.lock")
@@ -39,6 +41,8 @@ def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reac
     monkeypatch.setattr(plugin._slt_infra, "before_cluster_resolution", lambda *args: None)
     monkeypatch.setattr(plugin._slt_infra, "bind_striim", lambda *args: None)
     monkeypatch.setattr(sp, "verify_current_inputs", lambda *args: None)
+    if before:
+        before()
     config = SimpleNamespace(option=SimpleNamespace(xmlpath=xmlpath))
     return plugin._resolve_striim(config), config, clock, calls, progress
 
@@ -139,3 +143,39 @@ def test_a_tryout_that_cannot_be_built_fails_every_case(monkeypatch, tmp_path):
     monkeypatch.setattr(sp, "cluster_up", lambda *a, **k: pytest.fail("started a cluster"))
     ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)], docker=False, reachable=False)
     assert ctx is None and config._slt_striim_hard and "matches no jar" in config._slt_striim_reason
+
+
+
+def test_setting_off_redeploys_a_booting_tryout_cluster_before_accepting_it(monkeypatch, tmp_path):
+    """The boot-wait branch, undeclared and not in candidate mode: three failed logins, then the booting cluster
+    answers. It still runs a tryout image while the setting is unset, so it is redeployed onto the stock image
+    before the context is accepted -- never accepted and recorded as a stock run."""
+    from livetest import infra
+    events = []
+    monkeypatch.delenv(plugin._tryout.TRYOUT_ENV, raising=False)
+    monkeypatch.setattr(sp, "candidate_mode", lambda: False)
+
+    def wire():
+        monkeypatch.setattr(sp, "cluster_down", lambda *a, **k: events.append("down"))
+        monkeypatch.setattr(sp, "ensure_deps", lambda *a, **k: events.append("deps"))
+        monkeypatch.setattr(sp, "ensure_image", lambda *a, **k: events.append("image"))
+        monkeypatch.setattr(sp, "cluster_up", lambda *a, **k: events.append("up"))
+        monkeypatch.setattr(sp, "tryout_stock_check", lambda: (None, []))     # the redeployed cluster: stock
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)], probes=[False, False, False, True],
+                              running="5.4.2-tryout-0123456789ab", before=wire)
+    assert events == ["down", "deps", "image", "up"]
+    assert ctx is not None and config._slt_striim_provisioned is True
+    assert infra.observe_tryouts(config) == []
+
+
+def test_a_booting_cluster_on_the_stock_image_is_reused_as_before(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.delenv(plugin._tryout.TRYOUT_ENV, raising=False)
+    monkeypatch.setattr(sp, "candidate_mode", lambda: False)
+
+    def wire():
+        monkeypatch.setattr(sp, "cluster_down", lambda *a, **k: events.append("down"))
+        monkeypatch.setattr(sp, "tryout_stock_check", lambda: (None, []))
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)], probes=[False, False, False, True],
+                              before=wire)
+    assert ctx is not None and events == [] and config._slt_striim_provisioned is False
