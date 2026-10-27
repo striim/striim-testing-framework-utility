@@ -136,6 +136,10 @@ SECTIONS = (
          "`1`: fetch Teradata's JDBC driver from Maven Central and build it into the Striim image, for "
          "the `teradata` service. Teradata's licence for the driver applies "
          "([SERVICES.md](SERVICES.md), Teradata)."),
+        ("SLT_STRIIM_TRYOUT_JARS", "unset: the stock image",
+         "Patched product jars to run the cluster with, each `server:`, `agent:` or `both:` and an absolute "
+         "path, comma-separated; `=<jar>` names the jar it replaces. Docker mode only "
+         "([TRYOUT-JARS.md](TRYOUT-JARS.md))."),
         ("SLT_STRIIM_HTTP_HOST_PORT", None, "Host port of the console and REST API."),
         ("SLT_ENABLE_NODE_FAULTS", "unset (disabled)",
          "Set to `1` only on a dedicated disposable stack to permit node faults and publish the secondary API."),

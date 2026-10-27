@@ -806,6 +806,33 @@ def check_services(need: dict, env: dict, tcp=None, login=None, docker=None,
 
 # --- command --------------------------------------------------------------------------------
 
+def check_tryouts(env: dict) -> list:
+    """SLT_STRIIM_TRYOUT_JARS, as a tier child reads it: each entry well formed, each jar readable and naming
+    the jar it replaces (its Maven artifactId or `=<jar>`). Whether the image holds that jar is checked when
+    the tryout image is built."""
+    from livetest import paths
+    from livetest import tryout
+    from striim_test.dispatch import service_env
+    try:
+        value = ({**env, **service_env(env)}.get(tryout.TRYOUT_ENV) or "").strip()
+    except paths.PathConfigError:
+        return []                       # reported by check_env
+    if not value:
+        return []
+    try:
+        tryouts = tryout.load(value)
+    except tryout.TryoutError as e:
+        return [_fail("tryout", str(e))]
+    if (paths._lookup("SLT_STRIIM_NATIVE_ONLY", env)[0] or "") == "1":
+        return [_fail("tryout", f"{tryout.TRYOUT_ENV} needs the Docker cluster; SLT_STRIIM_NATIVE_ONLY=1 is set")]
+    out = []
+    for t in tryouts:
+        replaces = t.override or " or ".join(f"{a}-<STRIIM_VERSION>.jar" for a in t.artifact_ids)
+        scm = f", scm_version {t.scm_version}" if t.scm_version else ""
+        out.append(_ok("tryout", f"{t.path.name} ({t.target}) sha256:{t.sha256}{scm} replaces {replaces}"))
+    return out
+
+
 def run_checks(env: dict, clone: Path, cases=(), probe=None, docker=None, tcp=None, login=None,
                running=None, location=None, disk=None, present=None, tier_of=None) -> list:
     """``location`` is a project manifest's ``dispatch.location_env``: the ownership, ledger and
@@ -817,6 +844,7 @@ def run_checks(env: dict, clone: Path, cases=(), probe=None, docker=None, tcp=No
         run_env = {**env, **location}
         run_dotenv = paths.dotenv_values(run_env)
     checks += check_api_timeout(run_env)
+    checks += check_tryouts(run_env)
     checks += check_service_settings(run_env)
     checks += check_ownership(run_env, run_dotenv)
     checks += check_ledgers(run_env, run_dotenv)

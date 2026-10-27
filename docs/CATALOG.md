@@ -110,6 +110,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Instructions for AI coding assistants](../AGENTS.md) | `AGENTS.md` | This repository is a test framework for Striim apps, Open Processors and UDFs. |
 | [Contributing](../CONTRIBUTING.md) | `CONTRIBUTING.md` | This repository is gated: its maintainers review and merge every change. |
 | [Security policy](../SECURITY.md) | `SECURITY.md` | Report suspected security vulnerabilities privately through this repository's Security tab, using Report a vulnerability. |
+| [Testing a patched Striim jar](TRYOUT-JARS.md) | `docs/TRYOUT-JARS.md` | A fix to Striim itself often arrives as a single patched product jar, for example Platform-1.0.0-SNAPSHOT.jar built from a bugfix branch. |
 | [Upgrading the framework](UPGRADING.md) | `docs/UPGRADING.md` | Review the changes below before reusing services started by an older framework. |
 | [Live engine (scripts/live/, livetest)](internals/ENGINE.md) | `docs/internals/ENGINE.md` | How the live tier works inside. It is a pytest plugin (pyproject.toml loads livetest.plugin) that striim-test run drives; this page is for people changing the engine or running it with pytest directly. |
 | [Integration engine (scripts/integration/, inttest)](internals/INTEGRATION-ENGINE.md) | `docs/internals/INTEGRATION-ENGINE.md` | How the integration tier works inside: its services, isolation, clean-up, fixtures and settings. |

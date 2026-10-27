@@ -572,6 +572,9 @@ def run_tier(ctx: Ctx, tier: str, path: Path, *, label: str, cases=(), collect_o
     if not collect_only:
         # The tier's output goes to its log, not the console: say how to watch it while it runs.
         _say(f"{label}: follow it with: tail -f {shlex.quote(str(tier_dir / 'stdout.log'))}")
+        if tier == "live":
+            for line in tryout_lines(env):
+                _say(f"{label}: {line}")
     with open(tier_dir / "stdout.log", "wb") as so, open(tier_dir / "stderr.log", "wb") as se:
         rc = run_tier_process(argv, label, cwd=tier_dir, env=env, stdin=subprocess.DEVNULL,
                               stdout=so, stderr=se)
@@ -614,6 +617,21 @@ def run_tier(ctx: Ctx, tier: str, path: Path, *, label: str, cases=(), collect_o
             _say(f"{label}: the whole output is {tier_dir / 'stdout.log'}; docs/TROUBLESHOOTING.md, "
                  f"'Where the logs are', lists every log and the service containers' logs")
     return outcome
+
+
+def tryout_lines(env) -> list:
+    """What the console says about SLT_STRIIM_TRYOUT_JARS before a live tier runs, so a tryout run is never
+    mistaken for a stock one. Names only; the tier verifies the jars and records them in its evidence."""
+    from livetest import tryout
+    value = (env.get(tryout.TRYOUT_ENV) or "").strip()
+    if not value:
+        return []
+    try:
+        entries = tryout.parse(value)
+    except tryout.TryoutError as e:
+        return [f"TRYOUT: {e}"]
+    return ["TRYOUT: this run uses tryout jars in place of the stock Striim jars: " +
+            ", ".join(f"{p.name} ({t})" for t, p, _o in entries)]
 
 
 def usage_error(tier_dir: Path) -> str:
