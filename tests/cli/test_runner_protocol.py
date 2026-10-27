@@ -212,3 +212,37 @@ def test_unselected_runner_not_executed(tmp_path, elsewhere):
     r = run_cli(["run", "--targets", manifest], cwd=elsewhere)
     assert r.rc == 5, r.stderr              # the live suite is empty; the runner is not selected
     assert not marker.exists() and not (r.run_dir / "runners").exists()
+
+
+class _KilledLeader:
+    pid = 4242
+
+    def wait(self, timeout=None):
+        return -9
+
+
+def _decl():
+    from striim_test import runner
+    return runner.RunnerDecl(path=FAKE, name="r", tier="live", cwd=FAKE.parent, argv=[], env={},
+                             prereq=[], timeout_total=2, cancel_grace=0, process_group=True,
+                             reports=[], adapter="junit")
+
+
+def _killpg(answers):
+    def killpg(pgid, sig):
+        if sig == 0:
+            raise answers.pop(0) if len(answers) > 1 else answers[0]
+    return killpg
+
+
+def test_cancel_waits_out_macos_eperm_while_the_group_is_reaped(monkeypatch):
+    from striim_test import runner
+    monkeypatch.setattr(runner.os, "killpg", _killpg([PermissionError(), PermissionError(), ProcessLookupError()]))
+    assert runner._cancel(_KilledLeader(), _decl()) is True
+
+
+def test_cancel_reports_a_group_that_never_clears(monkeypatch):
+    from striim_test import runner
+    monkeypatch.setattr(runner, "GROUP_EXIT_WAIT", 0.3)
+    monkeypatch.setattr(runner.os, "killpg", _killpg([PermissionError()]))
+    assert runner._cancel(_KilledLeader(), _decl()) is False
