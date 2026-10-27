@@ -178,6 +178,7 @@ tier, and in the integration tier stops the run at collection. `striim-test doct
 | `exact:` on local BigQuery data/diff | bounded qualified scalar reads; other databases remain unsupported |
 | `lifecycle:` `initial-load` with a table (`baseline-landed`, `source-count`) | **tested**: samples 01 and 02 |
 | `lifecycle:` `initial-load` with a file (`baseline-landed`, `file-lines`) | **tested**: sample 03 (Docker mode) |
+| `lifecycle:` `initial-load` app that finishes on its own (`COMPLETED` or `QUIESCED`, e.g. `QuiesceOnILCompletion: true`) | **supported, not exercised here**, hermetic coverage: the finished status passes the RUNNING step and the counts decide. Without `lifecycle:`, `assert.smoke` fails an app that finishes before RUNNING is seen or within its one-second settle |
 | `lifecycle:` `cdc` with `sentinel` | **tested**: sample 04 |
 | `lifecycle:` `source-progress`, `row-count` | **supported, not exercised here** |
 | File/Kafka/Spanner lifecycle sentinel and bounded absence | File: **tested**, sample 10 reported passing on Striim 5.4.2. Kafka/Spanner: **supported, not exercised here**, hermetic coverage. The sentinel SQL source remains Postgres; Spanner counts additionally require the append-only audit contract |
