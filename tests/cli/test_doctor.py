@@ -1010,3 +1010,59 @@ def test_an_api_timeout_from_machine_env_is_reported_against_machine_env(proj, t
     checks = doctor.check_api_timeout({"SLT_PROJECT_ROOT": str(proj)})
     bad = [c for c in checks if "STRIIM_API_TIMEOUT" in c.message]
     assert bad and bad[0].status == "FAIL" and str(machine) in bad[0].message
+
+
+# --- SLT_STRIIM_TRYOUT_JARS ------------------------------------------------------------------------
+
+def _tryout_jar(path):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("META-INF/maven/com.webaction/Platform/pom.properties", "artifactId=Platform\n")
+        zf.writestr("build.properties", "scm_version=a1b2c3d\n")
+    return path
+
+
+def test_doctor_reads_tryout_jars_from_the_project_dotenv(proj, tmp_path):
+    jar = _tryout_jar(tmp_path / "Platform-1.0.0-SNAPSHOT.jar")
+    (proj / ".env").write_text(f"SLT_STRIIM_TRYOUT_JARS=both:{jar}\n")
+    (check,) = doctor.check_tryouts({"SLT_PROJECT_ROOT": str(proj)})
+    assert check.status == "ok" and check.subject == "tryout"
+    assert "Platform-1.0.0-SNAPSHOT.jar (both)" in check.message and "Platform-<STRIIM_VERSION>.jar" in check.message
+    assert "a1b2c3d" in check.message
+
+
+def test_doctor_fails_a_malformed_or_missing_tryout_jar(proj, tmp_path):
+    (bad,) = doctor.check_tryouts({"SLT_PROJECT_ROOT": str(proj), "SLT_STRIIM_TRYOUT_JARS": "Platform.jar"})
+    assert bad.status == "FAIL" and bad.code == CONFIG and "TARGET:PATH" in bad.message
+    (gone,) = doctor.check_tryouts({"SLT_PROJECT_ROOT": str(proj),
+                                    "SLT_STRIIM_TRYOUT_JARS": f"server:{tmp_path}/absent.jar"})
+    assert gone.status == "FAIL" and "does not exist" in gone.message
+    jar = _tryout_jar(tmp_path / "P.jar")
+    (native,) = doctor.check_tryouts({"SLT_PROJECT_ROOT": str(proj), "SLT_STRIIM_TRYOUT_JARS": f"server:{jar}",
+                                      "SLT_STRIIM_NATIVE_ONLY": "1"})
+    assert native.status == "FAIL" and "Docker cluster" in native.message
+    assert doctor.check_tryouts({"SLT_PROJECT_ROOT": str(proj)}) == []
+
+
+def test_the_console_names_the_tryouts_before_a_live_tier(tmp_path):
+    from striim_test import dispatch
+    assert dispatch.tryout_lines({}) == []
+    (line,) = dispatch.tryout_lines({"SLT_STRIIM_TRYOUT_JARS": "both:/j/Platform-1.0.0-SNAPSHOT.jar,"
+                                                               "agent:/j/Agent-1.0.0-SNAPSHOT.jar=Agent-5.4.2.jar"})
+    assert line.startswith("TRYOUT:") and "Platform-1.0.0-SNAPSHOT.jar (both)" in line
+    assert "Agent-1.0.0-SNAPSHOT.jar (agent)" in line
+    assert dispatch.tryout_lines({"SLT_STRIIM_TRYOUT_JARS": "oops"})[0].startswith("TRYOUT: ")
+
+
+def test_a_dotenv_tryout_setting_reaches_the_tier_child(proj):
+    from striim_test import dispatch
+    (proj / ".env").write_text("SLT_STRIIM_TRYOUT_JARS=both:/j/Platform-1.0.0-SNAPSHOT.jar\n")
+    assert dispatch.service_env({"SLT_PROJECT_ROOT": str(proj)})["SLT_STRIIM_TRYOUT_JARS"] == \
+        "both:/j/Platform-1.0.0-SNAPSHOT.jar"
+
+
+def test_doctor_runs_the_tryout_check(proj):
+    checks = doctor.run_checks({"SLT_PROJECT_ROOT": str(proj), "STRIIM_URL": "http://s:9080",
+                                "SLT_STRIIM_TRYOUT_JARS": "Platform.jar"}, REPO, probe=AUTH_OK)
+    (bad,) = [c for c in checks if c.subject == "tryout"]
+    assert bad.status == "FAIL" and doctor.exit_code(checks) == CONFIG

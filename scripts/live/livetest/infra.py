@@ -779,7 +779,8 @@ def observe_striim(config) -> dict:
     and the runtime version (``runtime_version``; never the image tag). Cached per session."""
     cached = getattr(config, "_slt_striim_observed", None)
     if cached is not None:
-        return cached
+        # tryouts is read fresh: it is set once the cluster is verified, which may follow the first call.
+        return {**cached, "tryouts": observe_tryouts(config)}
     release = getattr(config, "_slt_release", None)
     expected = dict(release) if isinstance(release, dict) else {"unobserved": "the Striim release was not resolved"}
     ctx = getattr(config, "_slt_striim", None)
@@ -801,7 +802,26 @@ def observe_striim(config) -> dict:
         config._slt_striim_observed = result
     except Exception:                   # noqa: BLE001 - a frozen config just is not cached
         pass
-    return result
+    return {**result, "tryouts": observe_tryouts(config)}
+
+
+def observe_tryouts(config):
+    """``runtime.striim.tryouts``: the tryout jars the cluster was verified to run (livetest.tryout), [] for
+    the stock image. Configured but not verified is ``{"unobserved": why}``, which never qualifies, so a
+    tryout run can never read as a stock one."""
+    verified = getattr(config, "_slt_tryouts", None)
+    if isinstance(verified, list) and verified:
+        return [dict(r) for r in verified]
+    if isinstance(verified, dict):      # a stock run whose members could not all be inspected
+        return dict(verified)
+    from livetest import tryout
+    try:
+        configured = bool(tryout.configured_value())
+    except Exception as e:              # noqa: BLE001
+        return {"unreadable": f"{tryout.TRYOUT_ENV}: {type(e).__name__}: {e}"}
+    if configured:
+        return {"unobserved": f"{tryout.TRYOUT_ENV} is set but no running cluster was verified to run its jars"}
+    return []
 
 
 def observe_services(config):
