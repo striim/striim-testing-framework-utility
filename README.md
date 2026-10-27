@@ -70,6 +70,16 @@ The framework does not build the BigQuery emulator image; supply one that meets
 `SLT_BIGQUERY_IMAGE` the BigQuery samples are skipped (exit 3). `striim-test run samples/live`
 exits 0 only when every prerequisite in the table is in place.
 
+## A real-world example
+
+[Striim-InitialLoad-ParallelLoader](https://github.com/striim/Striim-InitialLoad-ParallelLoader)
+splits a large initial load into slices and runs each slice as its own Striim app. Its Postgres
+quick start uses this framework: one `striim-test` case, `loader-slice`, starts Postgres and Striim
+in Docker, deploys one slice app built from the loader's TQL template and compares its target rows
+exactly. Only then does the full parallel load run. Clone the two repos side by side and run
+`./quickstart.sh all --step` from the loader's `quickstart/postgres/` folder. That folder's README
+also covers running against your own Striim server.
+
 ## Where to go next
 
 [Visual reference](docs/reference.html): how the framework works, the Acme Retail walkthrough, and the documentation library (open in a browser).
