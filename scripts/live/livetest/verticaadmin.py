@@ -131,11 +131,13 @@ class VerticaAdmin:
             conn.close()
 
     def run_sql(self, sql: str) -> None:
-        schema = self._schema()
         conn = self._open()
         try:
             cur = conn.cursor()
-            cur.execute(f"SET SEARCH_PATH TO {schema}, public")
+            # The admin owns no schema (init.sql creates none for dbadmin), so it keeps the
+            # server's search path and its SQL names schema.table.
+            if self.role != "admin":
+                cur.execute(f"SET SEARCH_PATH TO {self._schema()}, public")
             for stmt in split_sql_statements(sql):
                 cur.execute(stmt)
         finally:
