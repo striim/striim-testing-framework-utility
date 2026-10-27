@@ -44,6 +44,10 @@ MAX_OBSERVATIONS = 50
 # thread that is still inside a statement after that is reported as cancel-failed (never "cancelled").
 CANCEL_BOUND_S = 2.0
 TERMINAL_STATUSES = frozenset({"CRASH", "HALT", "TERMINATED", "DEPLOY_FAILED"})   # livetest.striim
+# A bounded source (DatabaseReader initial load) can load its rows and finish before the RUNNING
+# gate's first read: COMPLETED, or QUIESCED under QuiesceOnILCompletion on some releases. Such an
+# app has run. An initial-load case accepts it at the gate; any other mode fails on it at once.
+FINISHED_STATUSES = frozenset({"COMPLETED", "QUIESCED"})
 RECORD_KEYS = ("kind", "condition", "witness", "at", "startedAt", "endedAt", "deadlineS",
                "observations", "reason")
 SENTINEL_ID_MAX = 2 ** 31 - 1          # ids are 1 + randbelow(2**31 - 1): a signed 32-bit INT
@@ -877,24 +881,36 @@ def _terminal_of(client, apps):
     return check
 
 
-def await_running_bounded(client, apps, deadline: Deadline) -> dict:
-    """Every app RUNNING, bounded (replaces the unbounded smoke/RUNNING waits for lifecycle cases)."""
-    watch = Watch("app-running", f"RUNNING: {', '.join(apps)}", deadline)
+def _seen(sts: dict) -> str:
+    """What the RUNNING gate observed, per app; never "RUNNING" for an app that had finished."""
+    return ", ".join(f"{a} {st}" + (" (bounded source finished)" if st in FINISHED_STATUSES else "")
+                     for a, st in sts.items())
+
+
+def await_running_bounded(client, apps, deadline: Deadline, finished_ok: bool = False) -> dict:
+    """Every app RUNNING, bounded (replaces the unbounded smoke/RUNNING waits for lifecycle cases).
+    With ``finished_ok`` (initial-load) an app already COMPLETED or QUIESCED passes too; without
+    it either status ends the wait at once, as a terminal status does."""
+    accepted = {"RUNNING"} | (FINISHED_STATUSES if finished_ok else set())
+    watch = Watch("app-running", f"{'RUNNING, COMPLETED or QUIESCED' if finished_ok else 'RUNNING'}: "
+                                 f"{', '.join(apps)}", deadline)
     terminal = {}
 
     def observe(remaining):
         sts = _statuses(client, apps, max(0.05, remaining))
         for a, st in sts.items():
-            if st in TERMINAL_STATUSES:
+            if st in TERMINAL_STATUSES or (st in FINISHED_STATUSES and not finished_ok):
                 terminal["st"] = f"{st} ({a})"
         return sts
 
     def satisfied(sts):
-        return "st" in terminal or all(v == "RUNNING" for v in sts.values())
+        return "st" in terminal or all(v in accepted for v in sts.values())
 
-    reason, _ = _wait(watch, observe, satisfied)
+    reason, sts = _wait(watch, observe, satisfied)
     if reason == "satisfied" and "st" in terminal:
         reason = f"terminal-status:{terminal['st']}"
+    if reason == "satisfied" and any(v != "RUNNING" for v in sts.values()):
+        return watch.finish(reason, witness=f"observed {_seen(sts)}")
     return watch.finish(reason, witness=f"RUNNING observed for {', '.join(apps)}")
 
 
@@ -1058,15 +1074,18 @@ def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, 
         state.ready = e.record
         raise
     deadline = Deadline(spec.readiness_s, clock)
-    state.running = await_running_bounded(client, apps, deadline)
+    state.running = await_running_bounded(client, apps, deadline, finished_ok=spec.mode == "initial-load")
     if state.running["reason"] != "satisfied":
         state.ready = {**state.running, "kind": spec.readiness["kind"]}
         rec = build_assertion_result(type="smoke", status="failed", spec={}, target=None, db=None,
                                      detail=f"lifecycle RUNNING {state.running['reason']}")
         raise LifecycleError(f"lifecycle readiness failed: {state.running['reason']} before RUNNING",
                              state.ready, [rec])
+    sts = state.running["observations"][-1]["value"]      # the statuses that satisfied the gate
+    gate = "RUNNING" if all(v == "RUNNING" for v in sts.values()) else "app finished"
     smoke = build_assertion_result(type="smoke", status="passed", spec={}, target=None, db=None,
-                                   detail=f"RUNNING (bounded): {', '.join(apps)}")
+                                   detail=f"RUNNING (bounded): {', '.join(apps)}" if gate == "RUNNING"
+                                   else f"{_seen(sts)} (bounded)")
     kind = spec.readiness["kind"]
     terminal = _terminal_of(client, apps)
     if kind == "baseline-landed":
@@ -1076,13 +1095,13 @@ def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, 
         want = state.baseline["count"]
         if spec.sink == "db":
             observe, table = _count_observer(admins, spec.readiness["target"], tokens)
-            condition = f"RUNNING and {table} count == source baseline {want}"
+            condition = f"{gate} and {table} count == source baseline {want}"
         else:
             path = _render(spec.readiness["path"], tokens)
 
             def observe(remaining):
                 return _read_lines(read_files, path, remaining)
-            condition = f"RUNNING and {path} lines == source baseline {want}"
+            condition = f"{gate} and {path} lines == source baseline {want}"
         watch = Watch(kind, condition, deadline)
         reason, value = _wait(watch, observe, lambda v: v == want, terminal)
         witness = f"sink observed the positive source baseline {want}"
