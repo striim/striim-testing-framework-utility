@@ -2,6 +2,16 @@
 
 One entry per release, newest first: the pull requests it contains.
 
+## v0.3.2 (2026-10-27)
+
+**Breaking changes and changed behaviour**
+
+- **Integration: a whole-number `BigDecimal` is written as a decimal.** Oracle returns
+  `NUMBER(10,2)` 12500.00 as `BigDecimal` 12500, which was written as `12500` and failed the
+  type-strict compare against `12500.00`. It is now `12500.0`. A golden that recorded a
+  whole-number `NUMBER`/`NUMERIC` value the operator emits as an int (`5001`) now needs
+  `5001.0`. (#51)
+
 ## v0.3.1 (2026-10-26)
 
 **Checks and fixes**
