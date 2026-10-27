@@ -2,6 +2,13 @@
 
 One entry per release, newest first: the pull requests it contains.
 
+## v0.3.1 (2026-10-26)
+
+**Checks and fixes**
+
+- `striim-test run`: a timed-out or cancelled runner's process group is no longer reported
+  `processGroupCleared: false` while macOS is still reaping it (a transient EPERM). (#50)
+
 ## v0.3.0 (2026-10-26)
 
 **Breaking changes and changed behaviour**

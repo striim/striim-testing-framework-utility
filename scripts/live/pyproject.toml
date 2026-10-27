@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "livetest"
-version = "0.3.0"
+version = "0.3.1"
 license = {file = "LICENSE"}
 description = "Live App Test framework for Striim example/regression apps"
 requires-python = ">=3.12"

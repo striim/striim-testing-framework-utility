@@ -5,5 +5,5 @@ at single OpenProcessor/UDF behavior against real Postgres/Oracle/Spanner servic
 The pytest plugin (inttest.plugin) is loaded via pyproject.toml addopts.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __all__ = ["plugin"]
