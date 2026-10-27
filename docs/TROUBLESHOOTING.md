@@ -66,7 +66,7 @@ either the same way.
 | You see | Why | Fix |
 |---|---|---|
 | `unknown manifest key(s) ['timout']` | a typo | the message lists the keys allowed there |
-| the test passes but checks less than you meant | an `assert:` tier name that is not a real one (`rowcount:`) is **not** rejected, and never runs | use only the tiers in [TEST-YAML.md](TEST-YAML.md) |
+| `'assert' has unknown tier(s) ['rowcount']` | an `assert:` key that is not a tier | the message lists the allowed tiers; for a row count use `data:` with `rows:` |
 | `exact-block-missing` | a spec has `exact:` but the top-level `exact: {version: 1}` is missing | add the block |
 | `undeclared-conversion:amount:Decimal` | a numeric, date or JSON column without a type | add it under `exact.columns` |
 | `invalid-value:expected:amount` | a golden cell does not parse as the column's type | fix the cell; write `<null>` for NULL |
