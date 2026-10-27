@@ -68,6 +68,7 @@ class PreBlocks(HTMLParser):
 
 @pytest.mark.parametrize("source,heading", [
     ("docs/USING-AI.md", "### 2. Test my Striim application"),
+    ("docs/USING-AI.md", "### 13. Write tests for an application I already have"),
     ("examples/acme-retail/PROMPTS.md", "## 2. Add the orders application and test"),
 ])
 def test_reference_prompt_matches_markdown(source, heading):
