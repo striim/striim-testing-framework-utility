@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.function.IntPredicate;
 
@@ -239,5 +241,17 @@ class WAEventJsonFactoryTest {
         assertEquals("00010203fffefdca7e", value.get("$hex").asText());
         assertEquals("", out.get(1).get("data").get("values").get(1).get("$hex").asText());
         assertTrue(out.get(2).get("data").get("values").get(1).isNull());
+    }
+
+    @Test
+    void aDecimalWithoutFractionIsWrittenAsADecimal() throws Exception {
+        // Oracle returns NUMBER(10,2) 12500.00 as BigDecimal 12500; written bare, Python reads an int.
+        List<WAEvent> events = WAEventJsonFactory.readEvents(FIXTURE);
+        events.get(0).data = new Object[] {new BigDecimal("12500"), new BigDecimal("1.25E+4"), new BigDecimal("12500.00")};
+        events.get(1).data = new Object[] {101, 7L, BigInteger.valueOf(12500)};
+
+        String out = WAEventJsonFactory.writeEvents(events);
+        assertTrue(out.contains("\"values\":[12500.0,12500.0,12500.00]"), out);
+        assertTrue(out.contains("\"values\":[101,7,12500]"), out);
     }
 }
