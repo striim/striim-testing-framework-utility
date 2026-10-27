@@ -1931,7 +1931,11 @@ assert:
       # (a spec-wide `db:` is still accepted as a fallback for both endpoints)
 ```
 An empty source fails fast (asserts nothing). Polls until the target's distinct row set equals
-the source's.
+the source's. On a SQL database target each poll counts the target first and reads it in full only
+when the count can match (`exact: true`: the source's row count; otherwise at least its distinct
+rows). The time it reports (`elapsed_s`) is when the poll that passed began reading its last
+target, so the full read of a large table is not counted as the writer's time. The clock starts
+at the first poll, after deploy: a writer that finishes before it reports close to 0.
 
 For a typed Spanner diff, both endpoints name the table within the selected
 service database, and every non-text column is declared. This checks counted

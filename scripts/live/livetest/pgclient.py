@@ -43,6 +43,8 @@ class PgAdmin:
     ``source_schema``, ``target_user``/``target_password``/``target_schema``. Missing keys
     fall back to the ``source_*`` values so a minimal single-user dsn still works.
     """
+    # assertions/diff.py: count_rows counts what select_rows returns, so a diff may count first.
+    diff_counts_rows = True
 
     def __init__(self, dsn: dict, connect=None, role: str = "source"):
         self.dsn = dsn

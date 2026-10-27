@@ -307,3 +307,118 @@ def test_fold_names_does_not_forgive_a_wrong_value():
         assert_diff({"postgres-source": pg},
                     [{"source": "s.src", "target": "o.tgt", "exact": True, "fold_names": True}],
                     timeout=0, poll=0)
+
+
+# ---- the time a diff reports, and the count it checks first ----------------------------------
+
+class _SlowCountingPg(FakePg):
+    """A target whose full read is slow, as 20M rows are, and which counts cheaply."""
+    diff_counts_rows = True
+
+    def __init__(self, tables, *, read_s=0.0, behind_polls=0):
+        super().__init__(tables)
+        self.read_s, self.behind, self.reads, self.counts = read_s, behind_polls, [], 0
+
+    def count_rows(self, table):
+        self.counts += 1
+        if self.behind > 0:
+            self.behind -= 1
+            return 0
+        return len(self._t.get(table, []))
+
+    def select_rows(self, table):
+        import time as _t
+        self.reads.append(table)
+        _t.sleep(self.read_s)
+        return super().select_rows(table)
+
+
+def test_elapsed_is_when_the_passing_poll_started_not_when_its_read_ended():
+    """Measured 2026-10-27: a 20M-row target took 552 s to read after it was complete, and the
+    whole read landed in `elapsed_s`. The time reported is the start of the poll that passed."""
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows}, read_s=0.3)
+    rec = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                      timeout=5, poll=0)[0]
+    assert rec["elapsed_s"] < 0.1, rec["elapsed_s"]
+
+
+def test_a_count_that_differs_skips_the_full_read():
+    rows = [{"id": "1"}, {"id": "2"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.tgt": rows}, behind_polls=3)
+    assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                timeout=5, poll=0)
+    assert pg.reads.count("s.tgt") == 1, pg.reads
+    assert pg.counts == 4
+
+
+def test_a_matching_count_still_needs_the_rows_to_match():
+    pg = _SlowCountingPg({"s.src": [{"id": "1", "v": "a"}], "s.tgt": [{"id": "1", "v": "b"}]})
+    with pytest.raises(AssertionError, match="does not hold exactly"):
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                    timeout=0, poll=0)
+
+
+def test_a_not_exact_diff_skips_only_a_count_below_the_distinct_source():
+    """Without `exact`, duplicates in the target are allowed, so only a count BELOW the source's
+    distinct rows proves the target is behind."""
+    src = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": src, "s.tgt": [{"id": "1"}, {"id": "1"}]})
+    assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt"}], timeout=0, poll=0)
+    assert pg.reads.count("s.tgt") == 1
+
+
+def test_an_admin_without_the_opt_in_is_read_in_full_every_poll():
+    """Kafka, GCS and BigQuery count differently from what they select, so they never skip."""
+    class Unflagged(_SlowCountingPg):
+        diff_counts_rows = False
+    rows = [{"id": "1"}]
+    pg = Unflagged({"s.src": rows, "s.tgt": rows}, behind_polls=5)
+    assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                timeout=5, poll=0)
+    assert pg.counts == 0
+
+
+def test_a_count_that_fails_falls_back_to_the_full_read():
+    class Broken(_SlowCountingPg):
+        def count_rows(self, table):
+            raise RuntimeError("no count here")
+    rows = [{"id": "1"}]
+    pg = Broken({"s.src": rows, "s.tgt": rows})
+    assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                timeout=1, poll=0)
+    assert pg.reads.count("s.tgt") == 1
+
+
+def test_the_sql_admins_opt_in_to_the_count():
+    from livetest.mssqladmin import MssqlAdmin
+    from livetest.mysqlclient import MySQLAdmin
+    from livetest.oraadmin import OraAdmin
+    from livetest.pgclient import PgAdmin
+    from livetest.spanneradmin import SpannerAdmin
+    from livetest.teradataadmin import TeradataAdmin
+    from livetest.verticaadmin import VerticaAdmin
+    for cls in (MssqlAdmin, MySQLAdmin, OraAdmin, PgAdmin, SpannerAdmin, TeradataAdmin, VerticaAdmin):
+        assert getattr(cls, "diff_counts_rows", False) is True, cls.__name__
+
+
+def test_a_timeout_after_a_count_still_reports_the_rows():
+    """The count skips the read while polling; the failure must still say what differs."""
+    src = [{"id": "1"}, {"id": "2"}]
+    pg = _SlowCountingPg({"s.src": src, "s.tgt": [{"id": "1"}, {"id": "1"}, {"id": "2"}]})
+    with pytest.raises(AssertionFailed) as ei:
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                    timeout=0, poll=0)
+    assert "1 extra-or-duplicated" in str(ei.value)
+    rec = ei.value.records[0]
+    assert rec["actual"]["rows"], rec
+
+
+def test_elapsed_with_several_specs_is_when_the_last_spec_was_read():
+    """Spec 2's target is only read after spec 1's slow read; its time must not be spec 1's."""
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.t1": rows, "s.t2": rows}, read_s=0.3)
+    recs = assert_diff({"postgres-source": pg},
+                       [{"source": "s.src", "target": "s.t1", "exact": True},
+                        {"source": "s.src", "target": "s.t2", "exact": True}], timeout=5, poll=0)
+    assert 0.25 < recs[0]["elapsed_s"] < 0.45, recs[0]["elapsed_s"]
