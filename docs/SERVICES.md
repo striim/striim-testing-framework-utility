@@ -353,7 +353,8 @@ natively on Apple Silicon. 25.3 is the newest release that still runs as Communi
 
 - `DatabaseReader` emits three-part names (`sltdb.qasource.<table>`), so `DatabaseWriter`'s
   `Tables` mapping uses all three parts.
-- `vertica-admin` runs a `seed:` statement as `dbadmin`; nothing is dropped on it.
+- `vertica-admin` runs a `seed:` statement as `dbadmin` on the server's search path, so its SQL
+  names `schema.table`; nothing is dropped on it.
 - The Striim image carries the Vertica JDBC driver.
 
 ## Kafka (`kafka`)

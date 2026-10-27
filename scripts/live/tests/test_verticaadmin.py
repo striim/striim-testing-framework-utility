@@ -139,6 +139,14 @@ def test_admin_role_takes_its_credentials_from_the_dsn():
                  connect=db.connect, role="admin").run_sql("SELECT 2;")
     assert set(db.logins) == {"vadmin"}
 
+
+def test_admin_role_run_sql_keeps_the_server_search_path():
+    # dbadmin owns no schema: SET SEARCH_PATH TO dbadmin failed every vertica-admin seed
+    db = _FakeDb()
+    VerticaAdmin(_dsn(), connect=db.connect, role="admin").run_sql(
+        "SELECT CLOSE_USER_SESSIONS('qatarget');")
+    assert _stmts(db) == ["SELECT CLOSE_USER_SESSIONS('qatarget')"]
+
 # ---- reads ------------------------------------------------------------------
 
 def test_qualified_defaults_to_role_schema_and_rejects_unsafe():
