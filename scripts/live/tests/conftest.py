@@ -49,6 +49,19 @@ def _no_pre_up(monkeypatch):
     monkeypatch.setattr(prestart, "run_hook", lambda *a, **k: False)
 
 
+@pytest.fixture(autouse=True)
+def _no_tryout_docker(monkeypatch):
+    """Tryout jars come only from a test's own environment (never a developer's .env), and a tryout docker
+    call a test did not inject a runner for fails as if Docker were absent instead of reaching the daemon."""
+    from livetest import tryout
+
+    def no_docker(argv, timeout):
+        raise OSError(f"hermetic: {argv[:3]} reached the real docker")
+    monkeypatch.setattr(tryout, "_capture", no_docker)
+    monkeypatch.setattr(tryout, "configured_value", lambda env=None: ((os.environ if env is None else env)
+                                                                     .get(tryout.TRYOUT_ENV) or "").strip())
+
+
 @pytest.fixture
 def real_prestart_run():
     """The unstubbed livetest.prestart.run_hook."""
