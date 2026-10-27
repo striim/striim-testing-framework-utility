@@ -1,5 +1,6 @@
 package com.striim.testing.inttest;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -380,7 +381,12 @@ public final class WAEventJsonFactory {
      * It is rendered as {@code {"$hex": "..."}} so a fixture round trip returns what it stated.
      * See {@link #decodeHex}.</p>
      *
-     * <p><b>Every other value passes through unchanged</b> -- deliberately: these are two
+     * <p>A {@code BigDecimal} with no fractional digits (Oracle returns {@code NUMBER(10,2)} 12500.00
+     * as {@code 12500}) gets a third: Jackson writes it as {@code 12500}, which the Python side reads
+     * as an integer and the type-strict compare refuses against a decimal. One fractional zero keeps
+     * it a decimal without changing its value.</p>
+     *
+     * <p><b>Every other value passes through unchanged</b> -- deliberately: these are three
      * {@code instanceof} special cases, NOT a blanket catch, so a genuinely unserializable value
      * of any other type still fails loudly rather than being silently coerced. If a future
      * harness mock ever adds a second {@code org.joda.time.*} type, it needs its own branch here
@@ -402,6 +408,9 @@ public final class WAEventJsonFactory {
             }
             hex.put(HEX_KEY, digits.toString());
             return hex;
+        }
+        if (value instanceof BigDecimal bd && bd.scale() <= 0) {
+            return bd.setScale(1);
         }
         return value;
     }
