@@ -363,7 +363,8 @@ def _cancel(proc, decl: RunnerDecl) -> bool:
         except ProcessLookupError:
             return True
         except PermissionError:
-            return False
+            # macOS answers EPERM while a killed group's last members are being reaped.
+            pass
         time.sleep(0.05)
     return False
 
