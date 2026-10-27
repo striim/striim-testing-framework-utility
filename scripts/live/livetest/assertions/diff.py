@@ -86,9 +86,9 @@ def _target_behind(admins: dict, spec: dict, src_rows, want) -> str | None:
     return None
 
 
-def _evaluate(admins: dict, spec: dict, src_rows, want):
+def _evaluate(admins: dict, spec: dict, src_rows, want, *, count_first: bool = True):
     expected = {"kind": "rows", "rows": src_rows}
-    behind = _target_behind(admins, spec, src_rows, want)
+    behind = _target_behind(admins, spec, src_rows, want) if count_first else None
     if behind is not None:
         return False, behind, expected, None
     try:
@@ -147,10 +147,13 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
     while True:
         if status_probe:
             status_probe()
-        # The time reported is when the passing poll STARTED: the target was equal by then or
-        # during its reads, and a full read of millions of rows must not count as writer time.
-        observed = time.monotonic()
-        results = [_evaluate(admins, s, src_rows, want) for s, (src_rows, want) in zip(specs, sources)]
+        # The time reported is when the passing poll began reading its LAST spec: every target
+        # was equal by then or during its own read, and a full read of millions of rows must not
+        # count as writer time. Taken per spec, since earlier specs' reads can take minutes.
+        results, observed = [], time.monotonic()
+        for s, (src_rows, want) in zip(specs, sources):
+            observed = time.monotonic()
+            results.append(_evaluate(admins, s, src_rows, want))
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None:
             # ⚠ RESOLUTION IS THE POLL INTERVAL plus one failed poll. At the 2.0s default this is
@@ -164,6 +167,11 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
         if time.monotonic() >= deadline:
+            # A target the count rejected was never read: read it once now, so the failure
+            # carries its rows and, under `exact`, the missing and extra counts.
+            results = [r if r[3] is not None or r[0] else _evaluate(admins, s, src_rows, want, count_first=False)
+                       for r, s, (src_rows, want) in zip(results, specs, sources)]
+            detail = next((d for ok, d, _, _ in results if not ok), detail)
             records = [
                 build_assertion_result(type="diff", status="passed" if ok else "failed", spec=s,
                                         target=s["target"], db=db, detail="ok" if ok else d,

@@ -400,3 +400,25 @@ def test_the_sql_admins_opt_in_to_the_count():
     from livetest.verticaadmin import VerticaAdmin
     for cls in (MssqlAdmin, MySQLAdmin, OraAdmin, PgAdmin, SpannerAdmin, TeradataAdmin, VerticaAdmin):
         assert getattr(cls, "diff_counts_rows", False) is True, cls.__name__
+
+
+def test_a_timeout_after_a_count_still_reports_the_rows():
+    """The count skips the read while polling; the failure must still say what differs."""
+    src = [{"id": "1"}, {"id": "2"}]
+    pg = _SlowCountingPg({"s.src": src, "s.tgt": [{"id": "1"}, {"id": "1"}, {"id": "2"}]})
+    with pytest.raises(AssertionFailed) as ei:
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                    timeout=0, poll=0)
+    assert "1 extra-or-duplicated" in str(ei.value)
+    rec = ei.value.records[0]
+    assert rec["actual"]["rows"], rec
+
+
+def test_elapsed_with_several_specs_is_when_the_last_spec_was_read():
+    """Spec 2's target is only read after spec 1's slow read; its time must not be spec 1's."""
+    rows = [{"id": "1"}]
+    pg = _SlowCountingPg({"s.src": rows, "s.t1": rows, "s.t2": rows}, read_s=0.3)
+    recs = assert_diff({"postgres-source": pg},
+                       [{"source": "s.src", "target": "s.t1", "exact": True},
+                        {"source": "s.src", "target": "s.t2", "exact": True}], timeout=5, poll=0)
+    assert 0.25 < recs[0]["elapsed_s"] < 0.45, recs[0]["elapsed_s"]
