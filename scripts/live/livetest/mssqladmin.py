@@ -55,6 +55,8 @@ class MssqlAdmin:
     enable, account creation) uses the `sa` admin connection. dsn keys: user/password (sa,
     the admin), source_user/source_password/source_schema, target_user/target_password/
     target_schema — absent role keys fall back to the admin so a minimal dsn still works."""
+    # assertions/diff.py: count_rows counts what select_rows returns, so a diff may count first.
+    diff_counts_rows = True
 
     def __init__(self, dsn: dict, connect=None, role: str = "source"):
         self.dsn = dsn

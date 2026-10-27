@@ -127,6 +127,9 @@ def _split_statements(sql: str) -> list[str]:
     return out
 
 class OraAdmin:
+    # assertions/diff.py: count_rows counts what select_rows returns, so a diff may count first.
+    diff_counts_rows = True
+
     def __init__(self, dsn: dict, connect=None, *, prefix=None):
         # dsn: {host, port, service, user, password}
         self.dsn = dsn

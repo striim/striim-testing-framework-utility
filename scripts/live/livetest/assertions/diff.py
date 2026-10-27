@@ -62,8 +62,35 @@ def _multiset(rows: list) -> "Counter":
     return Counter(frozenset(normalized_row(r).items()) for r in rows)
 
 
+def _target_behind(admins: dict, spec: dict, src_rows, want) -> str | None:
+    """Why the target is certainly behind, from its row count alone; None to read it in full.
+
+    ⚠ Measured 2026-10-27: a full read of a 20M-row PostgreSQL target took 485-581 s, so a poll
+    that reads everything measures the check, not the writer. A count is cheap and, where it
+    differs, proves the full read would fail. Only admins whose `count_rows` counts the rows
+    `select_rows` returns opt in (`diff_counts_rows`); a count that fails is no evidence, and the
+    full read decides as before.
+    """
+    admin = _endpoint_admin(admins, spec, "target")
+    if not getattr(admin, "diff_counts_rows", False):
+        return None
+    try:
+        n = admin.count_rows(spec["target"])
+    except Exception:
+        return None
+    if spec.get("exact"):
+        if n != len(src_rows):
+            return f"{spec['target']} holds {n} rows, {spec['source']} {len(src_rows)}"
+    elif n < len(want):
+        return f"{spec['target']} has not caught up to {spec['source']}: |src|={len(want)} |tgt|<={n}"
+    return None
+
+
 def _evaluate(admins: dict, spec: dict, src_rows, want):
     expected = {"kind": "rows", "rows": src_rows}
+    behind = _target_behind(admins, spec, src_rows, want)
+    if behind is not None:
+        return False, behind, expected, None
     try:
         tgt_rows = _folded(_endpoint_admin(admins, spec, "target").select_rows(spec["target"]), spec)
     except NotYetReadable as e:
@@ -120,13 +147,17 @@ def assert_diff(admins: dict, specs: list[dict], timeout: int, poll: float = 2.0
     while True:
         if status_probe:
             status_probe()
+        # The time reported is when the passing poll STARTED: the target was equal by then or
+        # during its reads, and a full read of millions of rows must not count as writer time.
+        observed = time.monotonic()
         results = [_evaluate(admins, s, src_rows, want) for s, (src_rows, want) in zip(specs, sources)]
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None:
-            # ⚠ RESOLUTION IS THE POLL INTERVAL. At the 2.0s default this is ±2s, which is useless
-            # for comparing two writers that finish within seconds of each other -- a paired
-            # measurement must lower `poll` or the number it reports is quantisation.
-            elapsed = time.monotonic() - started
+            # ⚠ RESOLUTION IS THE POLL INTERVAL plus one failed poll. At the 2.0s default this is
+            # ±2s, which is useless for comparing two writers that finish within seconds of each
+            # other -- a paired measurement must lower `poll` or the number it reports is
+            # quantisation. A failed poll is a count where `diff_counts_rows` allows it.
+            elapsed = observed - started
             return [
                 build_assertion_result(type="diff", status="passed", spec=s, target=s["target"], db=db,
                                         detail="ok", expected=exp, actual=act, elapsed_s=elapsed)

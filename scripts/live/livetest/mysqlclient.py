@@ -40,6 +40,8 @@ class MySQLAdmin:
     Uses SQLAlchemy engine with StaticPool (one connection per admin instance,
     serialized) to match PgAdmin pattern.
     """
+    # assertions/diff.py: count_rows counts what select_rows returns, so a diff may count first.
+    diff_counts_rows = True
 
     def __init__(self, config: dict, role: Optional[str] = None, live: bool = False):
         """Initialize MySQL admin client.

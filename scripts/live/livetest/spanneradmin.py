@@ -48,6 +48,9 @@ def _jsonify(v):
 _CLIENTS: dict = {}
 
 class SpannerAdmin:
+    # assertions/diff.py: count_rows counts what select_rows returns, so a diff may count first.
+    diff_counts_rows = True
+
     def __init__(self, dsn: dict, database=None, client=None):
         # dsn: {project, instance, database, dialect, emulator_host}
         #   dialect: "google_standard_sql" | "postgresql"
