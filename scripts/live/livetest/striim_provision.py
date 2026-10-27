@@ -2,6 +2,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import inspect
+import json
 import os
 import re
 import subprocess
@@ -340,13 +341,18 @@ def verify_current_inputs(striim_dir: Path, release: dict | None = None) -> bool
 
 def running_image_reason(container: str, version: str, run=None):
     """Candidate-mode cluster reuse: after the gate verified the current inputs against this
-    stack's ``image_ref(version)`` tag, the running container must run that exact image. Returns a
-    redeploy reason when the container's immutable image ID differs from the tag's image ID,
-    or when either ID is unavailable (never a match); None when they are the same image."""
+    stack's ``cluster_image_ref(version)`` tag (the tryout image's when tryout jars are set), the
+    running container must run that exact image. Returns a redeploy reason when the container's
+    immutable image ID differs from the tag's image ID, or when either ID is unavailable (never a match); None when they are the same image."""
+    from livetest import tryout
     run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    try:
+        want = cluster_image_ref(version)     # the tryout image when SLT_STRIIM_TRYOUT_JARS is set
+    except tryout.TryoutError as e:
+        return str(e)
     ids = []
     for argv in (["docker", "container", "inspect", "-f", "{{.Image}}", container],
-                 ["docker", "image", "inspect", "-f", "{{.Id}}", image_ref(version)]):
+                 ["docker", "image", "inspect", "-f", "{{.Id}}", want]):
         try:
             r = run(argv)
         except OSError:
@@ -540,6 +546,22 @@ def image_ref(version: str = _DEFAULT_STRIIM_VERSION, env=None) -> str:
     return f"{stack.prefixed('slt-striim', env)}:{version}"
 
 
+def cluster_image_ref(version: str = _DEFAULT_STRIIM_VERSION, tryouts=None, env=None) -> str:
+    """The image the cluster runs: the stock ``image_ref``, or with SLT_STRIIM_TRYOUT_JARS set the tryout image
+    built FROM it (livetest.tryout). ``tryouts`` defaults to the setting's."""
+    from livetest import tryout
+    tryouts = tryout.configured(env) if tryouts is None else tryouts
+    stock = image_ref(version, env)
+    return tryout.image_ref(stock, tryouts) if tryouts else stock
+
+
+def tryout_reason(version: str, container: str | None = None, run=None) -> str | None:
+    """Why a running cluster does not match SLT_STRIIM_TRYOUT_JARS (livetest.tryout.running_reason), or None."""
+    from livetest import tryout
+    return tryout.running_reason(container or stack.striim_container(), image_ref(version),
+                                 tryout.configured(), run=run)
+
+
 def image_present(version: str = _DEFAULT_STRIIM_VERSION, run=None) -> bool:
     run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
     out = run(["docker", "images", "-q", image_ref(version)])
@@ -680,7 +702,7 @@ def _gate_docker_disk(query, progress=None, cold: bool = True) -> None:
 
 
 def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progress=None,
-                 query_run=None) -> None:
+                 query_run=None) -> str:
     # compose.yaml's image is stack-prefixed and version-tagged, so each
     # release gets its own image. Presence alone is not enough to skip the build, though: an
     # edit to entrypoint.sh or the Dockerfile leaves the tag untouched, so a machine that had
@@ -702,14 +724,23 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
     else:
         _clear_installer_identity(striim_dir)
     _write_optional_jars(striim_dir)
+    from livetest import tryout
+    tryouts = tryout.configured()       # a malformed setting fails before the stock image is touched
     present = image_present(version, run=query)
-    if present and image_inputs_match(version, striim_dir, run=query):
-        return
-    _gate_docker_disk(query, progress, cold=not present)
-    if progress: progress("cluster", "building image (first build is slow)")
-    print(f"[striim] building {image_ref(version)} (first build is slow under emulation)…")
-    with _env_override({"STRIIM_VERSION": version, "JDK_VERSION": java_release}):
-        run(["docker", "compose", "build", "slt-striim"], cwd=str(striim_dir))
+    if not (present and image_inputs_match(version, striim_dir, run=query)):
+        _gate_docker_disk(query, progress, cold=not present)
+        if progress: progress("cluster", "building image (first build is slow)")
+        print(f"[striim] building {image_ref(version)} (first build is slow under emulation)…")
+        with _env_override({"STRIIM_VERSION": version, "JDK_VERSION": java_release}):
+            run(["docker", "compose", "build", "slt-striim"], cwd=str(striim_dir))
+    if not tryouts:
+        return image_ref(version)
+    # The tryout image is built FROM the stock image just checked, under its own tag; the stock image
+    # itself is never changed. Built every time: an unchanged set is all cache hits.
+    ref, _ = tryout.build(image_ref(version), version, tryouts, run=query_run,
+                          stream=None if run is _stream else (lambda argv: run(argv)),
+                          progress=progress)
+    return ref
 
 # Bring the cluster up with the Spanner emulator redirect baked in. The framework's
 # cluster is emulator-only, so SPANNER_EMULATOR_HOST is always safe here (only Spanner
@@ -731,7 +762,8 @@ def compose_files(striim_dir: Path) -> list[Path]:
     two cannot drift."""
     return [Path(striim_dir) / f for f in _COMPOSE_FILES if f != "-f"]
 
-def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress=None) -> None:
+def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress=None,
+               query_run=None) -> None:
     if progress: progress("cluster", "starting containers")
     run = run or _stream
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
@@ -745,16 +777,38 @@ def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress
     derived = {v: enriched[v] for v in _LICENSE_VARS if sources[v] == "derived"}
     if progress and derived:
         progress("cluster", f"license config derived from STRIIM_HOME: {', '.join(sorted(derived))}")
-    with _env_override({"STRIIM_VERSION": version, **derived}):
+    from livetest import tryout
+    tryouts = tryout.configured()
+    with _env_override({"STRIIM_VERSION": version, **derived}), _tryout_override(tryouts, version, query_run) \
+            as (files, up_flags):
         # --remove-orphans: renaming a compose SERVICE strands its container exactly as
         # renaming the project does -- compose stops managing the old one but leaves it
         # RUNNING. Upgrading past the slt-striim-node -> slt-node rename would otherwise
         # leave the old node up beside the new one: two nodes in the cluster, one of them
         # invisible to compose. Orphans are containers whose SERVICE is gone from the file,
         # so naming a subset of services here does not make the rest orphans.
-        run(["docker", "compose", *_compose_files(), "up", "-d", "--remove-orphans",
+        run(["docker", "compose", *_compose_files(), *files, "up", "-d", *up_flags, "--remove-orphans",
              "slt-striim", "slt-node", "slt-agent"],
             cwd=str(striim_dir))
+
+
+@contextlib.contextmanager
+def _tryout_override(tryouts, version, query_run=None):
+    """The extra compose arguments that run the tryout image: none without tryouts. With them, a generated
+    override file pointing all three services at the tryout image, and --no-build, so a missing tryout image
+    is an error and never a stock build under the tryout tag (slt-striim declares `build:`)."""
+    if not tryouts:
+        yield [], []
+        return
+    from livetest import tryout
+    ref = cluster_image_ref(version, tryouts)
+    if tryout.image_id(ref, run=query_run) is None:
+        raise tryout.TryoutError(f"the tryout image {ref} is not built; ensure_image builds it")
+    services = "".join(f"  {s}:\n    image: {json.dumps(ref)}\n" for s in ("slt-striim", "slt-node", "slt-agent"))
+    with tempfile.TemporaryDirectory(prefix="slt-tryout-compose-") as tmp:
+        override = Path(tmp) / "compose.tryout.yaml"
+        override.write_text("services:\n" + services)
+        yield ["-f", str(override)], ["--no-build"]
 
 def cluster_has_containers(striim_dir: Path, release: dict | None = None) -> bool:
     """True iff this checkout's Striim compose project owns any container, running or not.

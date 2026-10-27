@@ -17,7 +17,7 @@ class Clock:
     def sleep(self, seconds): self.now += seconds
 
 
-def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None):
+def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reachable=True):
     clock, calls, progress = Clock(), [], []
     class Client:
         api = SimpleNamespace(post_tungsten_line=lambda *args, **kwargs: None)
@@ -28,7 +28,7 @@ def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None):
     monkeypatch.setattr(plugin.time, "sleep", clock.sleep)
     monkeypatch.setattr(plugin.paths, "setting", lambda key: "http://example.invalid:9080" if key == "STRIIM_URL" else None)
     monkeypatch.setenv("SLT_CLUSTER_SETTLE", "20")
-    monkeypatch.setattr(plugin, "probe_reachable", lambda *args: True)
+    monkeypatch.setattr(plugin, "probe_reachable", lambda *args: reachable)
     monkeypatch.setattr(plugin, "_striim5_running", lambda: docker)
     monkeypatch.setattr(plugin, "_running_striim_version", lambda: "5.4.2")
     monkeypatch.setattr(plugin, "_resolve_release", lambda config: {"STRIIM_VERSION": "5.4.2"})
@@ -84,3 +84,58 @@ def test_late_membership_read_cannot_prove_cluster_ready(monkeypatch):
     with pytest.raises(TimeoutError, match='CLUSTER-READY'):
         sp.wait_cluster_ready(Client(), timeout=1, poll=0)
     assert calls == [1]
+
+
+# --- tryout jars (livetest.tryout) -------------------------------------------------------------
+
+def _tryouts(monkeypatch, tmp_path):
+    jar = tmp_path / "Platform-1.0.0-SNAPSHOT.jar"
+    import zipfile
+    with zipfile.ZipFile(jar, "w") as zf:
+        zf.writestr("META-INF/maven/com.webaction/Platform/pom.properties", "artifactId=Platform\n")
+    monkeypatch.setenv(plugin._tryout.TRYOUT_ENV, f"both:{jar}")
+
+
+def test_a_cluster_whose_tryouts_do_not_verify_fails_every_case(monkeypatch, tmp_path):
+    _tryouts(monkeypatch, tmp_path)
+    monkeypatch.setattr(plugin, "_verify_tryouts", lambda config, tryouts: "tryout jars not verified: mismatch")
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)])
+    assert ctx is None and config._slt_striim_hard and "mismatch" in config._slt_striim_reason
+    with pytest.raises(pytest.fail.Exception, match="mismatch"):
+        plugin._fail_on_hard_striim_failure(config, ctx)
+
+
+def test_verified_tryouts_resolve_the_cluster(monkeypatch, tmp_path):
+    _tryouts(monkeypatch, tmp_path)
+    seen = []
+    monkeypatch.setattr(plugin, "_verify_tryouts", lambda config, tryouts: seen.append(tryouts) and None)
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)])
+    assert ctx is not None and len(seen[0]) == 1 and not getattr(config, "_slt_striim_hard", False)
+    plugin._fail_on_hard_striim_failure(config, ctx)              # nothing to fail
+
+
+def test_tryouts_against_a_native_striim_fail_rather_than_skip(monkeypatch, tmp_path):
+    _tryouts(monkeypatch, tmp_path)
+    monkeypatch.setattr(plugin, "_verify_tryouts", lambda *a: pytest.fail("verified a native Striim"))
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(False)], docker=False)
+    assert ctx is None and config._slt_striim_hard and "needs the Docker cluster" in config._slt_striim_reason
+
+
+def test_a_plain_unreachable_cluster_still_skips(monkeypatch, tmp_path):
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(False), groups(True), groups(False)])
+    assert ctx is None and not getattr(config, "_slt_striim_hard", False)
+    plugin._fail_on_hard_striim_failure(config, ctx)              # a skip, decided by the caller
+
+
+def test_a_tryout_that_cannot_be_built_fails_every_case(monkeypatch, tmp_path):
+    import socket
+    _tryouts(monkeypatch, tmp_path)
+
+    def no_jar(*args, **kwargs):
+        raise plugin._tryout.TryoutError("tryout Platform-1.0.0-SNAPSHOT.jar matches no jar in /opt/striim/lib")
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(OSError("closed")))
+    monkeypatch.setattr(sp, "ensure_deps", lambda *a, **k: None)
+    monkeypatch.setattr(sp, "ensure_image", no_jar)
+    monkeypatch.setattr(sp, "cluster_up", lambda *a, **k: pytest.fail("started a cluster"))
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)], docker=False, reachable=False)
+    assert ctx is None and config._slt_striim_hard and "matches no jar" in config._slt_striim_reason

@@ -40,6 +40,7 @@ from livetest.assertions.halt import assert_halt, accept_expected_halt, skipped_
 from livetest import recovery
 from livetest import outage
 from livetest import appactions
+from livetest import tryout as _tryout
 from livetest.striimfile import (
     read_server_files, clear_server_files, clear_server_dir, clear_op_checkpoints, ensure_server_dir,
     place_server_file,
@@ -336,6 +337,11 @@ def pytest_configure(config):
         striim_api.parse_timeout(os.environ.get("STRIIM_API_TIMEOUT"))   # effective_env merged it above
     except ValueError as e:
         raise pytest.UsageError(f"livetest: {e}") from e
+    # So is a malformed SLT_STRIIM_TRYOUT_JARS, or one naming a missing or unreadable jar.
+    try:
+        _tryout.configured()
+    except _tryout.TryoutError as e:
+        raise pytest.UsageError(f"livetest: {e}") from e
     # The OP register-once registry is NO LONGER WIPED here, and that is the point.
     #
     # It used to be, on the CONTROLLER only, because the registry JSON lives on the host while
@@ -421,7 +427,7 @@ def _running_striim_version() -> str | None:
     img = r.stdout.strip()
     if r.returncode != 0 or ":" not in img:
         return None
-    return img.rsplit(":", 1)[1]
+    return img.rsplit(":", 1)[1]        # a tryout image's tag is <version>-tryout-<hash> (_redeploy_reason)
 
 def _resolve_release(config) -> dict:
     # Resolve the release once per pytest session and cache it — every OP/UDF build and
@@ -459,8 +465,23 @@ def _redeploy_reason(running_version, want_version, striim_dir, ownership: str =
     path is the one flow that never
     reaches ensure_image -- so without this an edit stays invisible exactly where a developer
     is most likely to have just made one."""
+    running_tryout = bool(running_version) and _tryout.TAG_MARK in running_version
+    if running_version:
+        running_version = _tryout.strip_tag(running_version)
     if running_version and want_version and running_version != want_version:
         return f"running version {running_version} != required {want_version}"
+    # The tryout jars the cluster runs must be the ones SLT_STRIIM_TRYOUT_JARS names, and none when it is
+    # unset -- in every ownership mode, since a mismatch would label the run with the wrong jars. Unset, the
+    # running image's tag says it (no extra docker call on the stock path); set, the image is inspected.
+    try:
+        tryouts = _tryout.configured()
+        why = _sp.tryout_reason(want_version) if tryouts and want_version else None
+    except _tryout.TryoutError as e:
+        tryouts, why = True, str(e)
+    if not tryouts and running_tryout:
+        why = f"the running cluster runs tryout jars and {_tryout.TRYOUT_ENV} is unset"
+    if why:
+        return why
     if ownership != "shared" and want_version and not _sp.image_inputs_match(want_version, striim_dir):
         return "the running cluster's image was built from different sources"
     return None
@@ -558,6 +579,17 @@ def _resolve_striim(config):
         config._slt_striim_reason = reason
         return None
 
+    def _hard_fail(reason):
+        # A tryout problem fails every live case instead of skipping it: a run that could not put the
+        # named jars in place proved nothing about them, and must never read as a stock run either.
+        config._slt_striim_hard = True
+        return _fail(reason)
+
+    try:
+        tryouts = _tryout.configured()
+    except _tryout.TryoutError as e:
+        return _hard_fail(str(e))
+
     def _port_open(h, p):
         try:
             with socket.create_connection((h, p), timeout=3):
@@ -593,6 +625,8 @@ def _resolve_striim(config):
             # Record that WE started the cluster as soon as it's up, so it is torn down at
             # session end even if a later step below returns via _fail().
             config._slt_striim_provisioned = True
+        except _tryout.TryoutError as e:
+            _clear_progress(); _hard_fail(f"could not provision Docker cluster: {e}"); return False
         except Exception as e:
             _clear_progress(); _fail(f"could not provision Docker cluster: {e}"); return False
         # Containers are up; server + node + agent take time to become healthy (minutes on a cold
@@ -630,6 +664,9 @@ def _resolve_striim(config):
     if _slt_why:
         return _fail(_slt_why)
     native_only = paths.setting("SLT_STRIIM_NATIVE_ONLY") == "1"
+    if native_only and tryouts:
+        return _hard_fail(f"{_tryout.TRYOUT_ENV} needs the Docker cluster, and SLT_STRIIM_NATIVE_ONLY=1 uses "
+                          f"only the Striim at STRIIM_URL")
     with FileLock(str(_cluster_provision_lock()), mode=lockdir.file_mode()):
         if _probe_retry():
             if not native_only and _striim5_running():
@@ -737,6 +774,9 @@ def _resolve_striim(config):
                 mode = "docker"
                 provisioned = True
 
+    if tryouts and mode != "docker":
+        return _hard_fail(f"{_tryout.TRYOUT_ENV} needs the Docker cluster; the Striim at {url} is not one the "
+                          f"framework runs, so the tryout jars cannot be put in place")
     try:
         client = StriimClient.from_url(url, user, pw)
         if mode == "docker":
@@ -785,6 +825,9 @@ def _resolve_striim(config):
         _clear_progress()
         return _fail(f"could not read Striim topology: {e}")
 
+    why = _verify_tryouts(config, tryouts) if mode == "docker" else None
+    if why:
+        return _hard_fail(why)
     view = "host.docker.internal" if mode == "docker" else "localhost"
     ctx = StriimContext(url=url, user=user, password=pw, mode=mode, topology=topo,
                         view_host=view, groups={"app": "default", "source": "Agents"})
@@ -796,6 +839,43 @@ def _resolve_striim(config):
     if _slt_why:
         return _fail(_slt_why)
     return ctx
+
+def _fail_on_hard_striim_failure(config, ctx) -> None:
+    """A case FAILS, rather than skips, when the cluster was refused for a tryout problem (_resolve_striim's
+    _hard_fail): the run could not put the named jars in place, so it proved nothing about them."""
+    if ctx is None and getattr(config, "_slt_striim_hard", False):
+        pytest.fail(getattr(config, "_slt_striim_reason", "tryout jars not in place"), pytrace=False)
+
+
+def _verify_tryouts(config, tryouts) -> str | None:
+    """After the Docker cluster is up: the containers run the tryout image of this set, and each replaced
+    jar's sha256 inside every container it went to is the tryout's. Records the verified tryouts for the
+    evidence (``config._slt_tryouts``) and prints the TRYOUT banner. Returns why not, or None."""
+    if not tryouts:
+        config._slt_tryouts = []
+        return None
+    version = _resolve_release(config).get("STRIIM_VERSION", _sp._DEFAULT_STRIIM_VERSION)
+    ref = _sp.cluster_image_ref(version, tryouts)
+    try:
+        why = _sp.tryout_reason(version)
+        if why:
+            raise _tryout.TryoutError(why)
+        records = []
+        for record in _tryout.image_records(ref):
+            checks = _tryout.verify([record])
+            records.append({**record, "verifiedIn": [f"{c['container']}:{c['path']}" for c in checks]})
+    except _tryout.TryoutError as e:
+        return f"tryout jars not verified in the running cluster: {e}"
+    config._slt_tryouts = records
+    lines = _tryout.banner(records, ref)
+    tr = config.pluginmanager.getplugin("terminalreporter")
+    for line in lines:
+        if tr is not None:
+            tr.write_line(f"[slt] {line}", yellow=True, bold=True)
+        else:
+            print(f"[slt] {line}")
+    return None
+
 
 _NODE_LOG = "/var/log/striim/striim.server.log"
 
@@ -2105,6 +2185,7 @@ class LiveItem(pytest.Item):
         if "bigquery" in m.requires:
             validate_writer(m, (m.source_dir / m.tql).read_text())
         ctx = _resolve_striim(self.config)
+        _fail_on_hard_striim_failure(self.config, ctx)
         if ctx is None:
             self._slt_infra_skip = "cluster"   # see pytest_runtest_makereport
             pytest.skip(getattr(self.config, "_slt_striim_reason", "no reachable Striim"))
