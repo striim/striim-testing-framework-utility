@@ -61,7 +61,7 @@ def ui_properties(stored: dict, template: dict) -> dict:
             value = False
         elif value is None and (p or {}).get("conditionalRequired"):
             value = ""   # the form registers a conditionally required field, so it is sent
-        elif value == "" and p and not p.get("conditionalRequired") and (p.get("defaultValue") or "") == "":
+        elif value == "" and p and not p.get("conditionalRequired") and p.get("defaultValue") == "":
             value = None   # an empty optional field is left out of the save
         if value is None:
             continue

@@ -9,7 +9,8 @@ TEMPLATE = {"propertyMap": [
     {"name": "Flag", "type": "java.lang.Boolean", "required": False},
     {"name": "Repeat", "type": "java.lang.String", "required": False},
     {"name": "Size", "type": "java.lang.Integer", "required": False},
-    {"name": "Note", "type": "java.lang.String", "required": False},
+    {"name": "Note", "type": "java.lang.String", "required": False, "defaultValue": ""},
+    {"name": "Bare", "type": "java.lang.String", "required": False},
     {"name": "Sep", "type": "java.lang.String", "required": False, "defaultValue": ","},
     {"name": "Query", "type": "java.lang.String", "required": False, "conditionalRequired": "(p)=>!p.Tables"},
 ]}
@@ -21,9 +22,10 @@ def test_ui_properties_as_measured_on_5_4_0_6c():
     assert ui_properties(stored, TEMPLATE) == {
         "Url": PLACEHOLDER, "Workers": 1, "Flag": False, "Repeat": "300", "Size": 50, "Query": "",
         "Password": {"encrypted": "x"}, "adapterName": "X"}
-    # An empty optional field with an empty default is left out (TextCleanerOp ReplaceTo, 5.4.0.6C);
-    # one with another default is not measured, so it is sent as stored.
-    assert ui_properties({"Note": "", "Sep": ""}, TEMPLATE) == {"Sep": ""}
+    # An empty optional field with an empty default is left out (TextCleanerOp ReplaceTo, 5.4.0.6C,
+    # whose template says defaultValue ""); another default, or none, is not measured: sent as stored.
+    assert ui_properties({"Note": "", "Sep": "", "Bare": "", "Query": ""}, TEMPLATE) == {
+        "Sep": "", "Bare": "", "Query": ""}
 
 
 def test_split_at_first_deploy_and_names_the_apps_created_before_it():

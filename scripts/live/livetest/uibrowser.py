@@ -64,7 +64,7 @@ def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
         # A field's own error ("Value for Bucket Name is required") has no data-test-id.
         errors = [e.inner_text().strip()
                   for selector in ("[data-test-id=validation-error]:visible",
-                                   "text=/^Value for .+ is required$/ >> visible=true")
+                                   "text=/^\\s*Value for .+ is required\\s*$/ >> visible=true")
                   for e in page.locator(selector).all()]
         if any(errors):
             raise UiFormError(f"{name}: the UI refused Save: {'; '.join(e for e in errors if e)}")
