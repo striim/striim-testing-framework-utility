@@ -124,11 +124,20 @@ def _deletable(entry):
 
 
 
+# gRPC's own log line (glog format), which a forked child may write before it runs docker:
+# "I1027 20:56:25.501391 26618724 ev_poll_posix.cc:587] FD from fork parent still in poll list".
+_GRPC_LOG_LINE = re.compile(r"^[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\S+:\d+\] ")
+
+
 def _docker(argv):
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S)
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return SimpleNamespace(returncode=124, stdout="", stderr=f"timed out after {DOCKER_TIMEOUT_S:.0f}s")
+    stderr = getattr(r, "stderr", "") or ""
+    kept = [ln for ln in stderr.splitlines() if not _GRPC_LOG_LINE.match(ln)]
+    return SimpleNamespace(returncode=getattr(r, "returncode", 1), stdout=getattr(r, "stdout", ""),
+                           stderr="\n".join(kept) + ("\n" if kept else ""))
 
 
 def _now() -> str:
