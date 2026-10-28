@@ -96,6 +96,14 @@ SECTIONS = (
         ("SLT_PARALLEL", "unset", "`1`: allow pytest-xdist (`-n`) and give each test its own name tokens. "
                                   "`striim-test run --parallel` sets it."),
         ("SLT_RUN_DISABLED", "unset", "`1`: run tests marked `disabled:` or `disabled_parallel:`."),
+        ("SLT_UI_FORM", "unset",
+         "Save every component of each case's app as the Flow Designer would, between the TQL's "
+         "`CREATE`s and its first `DEPLOY`/`START APPLICATION`, so a value only the UI sends reaches "
+         "the adapter. `replay`: re-save over the UI's websocket call, one `[slt] ui-form` line per value "
+         "it changes. `browser`: re-save in the Flow Designer with headless Chromium; the case fails if "
+         "the UI or the server refuses Save or the UI sends a different form from `replay`. Needs the "
+         "`ui` extra (`pip install -e '.[ui]'`; `browser` also `playwright install chromium`). "
+         "`drop_recreate_app` and `alter_recompile` actions deploy as written."),
         ("SLT_SKIP_VERIFY", "unset",
          "`1`: run each test until it is RUNNING with its data flowed, then skip every assertion and "
          "the `recover:` phase and report it skipped. For debugging by hand, with "
