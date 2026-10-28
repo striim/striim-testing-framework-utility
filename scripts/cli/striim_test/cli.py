@@ -4,7 +4,7 @@ and its ``--help`` output are the executable contract.
     striim-test list     [--targets <path>] [--tier <t>] [--suite <s>]
     striim-test run      [PATH] [--targets <path>] [--tier <t>] [--suite <s>] [--case <id>...]
                          [--parallel] [--keep-resources] [--dry-run]
-    striim-test doctor   [--targets <path>] [--case <path>...]
+    striim-test doctor   [--targets <path>] [--case <path>...] [--strict]
 
 With no project manifest (no ``--targets``, no ``GOLD_TARGETS``) both run over this clone's own
 suites, located by the SLT_* path keys.
@@ -78,6 +78,8 @@ def build_parser() -> _Parser:
     d.add_argument("--case", metavar="PATH", action="extend", nargs="+",
                    help="a case dir, its test.yaml, or a dir of cases; the services they "
                         "require: are checked")
+    d.add_argument("--strict", action="store_true",
+                   help="fail, rather than warn, on anything that would skip a selected case")
     return p
 
 

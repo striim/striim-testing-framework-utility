@@ -1,6 +1,6 @@
 """``striim-test doctor``: check the setup a run depends on, one line per check.
 
-    striim-test doctor [--targets PATH] [--case PATH ...]
+    striim-test doctor [--targets PATH] [--case PATH ...] [--strict]
 
 1. ``.env`` (at the project root, ``livetest.paths.dotenv_path``) and the process environment:
    an ``SLT_*`` key the framework never reads is flagged as a likely typo, with the nearest
@@ -30,10 +30,21 @@
    accept a TCP connection, and Postgres a login as its admin user. A Docker service is
    connected to when its container runs; otherwise Docker must answer, since the run starts it.
 
+4. What would skip or refuse the selected cases later, checked now (``--strict`` fails on each,
+   since a run that skips a case has not tested it): the release (``STRIIM_HOME``); with a
+   cluster answering, that it runs that release (a shared run never redeploys, an exclusive one
+   never adopts); in Docker mode, that the primary and node together count no more than the
+   license's ``LICENSE_CPUS`` and that a running cluster has its node and agent; the jar builds'
+   ``mvn``, JDK and ``STRIIM_HOME``; per live case, node faults without ``SLT_ENABLE_NODE_FAULTS``,
+   the cluster topology on a native server, a ``service_outage`` target, ``openssl``; each
+   service's own availability (``livetest.prestart.prepare`` without hooks); the integration
+   tier's services, real-Spanner settings and session lock; the lock dir.
+
 The known ``SLT_*`` keys are read from this clone's own sources (every ``SLT_*`` literal under
 ``scripts/``, tests excluded), so a key a later change adds is known without a list to update.
-Doctor starts nothing and writes nothing. Exit: 0 clean (warnings allowed), 2 when a
-configuration check fails, else 3 when only reachability checks fail.
+Doctor starts nothing and writes nothing (the integration session lock is tried and released).
+Exit: 0 clean (warnings allowed), 2 when a configuration check fails, else 3 when only
+reachability checks fail, or, under ``--strict``, a check predicts skipped cases.
 """
 from __future__ import annotations
 
@@ -67,6 +78,7 @@ class Check:
     subject: str          # what was checked: "env", "striim", "service postgres", ...
     message: str
     code: int = OK        # CONFIG or INFRA when FAIL
+    skips: bool = False   # a warning that predicts selected cases skip; --strict fails it
 
     def line(self) -> str:
         return f"[{self.status:^4}] {self.subject}: {self.message}"
@@ -78,6 +90,11 @@ def _ok(subject, message):
 
 def _warn(subject, message):
     return Check(WARN, subject, message)
+
+
+def _skip(subject, message):
+    """A warning that the run would skip cases rather than test them."""
+    return Check(WARN, subject, message, skips=True)
 
 
 def _fail(subject, message, code=CONFIG):
@@ -217,7 +234,10 @@ def check_env(env: dict, clone: Path) -> tuple[list, dict]:
 
     for key in PATH_KEYS:
         try:
-            paths._path(key, Path("."), env, values)
+            if key == "SLT_LIVE_CASES":
+                paths.live_case_roots(env, values)      # one path or an os.pathsep list
+            else:
+                paths._path(key, Path("."), env, values)
         except paths.PathConfigError as e:
             checks.append(_fail("env", str(e)))
     for key in sorted(k for k in env if ENV_PATH_KEYS.fullmatch(k) or k in driver_paths):
@@ -382,12 +402,13 @@ def _docker_answers(run=None) -> tuple[bool, str]:
     return True, f"Docker {(p.stdout or '').strip()}"
 
 
-def check_striim(env: dict, dotenv: dict, probe=None, docker=None, build=None) -> list:
+def check_striim(env: dict, dotenv: dict, probe=None, docker=None, build=None, identity=None) -> list:
     """The Striim checks, with settings resolved as livetest.paths resolves them."""
     from livetest import paths
     probe = probe or _probe
     docker = docker or _docker_answers
     build = build or _docker_build
+    identity = identity or check_cluster_identity
     url, source = paths._lookup("STRIIM_URL", env, dotenv)
     user = paths.setting("STRIIM_USER", env, dotenv) or "admin"
     pw = paths.setting("STRIIM_PASS", env, dotenv)
@@ -408,7 +429,7 @@ def check_striim(env: dict, dotenv: dict, probe=None, docker=None, build=None) -
     ok, detail = probe(default, user, pw or "striim")
     if ok:
         return [_ok("striim", f"Docker mode (STRIIM_URL unset); a cluster already answers at "
-                              f"{default}")]
+                              f"{default}")] + identity(env, dotenv)
     if detail.startswith("HTTP"):
         return [_fail("striim", f"Docker mode (STRIIM_URL unset), but {default} answers "
                                 f"{detail}; stop what is on that port, or set STRIIM_URL to it")]
@@ -517,6 +538,300 @@ def check_docker_disk(env: dict, dotenv: dict, disk=None, present=None) -> list:
     return [_ok("docker disk", f"{docker_disk.describe(free)} free ({how}); {what} needs at "
                                f"least {docker_disk.min_free_gb(building, env):g} GB")]
 
+
+# --- release, cluster identity, sizing, builds -------------------------------------------------
+
+# The CPUs a Striim license lets a cluster count: 24 in the licenses this framework is tested with
+# (docs/WHAT-IS-SUPPORTED.md). Each node counts every CPU it sees; a node that takes the total past
+# it shuts itself down while the cluster forms.
+LICENSE_CPUS = 24
+
+
+def check_release(env: dict) -> list:
+    """The release a run builds and provisions, from STRIIM_HOME as livetest.releases detects it."""
+    from livetest import releases
+    home = (env.get("STRIIM_HOME") or "").strip()
+    try:
+        rel = releases.resolve_release(env)
+    except releases.ReleaseError as e:
+        return [_fail("release", f"STRIIM_HOME={home!r}: {e}")]
+    if not home:
+        return [_warn("release", f"STRIIM_HOME is unset, so the run assumes Striim {rel['STRIIM_VERSION']}; "
+                                 f"export STRIIM_HOME=<the Striim install to test>")]
+    return [_ok("release", f"Striim {rel['STRIIM_VERSION']} (JDK {rel['JAVA_RELEASE']}), from "
+                           f"STRIIM_HOME={home}")]
+
+
+def _running_version(env) -> str | None:
+    from livetest import plugin
+    return plugin._running_striim_version()
+
+
+def check_cluster_identity(env: dict, dotenv: dict, running=None) -> list:
+    """Docker mode, with a cluster already answering: will the run use it? A shared run never
+    redeploys and an exclusive run never adopts one, so a mismatch skips every live case only when
+    the live tier reaches it (livetest.plugin._redeploy_reason, livetest.infra.forbid_redeploy)."""
+    from livetest import infra, plugin, releases
+    mode, source = _lookup(infra.OWNERSHIP_ENV, env, dotenv)
+    if mode == "exclusive":
+        return [_fail("cluster", f"exclusive ({infra.OWNERSHIP_ENV}, set in {source}) never adopts a running "
+                                 f"cluster, and one already answers, so every live case skips; stop it, or "
+                                 f"set {infra.OWNERSHIP_ENV}=shared to use it")]
+    if mode != "shared":
+        return []                                   # reported by the ownership check
+    try:
+        want = releases.resolve_release(env)["STRIIM_VERSION"]
+    except releases.ReleaseError:
+        return []                                   # reported by the release check
+    have = (running or _running_version)(env)
+    if not have:
+        return [_warn("cluster", "a cluster answers, but its version could not be read from its image")]
+    why = plugin._redeploy_reason(have, want, None, "shared")
+    if why:
+        home = (env.get("STRIIM_HOME") or "").strip() or "unset"
+        running_release = plugin._tryout.strip_tag(have)
+        fix = (f"Point STRIIM_HOME at the {running_release} install, or stop the shared stack so the run "
+               f"starts {want}" if running_release != want else
+               "Stop the shared stack so the run starts it as this run's settings require")
+        return [_fail("cluster", f"{why} (STRIIM_HOME={home}); a shared run never redeploys, so every "
+                                 f"live case skips. {fix}")]
+    return [_ok("cluster", f"the running cluster is Striim {have}, as the run requires")]
+
+
+def _docker_info(env) -> tuple[int | None, int | None]:
+    """(CPUs, memory bytes) Docker's VM has, or (None, None)."""
+    try:
+        p = subprocess.run(["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"],
+                           capture_output=True, text=True, timeout=20)
+        cpus, mem = p.stdout.split()
+        return int(cpus), int(mem)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+
+
+def _container_cpus(name) -> float | None:
+    """The CPU limit of a running container (0 = none), or None when it is not running."""
+    try:
+        p = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}} {{.HostConfig.NanoCpus}}", name],
+                           capture_output=True, text=True, timeout=20)
+        running, nano = p.stdout.split()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return int(nano) / 1e9 if running == "true" else None
+
+
+def _mem_bytes(value: str) -> int | None:
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmgt]?)b?\s*", value or "", re.I)
+    if not m:
+        return None
+    unit = m.group(2).lower()
+    return int(float(m.group(1)) * (1024 ** ("kmgt".index(unit) + 1) if unit else 1))
+
+
+def check_sizing(env: dict, dotenv: dict, info=None, cpus=None) -> list:
+    """Docker mode: will both app nodes fit the license's CPU count, and the JVMs Docker's memory?
+    With the cluster running, its containers' own limits are read; otherwise the settings the run
+    starts it with (services/striim/compose.yaml)."""
+    from livetest import paths, stack
+    if paths._lookup("STRIIM_URL", env, dotenv)[0]:
+        return []
+    info, cpus = info or _docker_info, cpus or _container_cpus
+    ncpu, mem = info(env)
+    if ncpu is None:
+        return []                                   # Docker not answering is the striim check's
+    checks = []
+    primary, node = cpus(stack.striim_container(env)), cpus(stack.app_nodes(env)[-1])
+    if primary is not None:
+        missing = [n for n, c in ((stack.app_nodes(env)[-1], node),
+                                  (stack.agent_container(env), cpus(stack.agent_container(env)))) if c is None]
+        if missing:
+            return [_skip("sizing", f"the cluster runs without {' and '.join(missing)}, so every case needing "
+                                    f"the cluster topology skips; a node that counts more than {LICENSE_CPUS} "
+                                    f"CPUs with the primary shuts itself down. Stop the stack so the run starts "
+                                    f"it again")]
+        caps, where = (primary, node), "the running containers' limits"
+    else:
+        caps = tuple(float(paths._lookup(k, env, dotenv)[0] or 0) for k in
+                     ("SLT_STRIIM_PRIMARY_CPUS", "SLT_STRIIM_NODE_CPUS"))
+        where = "SLT_STRIIM_PRIMARY_CPUS / SLT_STRIIM_NODE_CPUS"
+    counted = [ncpu if c <= 0 else min(ncpu, -(-c // 1)) for c in caps]
+    if sum(counted) > LICENSE_CPUS:
+        half = LICENSE_CPUS // 2
+        checks.append(_fail("sizing", f"the primary and node count {int(counted[0])} + {int(counted[1])} CPUs "
+                                      f"({where}; Docker has {ncpu}), more than the {LICENSE_CPUS} the license "
+                                      f"allows: the node shuts down while the cluster forms. export "
+                                      f"SLT_STRIIM_PRIMARY_CPUS={half} SLT_STRIIM_NODE_CPUS={half}"))
+    else:
+        checks.append(_ok("sizing", f"the primary and node count {int(counted[0])} + {int(counted[1])} CPUs "
+                                    f"({where}), within the license's {LICENSE_CPUS}"))
+    heap = _mem_bytes(paths._lookup("SLT_STRIIM_MEM_MAX", env, dotenv)[0] or "16384m")
+    limit = _mem_bytes(paths._lookup("SLT_STRIIM_MEM_LIMIT", env, dotenv)[0] or "0")
+    if primary is None and mem and heap and not limit and 3 * heap > mem:
+        checks.append(_warn("sizing", f"SLT_STRIIM_MEM_MAX sizes three JVMs ({3 * heap / 2**30:.1f} GB) beyond "
+                                      f"Docker's {mem / 2**30:.1f} GB, with SLT_STRIIM_MEM_LIMIT unset; "
+                                      f"lower SLT_STRIIM_MEM_MAX, or set SLT_STRIIM_MEM_LIMIT"))
+    return checks
+
+
+def _builds(f: Path, tier: str) -> bool:
+    """Whether a case builds a jar: every integration and perf case builds its module; a live case
+    builds the op:/udf: it loads."""
+    return tier in ("integration", "perf") or _uploads(f)
+
+
+def check_build(env: dict, files: list, tier_of=None, java_home=None, which=None) -> list:
+    """The prerequisites of the jar builds the selected cases make (livetest/inttest opartifacts):
+    the JDK of the release, mvn, and STRIIM_HOME holding the release's Platform jar."""
+    import shutil
+
+    from livetest import opartifacts, releases
+    which = which or shutil.which
+    java_home = java_home or opartifacts.resolve_build_java_home
+    building = [f for f in files if _builds(f, tier_of(f) if tier_of else "live")]
+    if not building:
+        return []
+    who = f"{len(building)} selected case(s) build a jar"
+    try:
+        rel = releases.resolve_release(env)
+    except releases.ReleaseError:
+        return []                                   # reported by the release check
+    checks = []
+    integration = [f for f in building if tier_of and tier_of(f) in ("integration", "perf")]
+    if integration and not (env.get("STRIIM_HOME") or "").strip():
+        checks.append(_skip("build", f"STRIIM_HOME is unset, so the {len(integration)} integration/perf "
+                                     f"case(s) skip; export STRIIM_HOME=<the Striim install>"))
+    if not which("mvn"):
+        checks.append(_skip("build", f"mvn is not on PATH, and {who}"))
+    try:
+        jdk = java_home(rel["JAVA_RELEASE"])
+    except opartifacts.OpArtifactError as e:
+        checks.append(_skip("build", f"{who}: {e}"))
+        jdk = None
+    if not checks:
+        checks.append(_ok("build", f"{who}: mvn, JDK {rel['JAVA_RELEASE']}"
+                                   f"{f' ({jdk})' if jdk else ''} and Striim {rel['STRIIM_VERSION']} found"))
+    return checks
+
+
+def check_case_gates(files: list, env: dict, dotenv: dict, tier_of=None, which=None, outage=None) -> list:
+    """What skips or fails a live case before it runs, read from its test.yaml
+    (livetest.plugin LiveItem._runtest): node faults not enabled, the cluster topology on a native
+    server, a service_outage target that is not a container, and openssl for the services that sign
+    a key with it."""
+    import shutil
+
+    from livetest import manifest as live_manifest
+    from livetest import outage as live_outage
+    from livetest import paths
+    which = which or shutil.which
+    outage = outage or live_outage.container_for
+    native = bool(paths._lookup("STRIIM_URL", env, dotenv)[0])
+    checks, signs = [], []
+    for f in files:
+        if (tier_of(f) if tier_of else "live") != "live":
+            continue
+        try:
+            m = live_manifest.load_manifest(f)
+        except Exception:                   # noqa: BLE001 - reported by the manifest check
+            continue
+        subject = f"case {f.parent.name}"
+        if (getattr(m, "recover", None) or {}).get("node") and env.get("SLT_ENABLE_NODE_FAULTS") != "1":
+            checks.append(_skip(subject, "recover.node skips without SLT_ENABLE_NODE_FAULTS=1 (a dedicated, "
+                                         "disposable stack)"))
+        if native and m.topology in ("cluster", "agent"):
+            checks.append(_skip(subject, f"topology: {m.topology} needs the Docker cluster; STRIIM_URL names "
+                                         f"a single server, so it skips"))
+        for spec in m.action_specs:
+            if spec["type"] == "service_outage":
+                container, why = outage(spec["service"], env)
+                if container is None:
+                    checks.append(_skip(subject, why))
+        if {"spanner", "gcs", "bigquery"} & set(m.requires):
+            signs.append(f.parent.name)
+    if signs and not which("openssl"):
+        checks.append(_fail("openssl", f"not on PATH; {', '.join(signs)} need it to sign the emulator "
+                                       f"credentials", INFRA))
+    return checks
+
+
+def check_int_services(need: dict, env: dict, docker=None) -> list:
+    """The services the selected integration and perf cases require, as inttest provisions them
+    (inttest.plugin._provision_requires): supported here, real-Spanner settings complete, required
+    files present, a connection-only service pointed at an instance, and Docker for the rest."""
+    from inttest import services as int_services
+    from inttest import spanneradmin
+    docker = docker or _docker_answers
+    checks = []
+    for name in sorted(need):
+        subject = f"integration service {name}"
+        cases = ", ".join(sorted(set(need[name])))
+        if name not in int_services.supported_services():
+            checks.append(_skip(subject, f"required by {cases}: the integration tier does not provision it, "
+                                         f"so they skip"))
+            continue
+        if name == "spanner":
+            try:
+                real = spanneradmin.real_config(env)
+            except spanneradmin.RealSpannerError as e:
+                checks.append(_fail(subject, f"required by {cases}: {e}"))
+                continue
+            if real:
+                checks.append(_ok(subject, f"real Cloud Spanner ({real.get('project')}/{real.get('instance')}); "
+                                           f"the databases are checked when the run starts"))
+                continue
+        spec = int_services._service_spec(name)
+        why = int_services.unavailable(name)
+        if why:
+            message = f"required by {cases}: {why}"
+            checks.append(_fail(subject, message, INFRA) if spec.get("unavailable_policy") == "fail"
+                          else _skip(subject, f"{message}; they skip"))
+            continue
+        if spec and not spec.get("compose") and not spec.get("container"):
+            gate = spec.get("live_override_env")
+            if gate and (env.get(gate) or "").strip():
+                checks.append(_ok(subject, f"connection only ({gate}={env[gate].strip()})"))
+            else:
+                checks.append(_skip(subject, f"required by {cases}: no container ships for it; set {gate} "
+                                             f"to your own instance, or they skip"))
+            continue
+        up, detail = docker()
+        if not up:
+            checks.append(_skip(subject, f"required by {cases}: Docker is needed to start it: {detail}"))
+            continue
+        checks.append(_ok(subject, f"Docker ({detail}) starts it for {cases}"))
+    return checks
+
+
+def check_int_session(env: dict) -> list:
+    """Another integration session against this checkout refuses the run
+    (inttest.plugin._acquire_session_lock); the lock is tried and released at once."""
+    from filelock import FileLock, Timeout
+
+    from inttest import plugin as int_plugin
+    if (env.get("INT_SHARED_SERVICES") or "").strip() == "1" or env.get("INT_ALLOW_CONCURRENT_SESSIONS"):
+        return []
+    path = int_plugin._session_lock_path()
+    if not path.exists():
+        return [_ok("integration session", "no other integration session")]
+    lock = FileLock(str(path), timeout=0)
+    try:
+        lock.acquire()
+    except Timeout:
+        return [_fail("integration session", f"another integration session holds {path}; the run is "
+                                             f"refused until it finishes", INFRA)]
+    lock.release()
+    return [_ok("integration session", "no other integration session")]
+
+
+def check_lock_dir(env: dict) -> list:
+    """The machine-wide lock dir (livetest.lockdir) must be writable, or every live run errors."""
+    import os
+    d = Path((env.get("SLT_LOCK_DIR") or "").strip() or "/tmp/slt-locks").expanduser()
+    target = d if d.exists() else next((p for p in d.parents if p.exists()), d)
+    if not os.access(target, os.W_OK | os.X_OK):
+        return [_fail("lock dir", f"{target} is not writable by this user; export "
+                                  f"SLT_LOCK_DIR=$HOME/.slt-locks (README, \"When a run cannot start\")")]
+    return [_ok("lock dir", f"{d} is writable")]
 
 
 def _probe(url, user, pw):
@@ -713,8 +1028,8 @@ def _taken_host_port(defn, base: dict, tcp, env: dict, publisher):
 
 
 def check_services(need: dict, env: dict, tcp=None, login=None, docker=None,
-                   running=None, publisher=None) -> list:
-    from livetest import registry, resource_profiles, services
+                   running=None, publisher=None, mode="docker") -> list:
+    from livetest import prestart, registry, resource_profiles, services
     tcp = tcp or _tcp
     logins = LOGINS if login is None else login
     docker = docker or _docker_answers
@@ -728,6 +1043,15 @@ def check_services(need: dict, env: dict, tcp=None, login=None, docker=None,
             defn = registry.load_service(name, env=env)
         except registry.RegistryError as e:
             checks.append(_fail(subject, f"required by {cases}: {e}"))
+            continue
+        try:
+            why = prestart.prepare(defn, env, mode, allow_hook=False, log=lambda *_: None)
+        except Exception as e:          # noqa: BLE001 - a driver hook's own error is the reason
+            why = f"{type(e).__name__}: {e}"
+        if why:
+            fail = getattr(defn, "unavailable_policy", "skip") == "fail"
+            checks.append(_fail(subject, f"required by {cases}: {why}", INFRA) if fail
+                          else _skip(subject, f"required by {cases}: {why}; they skip until then"))
             continue
         if defn.opt_in_env and not (env.get(defn.opt_in_env) or env.get("SLT_EMULATORS")):
             checks.append(_warn(subject, f"opt-in: `start all` and other bring-ups not tied to a "
@@ -750,10 +1074,6 @@ def check_services(need: dict, env: dict, tcp=None, login=None, docker=None,
             if host and base.get("host") in (None, "localhost", "127.0.0.1"):
                 base["host"] = host
             where = f"Docker ({defn.container})"
-            why = registry.unavailable(defn, env)
-            if why and not defn.compose and not defn.container:
-                checks.append(_warn(subject, f"required by {cases}: {why}; they skip until then"))
-                continue
             try:
                 prof = resource_profiles.select_profile("live", name, services_dir=Path(defn.dir).parent)
             except resource_profiles.ProfileError as e:
@@ -834,7 +1154,8 @@ def check_tryouts(env: dict) -> list:
 
 
 def run_checks(env: dict, clone: Path, cases=(), probe=None, docker=None, tcp=None, login=None,
-               running=None, location=None, disk=None, present=None, tier_of=None) -> list:
+               running=None, location=None, disk=None, present=None, tier_of=None, identity=None,
+               info=None, cpus=None, java_home=None, which=None, outage=None) -> list:
     """``location`` is a project manifest's ``dispatch.location_env``: the ownership, ledger and
     service checks then read what a tier child of that project reads."""
     from livetest import paths
@@ -843,34 +1164,61 @@ def run_checks(env: dict, clone: Path, cases=(), probe=None, docker=None, tcp=No
     if location:
         run_env = {**env, **location}
         run_dotenv = paths.dotenv_values(run_env)
+    files, bad = case_files(list(cases)) if cases else ([], [])
+    tier = (lambda f: tier_of(f)) if tier_of is not None else (lambda f: "live")
+    live = [f for f in files if tier(f) == "live"]
+    integration = [f for f in files if tier(f) in ("integration", "perf")]
+    native = bool(paths._lookup("STRIIM_URL", env, dotenv)[0])
+    # Integration and perf cases run without a Striim cluster: with only those selected, the
+    # cluster, ownership and lock dir do not decide the run.
+    cluster = not (integration and len(integration) == len(files))
     checks += check_api_timeout(run_env)
-    checks += check_tryouts(run_env)
-    checks += check_service_settings(run_env)
-    checks += check_ownership(run_env, run_dotenv)
-    checks += check_ledgers(run_env, run_dotenv)
-    striim_checks = check_striim(env, dotenv, probe=probe, docker=docker)
-    checks += striim_checks
-    if not [c for c in striim_checks if c.status == FAIL] and \
-            not paths._lookup("STRIIM_URL", env, dotenv)[0]:
-        checks += check_license(env)
-        checks += check_installers(env)
-        checks += check_docker_disk(env, dotenv, disk=disk, present=present)
+    if cluster:
+        checks += check_tryouts(run_env)
+        checks += check_service_settings(run_env)
+        checks += check_ownership(run_env, run_dotenv)
+        checks += check_ledgers(run_env, run_dotenv)
+        checks += check_lock_dir(env)
+    checks += check_release(env)
+    if cluster:
+        striim_checks = check_striim(env, dotenv, probe=probe, docker=docker,
+                                     identity=lambda e, d: check_cluster_identity(
+                                         run_env, run_dotenv, running=identity))
+        checks += striim_checks
+        if not [c for c in striim_checks if c.status == FAIL and c.subject == "striim"] and not native:
+            checks += check_license(env)
+            checks += check_installers(env)
+            checks += check_docker_disk(env, dotenv, disk=disk, present=present)
+            checks += check_sizing(env, dotenv, info=info, cpus=cpus)
     if cases:
-        files, bad = case_files(list(cases))
-        need, unreadable = required_services(files)
-        checks += bad + unreadable
+        checks += bad
+        need, unreadable = required_services(live)
+        int_need, int_unreadable = required_services(integration)
+        checks += unreadable + int_unreadable
         checks += check_manifests(files, tier_of)
-        checks += check_uploads(env, dotenv, files)
-        if files and not need:
+        checks += check_uploads(env, dotenv, live)
+        checks += check_build(env, files, tier_of, java_home=java_home, which=which)
+        checks += check_case_gates(files, env, dotenv, tier_of, which=which, outage=outage)
+        if files and not need and not int_need:
             checks.append(_ok("services", f"the {len(files)} selected case(s) require none"))
         from striim_test.dispatch import service_env
         try:
             svc_env = {**run_env, **service_env(run_env)}
         except paths.PathConfigError:
             svc_env = run_env           # reported by check_env
-        checks += check_services(need, svc_env, tcp=tcp, login=login, docker=docker,
-                                 running=running)
+        if need:
+            checks += check_services(need, svc_env, tcp=tcp, login=login, docker=docker,
+                                     running=running, mode="native" if native else "docker")
+        if integration:
+            checks += check_int_session(run_env)
+            checks += check_int_services(int_need, svc_env, docker=docker)
     return checks
+
+
+def strict(checks) -> list:
+    """``--strict``: a warning that predicts skipped cases fails, since a run that skips them has
+    not tested them."""
+    return [Check(FAIL, c.subject, c.message, INFRA) if c.skips else c for c in checks]
 
 
 def exit_code(checks) -> int:
@@ -920,6 +1268,8 @@ def cmd_doctor(args, origins, env=None) -> int:
     location, checks = project_location(getattr(args, "targets", None), env)
     checks += run_checks(env, origins.home, cases=args.case or (), location=location,
                          tier_of=_tier_of(getattr(args, "targets", None), args.case))
+    if getattr(args, "strict", False):
+        checks = strict(checks)
     for c in checks:
         print(c.line(), flush=True)
     failed = [c for c in checks if c.status == FAIL]

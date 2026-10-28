@@ -942,6 +942,9 @@ def test_doctor_command_names_each_problem(clone, trap, elsewhere):
         "SLT_INFRA_OWNERSHIP=shared (with SLT_KEEP_SERVICES=1) to reuse a kept stack, or "
         "SLT_INFRA_OWNERSHIP=exclusive for a stack this run owns",
         "[ ok ] ledgers: no leftover ownership ledgers",
+        "[ ok ] lock dir: /tmp/slt-locks is writable",
+        "[warn] release: STRIIM_HOME is unset, so the run assumes Striim 5.4.2; export "
+        "STRIIM_HOME=<the Striim install to test>",
         f"[FAIL] striim: STRIIM_URL='striim.example.com:9080' has no scheme; write it as "
         f"http://striim.example.com:9080 (set in {clone / '.env'})",
         f"[FAIL] case: missing: no test.yaml there ({elsewhere / 'missing'})",
@@ -985,6 +988,9 @@ def test_doctor_command_clean(clone, elsewhere, tmp_path):
         f"for direct pytest); SLT_KEEP_SERVICES=1 (set in {clone / '.env'}; striim-test only, export for "
         f"direct pytest)",
         "[ ok ] ledgers: no leftover ownership ledgers",
+        "[ ok ] lock dir: /tmp/slt-locks is writable",
+        "[warn] release: STRIIM_HOME is unset, so the run assumes Striim 5.4.2; export "
+        "STRIIM_HOME=<the Striim install to test>",
         f"[ ok ] striim: {url} authenticated as 'admin'",
         "doctor: all checks passed"]
 

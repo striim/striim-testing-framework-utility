@@ -169,6 +169,9 @@ SECTIONS = (
          "the sandbox `intdb`."),
         ("INT_ALLOW_CONCURRENT_SESSIONS", "unset", "`1`: allow a second integration session on the same "
                                                    "stack at the same time."),
+        ("INT_ALLOW_ALL_SKIPPED", "unset", "`1`: do not fail a run in which every case skipped because a "
+                                           "service or Docker was missing. A build prerequisite missing "
+                                           "still fails it."),
         ("INT_SHARED_SERVICES", "unset", "Reserved: a broker owns the services, and the session does not "
                                          "tear them down."),
     )),
