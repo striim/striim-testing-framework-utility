@@ -17,7 +17,7 @@ import pytest
 import yaml
 from filelock import FileLock
 
-from livetest import lockdir
+from livetest import lockdir, uiform
 from livetest.manifest import load_manifest, TestManifest, ManifestError, VALID_DEPTHS, xfail_for_release, upload_name_ok
 from livetest.substitute import render
 from livetest.striim import StriimClient, probe_reachable, TERMINAL_STATUSES, POLL_TIMEOUT
@@ -2011,7 +2011,7 @@ def _deploy_tql_once_retrying(client, tql: str, ns: str, name: str) -> None:
     so a deterministic failure still fails, twice as slowly and no more quietly.
     """
     try:
-        client.deploy_tql(tql)
+        _deploy_case_tql(client, tql)
         return
     except Exception as e:
         if not _TRANSIENT_IMPORT_NPE.search(str(e)):
@@ -2020,7 +2020,13 @@ def _deploy_tql_once_retrying(client, tql: str, ns: str, name: str) -> None:
             f"[slt] {name}: TQL import hit a server-side NPE ({e}) — dropping the namespace "
             f"and retrying the import once", _slt_evidence.known_secrets(), home="", hostname=""))
     client.teardown_namespace(ns)
-    client.deploy_tql(tql)
+    _deploy_case_tql(client, tql)
+
+
+def _deploy_case_tql(client, tql: str) -> None:
+    """A case's TQL; under SLT_UI_FORM every component is re-saved as the UI would before DEPLOY."""
+    for line in uiform.deploy(client, tql):
+        print(line)
 
 
 def _rendered_tql(m: TestManifest, tokens: dict, upload_renames: dict) -> str:
@@ -2982,7 +2988,7 @@ class LiveItem(pytest.Item):
                         _in_use = opregistry.in_use(progress=lambda msg: _report(m.name, msg))
                         _in_use.__enter__()
                         in_use_held = True
-                        client.deploy_tql(_rendered_tql(m, tokens, upload_renames))
+                        _deploy_case_tql(client, _rendered_tql(m, tokens, upload_renames))
                         deployed = True
                         _diff_clock = time.monotonic()   # the restart and redeploy are not lag
                     elif not deployed:
