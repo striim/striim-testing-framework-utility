@@ -31,9 +31,13 @@ def _jsonify(v):
     # Normalize one column value from the Spanner client into a plain JSON-comparable value.
     # A JSON column arrives as JsonObject (dict subclass); serialize() yields correct text even
     # for a top-level array, which we json.loads back to a plain dict/list/scalar. NULL JSON
-    # serializes to None. A native ARRAY<T> column arrives as a plain list -> pass through.
+    # serializes to None. A native ARRAY<T> column arrives as a plain list; its elements are
+    # normalized too, since ARRAY<JSON> / jsonb[] holds JsonObjects, and one wrapping an array or
+    # a scalar would otherwise read as {}.
     if v is None:
         return None
+    if isinstance(v, list):
+        return [_jsonify(e) for e in v]
     ser = getattr(v, "serialize", None)
     if callable(ser):
         text = ser()
