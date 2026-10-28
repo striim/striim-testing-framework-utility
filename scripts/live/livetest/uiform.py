@@ -4,8 +4,8 @@ Unset (the default) changes nothing. `replay` re-saves each component over the U
 call; `browser` re-saves it in the Flow Designer with Playwright and checks the UI sent what
 `replay` would. Measured on 5.4.0.6C (CRUDHandler READ after a TQL create, against the UPDATE a
 UI save sends): the server stores every declared property, an empty default as null; the save
-drops nulls, sends a null Boolean as false, a null conditionally required property as '' and
-a number as text for a String property. TQL accepts
+drops nulls and '' for an optional property whose default is '', sends a null Boolean as false,
+a null conditionally required property as '' and a number as text for a String property. TQL accepts
 '' for a required property and the UI does not, so a UI user types something: PLACEHOLDER.
 """
 from __future__ import annotations
@@ -61,6 +61,8 @@ def ui_properties(stored: dict, template: dict) -> dict:
             value = False
         elif value is None and (p or {}).get("conditionalRequired"):
             value = ""   # the form registers a conditionally required field, so it is sent
+        elif value == "" and p and not p.get("conditionalRequired") and p.get("defaultValue") == "":
+            value = None   # an empty optional field is left out of the save
         if value is None:
             continue
         if kind == "java.lang.String" and isinstance(value, (int, float)) and not isinstance(value, bool):

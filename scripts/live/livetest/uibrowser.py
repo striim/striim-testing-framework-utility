@@ -61,7 +61,11 @@ def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
     page.click("[data-test-id=submit-btn]")
     update = None
     for _ in range(TIMEOUT_MS // 250):
-        errors = [e.inner_text().strip() for e in page.locator("[data-test-id=validation-error]:visible").all()]
+        # A field's own error ("Value for Bucket Name is required") has no data-test-id.
+        errors = [e.inner_text().strip()
+                  for selector in ("[data-test-id=validation-error]:visible",
+                                   "text=/^\\s*Value for .+ is required\\s*$/ >> visible=true")
+                  for e in page.locator(selector).all()]
         if any(errors):
             raise UiFormError(f"{name}: the UI refused Save: {'; '.join(e for e in errors if e)}")
         update = update or _sent(frames, mark, "CRUDHandler", "UPDATE")
