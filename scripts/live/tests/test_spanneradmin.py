@@ -1,3 +1,4 @@
+import json
 import re
 import pytest
 from google.cloud.spanner_v1.data_types import JsonObject
@@ -93,6 +94,13 @@ def test_jsonify_handles_json_and_native_shapes():
     assert _jsonify([11, 21]) == [11, 21]
     # plain NULL
     assert _jsonify(None) is None
+
+def test_jsonify_unwraps_json_array_elements():
+    # ARRAY<JSON> / jsonb[] arrives as a plain list of JsonObject. An element that is a JSON
+    # array or scalar must not collapse to {} (JsonObject is a dict subclass).
+    got = _jsonify([JsonObject({"k": 1}), JsonObject([1, 2]), JsonObject("s"), JsonObject(3), None])
+    assert got == [{"k": 1}, [1, 2], "s", 3, None]
+    assert json.dumps(got) == '[{"k": 1}, [1, 2], "s", 3, null]'
 
 def test_select_json_rows_mixed_columns():
     # bug 1: JSON object, bug 2: top-level JSON array, bug 3: JSON null, bug 4: native array
