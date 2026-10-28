@@ -47,7 +47,9 @@ either the same way.
 | `striim: … Striim needs a license to boot` | Docker mode without a license | export `STRIIM_HOME`, or the four license settings ([RUN-YOUR-FIRST-TEST.md](RUN-YOUR-FIRST-TEST.md), "Docker mode") |
 | "not available for download" | `STRIIM_HOME` names a release that is not published | unset `STRIIM_HOME` and export the four license settings, or supply the installers with `SLT_STRIIM_DEPS_MANIFEST` |
 | the build refuses: not enough free disk | the first image build needs 35 GB free in Docker | free space (`docker system df`), or raise Docker Desktop's disk |
-| "would bring the total number of CPUs to 48 … Beginning Shutdown" | the second node counts every CPU and exceeds the license | `export SLT_STRIIM_PRIMARY_CPUS=12 SLT_STRIIM_NODE_CPUS=12` |
+| "would bring the total number of CPUs to 48 … Beginning Shutdown" | the second node counts every CPU and exceeds the license | `export SLT_STRIIM_PRIMARY_CPUS=12 SLT_STRIIM_NODE_CPUS=12`; `doctor` names it |
+| every live case skipped: "shared cluster identity mismatch: running version 5.4.2 != required 5.4.0.6" | the shared stack runs another release than `STRIIM_HOME` names, and a shared run never redeploys | point `STRIIM_HOME` at the running release's install, or stop the shared stack; `doctor` names it before a run |
+| "[integration] PROVED NOTHING" | every integration case skipped because a service, Docker or a build prerequisite was missing here | fix what the first skip names; `doctor --strict` lists them all before a run |
 | skipped: `provisioned cluster did not become reachable in time` (exit 3) | the Docker cluster did not start | read `cluster-logs/` in the run directory; check the two rows above |
 | `PathConfigError: KEY='…' … does not exist` | a path setting names a folder that is not there | fix it, or unset it to use the default |
 

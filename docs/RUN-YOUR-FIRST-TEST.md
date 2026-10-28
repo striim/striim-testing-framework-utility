@@ -142,10 +142,18 @@ Each line is one check. A clean result ends without a problem count and exits 0:
 [ ok ] service settings: none set; each required service runs in Docker with its defaults
 [ ok ] ownership: shared (SLT_INFRA_OWNERSHIP, set in /path/to/.env; ...); SLT_KEEP_SERVICES=1 (...)
 [ ok ] ledgers: no leftover ownership ledgers
+[ ok ] lock dir: /tmp/slt-locks is writable
+[ ok ] release: Striim 5.4.2 (JDK 17), from STRIIM_HOME=...
 [ ok ] striim: ...
+[ ok ] sizing: the primary and node count 12 + 12 CPUs (...), within the license's 24
 [ ok ] case 01-plain-replication: test.yaml loads (plain-replication)
 [ ok ] service postgres: ...
 ```
+
+When a cluster already answers, doctor also checks that it runs the release `STRIIM_HOME` names: a
+shared stack is never redeployed, so a different release would skip every case. `--strict` fails,
+rather than warns, on anything that would skip a selected case (a missing `mvn` or JDK, a service
+that is unavailable, a cluster running without its second node).
 
 A failing line says what is wrong and what to set. Doctor then exits 2 when any problem is in
 your settings or a test (as below), or 3 when everything else is right but something is not

@@ -329,6 +329,7 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_EXTRA_CLASSPATH` | shell | unset | Jars added to the harness classpath, such as a JDBC driver kept elsewhere. |
 | `INT_PG_ALLOW_DESTRUCTIVE_RESET` | shell | unset | `1`: allow the Postgres reset, a cascading drop of the test schemas, on a database other than the sandbox `intdb`. |
 | `INT_ALLOW_CONCURRENT_SESSIONS` | shell | unset | `1`: allow a second integration session on the same stack at the same time. |
+| `INT_ALLOW_ALL_SKIPPED` | shell | unset | `1`: do not fail a run in which every case skipped because a service or Docker was missing. A build prerequisite missing still fails it. |
 | `INT_SHARED_SERVICES` | shell | unset | Reserved: a broker owns the services, and the session does not tear them down. |
 
 ### GCS emulator, integration (`gcs`)

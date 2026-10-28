@@ -10,7 +10,7 @@ SURFACE = {
     "list": {"--targets", "--tier", "--suite"},
     "run": {"--targets", "--tier", "--suite", "--case", "--parallel", "--keep-resources",
             "--dry-run"},
-    "doctor": {"--case", "--targets"},
+    "doctor": {"--case", "--targets", "--strict"},
     "fetch": {"--gcs-prefix", "--destination", "--endpoint"},
 }
 

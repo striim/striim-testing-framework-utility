@@ -233,6 +233,20 @@ def _docker_defaults(name: str) -> dict:
     return merged
 
 
+class EnvSkip(pytest.skip.Exception):
+    """A skip because this host could not run the case (no Docker, a service or a build
+    prerequisite missing), as opposed to one the case declares (``disabled:``, an opt-in gate).
+    ``_int_all_skipped_guard`` counts only these."""
+
+    def __init__(self, cause: str, msg: str):
+        super().__init__(msg=msg)
+        self.cause = cause                  # "env" (absent infrastructure) or "build"
+
+
+def _env_skip(cause: str, msg: str):
+    raise EnvSkip(cause, msg)
+
+
 def _require_service_opt_in(name: str) -> None:
     """Skip if `name`'s service.yaml declares an `opt_in_env` gate that isn't set,
     directly or via the INT_EMULATORS umbrella -- mirrors scripts/live/livetest/
@@ -523,10 +537,10 @@ def _ensure_up(name: str, lock: FileLock) -> bool:
     if _shared_services():
         return False  # Phase 2: a broker already owns lifecycle -- see module docstring.
     if _docker_mod is None:
-        pytest.skip(f"services/docker.py not found; cannot bring up the {name!r} service")
+        _env_skip("env", f"services/docker.py not found; cannot bring up the {name!r} service")
     compose_file = _service_file(name, "compose.yaml")
     if not compose_file.exists():
-        pytest.skip(
+        _env_skip("env", 
             f"services/{name}/compose.yaml does not exist yet (Phase 2) -- "
             f"cannot bring up the {name!r} integration service"
         )
@@ -535,7 +549,7 @@ def _ensure_up(name: str, lock: FileLock) -> bool:
         try:
             _docker_mod.compose_up(name, lock)
         except FileNotFoundError as e:
-            pytest.skip(f"docker not available: {e}")
+            _env_skip("env", f"docker not available: {e}")
         except subprocess.CalledProcessError as e:
             # The fixture-driven path (the YAML path is _provision_requires): a
             # declared service that will not start is the environment breaking, not a case
@@ -557,6 +571,40 @@ def pytest_unconfigure(config):
     _release_session_lock()
 
 
+def _int_all_skipped_guard(session, exitstatus):
+    """An integration or perf run that executed no case because this host could not run them
+    must not exit 0: ``7 skipped`` reads as green to every caller (live's ``_slt_infra_guard``).
+
+    Fires when at least one case skipped for an environment or build reason (``EnvSkip``) and no
+    case executed. A partial run keeps its status; a declared skip (``disabled:``, an opt-in gate)
+    never fires it. ``INT_ALLOW_ALL_SKIPPED=1`` opts out, but not when a build was the cause."""
+    tr = session.config.pluginmanager.get_plugin("terminalreporter")
+    if tr is None:
+        return exitstatus
+    stats = getattr(tr, "stats", {}) or {}
+
+    def cases(key):
+        return [r for r in stats.get(key, []) if getattr(r, "_int_case", False)]
+
+    blocked = [r for r in cases("skipped") if getattr(r, "_int_env_skip", "")]
+    if not blocked or cases("passed") or cases("failed") or cases("error"):
+        return exitstatus
+    causes = {r._int_env_skip for r in blocked}
+    if os.environ.get("INT_ALLOW_ALL_SKIPPED") and "build" not in causes:
+        return exitstatus
+    first = blocked[0]
+    reason = first.longrepr[2] if isinstance(first.longrepr, tuple) else str(first.longrepr)
+    print("")
+    print(f"[integration] PROVED NOTHING: {len(blocked)} case(s) could not be run here, and none executed.")
+    print("[integration] Reporting this as a FAILURE rather than a pass -- an all-skipped run that exits 0 "
+          "reads as green and is not.")
+    print(f"[integration] First skipped: {first.nodeid}")
+    print(f"[integration]   because: {reason}")
+    if "build" not in causes:
+        print("[integration] Set INT_ALLOW_ALL_SKIPPED=1 if you meant to run without these services.")
+    return 1 if exitstatus == 0 else exitstatus
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Tear down every service THIS host brought up -- but only from the xdist
     controller (workers each reach sessionfinish independently and must not race each
@@ -569,6 +617,9 @@ def pytest_sessionfinish(session, exitstatus):
     as already-up and not re-register it), so a stale registry entry pointing at a
     service THIS session no longer owns must not survive to be misread as "this
     session started it" by a future `pytest_sessionfinish`."""
+    decided = _int_all_skipped_guard(session, exitstatus)
+    if decided != exitstatus:
+        session.exitstatus = decided
     if _shared_services():
         return
     if os.environ.get("PYTEST_XDIST_WORKER"):
@@ -785,6 +836,11 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     setattr(item, f"rep_{rep.when}", rep)
+    if isinstance(item, (IntYamlItem, PerfYamlItem)):
+        # Attributes, not text in the reason: xdist carries report.__dict__ to the controller.
+        rep._int_case = True
+        exc = call.excinfo.value if call.excinfo is not None else None
+        rep._int_env_skip = exc.cause if isinstance(exc, EnvSkip) else ""
 
 
 def _test_failed(request) -> bool:
@@ -1289,7 +1345,7 @@ def _provision_requires(name: str, requires: list, lock: FileLock) -> None:
     PERF_SPEC.md §5 step 1). Shared by `IntYamlItem` and `PerfYamlItem`."""
     for svc in requires:
         if svc not in _docker_mod.SUPPORTED_SERVICES:
-            pytest.skip(
+            _env_skip("env", 
                 f"{name}: requires unsupported service {svc!r} -- only "
                 f"{sorted(_docker_mod.SUPPORTED_SERVICES)} are provisionable today"
             )
@@ -1315,7 +1371,7 @@ def _provision_requires(name: str, requires: list, lock: FileLock) -> None:
         if why:
             if _docker_mod._service_spec(svc).get("unavailable_policy") == "fail":
                 pytest.fail(f"{name}: service {svc!r} unavailable: {why}", pytrace=False)
-            pytest.skip(f"{name}: service {svc!r} unavailable: {why}")
+            _env_skip("env", f"{name}: service {svc!r} unavailable: {why}")
         spec = _load_service_yaml(svc)
         strict = _docker_mod._service_spec(svc).get('unavailable_policy') == 'fail'
         if spec and not spec.get("compose") and not spec.get("container"):
@@ -1327,7 +1383,7 @@ def _provision_requires(name: str, requires: list, lock: FileLock) -> None:
             message = f"{name}: no container ships for service {svc!r}: set {gate} and its settings to your own instance"
             if strict:
                 pytest.fail(message, pytrace=False)
-            pytest.skip(message)
+            _env_skip("env", message)
         try:
             _docker_mod.ensure_up(svc, lock)
         except FileNotFoundError as e:
@@ -1336,7 +1392,7 @@ def _provision_requires(name: str, requires: list, lock: FileLock) -> None:
             message = f"{name}: cannot bring up service {svc!r}: {e}"
             if strict:
                 pytest.fail(message, pytrace=False)
-            pytest.skip(message)
+            _env_skip("env", message)
         except subprocess.CalledProcessError as e:
             # ⚠ A FAILURE, not a skip. Docker is here and the service is
             # declared; `compose up` returning non-zero is the environment breaking, and a
@@ -1357,7 +1413,7 @@ def _build_operator_jar(name: str, op_jar_ref: str, report=None):
     §12's "whether the jar was rebuilt during this run or reused"); `IntYamlItem`
     leaves it `None`, unchanged from before."""
     if not os.environ.get("STRIIM_HOME"):
-        pytest.skip(
+        _env_skip("env", 
             f"{name}: STRIIM_HOME is not set -- building {op_jar_ref!r} needs a "
             f"Striim install (running the fast unit suite does not)"
         )
@@ -1374,7 +1430,7 @@ def _build_operator_jar(name: str, op_jar_ref: str, report=None):
         # would let a run that tested nothing of it read green.
         pytest.fail(f"{name}: operator jar {op_jar_ref!r} failed to build: {e}")
     except (opartifacts_mod.OpArtifactError, FileNotFoundError) as e:
-        pytest.skip(f"{name}: cannot build operator jar {op_jar_ref!r}: {e}")
+        _env_skip("build", f"{name}: cannot build operator jar {op_jar_ref!r}: {e}")
 
 
 def _terminal_emit(config, text: str) -> None:
@@ -1722,7 +1778,7 @@ class IntYamlItem(pytest.Item):
                 try:
                     harness_mod.ensure_harness_jar()
                 except harness_mod.HarnessError as e:
-                    pytest.skip(f"{m.name}: cannot build the inttest harness jar: {e}")
+                    _env_skip("build", f"{m.name}: cannot build the inttest harness jar: {e}")
 
                 # properties: values may themselves carry ${...} tokens (SPEC §3), same
                 # as every other test.yaml string.
@@ -1806,7 +1862,7 @@ class IntYamlItem(pytest.Item):
                             )
                         except harness_mod.HarnessError as e:
                             if "no `java` executable found" in str(e):
-                                pytest.skip(f"{m.name}: {e}")
+                                _env_skip("env", f"{m.name}: {e}")
                             raise  # a real driver/operator failure -- let it fail the test
 
                         self._assert_expect_log(m, at, data_log_sink)
@@ -1878,7 +1934,7 @@ class IntYamlItem(pytest.Item):
         try:
             harness_mod.ensure_harness_jar()
         except harness_mod.HarnessError as e:
-            pytest.skip(f"{m.name}: cannot build the inttest harness jar: {e}")
+            _env_skip("build", f"{m.name}: cannot build the inttest harness jar: {e}")
 
         at = _run_label(variant, overrides)
         tok = self._variant_tokens(variant)
@@ -1903,7 +1959,7 @@ class IntYamlItem(pytest.Item):
                 on_mid_run=self._mid_run_callback(m, tok, variant))
         except harness_mod.HarnessError as e:
             if "no `java` executable found" in str(e):
-                pytest.skip(f"{m.name}: {e}")
+                _env_skip("env", f"{m.name}: {e}")
             # ⚠ Matched against what the operator THREW, never the whole error: that also holds
             # everything it printed and the jar path, so a refusal logged as a WARN before an
             # unrelated failure -- or a timeout -- would pass. No exception chain, no match.
@@ -2002,7 +2058,7 @@ class IntYamlItem(pytest.Item):
         try:
             harness_mod.ensure_harness_jar()
         except harness_mod.HarnessError as e:
-            pytest.skip(f"{m.name}: cannot build the inttest harness jar: {e}")
+            _env_skip("build", f"{m.name}: cannot build the inttest harness jar: {e}")
 
         # The variant's tokens are what make ONE `properties:` block serve every engine: the
         # block names ${V_URL}/${V_PROVIDER}/..., and the variant supplies their values.
@@ -2033,7 +2089,7 @@ class IntYamlItem(pytest.Item):
             )
         except harness_mod.HarnessError as e:
             if "no `java` executable found" in str(e):
-                pytest.skip(f"{m.name}: {e}")
+                _env_skip("env", f"{m.name}: {e}")
             # Re-raised WITH the run label. A drive that fails under one permutation and not
             # another is the most valuable thing a matrix can find, and an unlabelled traceback
             # makes it the hardest to act on -- the reader cannot tell which of eight runs broke.
@@ -2459,11 +2515,11 @@ class PerfYamlItem(pytest.Item):
         try:
             harness_jar = harness_mod.ensure_harness_jar()
         except harness_mod.HarnessError as e:
-            pytest.skip(f"{m.name}: cannot build the inttest harness jar: {e}")
+            _env_skip("build", f"{m.name}: cannot build the inttest harness jar: {e}")
         try:
             java_bin = harness_mod._resolve_java(None)
         except harness_mod.HarnessError as e:
-            pytest.skip(f"{m.name}: {e}")
+            _env_skip("env", f"{m.name}: {e}")
 
         # --- Tokens: same assembly as IntYamlItem step 4, off this perf
         # test.yaml's own manifest's dir/requires -- ${...} tokens in `properties:`
