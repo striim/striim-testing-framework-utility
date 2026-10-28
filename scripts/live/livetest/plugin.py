@@ -2026,7 +2026,7 @@ def _deploy_tql_once_retrying(client, tql: str, ns: str, name: str) -> None:
 def _deploy_case_tql(client, tql: str) -> None:
     """A case's TQL; under SLT_UI_FORM every component is re-saved as the UI would before DEPLOY."""
     for line in uiform.deploy(client, tql):
-        print(line)
+        print(_slt_evidence.redact_text(line, _slt_evidence.known_secrets(), home="", hostname=""))
 
 
 def _rendered_tql(m: TestManifest, tokens: dict, upload_renames: dict) -> str:
@@ -2907,6 +2907,8 @@ class LiveItem(pytest.Item):
             _diff_clock = time.monotonic()
 
             def _accept_halt(exc):
+                if isinstance(exc, uiform.UiFormError):
+                    raise exc   # the UI-form save failed; the application never ran
                 # accept_expected_halt RAISES AssertionFailed when expect_halt_contains
                 # doesn't match. Both call sites below live inside the DEPLOY phase's
                 # `except Exception` handlers -- OUTSIDE the `except AssertionFailed`

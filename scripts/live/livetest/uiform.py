@@ -69,6 +69,12 @@ def ui_properties(stored: dict, template: dict) -> dict:
     return out
 
 
+def secret_names(template: dict) -> set:
+    """Lower-cased names of the template's Password properties, whose values are never printed."""
+    return {p["name"].lower() for p in template.get("propertyMap", [])
+            if p.get("type") == "com.webaction.security.Password"}
+
+
 class Rmi:
     """The Flow Designer's websocket RPC (ws://<host>/rmiws/, URL-encoded JSON)."""
 
@@ -77,7 +83,11 @@ class Rmi:
         self.token, self._n = token, 0
         self.ws = websocket.create_connection(url_base.replace("http", "ws", 1) + "/rmiws/",
                                               cookie=f"token={token}", timeout=timeout)
-        self.call(QV, "createNewContext", token)
+        try:
+            self.call(QV, "createNewContext", token)
+        except BaseException:
+            self.ws.close()
+            raise
 
     def call(self, cls: str, method: str, *params):
         self._n += 1
@@ -90,8 +100,9 @@ class Rmi:
             if str(reply.get("callbackIndex")) == n:
                 if not reply.get("success"):
                     what = params[3].get("id") if len(params) > 3 and isinstance(params[3], dict) else ""
-                    raise UiFormError(f"{method} {params[2] if len(params) > 2 else ''} {what}: "
-                                      f"{reply.get('params')}")
+                    detail = (reply.get("params") or [""])[0]
+                    raise UiFormError(f"{method} {params[2] if len(params) > 2 else ''} {what} failed: "
+                                      f"{str(detail)[:300]}")
                 return reply["params"][0]
 
     def read(self, oid: str, kind: str) -> dict:
@@ -112,13 +123,18 @@ class Rmi:
 
 def components(rmi: Rmi, ns: str, app: str) -> list[dict]:
     """The app's components that carry an adapter, parser or formatter, as the server stores them."""
-    objects = rmi.read(f"{ns}.APPLICATION.{app}", "APPLICATION").get("objects") or {}
-    out = []
-    for kind, ids in sorted(objects.items()):
-        for oid in ids:
-            obj = rmi.read(oid, kind)
-            if any(isinstance(obj.get(p), dict) for p in _PARTS):
-                out.append(obj)
+    out, pending = [], [(f"{ns}.APPLICATION.{app}", "APPLICATION")]
+    while pending:
+        # A sub-flow's members are listed under its FLOW, not under the application.
+        objects = rmi.read(*pending.pop(0)).get("objects") or {}
+        for kind, ids in sorted(objects.items()):
+            for oid in ids:
+                if kind == "FLOW":
+                    pending.append((oid, kind))
+                    continue
+                obj = rmi.read(oid, kind)
+                if any(isinstance(obj.get(p), dict) for p in _PARTS):
+                    out.append(obj)
     if not out:
         raise UiFormError(f"{ns}.{app}: no component to save, so the UI form would be untested")
     return out
@@ -142,9 +158,11 @@ def ui_object(rmi: Rmi, obj: dict, templates: dict) -> tuple[dict, list[str]]:
         if handler not in templates:
             templates[handler] = rmi.read(handler, "PROPERTYTEMPLATE")
         props = ui_properties(section.get("properties") or {}, templates[handler])
+        secret = secret_names(templates[handler])
         for key, value in (section.get("properties") or {}).items():
             if props.get(key, None) != value and not (value is None and key not in props):
-                changes.append(f"{obj['name']}.{key}: {value!r} -> {props.get(key)!r}")
+                old, new = ("***", "***") if key.lower() in secret else (repr(value), repr(props.get(key)))
+                changes.append(f"{obj['name']}.{key}: {old} -> {new}")
         sent[part] = {**section, "properties": props}
     return sent, changes
 
@@ -173,12 +191,20 @@ def deploy(client, tql: str) -> list[str]:
     if not apps:
         raise UiFormError("SLT_UI_FORM: no CREATE APPLICATION before the first DEPLOY/START APPLICATION")
     client.deploy_tql(head)
-    if how == "replay":
-        lines = replay(client.api.url_base, client.api.auth_token, apps)
-    else:
-        from livetest import uibrowser
-        lines = uibrowser.resave(client.api.url_base, client.api.username, client.api.password,
-                                 client.api.auth_token, apps)
+    try:
+        if how == "replay":
+            lines = replay(client.api.url_base, client.api.auth_token, apps)
+        else:
+            from livetest import uibrowser
+            lines = uibrowser.resave(client.api.url_base, client.api.username, client.api.password,
+                                     client.api.auth_token, apps)
+    except UiFormError:
+        raise
+    except ImportError as e:
+        raise UiFormError(f"SLT_UI_FORM={how} needs the `ui` extra (docs/SETTINGS.md): {e}") from e
+    except Exception as e:
+        # Never an expected halt: the save itself failed, not the application.
+        raise UiFormError(f"SLT_UI_FORM={how}: the save failed: {type(e).__name__}: {e}") from e
     if tail.strip():
         client.deploy_tql(tail)
     return [f"[slt] ui-form {how}: {line}" for line in lines]

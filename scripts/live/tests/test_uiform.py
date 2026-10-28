@@ -107,3 +107,45 @@ def test_ui_form_with_no_app_before_deploy_fails(monkeypatch):
     with pytest.raises(UiFormError, match="no CREATE APPLICATION"):
         uiform.deploy(client, "DEPLOY APPLICATION n.a;")
     assert client.deployed == []
+
+
+def test_components_include_a_sub_flows_members(monkeypatch):
+    store = {
+        "n.APPLICATION.a": {"id": "n.APPLICATION.a", "objects": {"FLOW": ["n.FLOW.f"], "TARGET": ["n.TARGET.t"]}},
+        "n.FLOW.f": {"id": "n.FLOW.f", "objects": {"SOURCE": ["n.SOURCE.s"], "STREAM": ["n.STREAM.x"]}},
+        "n.TARGET.t": {"id": "n.TARGET.t", "adapter": {"handler": "h", "properties": {}}},
+        "n.SOURCE.s": {"id": "n.SOURCE.s", "adapter": {"handler": "h", "properties": {}}},
+        "n.STREAM.x": {"id": "n.STREAM.x"},
+    }
+    rmi = object.__new__(uiform.Rmi)
+    monkeypatch.setattr(uiform.Rmi, "read", lambda self, oid, kind: store[oid])
+    assert sorted(o["id"] for o in uiform.components(rmi, "n", "a")) == ["n.SOURCE.s", "n.TARGET.t"]
+
+
+def test_a_password_change_is_reported_without_its_value():
+    template = {"propertyMap": [{"name": "Password", "type": "com.webaction.security.Password", "required": True}]}
+    obj = {"name": "t", "type": "TARGET", "adapter": {"handler": "h", "properties": {"Password": ""}}}
+    _, changes = ui_object(FakeRmi(), obj, {"h": template})
+    assert changes == ["t.Password: *** -> ***"]
+
+
+def test_a_failed_save_is_a_ui_form_error_not_an_application_halt(monkeypatch):
+    monkeypatch.setenv("SLT_UI_FORM", "replay")
+    monkeypatch.setattr(uiform, "replay", lambda *a: (_ for _ in ()).throw(TimeoutError("socket")))
+    client = FakeClient()
+    client.api = type("Api", (), {"url_base": "http://h:9080", "auth_token": "t"})()
+    with pytest.raises(UiFormError, match="the save failed: TimeoutError"):
+        uiform.deploy(client, "USE n;\nCREATE APPLICATION a;\nDEPLOY APPLICATION a;\n")
+    assert client.deployed == ["USE n;\nCREATE APPLICATION a;\n"]
+
+
+def test_the_socket_is_closed_when_the_context_cannot_be_made(monkeypatch):
+    import sys
+    import types
+    closed = []
+    ws = types.SimpleNamespace(close=lambda: closed.append(True))
+    monkeypatch.setitem(sys.modules, "websocket", types.SimpleNamespace(create_connection=lambda *a, **k: ws))
+    monkeypatch.setattr(uiform.Rmi, "call", lambda self, *a: (_ for _ in ()).throw(UiFormError("refused")))
+    with pytest.raises(UiFormError):
+        uiform.Rmi("http://h:9080", "t")
+    assert closed == [True]

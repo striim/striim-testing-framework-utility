@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 
-from livetest.uiform import Rmi, UiFormError, components, ui_object
+from livetest.uiform import Rmi, UiFormError, components, secret_names, ui_object
 
 TIMEOUT_MS = 60_000
 
@@ -34,7 +34,7 @@ def _close_editor(page) -> None:
             page.wait_for_timeout(1000)
 
 
-def _save_one(page, sent: list, name: str) -> tuple[dict, str]:
+def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
     """Save component `name`; the UPDATE it sent and the property touched to enable Save."""
     _close_editor(page)
     page.click(f"[data-test-id=node_container_{name}]")
@@ -57,22 +57,46 @@ def _save_one(page, sent: list, name: str) -> tuple[dict, str]:
     field.press("End")
     field.type("x")
     field.press("Backspace")
-    mark = len(sent)
+    mark = len(frames)
     page.click("[data-test-id=submit-btn]")
+    update = None
     for _ in range(TIMEOUT_MS // 250):
-        updates = [m for m in sent[mark:] if m.get("method") == "CRUDHandler" and m["params"][2] == "UPDATE"]
-        if updates:
-            page.wait_for_timeout(1000)
-            errors = [e.inner_text().strip() for e in page.locator("[data-test-id=validation-error]:visible").all()]
-            if any(errors):
-                raise UiFormError(f"{name}: the UI refused Save: {'; '.join(e for e in errors if e)}")
-            _close_editor(page)
-            return updates[-1]["params"][3], touched
         errors = [e.inner_text().strip() for e in page.locator("[data-test-id=validation-error]:visible").all()]
         if any(errors):
             raise UiFormError(f"{name}: the UI refused Save: {'; '.join(e for e in errors if e)}")
+        update = update or _sent(frames, mark, "CRUDHandler", "UPDATE")
+        recompile = update and _sent(frames, update[0], "CreateAlterRecompileStmt")
+        if recompile:
+            # Both answers must be successes: a refused UPDATE leaves the TQL's component in place.
+            for at, msg in (update, recompile):
+                reply = _reply(frames, at, msg["callbackIndex"])
+                if reply is None:
+                    break
+                if not reply.get("success"):
+                    raise UiFormError(f"{name}: the server refused the UI's {msg['method']}: "
+                                      f"{str((reply.get('params') or [''])[0])[:300]}")
+            else:
+                _close_editor(page)
+                return update[1]["params"][3], touched
         page.wait_for_timeout(250)
-    raise UiFormError(f"{name}: Save sent no UPDATE within {TIMEOUT_MS // 1000}s")
+    raise UiFormError(f"{name}: Save got no answer to UPDATE and recompile within {TIMEOUT_MS // 1000}s")
+
+
+def _sent(frames: list, start: int, method: str, verb: str | None = None):
+    """(index, message) of the first frame sent from `start` calling `method` (with `verb`)."""
+    for i in range(start, len(frames)):
+        way, msg = frames[i]
+        if way == "S" and msg.get("method") == method and (verb is None or msg["params"][2] == verb):
+            return i, msg
+    return None
+
+
+def _reply(frames: list, start: int, callback) -> dict | None:
+    """The first answer after `start` to callback index `callback`; the UI reuses indexes."""
+    for way, msg in frames[start + 1:]:
+        if way == "R" and str(msg.get("callbackIndex")) == str(callback):
+            return msg
+    return None
 
 
 def resave(url_base: str, user: str, password: str, token: str, apps: list[tuple[str, str]]) -> list[str]:
@@ -83,15 +107,21 @@ def resave(url_base: str, user: str, password: str, token: str, apps: list[tuple
             browser = p.chromium.launch()
             try:
                 page = browser.new_page(viewport={"width": 1600, "height": 1000})
-                sent: list = []
+                frames: list = []   # ("S" sent | "R" received, message)
 
-                def frame(f):
-                    if isinstance(f, str):
-                        try:
-                            sent.append(json.loads(urllib.parse.unquote(f)))
-                        except ValueError:
-                            pass
-                page.on("websocket", lambda ws: ws.on("framesent", frame))
+                def frame(way):
+                    def record(f):
+                        if isinstance(f, str):
+                            try:
+                                frames.append((way, json.loads(urllib.parse.unquote(f))))
+                            except ValueError:
+                                pass
+                    return record
+
+                def watch(ws):
+                    ws.on("framesent", frame("S"))
+                    ws.on("framereceived", frame("R"))
+                page.on("websocket", watch)
                 _login(page, url_base, user, password)
                 for ns, app in apps:
                     stored = components(rmi, ns, app)
@@ -99,7 +129,7 @@ def resave(url_base: str, user: str, password: str, token: str, apps: list[tuple
                     for obj in stored:
                         expected, changes = ui_object(rmi, obj, templates)
                         page.wait_for_selector(f"[data-test-id=node_container_{obj['name']}]", timeout=TIMEOUT_MS)
-                        got, touched = _save_one(page, sent, obj["name"])
+                        got, touched = _save_one(page, frames, obj["name"])
                         for part in ("adapter", "parser", "formatter"):
                             if isinstance(expected.get(part), dict):
                                 want = {k: v for k, v in expected[part]["properties"].items() if k != touched}
@@ -107,9 +137,12 @@ def resave(url_base: str, user: str, password: str, token: str, apps: list[tuple
                                         if k != touched}
                                 if want != have:
                                     diff = sorted(k for k in set(want) | set(have) if want.get(k) != have.get(k))
+                                    secret = secret_names(templates[expected[part]["handler"]])
+                                    shown = (lambda k, v: "***" if k.lower() in secret else repr(v))
                                     raise UiFormError(
                                         f"{obj['name']}.{part}: the UI sent a different form than replay: "
-                                        + ", ".join(f"{k} ui={have.get(k)!r} replay={want.get(k)!r}" for k in diff))
+                                        + ", ".join(f"{k} ui={shown(k, have.get(k))} replay={shown(k, want.get(k))}"
+                                                    for k in diff))
                         lines += changes or [f"{obj['name']}: saved unchanged"]
             finally:
                 browser.close()
