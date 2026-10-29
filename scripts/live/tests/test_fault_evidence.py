@@ -115,7 +115,7 @@ def test_transaction_observation_runs_once_at_boundary_not_during_progress_wait(
     namespace = dict(time=SimpleNamespace(monotonic=clock.now),
         _tx_pool=SimpleNamespace(observe_recovery=observe),
         _fault_target=SimpleNamespace(check_owner=lambda left: events.append("owner")),
-        _fault_progress=progress, app="N.app",
+        _fault_progress=progress, app="N.app", _rc_app="N.app",
         client=SimpleNamespace(current_status=lambda *a, **kw: "RUNNING"),
         _progress_read=lambda left: next(values))
     exec(compile(ast.Module(body=callbacks, type_ignores=[]), "callbacks", "exec"), namespace)
