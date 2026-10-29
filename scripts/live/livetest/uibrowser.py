@@ -34,9 +34,35 @@ def _close_editor(page) -> None:
             page.wait_for_timeout(1000)
 
 
+def _close_card(page, wait_ms: int = 0) -> None:
+    """Close the Sherlock AI card, waiting up to `wait_ms` for it: it can render after the nodes."""
+    close = page.locator("[data-test-id=insights-close-btn]:visible")
+    for _ in range(wait_ms // 250):
+        if close.count():
+            break
+        page.wait_for_timeout(250)
+    if close.count():
+        close.first.click(timeout=5000)
+
+
+def _clear_popups(page) -> None:
+    """Close what covers the canvas: Striim's Sherlock AI card ("Discover Sensitive Data ...")
+    opens on the flow page over the right-hand nodes, and a hover tooltip can sit over a node."""
+    page.mouse.move(0, 0)
+    _close_card(page)
+    tips = page.locator("[role=tooltip]:visible")
+    for attempt in range(20):
+        if tips.count() == 0:
+            return
+        if attempt == 0:
+            page.keyboard.press("Escape")
+        page.wait_for_timeout(250)
+
+
 def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
     """Save component `name`; the UPDATE it sent and the property touched to enable Save."""
     _close_editor(page)
+    _clear_popups(page)
     page.click(f"[data-test-id=node_container_{name}]")
     page.wait_for_selector("[data-test-id=submit-btn]", timeout=TIMEOUT_MS)
     page.wait_for_timeout(1500)
@@ -130,6 +156,8 @@ def resave(url_base: str, user: str, password: str, token: str, apps: list[tuple
                 for ns, app in apps:
                     stored = components(rmi, ns, app)
                     page.goto(f"{url_base}/#/flow/{ns}.{app}")
+                    page.wait_for_selector("[data-test-id^=node_container_]", timeout=TIMEOUT_MS)
+                    _close_card(page, wait_ms=3000)
                     for obj in stored:
                         expected, changes = ui_object(rmi, obj, templates)
                         page.wait_for_selector(f"[data-test-id=node_container_{obj['name']}]", timeout=TIMEOUT_MS)
