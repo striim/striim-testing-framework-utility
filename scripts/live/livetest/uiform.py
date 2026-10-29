@@ -77,6 +77,9 @@ def secret_names(template: dict) -> set:
             if p.get("type") == "com.webaction.security.Password"}
 
 
+_VERSIONED = re.compile(r"_\d+(?:\.\d+)+$")
+
+
 class Rmi:
     """The Flow Designer's websocket RPC (ws://<host>/rmiws/, URL-encoded JSON)."""
 
@@ -108,11 +111,18 @@ class Rmi:
                 return reply["params"][0]
 
     def read(self, oid: str, kind: str) -> dict:
-        found = self.call(QV, "CRUDHandler", self.token, None, "READ", {"id": oid, "type": kind})
-        # An unknown id comes back as {'noField': None}, not as nothing.
-        if not found or str(found[0].get("id", "")).lower() != oid.lower():
+        found = self._read(oid, oid, kind)
+        if found is None and _VERSIONED.search(oid):
+            # A versioned template (`KafkaWriter_2.1.0`) answers only to its unversioned id.
+            found = self._read(_VERSIONED.sub("", oid), oid, kind)
+        if found is None:
             raise UiFormError(f"no {kind} {oid}")
-        return found[0]
+        return found
+
+    def _read(self, asked: str, oid: str, kind: str) -> dict | None:
+        """READ `asked`; the answer only if it is `oid` (an unknown id comes back as {'noField': None})."""
+        found = self.call(QV, "CRUDHandler", self.token, None, "READ", {"id": asked, "type": kind})
+        return found[0] if found and str(found[0].get("id", "")).lower() == oid.lower() else None
 
     def update(self, ns: str, app: str, obj: dict) -> None:
         """Save `obj` as the UI's Save does: UPDATE, then recompile the application."""
