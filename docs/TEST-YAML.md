@@ -580,6 +580,7 @@ in flight at the interruption are never replayed. `recover:` is how a test asks 
 | `trigger` | Optional bounded progress reader, defined below |
 | `sentinel` | Optional `true`, with the declared lifecycle sentinel |
 | `node` | Optional exact container role or hosting-flow selector; unavailable with `quiesce` |
+| `app` | `${APP}`; the application `stop` or `quiesce` interrupts and restores, token-rendered (`'${APP}_line'`). Only with `stop` and `quiesce`; refused with `node`, `trigger` and `sentinel` |
 
 <!-- snippet: fragment -->
 ```yaml
