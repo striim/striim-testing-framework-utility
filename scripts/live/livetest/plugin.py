@@ -3262,7 +3262,7 @@ class LiveItem(pytest.Item):
                                         break
                                     _hb_r(_el, _wait)
                                     time.sleep(min(2.0, _wait - _el))
-                            _report(m.name, f"recover: interrupting app ({_rc['mode']}){_tag}")
+                            _report(m.name, f"recover: interrupting {'app' if _rc_app == app else _rc_app} ({_rc['mode']}){_tag}")
                             # verify_timeout tracks the manifest's own timeout instead of
                             # recovery.interrupt's 120s default: on an 80 000-event pipeline a
                             # STOP can legitimately sit in STOPPING for longer than that, and
@@ -3272,7 +3272,7 @@ class LiveItem(pytest.Item):
                             from livetest import progress as _fault_progress
                             def _read_at_fault(left):
                                 began = time.monotonic()
-                                status = client.current_status(app, timeout=min(5.0, left))
+                                status = client.current_status(_rc_app, timeout=min(5.0, left))
                                 if _progress_read is None:
                                     return status
                                 if status != "RUNNING":
@@ -3306,7 +3306,7 @@ class LiveItem(pytest.Item):
                                 before_issue=_before_fault)
                             if _rc.get("trigger", {}).get("kind") == "checkpoint" and "above" not in _rc["trigger"]:
                                 _progress_baseline = _progress_observed["value"]
-                            _report(m.name, f"recover: restoring app{_tag}")
+                            _report(m.name, f"recover: restoring {'app' if _rc_app == app else _rc_app}{_tag}")
                             # `when: post_recover` seeds: after the LAST
                             # restore reaches RUNNING, before the settle -- a parent that
                             # arrives only after the restart. Their `after` counts from RUNNING.

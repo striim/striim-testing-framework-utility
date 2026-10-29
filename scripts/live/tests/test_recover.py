@@ -152,6 +152,21 @@ def test_recover_app_must_be_a_non_empty_string(tmp_path, value):
         load_manifest(_write(tmp_path, _BASE + f"recover:\n  mode: stop\n  app: {value}\n"))
 
 
+def test_recover_app_refused_with_node(tmp_path):
+    with pytest.raises(ManifestError, match="cannot be combined with node"):
+        load_manifest(_write(tmp_path, _BASE + (
+            "recover:\n  mode: stop\n  node: primary\n  app: '${APP}_line'\n")))
+
+
+def test_recover_app_refused_with_checkpoint_history_predates(tmp_path):
+    from livetest.assertions.checkpoint_history import (CheckpointHistorySpecError,
+                                                        check_predates_manifest)
+    with pytest.raises(CheckpointHistorySpecError, match="recover.app"):
+        check_predates_manifest({"predates": "seed.sql"},
+                                {"mode": "stop", "app": "${APP}_line"},
+                                [("postgres-source", "seed.sql", "post_start", 0)])
+
+
 def test_recover_app_refused_with_sentinel(tmp_path):
     with pytest.raises(ManifestError, match="cannot be combined"):
         load_manifest(_write(tmp_path, _BASE + (

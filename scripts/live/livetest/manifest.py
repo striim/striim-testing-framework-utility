@@ -696,7 +696,7 @@ def _normalize_recover(raw, path) -> dict | None:
         clash = sorted(k for k in ("node", "trigger", "sentinel") if k in raw)
         if clash:
             raise ManifestError(
-                f"{path}: 'recover.app' cannot be combined with {clash} -- those read ${{APP}}")
+                f"{path}: 'recover.app' cannot be combined with {', '.join(clash)} -- those read ${{APP}}")
         result["app"] = rec_app.strip()
     if "sentinel" in raw:
         if raw["sentinel"] is not True or not expect_running:

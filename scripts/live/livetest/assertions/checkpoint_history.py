@@ -46,8 +46,8 @@ def parse_checkpoint_history_spec(raw):
 
 
 def check_predates_manifest(spec, recover, seed_files) -> None:
-    """Refuse a `predates` spec the run could not evaluate. It needs one `recover:` cycle on the
-    app (no `node:`) that brings the app back, and exactly one `post_start` seed of that file:
+    """Refuse a `predates` spec the run could not evaluate. It needs one `recover:` cycle on
+    ${APP} itself (no `node:`, no `app:`) that brings the app back, and exactly one `post_start` seed of that file:
     the three reads it compares are taken just before that seed, just before the interruption
     and the moment the app is RUNNING again."""
     if not isinstance(spec, dict):
@@ -61,6 +61,10 @@ def check_predates_manifest(spec, recover, seed_files) -> None:
         raise CheckpointHistorySpecError(
             "'assert.checkpoint_history.predates' cannot use recover mode quiesce: it records a "
             "checkpoint as it stops, so the case always fails")
+    if "app" in recover:
+        raise CheckpointHistorySpecError(
+            "'assert.checkpoint_history.predates' cannot use 'recover.app': it reads ${APP}'s "
+            "checkpoint history, not the interrupted application's")
     if recover.get("times", 1) != 1 or "node" in recover or not recover.get("expect_running", True):
         raise CheckpointHistorySpecError(
             "'assert.checkpoint_history.predates' needs 'recover:' with times: 1, no 'node:' "
