@@ -16,14 +16,15 @@ class FakeLocator:
     def first(self):
         return self
 
-    def click(self):
-        self.page.calls.append(("close",))
+    def click(self, timeout=None):
+        self.page.calls.append(("close", timeout))
         self.page.card, self.page.tooltips = 0, 0
 
 
 class FakePage:
-    def __init__(self, tooltips=0, card=0, closes_on=None):
+    def __init__(self, tooltips=0, card=0, closes_on=None, card_after=None):
         self.tooltips, self.card, self.closes_on, self.calls = tooltips, card, closes_on, []
+        self.card_after = card_after   # the card renders after this many waits
         page = self
 
         class Mouse:
@@ -46,6 +47,10 @@ class FakePage:
 
     def wait_for_timeout(self, ms):
         self.calls.append(("wait", ms))
+        if self.card_after is not None:
+            self.card_after -= 1
+            if self.card_after == 0:
+                self.card = 1
 
 
 def test_nothing_open_only_moves_the_pointer():
@@ -57,7 +62,7 @@ def test_nothing_open_only_moves_the_pointer():
 def test_the_sherlock_card_is_closed_with_its_close_button():
     page = FakePage(card=1, tooltips=1)
     uibrowser._clear_popups(page)
-    assert page.calls == [("move", 0, 0), ("close",)]
+    assert page.calls == [("move", 0, 0), ("close", 5000)]
 
 
 def test_a_hover_tooltip_closes_when_the_pointer_leaves():
@@ -77,3 +82,21 @@ def test_a_tooltip_that_never_closes_is_left_to_the_click_to_report():
     uibrowser._clear_popups(page)
     assert page.calls.count(("press", "Escape")) == 1
     assert page.calls.count(("wait", 250)) == 20
+
+
+def test_the_card_alone_is_closed():
+    page = FakePage(card=1)
+    uibrowser._clear_popups(page)
+    assert page.calls == [("move", 0, 0), ("close", 5000)]
+
+
+def test_a_card_that_renders_late_is_waited_for_once_per_page():
+    page = FakePage(card_after=3)
+    uibrowser._close_card(page, wait_ms=3000)
+    assert page.calls == [("wait", 250)] * 3 + [("close", 5000)]
+
+
+def test_no_card_costs_at_most_the_wait():
+    page = FakePage()
+    uibrowser._close_card(page, wait_ms=3000)
+    assert page.calls == [("wait", 250)] * 12
