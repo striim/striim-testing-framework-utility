@@ -65,7 +65,7 @@ _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 #              CONTROL arm: a test that loses data under `stop` and not under `quiesce` has
 #              localised the fault to the shutdown path rather than to the pipeline.
 VALID_RECOVER_MODES = {"kill", "stop", "quiesce", "restart"}
-_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel", "node"}
+_RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel", "node", "app"}
 _SERVICE_OUTAGE_KEYS = {"type", "service", "cycles", "delay_before", "down_for", "signal",
                         "ready_timeout", "settle", "concurrent"}
 _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -680,6 +680,24 @@ def _normalize_recover(raw, path) -> dict | None:
             raise ManifestError(f"{path}: {e}") from e
     elif mode == "restart":
         raise ManifestError(f"{path}: invalid-node-fault: restart requires one node")
+    # `app` -- the application `stop`/`quiesce` interrupts and restores, token-rendered at run
+    # time like drop_recreate_app's. Defaults to ${APP}. For a multi-app manifest whose behaviour
+    # under test lives in another application (a child application of a gated pipeline, a
+    # persisted-stream consumer). `kill` takes the whole node and needs no app, and the node,
+    # trigger and sentinel paths all read ${APP}, so they are refused alongside it.
+    if "app" in raw:
+        rec_app = raw["app"]
+        if not isinstance(rec_app, str) or not rec_app.strip():
+            raise ManifestError(f"{path}: 'recover.app' must be a non-empty string, got {rec_app!r}")
+        if mode not in ("stop", "quiesce"):
+            raise ManifestError(
+                f"{path}: 'recover.app' applies to modes stop and quiesce, not {mode!r} -- "
+                f"kill and restart act on nodes, not on one application")
+        clash = sorted(k for k in ("node", "trigger", "sentinel") if k in raw)
+        if clash:
+            raise ManifestError(
+                f"{path}: 'recover.app' cannot be combined with {clash} -- those read ${{APP}}")
+        result["app"] = rec_app.strip()
     if "sentinel" in raw:
         if raw["sentinel"] is not True or not expect_running:
             raise ManifestError(f"{path}: invalid-post-recovery-sentinel: sentinel must be true and expect_running must be true")

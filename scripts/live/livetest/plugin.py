@@ -3234,6 +3234,8 @@ class LiveItem(pytest.Item):
                     # one nobody trusts. `recover.after` tunes the window explicitly instead.
                     if m.recover and not skip_verify:
                         _rc = m.recover
+                        # The application stop/quiesce acts on: recover.app, else ${APP}.
+                        _rc_app = render(_rc["app"], tokens) if "app" in _rc else app
                         from livetest.recovery_sentinel import run as _post_recovery_sentinel
                         _ok, _why = recovery.supported(_rc["mode"], ctx, node=_rc.get("node"))
                         if not _ok:
@@ -3294,7 +3296,7 @@ class LiveItem(pytest.Item):
                                     _cp_witness.capture("interrupt")
                                 if _fault_target is not None:
                                     return _fault_target.interrupt(_rc["mode"])
-                                return recovery.interrupt(client, ctx, app, _rc["mode"],
+                                return recovery.interrupt(client, ctx, _rc_app, _rc["mode"],
                                     verify_timeout=max(120.0, float(m.timeout) / 2.0),
                                     report=lambda msg: _report(m.name, msg))
                             _progress_observed = _fault_progress.at_fault(
@@ -3313,7 +3315,7 @@ class LiveItem(pytest.Item):
                             def _restore_cycle(_settle):
                                 status = _fault_target.restore(expect_running=_rc["expect_running"], settle=_settle) \
                                     if _fault_target is not None else recovery.restore(
-                                    client, ctx, app, _rc["mode"], timeout=m.timeout,
+                                    client, ctx, _rc_app, _rc["mode"], timeout=m.timeout,
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
                                     report=lambda msg: _report(m.name, msg),

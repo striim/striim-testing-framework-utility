@@ -125,6 +125,39 @@ def test_recover_requires_an_assertion_beyond_smoke(tmp_path):
             "assert:\n  smoke: true\n"))
 
 
+@pytest.mark.parametrize("mode", ["stop", "quiesce"])
+def test_recover_app_names_the_application_to_interrupt(tmp_path, mode):
+    # Kept as written: the plugin renders it with the run's tokens, as drop_recreate_app does.
+    m = load_manifest(_write(tmp_path, _BASE + (
+        f"recover:\n  mode: {mode}\n  app: '${{APP}}_line '\n")))
+    assert m.recover["app"] == "${APP}_line"
+
+
+def test_recover_without_app_has_no_app_key(tmp_path):
+    m = load_manifest(_write(tmp_path, _BASE + "recover:\n  mode: stop\n"))
+    assert "app" not in m.recover
+
+
+@pytest.mark.parametrize("mode", ["kill", "restart"])
+def test_recover_app_refused_for_node_modes(tmp_path, mode):
+    node = "  node: primary\n" if mode == "restart" else ""
+    with pytest.raises(ManifestError, match="recover.app.*stop and quiesce"):
+        load_manifest(_write(tmp_path, _BASE + (
+            f"recover:\n  mode: {mode}\n{node}  app: '${{APP}}_line'\n")))
+
+
+@pytest.mark.parametrize("value", ["''", "'  '", "7", "[a]"])
+def test_recover_app_must_be_a_non_empty_string(tmp_path, value):
+    with pytest.raises(ManifestError, match="recover.app"):
+        load_manifest(_write(tmp_path, _BASE + f"recover:\n  mode: stop\n  app: {value}\n"))
+
+
+def test_recover_app_refused_with_sentinel(tmp_path):
+    with pytest.raises(ManifestError, match="cannot be combined"):
+        load_manifest(_write(tmp_path, _BASE + (
+            "recover:\n  mode: stop\n  app: '${APP}_line'\n  sentinel: true\n")))
+
+
 # --- supported() ----------------------------------------------------------------------
 
 class Ctx:
