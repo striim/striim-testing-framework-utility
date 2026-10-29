@@ -111,20 +111,18 @@ class Rmi:
                 return reply["params"][0]
 
     def read(self, oid: str, kind: str) -> dict:
-        found = self._read(oid, kind)
+        found = self._read(oid, oid, kind)
         if found is None and _VERSIONED.search(oid):
             # A versioned template (`KafkaWriter_2.1.0`) answers only to its unversioned id.
-            found = self._read(_VERSIONED.sub("", oid), kind)
-            if found is not None and str(found.get("id", "")).lower() != oid.lower():
-                found = None
+            found = self._read(_VERSIONED.sub("", oid), oid, kind)
         if found is None:
             raise UiFormError(f"no {kind} {oid}")
         return found
 
-    def _read(self, oid: str, kind: str) -> dict | None:
-        found = self.call(QV, "CRUDHandler", self.token, None, "READ", {"id": oid, "type": kind})
-        # An unknown id comes back as {'noField': None}, not as nothing.
-        return found[0] if found and found[0].get("id") else None
+    def _read(self, asked: str, oid: str, kind: str) -> dict | None:
+        """READ `asked`; the answer only if it is `oid` (an unknown id comes back as {'noField': None})."""
+        found = self.call(QV, "CRUDHandler", self.token, None, "READ", {"id": asked, "type": kind})
+        return found[0] if found and str(found[0].get("id", "")).lower() == oid.lower() else None
 
     def update(self, ns: str, app: str, obj: dict) -> None:
         """Save `obj` as the UI's Save does: UPDATE, then recompile the application."""

@@ -191,3 +191,17 @@ def test_an_unversioned_id_is_read_once():
     with pytest.raises(UiFormError):
         rmi.read("Global.PROPERTYTEMPLATE.Y", "PROPERTYTEMPLATE")
     assert rmi.reads == ["Global.PROPERTYTEMPLATE.X", "Global.PROPERTYTEMPLATE.Y"]
+
+
+def test_a_direct_read_answered_with_another_id_is_refused():
+    """READ of the unversioned KafkaWriter id answers with the 2.1.0 template: not the one asked for."""
+    rmi = _rmi({"Global.PROPERTYTEMPLATE.KafkaWriter": {"id": "Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0"}})
+    with pytest.raises(UiFormError, match="no PROPERTYTEMPLATE Global.PROPERTYTEMPLATE.KafkaWriter$"):
+        rmi.read("Global.PROPERTYTEMPLATE.KafkaWriter", "PROPERTYTEMPLATE")
+
+
+def test_an_unknown_versioned_id_reads_both_ids_then_fails():
+    rmi = _rmi({})
+    with pytest.raises(UiFormError, match="KafkaWriter_9.9.9"):
+        rmi.read("Global.PROPERTYTEMPLATE.KafkaWriter_9.9.9", "PROPERTYTEMPLATE")
+    assert rmi.reads == ["Global.PROPERTYTEMPLATE.KafkaWriter_9.9.9", "Global.PROPERTYTEMPLATE.KafkaWriter"]
