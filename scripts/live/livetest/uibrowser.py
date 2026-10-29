@@ -34,9 +34,26 @@ def _close_editor(page) -> None:
             page.wait_for_timeout(1000)
 
 
+def _clear_popups(page) -> None:
+    """Close what covers the canvas: Striim's Sherlock AI card ("Discover Sensitive Data ...")
+    opens on the flow page over the right-hand nodes, and a hover tooltip can sit over a node."""
+    page.mouse.move(0, 0)
+    close = page.locator("[data-test-id=insights-close-btn]:visible")
+    if close.count():
+        close.first.click()
+    tips = page.locator("[role=tooltip]:visible")
+    for attempt in range(20):
+        if tips.count() == 0:
+            return
+        if attempt == 0:
+            page.keyboard.press("Escape")
+        page.wait_for_timeout(250)
+
+
 def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
     """Save component `name`; the UPDATE it sent and the property touched to enable Save."""
     _close_editor(page)
+    _clear_popups(page)
     page.click(f"[data-test-id=node_container_{name}]")
     page.wait_for_selector("[data-test-id=submit-btn]", timeout=TIMEOUT_MS)
     page.wait_for_timeout(1500)
