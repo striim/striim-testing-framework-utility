@@ -147,10 +147,19 @@ def test_alter_recompile_normalizes(tmp_path):
     """, {"swap.tql": "-- ALTER APPLICATION in a comment is fine\n" + SWAP}))
     assert m.action_specs == [{
         "type": "alter_recompile", "app": "${APP}", "file": "swap.tql", "delay_before_stop": 3.0,
+        "interrupt": "stop",
         "capture": [{"token": "RESTART", "source": "describe", "component": "Src",
                      "field": "Source Restart Position", "timeout": None}],
         "stopped_seed": [("postgres-source", "batch2.sql")],
         "seed": [("postgres-source", "batch3.sql", 0.0)]}]
+
+
+def test_alter_recompile_interrupt_quiesce_loads(tmp_path):
+    m = load_manifest(_case(tmp_path, """
+        action:
+          - {type: alter_recompile, app: A, file: swap.tql, interrupt: quiesce}
+    """, {"swap.tql": SWAP}))
+    assert m.action_specs[0]["interrupt"] == "quiesce"
 
 
 @pytest.mark.parametrize("body, files, match", [
@@ -165,6 +174,7 @@ def test_alter_recompile_normalizes(tmp_path):
      "DEPLOY APPLICATION"),
     ("{type: alter_recompile, app: A, file: x.tql}", {"x.tql": "USE ns;\n" + SWAP}, "USE"),
     ("{type: alter_recompile, app: A, file: x.tql, tokens: {X: y}}", {"x.tql": SWAP}, "unknown key"),
+    ("{type: alter_recompile, app: A, file: x.tql, interrupt: kill}", {"x.tql": SWAP}, "interrupt 'kill'"),
 ])
 def test_alter_recompile_refusals(tmp_path, body, files, match):
     (tmp_path / "out.tql").write_text(SWAP)
