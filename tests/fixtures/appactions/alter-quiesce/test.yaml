@@ -1,0 +1,20 @@
+name: aa-alter-quiesce
+purpose: hermetic appactions fixture - alter_recompile with interrupt quiesce drains the app instead of stopping it
+tql: app.tql
+requires: [postgres]
+timeout: 30
+tokens: {START_POSITION: ""}
+server_files:
+  - {file: old.jar, dest: OldReader-5.4.jar, load: open_processor}
+action:
+  - type: alter_recompile
+    app: "${APP}"
+    file: swap.tql
+    interrupt: quiesce
+    delay_before_stop: 0
+    capture: [{token: RESTART, describe: Src, field: Source Restart Position}]
+    stopped_seed: [{file: stopped.sql, db: postgres-source}]
+    seed: [{file: after.sql, db: postgres-source, after: 1s}]
+  - {type: capture, token: ADAPTER, describe: Src, field: adapterName, expect: NewReader, timeout: 3s}
+assert:
+  smoke: true

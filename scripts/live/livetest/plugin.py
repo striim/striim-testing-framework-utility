@@ -3598,9 +3598,13 @@ class LiveItem(pytest.Item):
                                 _report(m.name, f"action: alter_recompile ({_ar_app})")
                                 _wait_hb(action_spec["delay_before_stop"],
                                          f"action: waiting to stop {_ar_app}")
-                                client.stop_app(_ar_app)
-                                recovery.await_left_running(client, _ar_app, timeout=min(300, m.timeout))
-                                _report(m.name, f"action: {_ar_app} stopped")
+                                if action_spec.get("interrupt", "stop") == "quiesce":
+                                    client.quiesce_app(_ar_app)
+                                else:
+                                    client.stop_app(_ar_app)
+                                _ar_status = recovery.await_left_running(
+                                    client, _ar_app, timeout=min(300, m.timeout))
+                                _report(m.name, f"action: {_ar_app} {_ar_status.lower()}")
                                 appactions.run_captures(
                                     client, action_spec["capture"], ns, tokens, m.timeout,
                                     report=lambda msg: _report(m.name, msg))

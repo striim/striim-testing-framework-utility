@@ -1,0 +1,2 @@
+-- the source re-created on another adapter, carrying the position read while stopped
+CREATE OR REPLACE SOURCE Src USING Global.NewReader (Note: '${RESTART}') OUTPUT TO S;

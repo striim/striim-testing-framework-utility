@@ -38,6 +38,11 @@ def _stop_app(self, app):
     STATE["running"] = False
 
 
+def _quiesce_app(self, app):
+    log("quiesce_app", app=app)
+    STATE["running"] = False
+
+
 def _describe(self, name):
     log("describe", name=name)
     return [{"name": name, "adapterName": STATE.get("adapter", "OldReader"),
@@ -70,6 +75,7 @@ def _force_drop(self, app):
 
 
 FakeClient.stop_app = _stop_app
+FakeClient.quiesce_app = _quiesce_app
 FakeClient.describe = _describe
 FakeClient.mon = _mon
 FakeClient.deploy_tql = _deploy_tql
@@ -83,8 +89,8 @@ P._rendered_tql = lambda m, tokens, renames: P.render((m.source_dir / m.tql).rea
 def run_actions(run_case, monkeypatch):
     monkeypatch.setattr(exec_harness, "CONFTEST", exec_harness.CONFTEST + EXTRA)
 
-    def run(mon_body, **extra):
-        return run_case("alter-capture", {"position": POS, "mon": {"Src": mon_body}, **extra},
+    def run(mon_body, case="alter-capture", **extra):
+        return run_case(case, {"position": POS, "mon": {"Src": mon_body}, **extra},
                         fixtures=FIXTURES)
     return run
 
@@ -130,6 +136,18 @@ def test_capture_alter_recompile_and_recreate_run_in_order_with_captured_tokens(
     assert ev[recreate]["tql"].startswith(f"USE {ns};\nCREATE OR REPLACE APPLICATION {app} RECOVERY")
     # seed after: 1s -- no earlier than the recompiled app's RUNNING (which follows the import)
     assert ev[seed3]["t"] - ev[alter]["t"] >= 1.0
+
+
+def test_alter_recompile_interrupt_quiesce_drains_instead_of_stopping(run_actions):
+    run = run_actions(GOOD, case="alter-quiesce")
+    _agree(run, "passed")
+    ev = run.events()
+    quiesce = _at(ev, lambda e: e["event"] == "quiesce_app")
+    desc = _at(ev, lambda e: e["event"] == "describe", quiesce)
+    alter = _at(ev, lambda e: e["event"] == "deploy_tql" and "RECOMPILE" in e["tql"])
+    assert quiesce < desc < alter
+    # the drain replaces the STOP: no stop_app before the swap
+    assert not any(e["event"] == "stop_app" for e in ev[:alter])
 
 
 def test_a_load_jar_is_staged_in_a_private_dir_that_is_removed(run_actions):

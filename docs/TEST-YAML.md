@@ -1078,6 +1078,7 @@ action:
     app: "${APP}"                        # required, token-rendered
     file: swap_source.tql                # required: the CREATE OR REPLACE statements, token-rendered
     delay_before_stop: 3                 # optional, default 3
+    interrupt: stop                      # optional: stop (default) or quiesce
     capture:                             # optional: read after STOP
       - {token: RESTART, describe: ChangeSource, field: Source Restart Position}
     stopped_seed:                        # optional: runs after STOP and capture
@@ -1094,7 +1095,10 @@ CREATE OR REPLACE SOURCE ChangeSource USING Global.MyCdcReaderV2 (
 ) OUTPUT TO ChangeStream;
 ```
 
-- **Order:** STOP and wait until the app has left RUNNING; captures; `stopped_seed`; then one import:
+- **`interrupt`:** `stop` (default) is `STOP APPLICATION`, which applies nothing pending; `quiesce` is
+  `QUIESCE APPLICATION`, which flushes every component first and can land inside a source
+  transaction. Either way the action waits until the app has left RUNNING (QUIESCED for `quiesce`).
+- **Order:** STOP (or QUIESCE) and wait until the app has left RUNNING; captures; `stopped_seed`; then one import:
   `USE ${NS}; UNDEPLOY APPLICATION <app>; ALTER APPLICATION <app>;` the rendered fragment,
   `ALTER APPLICATION <app> RECOMPILE;`, the TQL's own `DEPLOY APPLICATION <app> …;` (so deployment
   groups carry over; plain `DEPLOY` when the TQL has none) and `START APPLICATION <app>;`. Then wait

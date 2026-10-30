@@ -74,8 +74,10 @@ _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _CAPTURE_KEYS = {"token", "describe", "mon", "field", "timeout", "expect"}
 _DROP_RECREATE_KEYS = {"type", "app", "delay_before_stop", "recreate_wait", "seed",
                        "capture", "stopped_seed", "tokens"}
-_ALTER_RECOMPILE_KEYS = {"type", "app", "file", "delay_before_stop", "capture", "stopped_seed",
-                         "seed"}
+_ALTER_RECOMPILE_KEYS = {"type", "app", "file", "delay_before_stop", "interrupt", "capture",
+                         "stopped_seed", "seed"}
+# How alter_recompile takes the app down before the swap: STOP (no flush) or QUIESCE (the drain).
+_ALTER_RECOMPILE_INTERRUPTS = ("stop", "quiesce")
 # Statements alter_recompile writes itself around the fragment. A fragment carrying one would
 # run it twice, or (USE) re-point the rest of the import at another namespace.
 _ALTER_FRAGMENT_REFUSED = re.compile(
@@ -1429,6 +1431,11 @@ def load_manifest(path: Path) -> TestManifest:
                 if not isinstance(ar_app, str) or not ar_app.strip():
                     raise ManifestError(
                         f"{path}: action[{i}] 'alter_recompile' needs a non-empty 'app' key")
+                ar_interrupt = action.get("interrupt", "stop")
+                if ar_interrupt not in _ALTER_RECOMPILE_INTERRUPTS:
+                    raise ManifestError(
+                        f"{path}: action[{i}] 'alter_recompile' interrupt {ar_interrupt!r} -- "
+                        f"allowed: {list(_ALTER_RECOMPILE_INTERRUPTS)}")
                 action_specs.append({
                     "type": "alter_recompile",
                     "app": ar_app.strip(),
@@ -1436,6 +1443,7 @@ def load_manifest(path: Path) -> TestManifest:
                         action.get("file"), f"action[{i}] 'alter_recompile'", path, source_dir),
                     "delay_before_stop": _parse_zeroable_duration(
                         action.get("delay_before_stop", 3), "delay_before_stop", path),
+                    "interrupt": ar_interrupt,
                     "capture": _normalize_captures(
                         action.get("capture"), f"action[{i}] capture", path),
                     "stopped_seed": _normalize_file_specs(
