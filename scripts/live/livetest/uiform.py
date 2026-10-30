@@ -18,6 +18,7 @@ import urllib.parse
 MODES = ("replay", "browser")
 PLACEHOLDER = "ui-required"
 QV = "com.webaction.runtime.QueryValidator"
+MH = "com.webaction.web.api.MetadataHelper"
 _PARTS = ("adapter", "parser", "formatter")
 _DEPLOY = re.compile(r"(?:^|(?<=;))\s*(DEPLOY|START)\s+APPLICATION\b", re.I | re.M)
 _USE = re.compile(r"(?:^|(?<=;))\s*USE\s+(\w+)\s*;", re.I | re.M)
@@ -77,9 +78,6 @@ def secret_names(template: dict) -> set:
             if p.get("type") == "com.webaction.security.Password"}
 
 
-_VERSIONED = re.compile(r"_\d+(?:\.\d+)+$")
-
-
 class Rmi:
     """The Flow Designer's websocket RPC (ws://<host>/rmiws/, URL-encoded JSON)."""
 
@@ -111,18 +109,25 @@ class Rmi:
                 return reply["params"][0]
 
     def read(self, oid: str, kind: str) -> dict:
-        found = self._read(oid, oid, kind)
-        if found is None and _VERSIONED.search(oid):
-            # A versioned template (`KafkaWriter_2.1.0`) answers only to its unversioned id.
-            found = self._read(_VERSIONED.sub("", oid), oid, kind)
-        if found is None:
+        found = self.call(QV, "CRUDHandler", self.token, None, "READ", {"id": oid, "type": kind})
+        # An unknown id comes back as {'noField': None}, not as nothing.
+        if not found or str(found[0].get("id", "")).lower() != oid.lower():
             raise UiFormError(f"no {kind} {oid}")
-        return found
+        return found[0]
 
-    def _read(self, asked: str, oid: str, kind: str) -> dict | None:
-        """READ `asked`; the answer only if it is `oid` (an unknown id comes back as {'noField': None})."""
-        found = self.call(QV, "CRUDHandler", self.token, None, "READ", {"id": asked, "type": kind})
-        return found[0] if found and str(found[0].get("id", "")).lower() == oid.lower() else None
+    def template(self, oid: str) -> dict:
+        """A property template, loaded as the Flow Designer loads them: every template in one call.
+        A READ of a versioned one (`Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0`) finds nothing."""
+        if not hasattr(self, "_templates"):
+            found = self.call(MH, "getEntitiesByTypes", self.token, ["PROPERTYTEMPLATE"])
+            listed = found.get("PROPERTYTEMPLATE") if isinstance(found, dict) else None
+            if not isinstance(listed, list):
+                raise UiFormError(f"getEntitiesByTypes returned no PROPERTYTEMPLATE list: {str(found)[:200]}")
+            self._templates = {str(e.get("id", "")).lower(): e for e in listed if isinstance(e, dict)}
+        try:
+            return self._templates[oid.lower()]
+        except KeyError:
+            raise UiFormError(f"no PROPERTYTEMPLATE {oid}") from None
 
     def update(self, ns: str, app: str, obj: dict) -> None:
         """Save `obj` as the UI's Save does: UPDATE, then recompile the application."""
@@ -168,7 +173,7 @@ def ui_object(rmi: Rmi, obj: dict, templates: dict) -> tuple[dict, list[str]]:
             continue
         handler = section["handler"]
         if handler not in templates:
-            templates[handler] = rmi.read(handler, "PROPERTYTEMPLATE")
+            templates[handler] = rmi.template(handler)
         props = ui_properties(section.get("properties") or {}, templates[handler])
         secret = secret_names(templates[handler])
         for key, value in (section.get("properties") or {}).items():
