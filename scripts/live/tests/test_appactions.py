@@ -460,6 +460,18 @@ def test_input_snapshot_lists_action_fragments_and_seeds(tmp_path):
     assert ("tql-fragment", "swap.tql") in refs and ("seed", "b2.sql") in refs and ("seed", "b3.sql") in refs
 
 
+def test_input_snapshot_lists_action_server_files(tmp_path):
+    p = _case(tmp_path, """
+        action:
+          - type: alter_recompile
+            app: "${APP}"
+            file: swap.tql
+            server_files: [{file: rest.dat, dest: "/tmp/${NS}/rest.dat"}]
+    """, {"swap.tql": SWAP, "rest.dat": "x"})
+    refs = [(r, path.name) for r, path in inputs.referenced(load_manifest(p), p)]
+    assert ("server-file", "rest.dat") in refs
+
+
 def test_apply_upload_renames():
     assert appactions.apply_upload_renames("ConfigFile: 'UploadedFiles/a.json'", {"a.json": "t_a.json"}) \
         == "ConfigFile: 'UploadedFiles/t_a.json'"

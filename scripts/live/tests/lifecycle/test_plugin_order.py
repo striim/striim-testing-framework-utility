@@ -102,3 +102,30 @@ def test_final_outcome_computed_after_cleanup_before_raise():
     assert "_slt_sys.exc_info()[0] is None" in guard and 'cleanup.status == "failed"' in guard
     from livetest import evidence
     assert "_slt_cleanup" in inspect.getsource(evidence.case_envelope)          # the report hook reads it
+
+
+def test_alter_recompile_server_files_are_claimed_before_deploy():
+    """A copy an earlier attempt left would be in place before the swap the case is about."""
+    runtest = inspect.getsource(plugin.LiveItem._runtest)
+    claim = 'for _sf, _dest in _spec.get("server_files") or []:'
+    pos = _positions(runtest, [claim, "_deploy_tql_once_retrying("])
+    assert pos == sorted(pos)
+    after = runtest[runtest.index(claim):runtest.index(claim) + 300]
+    assert 'ledger.claim_exact_file(ctx, render(_dest, tokens), "server-file")' in after
+
+
+def test_action_server_files_need_the_owned_dir():
+    from livetest import ownership
+
+    class _Spec:
+        sink = "db"
+
+    class _M:
+        lifecycle = _Spec()
+        assert_ = {}
+        server_files = []
+        action_specs = [{"type": "alter_recompile", "server_files": [("r.dat", "${OWNED_DIR}/r.dat")]}]
+    assert ownership.needs_owned_dir(_M())
+    _M.action_specs = [{"type": "alter_recompile", "server_files": []}]
+    assert not ownership.needs_owned_dir(_M())
+

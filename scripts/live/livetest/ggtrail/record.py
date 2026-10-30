@@ -73,16 +73,27 @@ def _encode_columns(table: TableSchema, values: dict, keys_only: bool = False) -
     )
 
 
+TXN_TOKENS_FIRST = "first"   # a transaction's first record and single-record ones, as GoldenGate
+TXN_TOKENS_EVERY = "every"   # every record: not GoldenGate's shape, see _token_chunk
+_TXN_TOKEN_MODES = (None, TXN_TOKENS_FIRST, TXN_TOKENS_EVERY)
+
+
 def _token_chunk(txn_id: int) -> bytes:
     # ['T'][1 pad][u16 len][tokens], each token [code][1 pad][u16 len][value]
     # (AbstractTokenList.getTokens). GGTrailParser_1_0.isFirstTxnRecord takes a record with a
     # TxnID token as a transaction's start and stamps its file and offset into the positions of
     # the events after it; GGCheckpoint_2_0.compareTo orders positions by that start first.
-    # Measured live (5.4.0.6C, 2026-10-30, QUIESCE inside a 2,000-move transaction): with no token
-    # the start is empty and sorts before the restored checkpoint, so every later event was
-    # dropped; with the token on the first record only, the restored checkpoint's start is the
-    # last delivered record, so the rest of that transaction sorted before it and was dropped;
-    # with it on every record each start is the record itself and the restart resumed in order.
+    #
+    # GoldenGate writes TxnID on BEGIN and SOLE records only (Striim's OGG test trails, 39 files,
+    # 2026-10-30: no MIDDLE or END record carries it) -- TXN_TOKENS_FIRST. Measured live
+    # (5.4.0.6C, 2026-10-30, a QUIESCE inside a 2,000-move transaction split across two files):
+    # with no token every event after the restart was dropped (the start is empty and sorts before
+    # the restored checkpoint); with TXN_TOKENS_FIRST the rest of the open transaction was dropped
+    # (the restored checkpoint's start is the last delivered record, the rest's is earlier) and
+    # later transactions arrived; with TXN_TOKENS_EVERY each start is the record itself and the
+    # restart resumed in order. TXN_TOKENS_EVERY makes the reader deliver the rest of a
+    # transaction after such a restart, so a test of the TARGET can see it; it does not show what
+    # GGTrailReader does with a real trail.
     value = str(txn_id).encode("ascii")
     tokens = b"".join(bytes([code, 0x00]) + tlv.u16(len(value)) + value
                       for code in (_TOKEN_TXNID, _TOKEN_CSN))
@@ -92,12 +103,15 @@ def _token_chunk(txn_id: int) -> bytes:
 def _build_record(table: TableSchema, opcode: int, before_after: int,
                   values: dict, txn_id: int, timestamp: datetime.datetime,
                   txn_part: int = _TXN_PART_SOLE, prefix: bytes = b"",
-                  txn_tokens: bool = False) -> bytes:
+                  txn_tokens: str | None = None) -> bytes:
     columns = prefix + _encode_columns(table, values)
     # Data chunk: ['D'][1 pad][u16 dataLen][columns] -- dataLen at chunk offset 2, counts
     # only the column bytes (Evidence §C/§D, corrected: NOT [u32 pad][u16 len]).
     data_chunk = bytes([_RECORD_DATA_TOKEN, 0x00]) + tlv.u16(len(columns)) + columns
-    if txn_tokens:
+    if txn_tokens not in _TXN_TOKEN_MODES:
+        raise ValueError(f"txn_tokens must be one of {_TXN_TOKEN_MODES}, got {txn_tokens!r}")
+    if txn_tokens == TXN_TOKENS_EVERY or (
+            txn_tokens == TXN_TOKENS_FIRST and txn_part in (_TXN_PART_BEGIN, _TXN_PART_SOLE)):
         data_chunk += _token_chunk(txn_id)
 
     table_name = table.name.encode("ascii")
@@ -133,27 +147,31 @@ def _build_record(table: TableSchema, opcode: int, before_after: int,
 
 
 def write_insert(table: TableSchema, values: dict, txn_id: int, timestamp: datetime.datetime,
-                 txn_part: int = _TXN_PART_SOLE, txn_tokens: bool = False) -> bytes:
+                 txn_part: int = _TXN_PART_SOLE, txn_tokens: str | None = None) -> bytes:
     return _build_record(table, _DBOP_INSERT, _AFTER, values, txn_id, timestamp, txn_part=txn_part,
                          txn_tokens=txn_tokens)
 
 
 def write_delete(table: TableSchema, values: dict, txn_id: int, timestamp: datetime.datetime,
-                 txn_part: int = _TXN_PART_SOLE, txn_tokens: bool = False) -> bytes:
+                 txn_part: int = _TXN_PART_SOLE, txn_tokens: str | None = None) -> bytes:
     return _build_record(table, _DBOP_DELETE, _BEFORE, values, txn_id, timestamp, txn_part=txn_part,
                          txn_tokens=txn_tokens)
 
 
 def write_update(table: TableSchema, before: dict, after: dict,
                  txn_id: int, timestamp: datetime.datetime,
-                 txn_part: int = _TXN_PART_SOLE, txn_tokens: bool = False) -> bytes:
+                 txn_part: int = _TXN_PART_SOLE, txn_tokens: str | None = None) -> bytes:
     # An UPDATE that keeps the key: plain DBOP_UPDATE, after-image only (the reader fills the
     # key's before-image from the after-image). One that changes it: UPDATEPK, whose data chunk
     # starts with the before-image key, [u16 len counting itself][key columns]
     # (Operation.getColumns, the doBefore path).
-    keys = [c.name for c in table.columns if c.is_key]
-    if all(k in before for k in keys) and any(before[k] != after.get(k) for k in keys):
-        before_key = _encode_columns(table, before, keys_only=True)
+    keys = [c for c in table.columns if c.is_key]
+    missing = [c.name for c in keys if c.name not in before]
+    if before and missing:
+        raise ValueError(f"{table.name}: the UPDATE's before-image lacks key column(s) {missing}: "
+                         f"give every key column, or no before-image for an UPDATE that keeps its key")
+    before_key = _encode_columns(table, before, keys_only=True)
+    if before and before_key != _encode_columns(table, after, keys_only=True):
         prefix = tlv.u16(2 + len(before_key)) + before_key
         return _build_record(table, _DBOP_UPDATEPK, _AFTER, after, txn_id, timestamp,
                              txn_part=txn_part, prefix=prefix, txn_tokens=txn_tokens)
@@ -162,19 +180,22 @@ def write_update(table: TableSchema, before: dict, after: dict,
 
 
 def write_truncate(table: TableSchema, txn_id: int, timestamp: datetime.datetime,
-                   txn_part: int = _TXN_PART_SOLE, txn_tokens: bool = False) -> bytes:
+                   txn_part: int = _TXN_PART_SOLE, txn_tokens: str | None = None) -> bytes:
     return _build_record(table, _DBOP_TRUNCATE, _AFTER, {}, txn_id, timestamp, txn_part=txn_part,
                          txn_tokens=txn_tokens)
 
 
 def write_transaction(table: TableSchema, ops: list, txn_id: int,
-                      timestamp: datetime.datetime) -> bytes:
+                      timestamp: datetime.datetime, txn_tokens: str | None = None) -> bytes:
     # Single-table multi-part transaction: all records share txn_id, parts run
     # BEGIN/MIDDLE.../END (TransactionPart 0/1/2) vs. the SOLE=3 single-op records use.
     # The cross-table equivalent lives on TrailFileWriter.transaction() (spec §12.3).
+    # An op is (kind, values): an "update" here has no before-image, so it cannot change the key;
+    # TrailFileWriter.transaction takes (table, "update", before, after) for that.
     opcodes = {"insert": _DBOP_INSERT, "delete": _DBOP_DELETE, "update": _DBOP_UPDATE}
     out = bytearray()
     for i, (kind, values) in enumerate(ops):
         part = _TXN_PART_BEGIN if i == 0 else (_TXN_PART_END if i == len(ops) - 1 else _TXN_PART_MIDDLE)
-        out += _build_record(table, opcodes[kind], _AFTER, values, txn_id, timestamp, txn_part=part)
+        out += _build_record(table, opcodes[kind], _AFTER, values, txn_id, timestamp, txn_part=part,
+                             txn_tokens=txn_tokens)
     return bytes(out)

@@ -896,7 +896,6 @@ def _normalize_alter_server_files(raw, label: str, path, source_dir) -> list:
     if not isinstance(raw, list):
         raise ManifestError(f"{path}: {label} must be a list of {{file, dest}} entries")
     out = []
-    sdir = Path(source_dir).resolve()
     for item in raw:
         if not isinstance(item, dict) or not item.get("file") or not item.get("dest"):
             raise ManifestError(f"{path}: {label} item needs 'file' and 'dest': {item!r}")
@@ -907,25 +906,27 @@ def _normalize_alter_server_files(raw, label: str, path, source_dir) -> list:
         src, dest = item["file"], item["dest"]
         if not isinstance(src, str) or not isinstance(dest, str):
             raise ManifestError(f"{path}: {label} file and dest must be strings: {item!r}")
-        fpath = (Path(source_dir) / src).resolve()
-        if sdir not in fpath.parents:
-            raise ManifestError(f"{path}: {label} file escapes the test dir: {src!r}")
-        if not fpath.is_file():
-            raise ManifestError(f"{path}: {label} file not found: {fpath}")
+        _test_dir_file(src, label, path, source_dir)
         out.append((src, dest))
     return out
+
+
+def _test_dir_file(name: str, label: str, path, source_dir) -> Path:
+    """An alter_recompile file: inside the test dir and present."""
+    sdir = Path(source_dir).resolve()
+    fpath = (Path(source_dir) / name).resolve()
+    if sdir not in fpath.parents:
+        raise ManifestError(f"{path}: {label} file escapes the test dir: {name!r}")
+    if not fpath.is_file():
+        raise ManifestError(f"{path}: {label} file not found: {fpath}")
+    return fpath
 
 
 def _normalize_alter_file(raw, label: str, path, source_dir) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ManifestError(
             f"{path}: {label} needs a 'file' (a TQL fragment, relative to the test dir)")
-    sdir = Path(source_dir).resolve()
-    fpath = (Path(source_dir) / raw).resolve()
-    if sdir not in fpath.parents:
-        raise ManifestError(f"{path}: {label} file escapes the test dir: {raw!r}")
-    if not fpath.is_file():
-        raise ManifestError(f"{path}: {label} file not found: {fpath}")
+    fpath = _test_dir_file(raw, label, path, source_dir)
     text = re.sub(r"--[^\n]*", "", fpath.read_text())
     if not text.strip():
         raise ManifestError(f"{path}: {label} file {raw!r} is empty")

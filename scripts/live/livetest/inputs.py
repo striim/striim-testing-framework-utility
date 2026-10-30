@@ -67,6 +67,7 @@ def referenced(m, manifest_path) -> list[tuple[str, Path]]:
         if spec.get("file"):
             out.append(("tql-fragment", src / spec["file"]))
         out += [("seed", at(e[1])) for k in ("stopped_seed", "seed") for e in spec.get(k) or []]
+        out += [("server-file", src / sf) for sf, _dest in spec.get("server_files") or []]
     out += [("upload", at(u["from"])) for u in (getattr(m, "op_uploads", None) or []) if u.get("from")]
     out += [("workload", Path(g["workload"])) for g in (getattr(m, "generate_specs", None) or []) if g.get("workload")]
     lc = getattr(m, "lifecycle", None)

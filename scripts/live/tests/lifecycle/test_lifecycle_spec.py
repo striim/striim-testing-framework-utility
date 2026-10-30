@@ -254,3 +254,13 @@ def test_unsupported_route_explains_supported_routes_without_planning_ids():
     error = rejected(block, "unsupported lifecycle route")
     assert "postgres-source" in str(error)
     assert "task" not in str(error) and "follow-up" not in str(error)
+
+
+def test_action_server_files_dest_outside_owned_dir_rejected():
+    block = {"version": 1, "mode": "cdc", "sink": "file",
+             "readiness": {"kind": "source-progress", "db": "postgres-source"},
+             "completion": {"kind": "file-lines", "path": "${OWNED_DIR}/out.csv", "lines": 3}}
+    raw = {"assert": {"file": [{"path": "${OWNED_DIR}/out.csv", "min_events": 3}]},
+           "action": [{"type": "alter_recompile", "file": "s.tql",
+                       "server_files": [{"file": "r.dat", "dest": "/tmp/r.dat"}]}]}
+    rejected(block, r"action\[0\]\.server_files\[0\]\.dest '/tmp/r.dat' must start with", **raw)

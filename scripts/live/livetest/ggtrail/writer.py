@@ -22,9 +22,11 @@ class TrailFileWriter:
 
     def __init__(self, directory: Path, schemas: list[TableSchema], max_records_per_file: int = 1000,
                  txn_id_start: int = 1, clock: Callable[[], datetime.datetime] | None = None,
-                 txn_tokens: bool = False):
-        # txn_tokens: write GoldenGate's TxnID and CSN tokens on every record. Without them a
-        # restart inside a transaction (STOP, QUIESCE, crash) drops the events after it
+                 txn_tokens: str | None = None):
+        # txn_tokens: GoldenGate's TxnID and CSN tokens -- record.TXN_TOKENS_FIRST (on BEGIN and
+        # SOLE records, as GoldenGate writes them) or record.TXN_TOKENS_EVERY (every record).
+        # Without them the reader drops every event after a restart inside a transaction; with
+        # FIRST it drops the rest of that transaction; with EVERY it resumes in order
         # (record._token_chunk). Off by default: it changes every record's bytes.
         self._txn_tokens = txn_tokens
         self._dir = Path(directory)
