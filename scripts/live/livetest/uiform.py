@@ -120,7 +120,10 @@ class Rmi:
         A READ of a versioned one (`Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0`) finds nothing."""
         if not hasattr(self, "_templates"):
             found = self.call(MH, "getEntitiesByTypes", self.token, ["PROPERTYTEMPLATE"])
-            self._templates = {str(e.get("id", "")).lower(): e for e in (found or {}).get("PROPERTYTEMPLATE") or []}
+            listed = found.get("PROPERTYTEMPLATE") if isinstance(found, dict) else None
+            if not isinstance(listed, list):
+                raise UiFormError(f"getEntitiesByTypes returned no PROPERTYTEMPLATE list: {str(found)[:200]}")
+            self._templates = {str(e.get("id", "")).lower(): e for e in listed if isinstance(e, dict)}
         try:
             return self._templates[oid.lower()]
         except KeyError:

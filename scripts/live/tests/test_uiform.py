@@ -157,7 +157,6 @@ def test_the_socket_is_closed_when_the_context_cannot_be_made(monkeypatch):
     assert closed == [True]
 
 
-
 def _rmi(answers, templates=()):
     """An Rmi whose READs answer from `answers` (id -> object) and whose template load returns
     `templates`, the way Striim does."""
@@ -168,7 +167,7 @@ def _rmi(answers, templates=()):
     def call(cls, method, token, *params):
         if method == "getEntitiesByTypes":
             rmi.loads += 1
-            return {"PROPERTYTEMPLATE": list(templates)}
+            return templates if isinstance(templates, (dict, type(None))) else {"PROPERTYTEMPLATE": list(templates)}
         query = params[2]
         rmi.reads.append(query["id"])
         return [answers.get(query["id"], {"noField": None})]
@@ -195,3 +194,10 @@ def test_a_direct_read_answered_with_another_id_is_refused():
     rmi = _rmi({"Global.TARGET.t": {"id": "Global.TARGET.other"}})
     with pytest.raises(UiFormError, match="no TARGET Global.TARGET.t$"):
         rmi.read("Global.TARGET.t", "TARGET")
+
+
+@pytest.mark.parametrize("reply", [None, {}, {"PROPERTYTEMPLATE": None}])
+def test_a_template_load_without_a_list_says_so(reply):
+    rmi = _rmi({}, reply)
+    with pytest.raises(UiFormError, match="getEntitiesByTypes returned no PROPERTYTEMPLATE list"):
+        rmi.template("Global.PROPERTYTEMPLATE.X")
