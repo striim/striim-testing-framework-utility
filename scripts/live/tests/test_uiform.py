@@ -43,7 +43,7 @@ class FakeRmi:
     def __init__(self):
         self.reads = []
 
-    def read(self, oid, kind):
+    def template(self, oid):
         self.reads.append(oid)
         return TEMPLATE
 
@@ -157,51 +157,41 @@ def test_the_socket_is_closed_when_the_context_cannot_be_made(monkeypatch):
     assert closed == [True]
 
 
-def _rmi(answers):
-    """An Rmi whose READs answer from `answers` (id -> object) the way Striim does."""
+
+def _rmi(answers, templates=()):
+    """An Rmi whose READs answer from `answers` (id -> object) and whose template load returns
+    `templates`, the way Striim does."""
     from livetest.uiform import Rmi
     rmi = Rmi.__new__(Rmi)
-    rmi.token, rmi.reads = "t", []
+    rmi.token, rmi.reads, rmi.loads = "t", [], 0
 
-    def call(cls, method, token, app, verb, query):
+    def call(cls, method, token, *params):
+        if method == "getEntitiesByTypes":
+            rmi.loads += 1
+            return {"PROPERTYTEMPLATE": list(templates)}
+        query = params[2]
         rmi.reads.append(query["id"])
         return [answers.get(query["id"], {"noField": None})]
     rmi.call = call
     return rmi
 
 
-def test_a_versioned_template_is_read_by_its_unversioned_id():
+def test_a_versioned_template_comes_from_the_one_template_load():
     kafka = {"id": "Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0", "name": "KafkaWriter_2.1.0"}
-    rmi = _rmi({"Global.PROPERTYTEMPLATE.KafkaWriter": kafka})
-    assert rmi.read("Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0", "PROPERTYTEMPLATE") is kafka
-    assert rmi.reads == ["Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0", "Global.PROPERTYTEMPLATE.KafkaWriter"]
+    plain = {"id": "Global.PROPERTYTEMPLATE.KafkaWriter"}
+    rmi = _rmi({}, [plain, kafka])
+    assert rmi.template("Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0") is kafka
+    assert rmi.template("Global.PROPERTYTEMPLATE.KafkaWriter") is plain
+    assert rmi.loads == 1 and rmi.reads == []
 
 
-def test_another_version_under_the_unversioned_id_is_refused():
-    kafka = {"id": "Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0"}
-    rmi = _rmi({"Global.PROPERTYTEMPLATE.KafkaWriter": kafka})
-    with pytest.raises(UiFormError, match="no PROPERTYTEMPLATE Global.PROPERTYTEMPLATE.KafkaWriter_0.11.0"):
-        rmi.read("Global.PROPERTYTEMPLATE.KafkaWriter_0.11.0", "PROPERTYTEMPLATE")
-
-
-def test_an_unversioned_id_is_read_once():
-    x = {"id": "Global.PROPERTYTEMPLATE.X"}
-    rmi = _rmi({"Global.PROPERTYTEMPLATE.X": x})
-    assert rmi.read("Global.PROPERTYTEMPLATE.X", "PROPERTYTEMPLATE") is x
-    with pytest.raises(UiFormError):
-        rmi.read("Global.PROPERTYTEMPLATE.Y", "PROPERTYTEMPLATE")
-    assert rmi.reads == ["Global.PROPERTYTEMPLATE.X", "Global.PROPERTYTEMPLATE.Y"]
+def test_an_unknown_template_names_the_id():
+    rmi = _rmi({}, [{"id": "Global.PROPERTYTEMPLATE.KafkaWriter"}])
+    with pytest.raises(UiFormError, match="no PROPERTYTEMPLATE Global.PROPERTYTEMPLATE.KafkaWriter_9.9.9$"):
+        rmi.template("Global.PROPERTYTEMPLATE.KafkaWriter_9.9.9")
 
 
 def test_a_direct_read_answered_with_another_id_is_refused():
-    """READ of the unversioned KafkaWriter id answers with the 2.1.0 template: not the one asked for."""
-    rmi = _rmi({"Global.PROPERTYTEMPLATE.KafkaWriter": {"id": "Global.PROPERTYTEMPLATE.KafkaWriter_2.1.0"}})
-    with pytest.raises(UiFormError, match="no PROPERTYTEMPLATE Global.PROPERTYTEMPLATE.KafkaWriter$"):
-        rmi.read("Global.PROPERTYTEMPLATE.KafkaWriter", "PROPERTYTEMPLATE")
-
-
-def test_an_unknown_versioned_id_reads_both_ids_then_fails():
-    rmi = _rmi({})
-    with pytest.raises(UiFormError, match="KafkaWriter_9.9.9"):
-        rmi.read("Global.PROPERTYTEMPLATE.KafkaWriter_9.9.9", "PROPERTYTEMPLATE")
-    assert rmi.reads == ["Global.PROPERTYTEMPLATE.KafkaWriter_9.9.9", "Global.PROPERTYTEMPLATE.KafkaWriter"]
+    rmi = _rmi({"Global.TARGET.t": {"id": "Global.TARGET.other"}})
+    with pytest.raises(UiFormError, match="no TARGET Global.TARGET.t$"):
+        rmi.read("Global.TARGET.t", "TARGET")
