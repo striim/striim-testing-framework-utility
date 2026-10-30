@@ -148,6 +148,10 @@ def test_alter_recompile_interrupt_quiesce_drains_instead_of_stopping(run_action
     assert quiesce < desc < alter
     # the drain replaces the STOP: no stop_app before the swap
     assert not any(e["event"] == "stop_app" for e in ev[:alter])
+    # server_files: placed once the recompiled app is RUNNING, before its seed
+    placed = _at(ev, lambda e: e["event"] == "placed" and e["dest"].endswith("-rest.dat"))
+    seed = _at(ev, lambda e: e["event"] == "insert", alter)
+    assert alter < placed < seed
 
 
 def test_a_load_jar_is_staged_in_a_private_dir_that_is_removed(run_actions):

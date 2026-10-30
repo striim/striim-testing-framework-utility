@@ -148,10 +148,37 @@ def test_alter_recompile_normalizes(tmp_path):
     assert m.action_specs == [{
         "type": "alter_recompile", "app": "${APP}", "file": "swap.tql", "delay_before_stop": 3.0,
         "interrupt": "stop",
+        "server_files": [],
         "capture": [{"token": "RESTART", "source": "describe", "component": "Src",
                      "field": "Source Restart Position", "timeout": None}],
         "stopped_seed": [("postgres-source", "batch2.sql")],
         "seed": [("postgres-source", "batch3.sql", 0.0)]}]
+
+
+def test_alter_recompile_server_files_load(tmp_path):
+    m = load_manifest(_case(tmp_path, """
+        action:
+          - type: alter_recompile
+            app: A
+            file: swap.tql
+            server_files: [{file: rest.dat, dest: "/tmp/${NS}/rest.dat"}]
+    """, {"swap.tql": SWAP, "rest.dat": "x"}))
+    assert m.action_specs[0]["server_files"] == [("rest.dat", "/tmp/${NS}/rest.dat")]
+
+
+@pytest.mark.parametrize("entry, files, match", [
+    ("[{dest: /tmp/x}]", {}, "needs 'file' and 'dest'"),
+    ("[{file: nope.dat, dest: /tmp/x}]", {}, "not found"),
+    ("[{file: ../out.tql, dest: /tmp/x}]", {}, "escapes the test dir"),
+    ("[{file: rest.dat, dest: /tmp/x, when: post_start}]", {"rest.dat": "x"}, "unknown key"),
+    ("{file: rest.dat, dest: /tmp/x}", {"rest.dat": "x"}, "must be a list"),
+])
+def test_alter_recompile_server_files_refusals(tmp_path, entry, files, match):
+    (tmp_path / "out.tql").write_text(SWAP)
+    with pytest.raises(ManifestError, match=match):
+        load_manifest(_case(tmp_path, f"action:\n  - {{type: alter_recompile, app: A, "
+                                      f"file: swap.tql, server_files: {entry}}}\n",
+                            {"swap.tql": SWAP, **files}))
 
 
 def test_alter_recompile_interrupt_quiesce_loads(tmp_path):
