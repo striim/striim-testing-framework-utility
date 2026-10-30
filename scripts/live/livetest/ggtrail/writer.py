@@ -21,7 +21,14 @@ class TrailFileWriter:
     """
 
     def __init__(self, directory: Path, schemas: list[TableSchema], max_records_per_file: int = 1000,
-                 txn_id_start: int = 1, clock: Callable[[], datetime.datetime] | None = None):
+                 txn_id_start: int = 1, clock: Callable[[], datetime.datetime] | None = None,
+                 txn_tokens: str | None = None):
+        # txn_tokens: GoldenGate's TxnID and CSN tokens -- record.TXN_TOKENS_FIRST (on BEGIN and
+        # SOLE records, as GoldenGate writes them) or record.TXN_TOKENS_EVERY (every record).
+        # Without them the reader drops every event after a restart inside a transaction; with
+        # FIRST it drops the rest of that transaction; with EVERY it resumes in order
+        # (record._token_chunk). Off by default: it changes every record's bytes.
+        self._txn_tokens = txn_tokens
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._schemas = list(schemas)
@@ -66,19 +73,23 @@ class TrailFileWriter:
 
     def insert(self, table: str, values: dict) -> None:
         schema = self._schema_for(table)
-        self._write_one(rec.write_insert(schema, values, self._next_txn_id, self._clock()))
+        self._write_one(rec.write_insert(schema, values, self._next_txn_id, self._clock(),
+                                         txn_tokens=self._txn_tokens))
 
     def delete(self, table: str, values: dict) -> None:
         schema = self._schema_for(table)
-        self._write_one(rec.write_delete(schema, values, self._next_txn_id, self._clock()))
+        self._write_one(rec.write_delete(schema, values, self._next_txn_id, self._clock(),
+                                         txn_tokens=self._txn_tokens))
 
     def update(self, table: str, before: dict, after: dict) -> None:
         schema = self._schema_for(table)
-        self._write_one(rec.write_update(schema, before, after, self._next_txn_id, self._clock()))
+        self._write_one(rec.write_update(schema, before, after, self._next_txn_id, self._clock(),
+                                         txn_tokens=self._txn_tokens))
 
     def truncate(self, table: str) -> None:
         schema = self._schema_for(table)
-        self._write_one(rec.write_truncate(schema, self._next_txn_id, self._clock()))
+        self._write_one(rec.write_truncate(schema, self._next_txn_id, self._clock(),
+                                           txn_tokens=self._txn_tokens))
 
     def ddl(self, schema: str, object_name: str, ddl_text: str,
             catalog_object_type: str = "TABLE", operation_name: str = "ALTER") -> None:
@@ -112,11 +123,14 @@ class TrailFileWriter:
             table, kind = op[0], op[1]
             schema = self._schema_for(table)
             if kind == "insert":
-                body = rec.write_insert(schema, op[2], txn_id, ts, txn_part=part)
+                body = rec.write_insert(schema, op[2], txn_id, ts, txn_part=part,
+                                        txn_tokens=self._txn_tokens)
             elif kind == "delete":
-                body = rec.write_delete(schema, op[2], txn_id, ts, txn_part=part)
+                body = rec.write_delete(schema, op[2], txn_id, ts, txn_part=part,
+                                        txn_tokens=self._txn_tokens)
             elif kind == "update":
-                body = rec.write_update(schema, op[2], op[3], txn_id, ts, txn_part=part)
+                body = rec.write_update(schema, op[2], op[3], txn_id, ts, txn_part=part,
+                                        txn_tokens=self._txn_tokens)
             else:
                 raise ValueError(f"unknown transaction op kind {kind!r} (insert|update|delete)")
             self._write(body)

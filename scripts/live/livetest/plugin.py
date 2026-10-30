@@ -2809,6 +2809,12 @@ class LiveItem(pytest.Item):
                 if not _load and m.lifecycle is None:
                     # the exact rendered path, never a parent-directory wipe
                     ledger.claim_exact_file(ctx, render(_dest, tokens), "server-file")
+            # alter_recompile's server_files too: a copy left by an earlier attempt would be in
+            # place before the swap, which is the moment the case means it not to be.
+            for _spec in m.action_specs:
+                for _sf, _dest in _spec.get("server_files") or []:
+                    if m.lifecycle is None:
+                        ledger.claim_exact_file(ctx, render(_dest, tokens), "server-file")
             # Generated data (generate:) is produced + placed BEFORE this phase's
             # hand-placed server_files, so generated output can never race a file the test
             # drops itself. Every generate: dest dir is created now, whatever its `when`.
@@ -3624,6 +3630,18 @@ class LiveItem(pytest.Item):
                                 client.await_running(_ar_app, timeout=min(300, m.timeout))
                                 _ar_running_at = time.monotonic()
                                 _report(m.name, f"action: {_ar_app} altered, recompiled and RUNNING")
+                                # Files a tailing reader picks up only now, after the swap.
+                                for _sf, _dest in action_spec.get("server_files", []):
+                                    _staged = _slt_evidence.stage_on(m, "server-file", _sf,
+                                                                     m.source_dir / _sf)
+                                    try:
+                                        place_server_file(ctx, _staged, render(_dest, tokens))
+                                    finally:
+                                        _slt_evidence.unstage(_staged)
+                                if action_spec.get("server_files"):
+                                    _report(m.name, f"action: placed "
+                                                    f"{len(action_spec['server_files'])} server "
+                                                    f"file(s) after the recompile")
                                 if action_spec["seed"]:
                                     _report(m.name, f"action: seeding after the recompile "
                                                     f"({len(action_spec['seed'])} file(s))")

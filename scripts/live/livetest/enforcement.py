@@ -553,6 +553,12 @@ def check_file_paths_tokenized(path: Path, text: str) -> list[Violation]:
         if "${NS}" not in d and "${TID}" not in d:
             out.append(Violation(path, 0, "file-path-untokenized",
                                   f"server_files dest lacks ${{NS}}/${{TID}}: {d!r}"))
+    for act in doc.get("action") or []:
+        for sf in (act.get("server_files") or []) if isinstance(act, dict) else []:
+            d = sf.get("dest", "") if isinstance(sf, dict) else ""
+            if "${NS}" not in d and "${TID}" not in d:
+                out.append(Violation(path, 0, "file-path-untokenized",
+                                      f"action server_files dest lacks ${{NS}}/${{TID}}: {d!r}"))
     return out
 
 

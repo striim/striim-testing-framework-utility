@@ -75,7 +75,7 @@ _CAPTURE_KEYS = {"token", "describe", "mon", "field", "timeout", "expect"}
 _DROP_RECREATE_KEYS = {"type", "app", "delay_before_stop", "recreate_wait", "seed",
                        "capture", "stopped_seed", "tokens"}
 _ALTER_RECOMPILE_KEYS = {"type", "app", "file", "delay_before_stop", "interrupt", "capture",
-                         "stopped_seed", "seed"}
+                         "stopped_seed", "server_files", "seed"}
 # How alter_recompile takes the app down before the swap: STOP (no flush) or QUIESCE (the drain).
 _ALTER_RECOMPILE_INTERRUPTS = ("stop", "quiesce")
 # Statements alter_recompile writes itself around the fragment. A fragment carrying one would
@@ -887,16 +887,46 @@ def _normalize_overrides(raw, label: str, path, declared: dict) -> dict:
     return out
 
 
+def _normalize_alter_server_files(raw, label: str, path, source_dir) -> list:
+    """alter_recompile's `server_files:`: test-dir files placed once the recompiled app is
+    RUNNING, before its `seed:` -- a tailing reader (a GG trail, a FileReader) gets the rest of its
+    input only after the swap. Returns (file, dest) pairs."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ManifestError(f"{path}: {label} must be a list of {{file, dest}} entries")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or not item.get("file") or not item.get("dest"):
+            raise ManifestError(f"{path}: {label} item needs 'file' and 'dest': {item!r}")
+        unknown = sorted(set(item) - {"file", "dest"})
+        if unknown:
+            raise ManifestError(f"{path}: {label} item has unknown key(s) {unknown} -- "
+                                f"allowed: ['dest', 'file']")
+        src, dest = item["file"], item["dest"]
+        if not isinstance(src, str) or not isinstance(dest, str):
+            raise ManifestError(f"{path}: {label} file and dest must be strings: {item!r}")
+        _test_dir_file(src, label, path, source_dir)
+        out.append((src, dest))
+    return out
+
+
+def _test_dir_file(name: str, label: str, path, source_dir) -> Path:
+    """An alter_recompile file: inside the test dir and present."""
+    sdir = Path(source_dir).resolve()
+    fpath = (Path(source_dir) / name).resolve()
+    if sdir not in fpath.parents:
+        raise ManifestError(f"{path}: {label} file escapes the test dir: {name!r}")
+    if not fpath.is_file():
+        raise ManifestError(f"{path}: {label} file not found: {fpath}")
+    return fpath
+
+
 def _normalize_alter_file(raw, label: str, path, source_dir) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ManifestError(
             f"{path}: {label} needs a 'file' (a TQL fragment, relative to the test dir)")
-    sdir = Path(source_dir).resolve()
-    fpath = (Path(source_dir) / raw).resolve()
-    if sdir not in fpath.parents:
-        raise ManifestError(f"{path}: {label} file escapes the test dir: {raw!r}")
-    if not fpath.is_file():
-        raise ManifestError(f"{path}: {label} file not found: {fpath}")
+    fpath = _test_dir_file(raw, label, path, source_dir)
     text = re.sub(r"--[^\n]*", "", fpath.read_text())
     if not text.strip():
         raise ManifestError(f"{path}: {label} file {raw!r} is empty")
@@ -1449,6 +1479,9 @@ def load_manifest(path: Path) -> TestManifest:
                     "stopped_seed": _normalize_file_specs(
                         action.get("stopped_seed"), "stopped_seed", path, allow_when=False,
                         refs_out=file_refs),
+                    "server_files": _normalize_alter_server_files(
+                        action.get("server_files"), f"action[{i}] 'alter_recompile' server_files",
+                        path, source_dir),
                     "seed": _normalize_action_seeds(action.get("seed"), f"action[{i}] seed", path,
                                                     refs_out=file_refs),
                 })

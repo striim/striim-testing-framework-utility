@@ -1083,6 +1083,8 @@ action:
       - {token: RESTART, describe: ChangeSource, field: Source Restart Position}
     stopped_seed:                        # optional: runs after STOP and capture
       - {file: batch2.sql, db: postgres-source}
+    server_files:                        # optional: placed once the app is RUNNING again
+      - {file: trail/rt0000001, dest: "/tmp/${NS}-trail/rt0000001"}
     seed:                                # optional: runs once the app is RUNNING again
       - {file: batch3.sql, db: postgres-source, after: 10s}   # as for drop_recreate_app
 ```
@@ -1102,7 +1104,9 @@ CREATE OR REPLACE SOURCE ChangeSource USING Global.MyCdcReaderV2 (
   `USE ${NS}; UNDEPLOY APPLICATION <app>; ALTER APPLICATION <app>;` the rendered fragment,
   `ALTER APPLICATION <app> RECOMPILE;`, the TQL's own `DEPLOY APPLICATION <app> …;` (so deployment
   groups carry over; plain `DEPLOY` when the TQL has none) and `START APPLICATION <app>;`. Then wait
-  for RUNNING and run `seed`.
+  for RUNNING, place `server_files` (test-dir files; `{file, dest}` only), and run `seed`. A
+  tailing reader (a GoldenGate trail, a FileReader) gets the rest of its input only after the
+  swap: a transaction split across two trail files is still open when the app stops.
 - **Refused at load:** a missing or empty `file`, one outside the test dir, one containing a
   statement the action writes itself (`USE`, `ALTER APPLICATION`, `RECOMPILE`, `DEPLOY`/`UNDEPLOY`/
   `START`/`STOP`/`END APPLICATION`, `CREATE APPLICATION`; `--` comments are ignored), and unknown

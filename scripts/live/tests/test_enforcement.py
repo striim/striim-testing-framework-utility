@@ -531,3 +531,18 @@ def test_vertica_prefix_accepts_tid_prefixed_tables():
     text = ("CREATE TABLE ${VERTICA_SOURCE_SCHEMA}.${TID}ORDERS (id INT);\n"
             "SELECT * FROM QATARGET.${TID}items;\n")
     assert check_vertica_prefix(Path("ddl.sql"), text) == []
+
+
+def test_file_paths_tokenized_checks_action_server_files():
+    text = """
+name: t
+tql: app.tql
+action:
+  - type: alter_recompile
+    file: swap.tql
+    server_files:
+      - {file: a.dat, dest: /tmp/plain/a.dat}
+      - {file: b.dat, dest: '/tmp/${NS}/b.dat'}
+"""
+    v = check_file_paths_tokenized(Path("test.yaml"), text)
+    assert [x.rule for x in v] == ["file-path-untokenized"] and "/tmp/plain/a.dat" in v[0].message

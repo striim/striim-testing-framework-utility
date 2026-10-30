@@ -349,7 +349,8 @@ def docker_rm(path: str, recursive: bool = False, nodes=None) -> None:
 def needs_owned_dir(m) -> bool:
     spec = getattr(m, "lifecycle", None)
     return spec is not None and (spec.sink == "file" or bool(m.assert_.get("file"))
-                                 or any(not load for _f, _d, _w, load in m.server_files))
+                                 or any(not load for _f, _d, _w, load in m.server_files)
+                                 or any(s.get("server_files") for s in getattr(m, "action_specs", None) or []))
 
 
 def snapshot_targets(admins, ctx, nodes=None, env=None) -> dict:

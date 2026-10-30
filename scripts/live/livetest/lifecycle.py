@@ -337,6 +337,10 @@ def parse_manifest_block(raw: dict, path) -> LifecycleSpec | None:
     for i, sf in enumerate(raw.get("server_files") or []):
         if isinstance(sf, dict) and isinstance(sf.get("dest"), str) and not sf.get("load"):
             paths.append((f"server_files[{i}].dest", sf["dest"]))
+    for i, act in enumerate(raw.get("action") or []):
+        for j, sf in enumerate((act.get("server_files") or []) if isinstance(act, dict) else []):
+            if isinstance(sf, dict) and isinstance(sf.get("dest"), str):
+                paths.append((f"action[{i}].server_files[{j}].dest", sf["dest"]))
     if spec.completion["kind"] == "file-lines":
         paths.append(("completion.path", spec.completion["path"]))
     if spec.readiness["kind"] == "baseline-landed" and spec.sink == "file":

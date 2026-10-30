@@ -195,7 +195,8 @@ def test_rendered_inputs_recorded_at_send_sites_only(good):
     # Every server-file path transfers the staged file whose bytes are recorded (never a path re-read)
     assert '_staged = _slt_evidence.stage_on(m, "server-file", _sf, m.source_dir / _sf)' in plugin
     assert "place_server_file(ctx, _staged, _rdest)" in plugin and "place_server_file(ctx, _staged, render(_dest, tokens))" in plugin
-    assert plugin.count('_slt_evidence.stage_on(m, "server-file"') == 3 and 'record_on(m, "server-file"' not in plugin
+    # pre_deploy, post_start, and alter_recompile's server_files (placed after the swap)
+    assert plugin.count('_slt_evidence.stage_on(m, "server-file"') == 4 and 'record_on(m, "server-file"' not in plugin
     src = (REPO / "scripts/live/livetest/lifecycle.py").read_text()
     assert src.index("writer.run(sent, watch.deadline.remaining())") < src.index('self.record("sentinel", s[file_key], sent')
 
