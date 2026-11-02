@@ -61,11 +61,12 @@ class PgAdminRouteError(ValueError):
 
 
 def statements(sql: str) -> list[str]:
-    """The script's statements: split on ';', each trimmed, comment lines and blanks dropped."""
+    """The script's statements: ``--`` comments dropped first (a ';' in one splits nothing), then
+    split on ';', each trimmed, blanks dropped. No accepted statement has '--' in a literal."""
+    code = "\n".join(ln.split("--", 1)[0] for ln in sql.splitlines())
     out = []
-    for part in sql.split(";"):
-        lines = [ln for ln in part.splitlines() if not ln.strip().startswith("--")]
-        text = " ".join(" ".join(lines).split())
+    for part in code.split(";"):
+        text = " ".join(part.split())
         if text:
             out.append(text)
     return out
