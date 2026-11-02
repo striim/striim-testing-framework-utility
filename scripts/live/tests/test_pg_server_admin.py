@@ -5,20 +5,24 @@ from livetest import pgserveradmin as psa
 
 
 class FakePg:
-    def __init__(self, waiters=None, standby=""):
+    def __init__(self, waiters=None, standby="", written=None):
         self.ran = []
         self.waiters = list(waiters or [])
         self.standby = standby
+        self.written = written
 
     def _exec(self, statements, which=None, **kw):
         assert which == "admin"
-        self.ran.extend(statements)
+        assert statements[0] == "SET synchronous_commit = local", "every route commit is local"
+        self.ran.extend(statements[1:])
 
     def _query(self, sql, params=None, which=None):
         assert which == "admin"
         self.ran.append(sql)
         if sql.startswith("SHOW"):
             return ["synchronous_standby_names"], [(self.standby,)]
+        if "pg_file_settings" in sql:
+            return ["setting"], [(self.written,)] if self.written else []
         if "pg_terminate_backend" in sql:
             return ["pg_terminate_backend"], [(True,)] if (self.waiters and self.waiters.pop(0)) else []
         return [], []
@@ -43,6 +47,7 @@ def test_accepted_statements_run_as_the_superuser():
     "ALTER SYSTEM SET fsync = off",
     "DROP TABLE qatarget.t",
     "ALTER ROLE postgres SET synchronous_commit = local",
+    "ALTER SYSTEM SET synchronous_standby_names = 'SLT_NO_STANDBY'",
     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
     f"{SET}; DROP ROLE qatarget",
 ])
@@ -85,8 +90,14 @@ def test_reset_only_after_use():
     assert pg.ran[1:] == psa.RESET and not admin.touched
 
 
+def test_reset_reloads_before_the_role_resets():
+    assert psa.RESET.index("SELECT pg_reload_conf()") < psa.RESET.index("ALTER ROLE qasource RESET synchronous_commit")
+
+
 def test_clear_stale_resets_only_the_sentinel():
     assert not psa.clear_stale(FakePg(standby=""))
     pg = FakePg(standby=psa.SENTINEL)
     assert psa.clear_stale(pg)
-    assert pg.ran[1:] == psa.RESET
+    assert pg.ran[2:] == psa.RESET
+    written = FakePg(standby="", written=psa.SENTINEL)   # set, not yet reloaded
+    assert psa.clear_stale(written)

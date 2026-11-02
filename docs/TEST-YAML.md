@@ -390,8 +390,8 @@ not general anonymous PL/SQL scripts.
 
 ### PostgreSQL server settings (`postgres-admin`)
 
-With `requires: [postgres]`, `db: postgres-admin` runs a `ddl` or `seed` file as the
-PostgreSQL superuser, for a case that needs a target commit to land with its reply lost.
+With `requires: [postgres]`, `db: postgres-admin` runs a `seed` file as the PostgreSQL
+superuser, for a case that needs a target commit to land with its reply lost.
 It accepts only these statements, one per `;`:
 
 - `ALTER SYSTEM SET synchronous_standby_names = 'slt_no_standby'` and
@@ -405,6 +405,11 @@ It accepts only these statements, one per `;`:
   wait_event = 'SyncRep'`: retried until it ends at least one backend, or the step's fixture
   timeout (default 120 s) passes (`postgres-admin-no-waiter`). The ended backend's transaction
   has committed locally; its client sees the connection drop.
+
+Order matters: once the sentinel is set and reloaded, a data role's commit waits. Set the
+source's `synchronous_commit` before the sentinel, and restore with `ALTER SYSTEM RESET` and
+`SELECT pg_reload_conf()` before any `ALTER ROLE … RESET`, in the step that ends the waiting
+backend, so the writer's reconnect commits. The route's own statements commit locally.
 
 Anything else fails `postgres-admin-unsupported` before a connection opens. The settings are
 server-wide, so the route fails `postgres-admin-parallel` under `SLT_PARALLEL`; mark the case
@@ -420,7 +425,7 @@ seed:
   when: post_start
 - file: rows.sql
   when: post_start
-- file: end_waiting_writer.sql
+- file: end_waiting_writer.sql   # terminate, ALTER SYSTEM RESET, reload, ALTER ROLE RESET
   db: postgres-admin
   when: post_start
 ```

@@ -11,7 +11,12 @@ It accepts only:
   synchronous_commit``: a role whose commits must not wait (the source) sets ``local``;
 - ``SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'qatarget' AND
   wait_event = 'SyncRep'``: retried until it ends at least one such backend, or the step's
-  timeout passes. A backend ended while it waits on SyncRep has committed locally; its client
+  timeout passes.
+
+Order matters: once the sentinel is set and reloaded, a data role's commit waits. Set a role's
+``synchronous_commit`` before the sentinel; restore with ``ALTER SYSTEM RESET`` and
+``pg_reload_conf()`` before any ``ALTER ROLE ... RESET``. The route's own statements commit
+locally, so they never wait. A backend ended while it waits on SyncRep has committed locally; its client
   sees the connection drop.
 
 Anything else fails ``postgres-admin-unsupported`` before a connection opens. The settings are
@@ -28,21 +33,23 @@ import time
 SENTINEL = "slt_no_standby"
 
 _STATEMENTS = [
-    re.compile(r"ALTER\s+SYSTEM\s+SET\s+synchronous_standby_names\s*(=|TO)\s*'" + SENTINEL + r"'", re.I),
+    re.compile(r"ALTER\s+SYSTEM\s+SET\s+synchronous_standby_names\s*(=|TO)\s*'(?-i:" + SENTINEL + r")'", re.I),
     re.compile(r"ALTER\s+SYSTEM\s+RESET\s+synchronous_standby_names", re.I),
     re.compile(r"SELECT\s+pg_reload_conf\s*\(\s*\)", re.I),
-    re.compile(r"ALTER\s+ROLE\s+(qasource|qatarget)\s+SET\s+synchronous_commit\s*(=|TO)\s*'?"
+    re.compile(r"ALTER\s+ROLE\s+(?-i:qasource|qatarget)\s+SET\s+synchronous_commit\s*(=|TO)\s*'?"
                r"(on|off|local|remote_write|remote_apply)'?", re.I),
-    re.compile(r"ALTER\s+ROLE\s+(qasource|qatarget)\s+RESET\s+synchronous_commit", re.I),
+    re.compile(r"ALTER\s+ROLE\s+(?-i:qasource|qatarget)\s+RESET\s+synchronous_commit", re.I),
 ]
 _TERMINATE = re.compile(r"SELECT\s+pg_terminate_backend\s*\(\s*pid\s*\)\s+FROM\s+pg_stat_activity\s+"
-                        r"WHERE\s+usename\s*=\s*'qatarget'\s+AND\s+wait_event\s*=\s*'SyncRep'", re.I)
+                        r"WHERE\s+usename\s*=\s*'(?-i:qatarget)'\s+AND\s+wait_event\s*=\s*'(?-i:SyncRep)'", re.I)
 
+# The standby setting first and reloaded: until the reload, a commit made as the superuser at its
+# default synchronous_commit would wait for the standby (each statement also commits locally).
 RESET = [
     "ALTER SYSTEM RESET synchronous_standby_names",
+    "SELECT pg_reload_conf()",
     "ALTER ROLE qasource RESET synchronous_commit",
     "ALTER ROLE qatarget RESET synchronous_commit",
-    "SELECT pg_reload_conf()",
 ]
 
 TERMINATE_TIMEOUT_S = 120.0
@@ -126,8 +133,12 @@ def clear_stale(pg_admin) -> bool:
 
     :return: whether it was reset
     """
+    if not hasattr(pg_admin, "_query"):
+        return False   # a stand-in with no server to read
     _, rows = pg_admin._query("SHOW synchronous_standby_names", which="admin")
-    if not rows or rows[0][0] != SENTINEL:
+    _, written = pg_admin._query("SELECT setting FROM pg_file_settings "
+                                 "WHERE name = 'synchronous_standby_names'", which="admin")
+    if not any(r and r[0] == SENTINEL for r in [*rows, *written]):
         return False
     for s in RESET:
         _run(pg_admin, s)
@@ -135,8 +146,9 @@ def clear_stale(pg_admin) -> bool:
 
 
 def _run(pg_admin, statement: str) -> None:
-    """One statement as the superuser: a SELECT read, anything else executed (no result set)."""
+    """One statement as the superuser, committing locally: with the sentinel live, a commit that
+    waited for the standby would never return. A SELECT is read, anything else executed."""
     if statement.upper().startswith("SELECT"):
         pg_admin._query(statement, which="admin")
     else:
-        pg_admin._exec([statement], which="admin")
+        pg_admin._exec(["SET synchronous_commit = local", statement], which="admin")

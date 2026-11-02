@@ -2397,14 +2397,15 @@ class LiveItem(pytest.Item):
                     # no whole-schema wipe on any path; every run
                     # resets only its own run-scoped ${TID} objects (replaced by the ledger reset
                     # in increment 3).
+                    # A run killed before its teardown can leave commits waiting on no standby;
+                    # before ensure_setup, whose GRANT commits would wait too.
+                    from livetest.pgserveradmin import clear_stale, PgServerAdmin
+                    if clear_stale(_pg_src):
+                        _report(m.name, "postgres: reset synchronous_standby_names a killed run left set")
                     if _parallel(os.environ):
                         ensure_provisioned_once("postgres-setup", _pg_src.ensure_setup)
                     else:
                         _pg_src.ensure_setup()
-                    # A run killed before its teardown can leave commits waiting on no standby.
-                    from livetest.pgserveradmin import clear_stale, PgServerAdmin
-                    if clear_stale(_pg_src):
-                        _report(m.name, "postgres: reset synchronous_standby_names a killed run left set")
                     # no prefix reset here; the ledger resets this
                     # identity's recorded objects by exact name (H6).
                     _terminated = []   # no reset here, so no backend was terminated for it
@@ -2420,7 +2421,8 @@ class LiveItem(pytest.Item):
                     admins["postgres-target"] = {"admin": PgAdmin(resolved.base, role="target"),
                                                  "schema": None}
                     # Superuser, server-level statements only (pgserveradmin); reset at teardown.
-                    admins["postgres-admin"] = {"admin": PgServerAdmin(_pg_src), "schema": None}
+                    admins["postgres-admin"] = {"admin": PgServerAdmin(_pg_src, parallel=_parallel(os.environ)),
+                                                "schema": None}
                     pg_admins.append((_pg_src, schema))
                 elif svc == "oracle":
                     admins.update(_oracle_admins(resolved.base, tid_oracle, ledger=ledger))
@@ -3950,17 +3952,25 @@ class LiveItem(pytest.Item):
             # Remove database-wide hooks before app cleanup can exhaust the interrupt alarm.
             _observers = teardown_oracle_observers(admins, tokens)
             _pg_server = (admins.get("postgres-admin") or {}).get("admin")
+            _pg_reset_error = None
             if _pg_server is not None and _pg_server.touched:
                 try:
                     _pg_server.reset()
-                except Exception as e:   # recorded as an observer failure: the case fails
-                    _observers["failed"]["postgres-admin"] = f"settings not reset: {e}"
+                except Exception as e:
+                    _pg_reset_error = str(e)
             cleanup = _slt_ownership.run_cleanup(
                 ledger, client=client, admins=admins, ctx=ctx, tokens=tokens,
                 gcs_cleanup=gcs_cleanup, kafka_cleanup=kafka_cleanup, upload_names=_slt_upload_names(),
                 file_globs=_slt_file_globs(),
                 checkpoint_ns=ident.ns if m.modules else None, keep_reason=_slt_keep_reason,
                 keep_slots=bool(os.environ.get("SLT_KEEP_RESOURCES")))
+            if _pg_reset_error is not None:
+                cleanup.status, cleanup.verified = "failed", False
+                cleanup.detail = "; ".join(filter(None, (
+                    cleanup.detail, "postgres-admin-reset-failed: " + _pg_reset_error)))
+                cleanup.gaps.append("postgres-admin")
+                cleanup.failures.append({"kind": "postgres-admin", "name": "postgres-admin",
+                                         "error": _pg_reset_error})
             if _observers["failed"]:
                 cleanup.status, cleanup.verified = "failed", False
                 _detail = "oracle-observer-cleanup-failed: " + "; ".join(
