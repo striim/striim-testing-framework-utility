@@ -56,6 +56,14 @@ public class MonitorEvent<X extends Comparable> {
         public static final Type<String> NO_OP_OPERATIONS = new Type<>("NO_OP_OPERATIONS");
         /** Per-target-table millis behind the source's commit clock, JSON. {@code Type<String>} in the platform. */
         public static final Type<String> COMMIT_LAG = new Type<>("COMMIT_LAG");
+        /** DatabaseWriter's per-table DDL counts, JSON. */
+        public static final Type<String> DDL_METRICS = new Type<>("DDL_METRICS");
+        /** SpannerWriter's last batch, JSON. */
+        public static final Type<String> LAST_BATCH_INFO = new Type<>("LAST_BATCH_INFO");
+        /** SpannerWriter's database and its last commit, JSON. */
+        public static final Type<String> DATABASE_WRITE_INFO = new Type<>("DATABASE_WRITE_INFO");
+        /** SpannerWriter's millis spent committing the last batch. {@code Type<Long>} in the platform. */
+        public static final Type<Long> TIME_TAKEN_FOR_MERGE = new Type<>("TIME_TAKEN_FOR_MERGE");
 
         private final String name;
 
