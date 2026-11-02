@@ -392,7 +392,7 @@ not general anonymous PL/SQL scripts.
 
 With `requires: [postgres]`, `db: postgres-admin` runs a `seed` file as the PostgreSQL
 superuser, for a case that needs a target commit to land with its reply lost.
-It accepts only these statements, one per `;`:
+It accepts only these statements, one per `;` (a `;` inside a `--` comment splits nothing):
 
 - `ALTER SYSTEM SET synchronous_standby_names = 'slt_no_standby'` and
   `ALTER SYSTEM RESET synchronous_standby_names`: commits then wait for a standby that never

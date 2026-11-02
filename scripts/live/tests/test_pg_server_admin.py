@@ -90,6 +90,15 @@ def test_reset_only_after_use():
     assert pg.ran[1:] == psa.RESET and not admin.touched
 
 
+def test_a_semicolon_in_a_comment_splits_nothing():
+    pg = FakePg()
+    psa.PgServerAdmin(pg, parallel=False).run_sql(
+        "-- the source commits locally; the target waits\n"
+        "ALTER ROLE qasource SET synchronous_commit = local; -- first; then the standby\n"
+        f"{SET};\nSELECT pg_reload_conf();")
+    assert pg.ran == ["ALTER ROLE qasource SET synchronous_commit = local", SET, "SELECT pg_reload_conf()"]
+
+
 def test_reset_reloads_before_the_role_resets():
     assert psa.RESET.index("SELECT pg_reload_conf()") < psa.RESET.index("ALTER ROLE qasource RESET synchronous_commit")
 
