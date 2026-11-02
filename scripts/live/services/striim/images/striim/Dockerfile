@@ -7,6 +7,13 @@ ARG INSTANTCLIENT_VERSION
 ARG INSTANTCLIENT_ZIPFILE
 ARG INSTANTCLIENT_FOLDER
 
+# UTF-8 for every process in the image. Without a locale the JVM's file.encoding is
+# ANSI_X3.4-1968 (ASCII) and non-Latin text is garbled for every writer (field STATUS F5:
+# paired-544-sqlserver-nvarchar-null on a 5.4.4.0 lane, both arms). Striim's scripts set no
+# file.encoding of their own.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
 EXPOSE 1527 9080 9081 5701-5702 7071 9300 49152-65535 54327/udp
 
 WORKDIR /app/
