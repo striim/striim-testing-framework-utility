@@ -54,6 +54,36 @@ public class Path implements Serializable, Comparable<Path> {
         return high;
     }
 
+    /**
+     * The hash of this path's item list, which the platform's duplicate filter and
+     * {@code HoldAckLedger} key a path by.
+     *
+     * <p>The real method is {@code pathItems.hashCode()}, and an item list hashes as its string,
+     * {@code "<componentUuid>+<distributionID>"} per item joined by commas, with {@code "*"} for a
+     * null uuid or a null or empty distribution ID. This mock's path has one item, so the same
+     * formula over that one item gives the same answer: two paths through the same (component,
+     * distribution) hash alike whatever their positions, and paths through different ones (almost
+     * always) do not.</p>
+     */
+    public int getPathHash() {
+        String component = componentID != null ? componentID.toString() : "*";
+        String distribution = distributionID != null && !distributionID.isEmpty() ? distributionID : "*";
+        return (component + "+" + distribution).hashCode();
+    }
+
+    /**
+     * {@code AFTER} semantics: the platform resumes past this path's position rather than at it.
+     *
+     * <p>Always false here. The real class carries an {@code atOrAfter} marker, {@code "@"} or
+     * {@code "^"}, set by the source that made the path; this mock has no constructor that takes
+     * one, so every path it builds is the real class's default, {@code AT}. A writer that compares
+     * the recorded position of a path therefore compares its low, as it does for an {@code AT}
+     * path on a server.</p>
+     */
+    public boolean isAfter() {
+        return false;
+    }
+
     /** The identity a {@link Position} keys this path under: component and distribution. */
     public String key() {
         return (componentID == null ? "-" : componentID.toString())

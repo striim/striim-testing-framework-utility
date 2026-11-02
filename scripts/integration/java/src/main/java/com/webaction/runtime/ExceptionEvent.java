@@ -1,8 +1,14 @@
 package com.webaction.runtime;
 
+import java.util.Arrays;
+
 import org.joda.time.DateTime;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.webaction.event.Event;
+import com.webaction.exceptionhandling.ExceptionType;
+import com.webaction.runtime.components.EntityType;
+import com.webaction.uuid.UUID;
 
 /**
  * Mock of the platform's {@code com.webaction.runtime.ExceptionEvent} — the native event type an
@@ -50,5 +56,62 @@ public class ExceptionEvent extends Event {
      * a default it should be setting.</p>
      */
     public ExceptionEvent() {
+    }
+
+    /**
+     * The real 13-argument constructor, which {@code NotifyExceptionStore.notify} uses and field's
+     * {@code ExceptionStorePublisher} now calls itself. Field for field as the real one (cfr,
+     * 5.4.0.6G): the type, action and entity type are stored as their names, the application's
+     * uuid as its string (a null uuid throws, as it does there), and the related events as a
+     * string of their JSON.
+     *
+     * <p>Two differences, both deliberate. {@code exceptionTime} is left null where the real
+     * constructor stamps {@code now()}, for the reason the no-arg constructor gives. And the events
+     * themselves are kept, beside their JSON, in a field only this package reads:
+     * {@code NotifyExceptionStore} records them, by identity, so a case can name which input
+     * events a skipped row carried -- the real event keeps only the string.</p>
+     */
+    public ExceptionEvent(ExceptionType exceptionType, ActionType actionType, String appName,
+            UUID appUUID, String entityName, EntityType entityType, String className,
+            String message, Long epochNumber, String relatedActivity, Event[] relatedObjects,
+            String relatedEntity, String exceptionCode) {
+        this.exceptionType = exceptionType.toString();
+        if (actionType != null) {
+            this.action = actionType.toString();
+        }
+        this.appName = appName;
+        this.appid = appUUID.toString();
+        this.entityName = entityName;
+        if (entityType != null) {
+            this.entityType = entityType.toString();
+        }
+        this.className = className;
+        this.message = message;
+        this.epochNumber = epochNumber;
+        this.relatedActivity = relatedActivity;
+        if (relatedObjects != null) {
+            String[] json = new String[relatedObjects.length];
+            for (int i = 0; i < relatedObjects.length; i++) {
+                json[i] = toJSON(relatedObjects[i]);
+            }
+            this.relatedObjects = Arrays.toString(json);
+            this.relatedEvents = relatedObjects.clone();
+        }
+        this.relatedEntity = relatedEntity;
+        this.exceptionCode = exceptionCode;
+    }
+
+    /** Harness-only: the events {@link #relatedObjects} was made from, as the caller passed them. */
+    transient Event[] relatedEvents;
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** The real method, over a plain Jackson mapper where the platform uses its own. */
+    public String toJSON(Object object) {
+        try {
+            return JSON.writeValueAsString(object);
+        } catch (Exception exception) {
+            return "Cannot map object, " + String.valueOf(object) + "to JSON.";
+        }
     }
 }

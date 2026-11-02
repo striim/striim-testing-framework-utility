@@ -4,6 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.webaction.runtime.components.EntityType;
 import com.webaction.uuid.UUID;
 
 /**
@@ -55,9 +56,27 @@ public class MetaInfo {
         public String metaObjectClass;
         public UUID uuid;
         public UUID namespaceId;
+        /**
+         * ⚠ ADDED with {@link #getType()}: {@code FlowComponent.getMetaType()} is
+         * {@code getMetaInfo().getType()} on the real class, and {@code Flow.getTopLevelFlow()}
+         * decides "this flow is the application" by it.
+         */
+        public EntityType type;
 
         public String getName() {
             return name;
+        }
+
+        public UUID getUuid() {
+            return uuid;
+        }
+
+        public EntityType getType() {
+            return type;
+        }
+
+        public void setType(EntityType type) {
+            this.type = type;
         }
 
         public String getNsName() {
@@ -144,9 +163,20 @@ public class MetaInfo {
 
     /**
      * ⚠ ADDED for {@code components.Flow.flowInfo}, which {@code RetriableWriter.getOwnerFlow()}
-     * hands back. Real shape: {@code MetaInfo$Flow extends MetaInfo$MetaObject}. No members are
-     * reproduced: this tier never sets an owner flow, so a writer never reads one.
+     * hands back. Real shape: {@code MetaInfo$Flow extends MetaInfo$MetaObject}.
+     *
+     * <p>The one member reproduced is the exception store's name: {@code ExceptionStorePublisher}
+     * reads it off the component's application ({@code getTopLevelFlow().getMetaInfo()}) and
+     * refuses to publish when it is null or blank, as the platform drops the events when an
+     * application has no {@code USE EXCEPTIONSTORE}. The rest of the real class is MDR state
+     * read only on a server, behind an owner flow this tier never sets.</p>
      */
     public static class Flow extends MetaObject {
+        /** The application's exception store ({@code USE EXCEPTIONSTORE}); null when it has none. */
+        public String exceptionstoreName;
+
+        public String getExceptionstoreName() {
+            return exceptionstoreName;
+        }
     }
 }

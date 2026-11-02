@@ -1,6 +1,8 @@
 package com.webaction.recovery;
 
 import java.io.Serializable;
+import java.util.Collections;
+import java.util.List;
 
 import com.webaction.uuid.UUID;
 
@@ -84,6 +86,28 @@ public abstract class Stemma implements Serializable {
     /** The high mark when there is one, else the low. */
     public SourcePosition getHighOrLowSourcePosition() {
         return getHighSourcePosition() != null ? getHighSourcePosition() : getLowSourcePosition();
+    }
+
+    /**
+     * {@code AFTER} semantics; always false here, for the reason {@link Path#isAfter()} gives.
+     * Abstract on the real class, whose stemmas carry the source's {@code atOrAfter} marker.
+     */
+    public boolean isAfter() {
+        return false;
+    }
+
+    /**
+     * The source paths this stemma carries: the platform's duplicate filter compares a replayed
+     * event path by path, and {@code HoldAckLedger} groups positions the same way.
+     *
+     * <p>The real method returns one path per root of the stemma's lattice, each extended by this
+     * node. With no parents (see the class note) every stemma here is a root, and the real class's
+     * answer for a root ({@code isInitial()}) is exactly one path naming this stemma's component,
+     * distribution and marks, which is what this returns.</p>
+     */
+    public List<Path> toPaths() {
+        return Collections.singletonList(new Path(getComponentID(), getDistributionID(),
+                getLowSourcePosition(), getHighSourcePosition()));
     }
 
     /** This stemma rendered as a one-path {@link Position}. */
