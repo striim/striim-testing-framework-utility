@@ -388,6 +388,48 @@ format. Alternative `q'...'` quoting is refused with `oracle-sql-quoting`; use
 doubled single quotes instead. This extension supports trigger definitions,
 not general anonymous PL/SQL scripts.
 
+### PostgreSQL server settings (`postgres-admin`)
+
+With `requires: [postgres]`, `db: postgres-admin` runs a `seed` file as the PostgreSQL
+superuser, for a case that needs a target commit to land with its reply lost.
+It accepts only these statements, one per `;`:
+
+- `ALTER SYSTEM SET synchronous_standby_names = 'slt_no_standby'` and
+  `ALTER SYSTEM RESET synchronous_standby_names`: commits then wait for a standby that never
+  answers;
+- `SELECT pg_reload_conf()`;
+- `ALTER ROLE qasource|qatarget SET synchronous_commit = <value>` and
+  `ALTER ROLE qasource|qatarget RESET synchronous_commit` (set the source's to `local` so its
+  commits do not wait);
+- `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'qatarget' AND
+  wait_event = 'SyncRep'`: retried until it ends at least one backend, or the step's fixture
+  timeout (default 120 s) passes (`postgres-admin-no-waiter`). The ended backend's transaction
+  has committed locally; its client sees the connection drop.
+
+Order matters: once the sentinel is set and reloaded, a data role's commit waits. Set the
+source's `synchronous_commit` before the sentinel, and restore with `ALTER SYSTEM RESET` and
+`SELECT pg_reload_conf()` before any `ALTER ROLE … RESET`, in the step that ends the waiting
+backend, so the writer's reconnect commits. The route's own statements commit locally.
+
+Anything else fails `postgres-admin-unsupported` before a connection opens. The settings are
+server-wide, so the route fails `postgres-admin-parallel` under `SLT_PARALLEL`; mark the case
+`disabled_parallel`. Teardown resets them when the route ran a statement, and every PostgreSQL
+setup resets a `synchronous_standby_names` a killed run left at `slt_no_standby`.
+
+<!-- snippet: fragment -->
+```yaml
+requires: [postgres]
+seed:
+- file: wait_for_no_standby.sql
+  db: postgres-admin
+  when: post_start
+- file: rows.sql
+  when: post_start
+- file: end_waiting_writer.sql   # terminate, ALTER SYSTEM RESET, reload, ALTER ROLE RESET
+  db: postgres-admin
+  when: post_start
+```
+
 Ordinary data-user DDL and seeds create no observer cleanup obligation. Observer
 cleanup runs only after case-prefixed views/triggers or use of `oracle-admin`.
 A case without observers does not read their catalogs or fail on such a read.
