@@ -1,0 +1,84 @@
+# Cloud Bigtable emulator (CBTEMULATOR) for the live tier (a BigtableWriter target).
+# Same emulator the integration tier uses (scripts/integration/services/bigtable/compose.yaml),
+# on gcloud's emulators image -- the Bigtable admin/data client (google-cloud-bigtable) only
+# honors the official CBTEMULATOR binary, which ships inside
+# gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators (the `cbtemulator` platform binary),
+# NOT a standalone Docker image like the Spanner emulator.
+#
+# The gcloud CLI launches CBTEMULATOR on 9080 and publishes it to the host. SLT_BIGTABLE_GRPC_
+# HOST_PORT remaps a busy host port and, via service.yaml's docker_env, moves the admin client
+# that dials it the same way. SLT_BIGTABLE_HOST (live_override_env) reuses an emulator you run
+# yourself and skips `docker compose up` -- a DIFFERENT intent from remapping the published port.
+#
+# The emulator needs no credentials: BIGTABLE_EMULATOR_HOST makes the client target it and skip
+# auth, so no service-account key is generated (contrast Spanner/GCS, which still parse one).
+#
+# Health gate. `docker compose up --wait` blocks on this service's healthcheck. CBTEMULATOR
+# serves gRPC on 9470; a TCP probe of that port proves the server is listening, but listening is
+# not the same as *ready to accept admin RPCs* (CBTEMULATOR boots its in-memory store after the
+# listener opens). The admin client's ensure() -- a create + delete of a throwaway table on the
+# emulator (livetest/bigtableadmin.py's ensure(), called from livetest.prestart for this
+# service) -- is the real readiness proof; the healthcheck below only keeps `--wait` honest.
+#
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project and every container_name below
+# -- unset/empty, it interpolates to today's exact names (see docs/internals/ENGINE.md
+# "Parallel stacks", mirroring scripts/live/services/spanner/compose.yaml).
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
+services:
+  slt-bigtable:
+    # Pinned by DIGEST for reproducibility. The :emulators tag is the gcloud-maintained image that
+    # bundles `cbtemulator`; the digest pins the exact build the CBTEMULATOR was validated against
+    # (resolves with `docker buildx imagetools inspect <image>` -- no daemon needed).
+    #
+    # The tag is a multi-arch manifest LIST (index digest sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935).
+    # We pin the linux/amd64 MANIFEST explicitly, because `platform: linux/amd64` under a manifest
+    # list only selects which child Docker runs -- a busy-port remap or a new child added to the
+    # list would otherwise silently change the binary. amd64 manifest digest:
+    #     sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    #
+    # Re-pin deliberately when upgrading; then RE-RUN the BCR-1/BT-9 probes (scripts/dev/
+    # bigtable_probe) -- the CBTEMULATOR Go binary changed across gcloud versions and its change-
+    # stream support may move: it does NOT implement change streams (a ReadChangeStream /
+    # GenerateInitialChangeStreamPartitions RPC SIGSEGVs the bttest server -- see docs/
+    # BIGTABLE_EMULATOR.md, "BCR-1"/"Probe record").
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
+    # Measured ceilings (a limits sampler re-derives them). The CBTEMULATOR is an in-memory
+    # store; it grows with the data it holds. 2g covers the serial pass.
+    cpus: ${SLT_BIGTABLE_CPUS:-1}
+    mem_limit: ${SLT_BIGTABLE_MEM_LIMIT:-2g}
+    platform: linux/amd64
+    # CBTEMULATOR is launched with `gcloud beta emulators bigtable start --host-port=0.0.0.0:<port>`;
+    # it binds the PUBLISHED port on the container. We publish SLT_BIGTABLE_GRPC_HOST_PORT on the
+    # host to the same port inside, so BIGTABLE_EMULATOR_HOST=host.docker.internal:<that port>
+    # reaches the listener. SLT_BIGTABLE_GRPC_HOST_PORT remaps a busy host port AND, via
+    # service.yaml's docker_env, moves the admin client that dials it the same way (the "container
+    # moves, client does not" hazard docker_env exists to prevent).
+    #
+    # The gcloud image's default entrypoint is `gcloud` itself (NOT the emulator), so the service
+    # must start CBTEMULATOR explicitly. --host-port binds it on 0.0.0.0 inside the container -- the
+    # PUBLISHED port is what BIGTABLE_EMULATOR_HOST then points the Striim app at.
+    command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"]
+    ports:
+      # Do NOT set SLT_BIGTABLE_HOST to "point the framework at it": that is live_override_env,
+      # and a non-empty value makes services.resolve() return mode="live"/started=False, skipping
+      # `docker compose up` entirely -- so the stack this file defines never starts. That variable
+      # is for an emulator you run YOURSELF, which is a different intent.
+      - "${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"
+    healthcheck:
+      # A listening-port probe keeps `--wait` honest: CBTEMULATOR opens the published port, so a
+      # TCP connect succeeds once the Go binary has booted the listener. The real "ready for admin
+      # RPCs" proof is the admin-table ensure() the pre-up hook runs (see services.py / this dir's
+      # README "Health gate"); this check only guards against a half-booted listener. /dev/tcp is the
+      # stock sh builtin -- the image ships `sh` but no `nc`/`curl`, so we use the shell's own TCP.
+      test: ["CMD-SHELL", "sh -c 'exec 3<>/dev/tcp/127.0.0.1/${SLT_BIGTABLE_GRPC_HOST_PORT:-9470} || exit 1'"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - slt-bigtable-net
+
+networks:
+  slt-bigtable-net:
+    driver: bridge

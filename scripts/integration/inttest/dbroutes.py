@@ -195,6 +195,24 @@ _PARAM_SPECS: dict[str, dict] = {
                          "const":  {"dialect": "postgresql"}},
         },
     },
+    "bigtable": {
+        "driver": "bigtable",
+        # CBTEMULATOR (gcloud's Cloud Bigtable emulator), reached by the framework's
+        # BigtableAdmin via host:port (BIGTABLE_EMULATOR_HOST skips auth). One instance,
+        # no databases or dialects -- so it has `directions` (source/target) but the
+        # directions only pick the role, not a per-direction token. The admin gets
+        # `{project, instance, emulator_host, credentials}`.
+        "common": {
+            "project": "BIGTABLE_PROJECT",
+            "instance": "BIGTABLE_INSTANCE",
+            "host": "BIGTABLE_HOST",
+            "port": "BIGTABLE_GRPC_PORT",
+        },
+        "directions": {
+            "source": {"tokens": {}, "const": {}},
+            "target": {"tokens": {}, "const": {}},
+        },
+    },
 }
 
 
@@ -257,6 +275,16 @@ def connection_params(route: str, tokens: Mapping[str, str]) -> dict:
         if credentials:
             # Real Spanner (spanneradmin.real_tokens): the key authenticates, there is no
             # emulator, and the test's ${TID} is the only prefix the admin's guard allows.
+            params["credentials"] = credentials
+            params["tid"] = tokens.get("TID", "")
+        else:
+            params["emulator_host"] = f'{params["host"]}:{params["port"]}'
+    elif params["driver"] == "bigtable":
+        # BigtableAdmin's dsn shape: {project, instance, emulator_host, credentials}.
+        # CBTEMULATOR skips auth via BIGTABLE_EMULATOR_HOST; a real-instance path
+        # (INT_BIGTABLE_CREDENTIALS) carries the key instead.
+        credentials = tokens.get("BIGTABLE_CREDENTIALS")
+        if credentials:
             params["credentials"] = credentials
             params["tid"] = tokens.get("TID", "")
         else:
@@ -651,6 +679,79 @@ _RUNNERS = {"postgres": _run_postgres, "oracle": _run_oracle, "spanner": _run_sp
 _QUERIERS = {"postgres": _query_postgres, "oracle": _query_oracle,
              "spanner": _query_spanner, "sqlserver": _query_sqlserver, "mysql": _query_mysql,
              "teradata": _query_teradata, "vertica": _query_vertica}
+
+
+# --- Bigtable (no SQL; the admin reads a whole table) -----------------------------------------
+# Bigtable is not a query engine -- the admin reads back a WHOLE table as
+# {row: <hex key>, cells: {<fam>:<qual>: <hex value>}} and the assert.target tier
+# compares that to an expected/*.json snapshot. So this module exposes two bigtable-
+# specific entry points that bypass the query-rows model entirely:
+#
+#   setup_bigtable(table, families, gc, seed)  -- create the table + families/GC + seed rows
+#   read_cells(route, table)                   -- read the table back for an assert snapshot
+#
+# `query_rows`/`run_sql_text`/`_RUNNERS`/`_QUERIERS` raise for driver 'bigtable' because
+# Bigtable has no SQL; the assert.target tier dispatches bigtable routes to `read_cells`
+# and `setup_bigtable` instead of `query_rows`.
+
+
+def _bigtable_admin(route: str, tokens: Mapping[str, str]):
+    """Build a BigtableAdmin from a `bigtable-*` route + the run's tokens.
+    `connection_params` already produced {project, instance, emulator_host, [credentials]}."""
+    from inttest import bigtableadmin as _bigtable_mod
+    params = connection_params(route, tokens)
+    return _bigtable_mod.BigtableAdmin(params, client=None, data_client=None)
+
+
+def setup_bigtable(table: str, families: dict, *, gc_rules: dict | None = None,
+                   seed: list | None = None, route: str = "bigtable-target",
+                   tokens: Mapping[str, str] | None = None) -> None:
+    """Create `table` with `families` + optional `gc_rules` and seed rows from a YAML/JSON
+    spec, driving the route's BigtableAdmin. This is the Bigtable 'setup' step that
+    takes the role of `ddl:`/`seed:` for a non-SQL target."""
+    admin = _bigtable_admin(route, dict(tokens or {}))
+    admin.create_table(table, families, gc_rules=gc_rules or {})
+    if seed:
+        admin.write_cells(table, seed)
+
+
+def teardown_bigtable(table: str, route: str = "bigtable-target",
+                      tokens: Mapping[str, str] | None = None) -> None:
+    """Drop `table` at teardown via the route's BigtableAdmin.drop_table. Best-effort.
+    Mirrors the framework's per-test teardown contract for a service the admin 'owns'."""
+    admin = _bigtable_admin(route, dict(tokens or {}))
+    admin.drop_table(table)
+
+
+def read_cells(route: str, table: str,
+               tokens: Mapping[str, str] | None = None,
+               *, cells_per_column_limit: int = 1) -> dict:
+    """Read the whole `table` from a `bigtable-*` route via its admin. Returns
+    `{"table": <name>, "rows": [{"row": <hex>, "cells": {<fam>:<qual>: <hex>}}]}` -- the
+    JSON snapshot the `assert.target` tier compares to `expected/*.json`."""
+    admin = _bigtable_admin(route, dict(tokens or {}))
+    rows = admin.read_all(table, cells_per_column_limit=cells_per_column_limit)
+    return {"table": table, "rows": rows}
+
+
+def assert_target(route: str, table: str, expected: list, tokens: Mapping[str, str] | None = None) -> None:
+    """Compare a route's table snapshot to `expected`, raising with a clear mismatch message.
+    Used by the assert.target tier for `db: bigtable-target` manifests (a target that wrote to
+    a Bigtable emulator and the harness reads it back via the admin)."""
+    got = read_cells(route, table, tokens)
+    if got != {"table": table, "rows": list(expected)}:
+        import json
+        raise AssertionError(
+            f"assert.target({route!r}/{table!r}) mismatch:\n"
+            f"  expected: {json.dumps(list(expected), sort_keys=True)}\n"
+            f"  actual:   {json.dumps(got, sort_keys=True)}"
+        )
+
+
+def assert_target_rows(route: str, table: str, expected_rows: list,
+                       tokens: Mapping[str, str] | None = None) -> None:
+    """Like assert_target but pass just the rows list (no {"table": ...} wrapper)."""
+    assert_target(route, table, expected_rows, tokens)
 
 
 def query_rows(route: str, sql: str, tokens: Mapping[str, str]) -> list[list]:

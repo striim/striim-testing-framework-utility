@@ -44,6 +44,7 @@ markers = [
     "oracle: live test whose manifest requires the oracle service",
     "mssql: live test whose manifest requires the mssql service",
     "spanner: live test whose manifest requires the spanner service",
+    "bigtable: live test whose manifest requires the bigtable service (CBTEMULATOR, opt-in SLT_BIGTABLE_SERVICE)",
     "gcs: live test whose manifest requires the gcs service",
     "kafka: live test whose manifest requires the kafka service",
     "mysql: live test whose manifest requires the mysql service",

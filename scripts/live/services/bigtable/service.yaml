@@ -1,0 +1,43 @@
+name: bigtable
+compose: compose.yaml            # relative to this file
+container: slt-bigtable
+isolation: none                 # fixed instance/tables; provisioned once per session
+# SLT_BIGTABLE_HOST, set, reuses an emulator/run you run yourself and skips `docker compose up`
+# (services.resolve() returns mode="live"/started=False) -- a different intent from remapping the
+# published gRPC port via SLT_BIGTABLE_GRPC_HOST_PORT.
+live_override_env: SLT_BIGTABLE_HOST
+# Like Spanner, the Bigtable emulator redirect is JVM-global (BIGTABLE_EMULATOR_HOST, set by the
+# striim overlay), so opt-in: a test that requires this service is skipped unless its own env or the
+# SLT_EMULATORS umbrella is set. A plain `docker compose up` (or a reused real cluster) still
+# targets real Bigtable, never this empty local emulator.
+opt_in_env: SLT_BIGTABLE_SERVICE
+docker_defaults:
+  host: localhost
+  port: 9470                    # gRPC, the CBTEMULATOR listener on host 9080 (data + admin over
+                                # one gRPC port, unlike Spanner's gRPC+REST split)
+  project: test-project
+  instance: test-instance
+# Published host port, overridable exactly as compose.yaml interpolates it -- so remapping a busy
+# port moves the emulator AND the admin client that dials it (services.resolve reads docker_env).
+docker_env:
+  port: SLT_BIGTABLE_GRPC_HOST_PORT
+live_env:
+  host: SLT_BIGTABLE_HOST
+  port: SLT_BIGTABLE_PORT
+  project: SLT_BIGTABLE_PROJECT
+  instance: SLT_BIGTABLE_INSTANCE
+  # The bigtable data/admin client reads the emulator via host:port; the harness passes it on the
+  # live client path. (No separate REST port -- CBTEMULATOR is one gRPC listener.)
+  emulator_host: SLT_BIGTABLE_EMULATOR_HOST
+# Tokens for the Striim app + the framework's own admin. The BigtableWriter reaches the emulator
+# only through the JVM-wide BIGTABLE_EMULATOR_HOST (+ no-auth), set by the striim overlay. The
+# connection token is the static JDBC URL (the emulator host comes via env, not the URL). The
+# framework's own admin (livetest/bigtableadmin.py, via inttest.dbroutes) dials base
+# {host}:{port} (localhost:9470) -- that is why BIGTABLE_HOST/BIGTABLE_GRPC_PORT are provided.
+provides:
+  BIGTABLE_PROJECT: "{project}"
+  BIGTABLE_INSTANCE: "{instance}"
+  BIGTABLE_URL: "jdbc:bigtable:/projects/{project}/instances/{instance}?app_profile_id=default"
+  BIGTABLE_HOST: "{host}"
+  BIGTABLE_GRPC_PORT: "{port}"
+  BIGTABLE_EMULATOR_HOST: "{view_host}:{port}"
