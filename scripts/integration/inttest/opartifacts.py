@@ -66,6 +66,7 @@ class BuiltArtifact:
                   #            e.g. "ReferenceOpV1"
     sha256: str = ""
     origin: str = field(default="", compare=False)  # "built" (mvn ran), "reused" (an up-to-date target/ jar) or "prebuilt"
+    record_sha256: str = field(default="", compare=False)  # its sha256, taken under the build lock
 
 
 def file_sha256(path: Path) -> str:

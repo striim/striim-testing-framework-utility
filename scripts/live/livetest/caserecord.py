@@ -292,6 +292,9 @@ class Recorder:
     def mark(self, item, report) -> None:
         """Tag a case item's report (the engine's makereport wrapper calls this): xdist carries the
         attributes to the controller, and only tagged reports are recorded."""
+        self._guarded("mark", self._mark, item, report)
+
+    def _mark(self, item, report) -> None:
         if not self.is_case(item):
             return
         report._slt_case_record = True
@@ -300,8 +303,9 @@ class Recorder:
 
     def _jars(self, item):
         """The jars the case loaded (the engine sets ``_slt_case_jars`` once it has them): module dir
-        relative to ``caseRoot``, origin (built / reused / prebuilt) and the jar file's sha256.
-        None when the case stopped before its jars were resolved."""
+        as the engine names it (repo-relative), origin (built / reused / prebuilt / preloaded) and the
+        sha256 the engine took under its build lock (else the file's, read now). None when the case
+        stopped before its jars were resolved."""
         jars = getattr(item, "_slt_case_jars", None)
         if jars is None:
             return None
@@ -312,7 +316,8 @@ class Recorder:
                 module = str(Path(module).parent)
             module = module.rstrip("/")
             out.append({"module": module if not Path(module).is_absolute() else self._relative(module),
-                        "origin": jar.get("origin") or "unknown", "sha256": _file_sha256(jar.get("path"))})
+                        "origin": jar.get("origin") or "unknown",
+                        "sha256": jar.get("sha256") or _file_sha256(jar.get("path"))})
         return out
 
     @pytest.hookimpl(trylast=True)

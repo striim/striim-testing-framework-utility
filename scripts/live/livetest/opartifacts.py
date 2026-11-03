@@ -69,6 +69,8 @@ class BuiltArtifact:
     module_name: str = ""  # OP jars: the manifest's Striim-Module-Name (the OP's identity)
     origin: str = field(default="", compare=False)       # build_jar: "built" (mvn ran), "reused" (an up-to-date target/ jar)
                            # or "prebuilt" (SLT_PREBUILT_*); what a case record says it loaded
+    record_sha256: str = field(default="", compare=False)  # the loaded file's sha256, taken under the
+                           # module build lock (build_modules), for the case record
 
     @property
     def content_tag(self) -> str:

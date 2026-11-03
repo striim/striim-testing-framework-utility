@@ -188,5 +188,5 @@ def test_the_jars_a_case_loaded_and_the_set_overrides_are_recorded(run_case, tmp
     assert "/somewhere/x.jar" not in json.dumps(session), "names only, never values"
     [jar] = item["jars"]
     assert jar["module"] == "java/OpenProcessors/StubOp"
-    assert jar["origin"] == "unknown"                     # the stub says nothing: never reusable
+    assert jar["origin"] == "preloaded"                   # the console pre-flight loaded the bytes: never reusable
     assert jar["sha256"] is not None

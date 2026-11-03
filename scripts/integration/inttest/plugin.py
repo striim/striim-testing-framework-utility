@@ -1451,7 +1451,12 @@ def _build_operator_jar(name: str, op_jar_ref: str, report=None):
     lock = FileLock(str(_op_build_lock_path(op_jar_ref)))
     try:
         with lock:
-            return opartifacts_mod.build_jar(op_jar_ref, release, report=report)
+            built = opartifacts_mod.build_jar(op_jar_ref, release, report=report)
+            # Hashed under the lock, for the case record: a sibling may rebuild target/ after it.
+            try:
+                return dataclasses.replace(built, record_sha256=opartifacts_mod.file_sha256(built.path))
+            except Exception:           # noqa: BLE001 -- a record without a hash is never reused
+                return built
     except opartifacts_mod.OpBuildFailed as e:
         # A FAILURE, not a skip: the build ran, so the module itself is broken, and a skip
         # would let a run that tested nothing of it read green.
@@ -1651,6 +1656,7 @@ class IntYamlItem(pytest.Item):
         self.artifact = artifact = _build_operator_jar(m.name, m.module_ref)
         # What the case loaded, for its run record (livetest.caserecord).
         self._slt_case_jars = [{"module": m.module_ref, "path": str(artifact.path),
+                                "sha256": getattr(artifact, "record_sha256", "") or None,
                                 "origin": getattr(artifact, "origin", "")}]
 
         # --- 4. Tokens: ${TEST_DIR}/${TID}/${TID_ORACLE} + every requires: service's

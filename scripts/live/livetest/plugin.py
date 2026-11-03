@@ -1611,8 +1611,12 @@ def build_modules(m: TestManifest, release: dict, report=None) -> list:
             if mod["kind"] == "op":
                 # Uploaded and loaded under a content name; see opartifacts.content_addressed.
                 built = opartifacts.content_addressed(built)
+                # The content-named copy is what is uploaded; its bytes, read under the lock, are
+                # what the case record names.
+                built = dataclasses.replace(built, record_sha256=opartifacts.file_sha256(built.path))
             else:
-                built = dataclasses.replace(built, sha256=opartifacts.file_sha256(built.path))
+                digest = opartifacts.file_sha256(built.path)
+                built = dataclasses.replace(built, sha256=digest, record_sha256=digest)
         builts.append((mod, built))
     return builts
 
@@ -2696,13 +2700,19 @@ class LiveItem(pytest.Item):
             upload_renames: dict = {}
             # Before registration: a LOAD can be where the OP class loader's poison is logged.
             poison_marks = _node_log_marks(ctx) if m.modules else {}
+            self._slt_case_jars = []            # an app-only case loads no jar
             if m.modules:
                 try:
                     _report(m.name, "building OP/UDF jar(s)")
                     builts = build_modules(m, release, report=_report)
                     # What the case loaded, for its run record (livetest.caserecord).
+                    # Under SLT_OPS_PRELOADED the console pre-flight built and loaded the jars; this
+                    # build only names them, so the bytes the server runs are not these.
+                    preloaded_run = bool(os.environ.get("SLT_OPS_PRELOADED"))
                     self._slt_case_jars = [{"module": mod["jar"], "path": str(getattr(b, "path", "")),
-                                            "origin": getattr(b, "origin", "")} for mod, b in builts]
+                                            "sha256": getattr(b, "record_sha256", "") or None,
+                                            "origin": "preloaded" if preloaded_run else getattr(b, "origin", "")}
+                                           for mod, b in builts]
                 except (opartifacts.OpBuildFailed, opartifacts.OpJarRejected) as e:
                     # The module under test, or the jar named for it, is broken: a failure, not a skip.
                     pytest.fail(f"{m.name}: {e}", pytrace=False)
