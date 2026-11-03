@@ -10,11 +10,13 @@ Lines, in order:
 
 - ``session``, read and written just before the process's first case runs: the project root case
   paths are relative to (``caseRoot``), the source repo's HEAD and dirty paths, the framework
-  checkout's HEAD and dirty paths, the recorded settings (``RECORDED_ENV``), host, tier, start time.
+  checkout's HEAD and dirty paths, the recorded settings (``RECORDED_ENV``), the names of every set
+  ``SLT_``/``INT_``/``STRIIM_``/``GOLD_``/``FIELD_`` variable, host, tier, start time.
   A run that runs no case (collection, a dry run) spawns nothing and writes nothing.
 - ``item``, one per case item at its teardown: case dir (relative to ``caseRoot``), item name,
   nodeid, the item names its case file collected in this process (its variants), status
   (``passed``/``failed``/``error``/``skipped``), skip or xfail reason, start and end, and
+  ``jars``: each jar the case loaded (module, ``built``/``reused``/``prebuilt``, sha256), and
   ``striim``: the release the engine resolved (from ``STRIIM_HOME``; ``STRIIM_VERSION`` does not
   choose it), ``STRIIM_HOME`` and ``SLT_STRIIM_TRYOUT_JARS``.
 - ``end``, at session finish: exit status, the nodeids an evidence error marked, the failed
@@ -29,6 +31,7 @@ outcome: a record that cannot be written leaves a case without reusable evidence
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -46,6 +49,10 @@ DEFAULT_SUBDIR = Path(".local-evidence") / "case-records"
 # release is not among them: each item records the release the engine resolved (``striim``).
 RECORDED_ENV = ("STRIIM_VERSION", "STRIIM_HOME", "SLT_UI_FORM", "SLT_PARALLEL",
                 "SLT_STRIIM_JAVA_SYSTEM_PROPERTIES", "SLT_STRIIM_TRYOUT_JARS")
+# Every set variable with one of these prefixes is named in the header (names only: values can be
+# secrets), so a consumer can refuse a run whose overrides it does not accept (SLT_PREBUILT_*,
+# SLT_SERVICES_DIR, a consumer's own).
+ENV_NAME_PREFIXES = ("SLT_", "INT_", "STRIIM_", "GOLD_", "FIELD_")
 GIT_TIMEOUT_S = 5.0
 _PLUGIN_NAME = "slt-case-records"
 
@@ -116,6 +123,25 @@ def _session_id(config) -> str:
             option.testrunuid = uuid.uuid4().hex
         return option.testrunuid
     return uuid.uuid4().hex
+
+
+_SHA_MEMO: dict = {}
+
+
+def _file_sha256(path) -> str | None:
+    """sha256 of a jar file, memoised per (path, size, mtime); None when it cannot be read."""
+    try:
+        st = os.stat(path)
+        key = (str(path), st.st_size, st.st_mtime_ns)
+        if key not in _SHA_MEMO:
+            h = hashlib.sha256()
+            with open(path, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            _SHA_MEMO[key] = h.hexdigest()
+        return _SHA_MEMO[key]
+    except Exception:                   # noqa: BLE001
+        return None
 
 
 def _now() -> str:
@@ -207,6 +233,7 @@ class Recorder:
                      "caseRoot": str(self.source_root.resolve()), "source": self.source,
                      "framework": _framework_state(),
                      "env": {k: self.env.get(k) for k in RECORDED_ENV},
+                     "envNames": sorted(k for k, v in self.env.items() if k.startswith(ENV_NAME_PREFIXES) and v),
                      "args": list(getattr(getattr(self.config, "invocation_params", None), "args", ()) or ())})
 
     # -- hooks ---------------------------------------------------------------------------------
@@ -255,6 +282,7 @@ class Recorder:
             info = getattr(report, "_slt_case_info", None) or {}
             case = info.get("case")
             self._write({"kind": "item", "case": case, "item": info.get("name"), "nodeid": report.nodeid,
+                         "jars": info.get("jars"),
                          "variants": list(self.variants.get(case) or []), "status": state["status"],
                          "skipReason": state["reason"], "xfail": state["xfail"],
                          "striim": self._striim_identity(),
@@ -267,7 +295,25 @@ class Recorder:
         if not self.is_case(item):
             return
         report._slt_case_record = True
-        report._slt_case_info = {"case": self._relative(self.case_dir(item)), "name": item.name}
+        report._slt_case_info = {"case": self._relative(self.case_dir(item)), "name": item.name,
+                                 "jars": self._jars(item)}
+
+    def _jars(self, item):
+        """The jars the case loaded (the engine sets ``_slt_case_jars`` once it has them): module dir
+        relative to ``caseRoot``, origin (built / reused / prebuilt) and the jar file's sha256.
+        None when the case stopped before its jars were resolved."""
+        jars = getattr(item, "_slt_case_jars", None)
+        if jars is None:
+            return None
+        out = []
+        for jar in jars:
+            module = str(jar.get("module") or "")
+            if module.endswith("pom.xml"):
+                module = str(Path(module).parent)
+            module = module.rstrip("/")
+            out.append({"module": module if not Path(module).is_absolute() else self._relative(module),
+                        "origin": jar.get("origin") or "unknown", "sha256": _file_sha256(jar.get("path"))})
+        return out
 
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session, exitstatus):

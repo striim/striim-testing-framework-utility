@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from inttest import opjarrelease
@@ -65,6 +65,7 @@ class BuiltArtifact:
     op_name: str  # OP_NAME -- filename with the trailing "-<SERIES>.jar" removed,
                   #            e.g. "ReferenceOpV1"
     sha256: str = ""
+    origin: str = field(default="", compare=False)  # "built" (mvn ran), "reused" (an up-to-date target/ jar) or "prebuilt"
 
 
 def file_sha256(path: Path) -> str:
@@ -497,7 +498,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         op_name = op_name_for(jar_name, suffix, series)
         digest = file_sha256(prebuilt)
         notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
-        return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest)
+        return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest, origin="prebuilt")
 
     existing = _release_jar_candidates(module_dir, suffix)
     # >1 candidate is stale build output, not a broken repo: a version bump changes the
@@ -532,7 +533,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         _assert_jar_java_version(jar, java_release, module_dir)
         trigger = _stale_trigger(jar, module_dir)
         if trigger is None:
-            return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix))
+            return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="reused")
         clean = False   # a source edit in the same environment -> incremental rebuild
         try:
             changed = trigger.relative_to(module_dir)
@@ -614,4 +615,4 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # The MANIFEST stamp is written by the pom during the build, not here; verify what landed.
     _assert_jar_java_version(jar, java_release, module_dir)
     _write_source_record(jar, module_dir)
-    return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix))
+    return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")

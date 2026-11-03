@@ -436,6 +436,7 @@ def test_build_jar_clean_rebuilds_a_corrupt_jar(tmp_path, monkeypatch):
     built = opartifacts.build_jar(MODULE, RELEASE_54, run=fake_run, report=reasons.append)
     assert built.path == jar
     assert "clean" in goals, "a corrupt jar must force `mvn clean package`, not a reuse"
+    assert built.origin == "built"
     assert "not a readable jar" in reasons[0] and "clean rebuild" in reasons[0]
 
 
@@ -455,6 +456,7 @@ def test_build_jar_reuses_a_valid_up_to_date_jar(tmp_path, monkeypatch):
         run=lambda *a: pytest.fail("must not build"), report=reasons.append)
     assert built.path == jar
     assert reasons == []
+    assert built.origin == "reused"
 
 
 def test_build_jar_still_reuses_a_valid_jar_with_no_stamp_and_no_own_classes(tmp_path, monkeypatch):
@@ -515,6 +517,7 @@ def test_build_jar_uses_prebuilt_jar_env(tmp_path, monkeypatch):
     assert built.sha256 == opartifacts.file_sha256(prebuilt)
     assert len(calls) == 0
     assert any("using prebuilt jar" in r for r in reports)
+    assert built.origin == "prebuilt"
 
 
 @pytest.mark.parametrize("jar_name", ["release.jar", "ReferenceOpV1-5.2.jar"])

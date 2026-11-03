@@ -2700,6 +2700,9 @@ class LiveItem(pytest.Item):
                 try:
                     _report(m.name, "building OP/UDF jar(s)")
                     builts = build_modules(m, release, report=_report)
+                    # What the case loaded, for its run record (livetest.caserecord).
+                    self._slt_case_jars = [{"module": mod["jar"], "path": str(getattr(b, "path", "")),
+                                            "origin": getattr(b, "origin", "")} for mod, b in builts]
                 except (opartifacts.OpBuildFailed, opartifacts.OpJarRejected) as e:
                     # The module under test, or the jar named for it, is broken: a failure, not a skip.
                     pytest.fail(f"{m.name}: {e}", pytrace=False)

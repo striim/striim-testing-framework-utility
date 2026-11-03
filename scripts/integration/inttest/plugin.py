@@ -1649,6 +1649,9 @@ class IntYamlItem(pytest.Item):
         # Stashed on the item for Phase 3 (IntegrationProcessor invocation needs the
         # built jar's path/name/op_name) -- unused by this slice's pipeline itself.
         self.artifact = artifact = _build_operator_jar(m.name, m.module_ref)
+        # What the case loaded, for its run record (livetest.caserecord).
+        self._slt_case_jars = [{"module": m.module_ref, "path": str(artifact.path),
+                                "origin": getattr(artifact, "origin", "")}]
 
         # --- 4. Tokens: ${TEST_DIR}/${TID}/${TID_ORACLE} + every requires: service's
         # provides: map (SPEC §6). ${OP_JAR}/${OP_NAME} are assembled for parity/Phase 3

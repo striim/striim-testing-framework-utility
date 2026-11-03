@@ -76,6 +76,7 @@ def test_build_jar_reuses_when_up_to_date(tmp_path, monkeypatch):
     assert built.name == "ExampleMapOpV8G-5.4.jar"
     assert built.op_name == "ExampleMapOpV8G"
     assert calls == []                                    # up-to-date -> no build
+    assert built.origin == "reused"                       # what a case record says it loaded
 
 def test_build_jar_rebuilds_when_source_newer(tmp_path, monkeypatch):
     # a source edited after the jar was built -> stale -> CLEAN rebuild (the footgun fix:
@@ -99,6 +100,7 @@ def test_build_jar_rebuilds_when_source_newer(tmp_path, monkeypatch):
     assert argv == ["mvn", "-q", "clean", "package", "-DskipTests=true"]
     assert cwd == str(mod)
     assert env["STRIIM_RELEASE"] == "5.4.0.6" and env["STRIIM_SERIES"] == "5.4"
+    assert built.origin == "built"
 
 def test_build_jar_merges_release_env_incl_lib_overrides(tmp_path, monkeypatch):
     monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
@@ -494,6 +496,12 @@ def test_build_jar_uses_prebuilt_jar_env(tmp_path, monkeypatch):
     assert built.sha256 == opartifacts.file_sha256(prebuilt)
     assert len(calls) == 0
     assert any("using prebuilt jar" in r for r in reports)
+    assert built.origin == "prebuilt"
+    # The content-named copy keeps the origin, also when it is served from the per-process memo.
+    store = tmp_path / "store"
+    assert opartifacts.content_addressed(built, store).origin == "prebuilt"
+    import dataclasses
+    assert opartifacts.content_addressed(dataclasses.replace(built, origin="reused"), store).origin == "reused"
 
 @pytest.mark.parametrize("jar_name", ["release.jar", "ExampleMapOpV8G-5.2.jar"])
 @pytest.mark.parametrize("per_module", [False, True])
