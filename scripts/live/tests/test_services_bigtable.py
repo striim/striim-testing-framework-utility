@@ -13,9 +13,18 @@ registry, (2) publish EXACTLY the BIGTABLE_* tokens the rest of the tier consume
 render those templates to the expected concrete values -- including the gRPC-port override
 the emulator and the admin client that dials it must follow together (the "the container
 moves, the client does not" hazard service.yaml's docker_env is written to close).
+
+§9.2 adds the compose-rendering half, in the same hermetic style: the bigtable compose.yaml
+renders its name:, container_name: and published port correctly with and without
+SLT_STACK_PREFIX, and the Striim `compose.bigtable-emulator.yaml` overlay injects
+BIGTABLE_EMULATOR_HOST on slt-striim/slt-node/slt-agent at the published port -- while
+staying out of the base compose so a plain `docker compose up` still targets real Bigtable.
 """
+from pathlib import Path
+
+import yaml
 from livetest.registry import load_service
-from livetest.services import resolve
+from livetest.services import declared_containers, resolve
 from livetest.plugin import build_service_tokens
 
 # The exact `provides:` block service.yaml advertises for the framework's own admin and for
@@ -84,3 +93,56 @@ def test_bigtable_emulator_host_carries_the_containerised_view_host():
     assert tokens["BIGTABLE_EMULATOR_HOST"] == "host.docker.internal:9470"
     assert tokens["BIGTABLE_URL"].startswith(
         "jdbc:bigtable:/projects/test-project/instances/test-instance")
+
+
+# --- §9.2 compose rendering: name / container_name / published port + the Striim overlay ------
+# No Docker, no CBTEMULATOR: render the compose files' own text the way the harness does --
+# via the framework's own declared_containers/stack (live reads SLT_STACK_PREFIX) and a YAML
+# parse of the overlay. The claim in each test is the one §9.2 names: the rendered names/ports
+# and the overlay's per-container injection are *correct*.
+
+_LIVE_COMPOSE = Path(__file__).resolve().parents[1] / "services" / "bigtable" / "compose.yaml"
+_LIVE_BASE_STRIIM = Path(__file__).resolve().parents[1] / "services" / "striim" / "compose.yaml"
+_LIVE_OVERLAY = (Path(__file__).resolve().parents[1]
+                 / "services" / "striim" / "compose.bigtable-emulator.yaml")
+
+# The canonical stack-prefix expression every live compose names its project + container with.
+_LIVE_PREFIX_TPL = "${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}"
+
+
+def test_live_compose_container_name_renders_with_and_without_stack_prefix():
+    # container_name carries the canonical SLT_STACK_PREFIX expression; the framework strips the
+    # interpolation and re-derives the name via stack.prefixed, so both the bare default and a
+    # prefixed stack must render -- and an override must not leak a literal prefix into the bare.
+    assert declared_containers([_LIVE_COMPOSE], {}) == ["slt-bigtable"]
+    assert declared_containers([_LIVE_COMPOSE], {"SLT_STACK_PREFIX": "ec"}) == ["ec-slt-bigtable"]
+
+
+def test_live_compose_project_and_container_names_carry_the_stack_prefix():
+    # The compose `name:` (which scopes `docker compose down`) and the container_name must carry
+    # the SAME prefix expression: a prefix that hits one but not the other orphaned the other on
+    # teardown -- the silent-driver failure stack-scoping exists to prevent.
+    data = yaml.safe_load(_LIVE_COMPOSE.read_text())
+    assert data["name"] == f"{_LIVE_PREFIX_TPL}slt-bigtable"
+    assert data["services"]["slt-bigtable"]["container_name"] == f"{_LIVE_PREFIX_TPL}slt-bigtable"
+
+
+def test_live_compose_published_port_is_the_overridable_host_port():
+    # The published host port IS the container port, both bound to the same overridable
+    # SLT_BIGTABLE_GRPC_HOST_PORT with the 9470 default -- so remapping a busy port moves where
+    # the emulator publishes (the host BIGTABLE_EMULATOR_HOST then points at), not just source.
+    data = yaml.safe_load(_LIVE_COMPOSE.read_text())
+    ports = data["services"]["slt-bigtable"]["ports"]
+    assert ports == ["${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"]
+
+
+def test_live_striim_overlay_injects_emulator_host_on_all_three_containers():
+    # A BigtableWriter/reader in the cluster reaches the emulator only through the JVM-global
+    # BIGTABLE_EMULATOR_HOST, so the overlay must reach slt-striim, slt-node AND slt-agent at the
+    # published host port -- and must stay OUT of the base compose (a plain `up` then still
+    # targets real Bigtable, never this empty emulator).
+    overlay = yaml.safe_load(_LIVE_OVERLAY.read_text())
+    expected = "host.docker.internal:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"
+    for svc in ("slt-striim", "slt-node", "slt-agent"):
+        assert overlay["services"][svc]["environment"]["BIGTABLE_EMULATOR_HOST"] == expected
+    assert "BIGTABLE_EMULATOR_HOST" not in _LIVE_BASE_STRIIM.read_text()

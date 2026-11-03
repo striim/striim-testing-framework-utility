@@ -9,7 +9,9 @@ Same guard shape scripts/integration/tests/test_services.py carries for spanner.
 """
 from pathlib import Path
 
+import yaml
 from inttest import tokens as tokens_mod
+from inttest import services as services_mod
 
 # Same origin the module-under-test reads service.yaml from (scripts/integration/services).
 _SERVICES_DIR = Path(__file__).resolve().parents[1] / "services"
@@ -62,3 +64,41 @@ def test_bigtable_grpc_host_port_override_moves_the_client(monkeypatch):
     t = tokens_mod.service_tokens("bigtable", services_dir=_SERVICES_DIR)
     assert t["BIGTABLE_GRPC_PORT"] == "19110"
     assert t["BIGTABLE_EMULATOR_HOST"] == "localhost:19110"
+
+
+# --- §9.2 compose rendering: name / container_name / published port (integration half) ---------
+# Mirror of the live §9.2 block at scripts/live/tests/test_services_bigtable.py: this tier
+# honours INT_STACK_PREFIX (not SLT_STACK_PREFIX), so it uses inttest.services' own
+# declared_containers / compose_container_names, which read the prefix from the environment --
+# the same idiom test_services.py::test_container_names_carry_the_stack_prefix uses. No Docker.
+
+_INT_COMPOSE = _SERVICES_DIR / "bigtable" / "compose.yaml"
+_INT_PREFIX_TPL = "${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}"
+
+
+def test_integration_compose_container_name_renders_with_and_without_stack_prefix(monkeypatch):
+    # container_name carries the canonical INT_STACK_PREFIX expression; the framework strips the
+    # interpolation and re-derives via the prefix, so both the bare default and a prefixed stack
+    # must render, and an override must not leak a literal prefix into the bare.
+    monkeypatch.delenv("INT_STACK_PREFIX", raising=False)
+    assert services_mod.declared_containers([_INT_COMPOSE]) == ["int-bigtable"]
+    monkeypatch.setenv("INT_STACK_PREFIX", "ec")
+    assert services_mod.declared_containers([_INT_COMPOSE]) == ["ec-int-bigtable"]
+
+
+def test_integration_compose_project_and_container_names_carry_the_stack_prefix():
+    # The compose `name:` (which scopes `docker compose down`) and the container_name must carry
+    # the SAME prefix expression: a prefix that hits one but not the other orphaned the other on
+    # teardown -- the silent-driver failure stack-scoping exists to prevent.
+    data = yaml.safe_load(_INT_COMPOSE.read_text())
+    assert data["name"] == f"{_INT_PREFIX_TPL}int-bigtable"
+    assert data["services"]["int-bigtable"]["container_name"] == f"{_INT_PREFIX_TPL}int-bigtable"
+
+
+def test_integration_compose_published_port_is_the_overridable_host_port():
+    # The published host port IS the container port, both bound to the same overridable
+    # INT_BIGTABLE_GRPC_HOST_PORT with the 19470 default -- same on a separate port so both
+    # stacks can run at once (the CBTEMULATOR is one gRPC listener, no REST/admin split).
+    data = yaml.safe_load(_INT_COMPOSE.read_text())
+    ports = data["services"]["int-bigtable"]["ports"]
+    assert ports == ["${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:${INT_BIGTABLE_GRPC_HOST_PORT:-19470}"]
