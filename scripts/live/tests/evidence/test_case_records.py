@@ -43,6 +43,57 @@ def test_a_passing_case_is_recorded_with_its_session_and_end(run_case, tmp_path,
     assert item["variants"] == ["initial-load"] and item["skipReason"] is None and item["xfail"] is None
     assert end["kind"] == "end" and end["exitstatus"] == 0 and end["teardownFailures"] == [] \
         and end["evidenceErrors"] == []
+    # The release the engine resolved, never the STRIIM_VERSION setting
+    assert item["striim"]["release"] == run_release(run) and item["striim"]["tryouts"] is None
+    assert end["source"] == session["source"] and "framework" in end
+
+
+def run_release(run):
+    return json.loads([p for p in (run.root / "live" / "evidence").glob("*/*/evidence.json")][0].read_text()
+                      )["runtime"]["striim"]["expected"]["STRIIM_VERSION"]
+
+
+def test_the_recorded_release_is_the_resolved_one_not_the_setting(run_case, tmp_path, monkeypatch):
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    run, store = _run(run_case, tmp_path, env={"STRIIM_VERSION": "9.9.9"})
+    assert run.ret == 0, run.text
+    _, item, _ = _records(store)["main"]
+    assert item["striim"]["release"] != "9.9.9" and item["striim"]["release"] == run_release(run)
+
+
+def test_an_edit_during_the_run_shows_in_the_end_line(run_case, tmp_path, pytester, monkeypatch):
+    root = pytester.path
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(root))
+
+    def prepare(root, name):
+        git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "add", "cases"], check=True)
+        subprocess.run([*git, "commit", "-qm", "cases"], check=True)
+        # Edited by the case itself, after the header was read: what another session's edit does.
+        conftest = root / "conftest.py"
+        conftest.write_text(conftest.read_text() + (
+            "\nimport pytest as _p\n@_p.hookimpl(trylast=True)\ndef pytest_runtest_call(item):\n"
+            f"    open({str(root / 'cases' / 'initial-load' / 'app.tql')!r}, 'a').write('-- edited mid-run\\n')\n"))
+    run, store = _run(run_case, tmp_path, prepare=prepare)
+    session, _, end = _records(store)["main"]
+    assert session["source"]["head"] == end["source"]["head"]
+    assert "cases/initial-load/app.tql" not in session["source"]["dirty"]
+    assert "cases/initial-load/app.tql" in end["source"]["dirty"]
+
+
+def test_a_rename_in_the_worktree_names_both_paths(tmp_path):
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (tmp_path / "cases").mkdir()
+    (tmp_path / "cases" / "app.tql").write_text("x\n")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "c"], check=True)
+    subprocess.run([*git, "mv", "cases/app.tql", "moved.tql"], check=True)
+    subprocess.run([*git, "reset", "-q"], check=True)                    # unstaged: the worktree rename
+    subprocess.run([*git, "add", "-N", "moved.tql"], check=True)
+    dirty = caserecord.git_state(tmp_path)["dirty"]
+    assert "cases/app.tql" in dirty and "moved.tql" in dirty
 
 
 def test_a_failing_case_is_recorded_failed(run_case, tmp_path, monkeypatch):
@@ -110,3 +161,17 @@ def test_a_run_that_records_no_case_leaves_no_file(run_case, tmp_path, monkeypat
     run, store = _run(run_case, tmp_path, args=("--collect-only",))
     assert run.ret == 0, run.text
     assert not store.exists() or not any(store.rglob("*.jsonl"))
+
+
+def test_a_process_that_dies_in_its_first_case_leaves_a_file_without_an_end(run_case, tmp_path, monkeypatch):
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+
+    def prepare(root, name):
+        conftest = root / "conftest.py"
+        conftest.write_text(conftest.read_text() + (
+            "\nimport os as _os, pytest as _p\n@_p.hookimpl(tryfirst=True)\ndef pytest_runtest_call(item):\n"
+            "    _os._exit(3)\n"))
+    run, store = _run(run_case, tmp_path, prepare=prepare)
+    assert run.ret != 0
+    lines = _records(store)["main"]
+    assert [ln["kind"] for ln in lines] == ["session"]

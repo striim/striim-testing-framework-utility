@@ -8,19 +8,23 @@ shared by every xdist worker of one run and ``<process>`` is ``main`` or the wor
 
 Lines, in order:
 
-- ``session``, read just before the first case runs and written with its item: the project root
-  case paths are relative to (``caseRoot``), the source repo's HEAD and dirty paths, the framework
+- ``session``, read and written just before the process's first case runs: the project root case
+  paths are relative to (``caseRoot``), the source repo's HEAD and dirty paths, the framework
   checkout's HEAD and dirty paths, the recorded settings (``RECORDED_ENV``), host, tier, start time.
   A run that runs no case (collection, a dry run) spawns nothing and writes nothing.
 - ``item``, one per case item at its teardown: case dir (relative to ``caseRoot``), item name,
   nodeid, the item names its case file collected in this process (its variants), status
-  (``passed``/``failed``/``error``/``skipped``), skip or xfail reason, start and end.
+  (``passed``/``failed``/``error``/``skipped``), skip or xfail reason, start and end, and
+  ``striim``: the release the engine resolved (from ``STRIIM_HOME``; ``STRIIM_VERSION`` does not
+  choose it), ``STRIIM_HOME`` and ``SLT_STRIIM_TRYOUT_JARS``.
 - ``end``, at session finish: exit status, the nodeids an evidence error marked, the failed
-  teardowns of owned infrastructure.
+  teardowns of owned infrastructure, and the source and framework state read again (a change
+  during the run shows as a difference from the header).
 
 The engine computes no fingerprint: the consumer recomputes its own from the recorded commit, so a
-record never has to know how the consumer builds. A file without an ``end`` line is a session that
-did not finish; a consumer must not reuse it. Writing is best effort and never changes a run's
+record never has to know how the consumer builds. A file without an ``end`` line is a process
+that did not finish (it crashed or was interrupted after its first case started); a consumer must
+not reuse that session. Writing is best effort and never changes a run's
 outcome: a record that cannot be written leaves a case without reusable evidence, which is safe.
 """
 from __future__ import annotations
@@ -38,8 +42,10 @@ import pytest
 SCHEMA = 1
 ENV_STORE = "SLT_CASE_RECORDS"
 DEFAULT_SUBDIR = Path(".local-evidence") / "case-records"
-# Settings that change what a case does, recorded as they were (none holds a secret).
-RECORDED_ENV = ("STRIIM_VERSION", "SLT_UI_FORM", "SLT_PARALLEL", "SLT_STRIIM_JAVA_SYSTEM_PROPERTIES")
+# Settings that change what a case does, recorded as they were (none holds a secret). The Striim
+# release is not among them: each item records the release the engine resolved (``striim``).
+RECORDED_ENV = ("STRIIM_VERSION", "STRIIM_HOME", "SLT_UI_FORM", "SLT_PARALLEL",
+                "SLT_STRIIM_JAVA_SYSTEM_PROPERTIES", "SLT_STRIIM_TRYOUT_JARS")
 GIT_TIMEOUT_S = 5.0
 _PLUGIN_NAME = "slt-case-records"
 
@@ -68,21 +74,28 @@ def git_state(root) -> dict:
         status = run("status", "--porcelain=v1", "-z", "--untracked-files=all")
         if status.returncode != 0:
             return {"unreadable": (status.stderr or "").strip()[:200] or f"git rc {status.returncode}"}
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return {"unreadable": f"git: {e}"}
+    except Exception as e:              # noqa: BLE001 -- OSError, a timeout, undecodable output
+        return {"unreadable": f"git: {type(e).__name__}: {e}"}
     entries = iter((status.stdout or "").split("\0"))
     dirty = []
     for entry in entries:
         if len(entry) < 4:
             continue
         dirty.append(entry[3:])
-        if entry[0] in "RC":
+        if entry[0] in "RC" or entry[1] in "RC":
             dirty.append(next(entries, ""))     # a rename's source left its old place
     return {"root": (top.stdout or "").strip() or str(root), "head": (head.stdout or "").strip(),
             "dirty": sorted(filter(None, dirty))}
 
 
 def _framework_state() -> dict:
+    try:
+        return _framework_state_unguarded()
+    except Exception as e:              # noqa: BLE001
+        return {"unreadable": f"{type(e).__name__}: {e}"}
+
+
+def _framework_state_unguarded() -> dict:
     import livetest
     prov = getattr(livetest, "__provenance__", {}) or {}
     if prov.get("BUILT_FROM") not in (None, "checkout"):
@@ -113,18 +126,19 @@ class Recorder:
     """A pytest plugin writing one process's records. ``is_case(item)`` picks the engine's items;
     ``case_dir(item)`` is the item's case directory."""
 
-    def __init__(self, config, tier: str, source_root, is_case, case_dir, env=None):
+    def __init__(self, config, tier: str, source_root, is_case, case_dir, env=None, release=None):
         self.config = config
         self.tier = tier
         self.is_case = is_case
         self.case_dir = case_dir
         self.source_root = Path(source_root)
         self.env = os.environ if env is None else env
+        self.release = release          # () -> the engine's resolved release dict
+        self._striim: dict | None = None
         self.path: Path | None = None
         self.variants: dict[str, list[str]] = {}
         self.phases: dict[str, dict] = {}
         self.failed = False
-        self.header: dict | None = None
         self.started = False
         self.source: dict = {}
         self.header_written = False
@@ -142,26 +156,35 @@ class Recorder:
         return self._worker is None and self.config.pluginmanager.hasplugin("dsession")
 
     def _write(self, doc: dict) -> None:
-        """Append one line. The session header waits for the first item, so a run that records no
-        case (collection only, a hermetic suite) leaves no file."""
+        """Append one line. Nothing is written before the first case starts (``start``), so a run
+        that runs no case leaves no file; a process that dies after that leaves a file without an
+        ``end`` line, which a consumer must not reuse."""
         if self.path is None or self.failed:
             return
-        if doc["kind"] == "session":
-            self.header = doc
-            return
-        if self.header is None:
-            return
-        lines = [doc]
-        if not self.header_written:
-            lines.insert(0, self.header)
         try:
+            line = json.dumps(doc, sort_keys=True, default=str) + "\n"
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, "a", encoding="utf-8") as f:
-                f.write("".join(json.dumps(line, sort_keys=True) + "\n" for line in lines))
-            self.header_written = True
-        except OSError as e:
+                f.write(line)
+            if doc["kind"] == "session":
+                self.header_written = True
+        except Exception as e:          # noqa: BLE001 -- never change a run's outcome
             self.failed = True
-            print(f"[slt] case records not written to {self.path}: {e}")
+            print(f"[slt] case records not written to {self.path}: {type(e).__name__}: {e}")
+
+    def _striim_identity(self) -> dict:
+        """The Striim the cases ran against: the release the engine resolved (from STRIIM_HOME, not
+        STRIIM_VERSION), STRIIM_HOME, and any tryout jars patched into the cluster."""
+        if self._striim is None:
+            try:
+                rel = self.release() if self.release is not None else None
+                version = (rel or {}).get("STRIIM_VERSION") if isinstance(rel, dict) else None
+                release = version or {"unreadable": "the engine resolved no release"}
+            except Exception as e:      # noqa: BLE001
+                release = {"unreadable": f"{type(e).__name__}: {e}"}
+            self._striim = {"release": release, "home": self.env.get("STRIIM_HOME"),
+                            "tryouts": self.env.get("SLT_STRIIM_TRYOUT_JARS") or None}
+        return self._striim
 
     def _relative(self, path) -> str:
         """`path` relative to the project root (``caseRoot`` in the header), else absolute."""
@@ -179,24 +202,31 @@ class Recorder:
         self.source = git_state(self.source_root)
         if self.path is None:
             return
-        try:
-            framework = _framework_state()
-        except Exception as e:          # noqa: BLE001
-            framework = {"unreadable": f"{type(e).__name__}: {e}"}
         self._write({"kind": "session", "schema": SCHEMA, "tier": self.tier, "process": self.process,
                      "startedAt": _now(), "host": socket.gethostname(), "pid": os.getpid(),
-                     "caseRoot": str(self.source_root.resolve()), "source": self.source, "framework": framework,
+                     "caseRoot": str(self.source_root.resolve()), "source": self.source,
+                     "framework": _framework_state(),
                      "env": {k: self.env.get(k) for k in RECORDED_ENV},
                      "args": list(getattr(getattr(self.config, "invocation_params", None), "args", ()) or ())})
 
     # -- hooks ---------------------------------------------------------------------------------
 
+    def _guarded(self, what, fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception as e:          # noqa: BLE001 -- never change a run's outcome
+            self.failed = True
+            print(f"[slt] case records stopped ({what}): {type(e).__name__}: {e}")
+
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtest_setup(self, item):
         if self.is_case(item):
-            self.start()
+            self._guarded("start", self.start)
 
     def pytest_collectreport(self, report):
+        self._guarded("collect", self._collected, report)
+
+    def _collected(self, report):
         items = [i for i in (report.result or []) if hasattr(i, "nodeid") and self.is_case(i)]
         for item in items:
             names = self.variants.setdefault(self._relative(self.case_dir(item)), [])
@@ -204,6 +234,9 @@ class Recorder:
                 names.append(item.name)
 
     def pytest_runtest_logreport(self, report):
+        self._guarded("report", self._reported, report)
+
+    def _reported(self, report):
         if self.path is None or self.controller or not getattr(report, "_slt_case_record", False):
             return
         state = self.phases.setdefault(report.nodeid, {"status": "passed", "reason": None,
@@ -224,6 +257,7 @@ class Recorder:
             self._write({"kind": "item", "case": case, "item": info.get("name"), "nodeid": report.nodeid,
                          "variants": list(self.variants.get(case) or []), "status": state["status"],
                          "skipReason": state["reason"], "xfail": state["xfail"],
+                         "striim": self._striim_identity(),
                          "startedAt": state["startedAt"], "endedAt": _now()})
             self.phases.pop(report.nodeid, None)
 
@@ -237,7 +271,7 @@ class Recorder:
 
     @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session, exitstatus):
-        self.finish(session)
+        self._guarded("finish", self.finish, session)
 
     def finish(self, session) -> None:
         # An xdist controller ends a session its workers recorded: its own teardown is part of it.
@@ -246,14 +280,18 @@ class Recorder:
             return
         self.start()
         config = session.config
+        # Read again: a change made while the run was going (an edit, a commit, a checkout) means
+        # the header no longer describes what every case ran on. A consumer compares the two.
+        source = git_state(self.source_root)
+        framework = _framework_state()
         errors = sorted({e.get("nodeid") for e in (getattr(config, "_slt_evidence_errors", None) or [])
                          if e.get("nodeid")})
         self._write({"kind": "end", "endedAt": _now(), "exitstatus": int(getattr(session, "exitstatus", 1) or 0),
-                     "evidenceErrors": errors,
+                     "evidenceErrors": errors, "source": source, "framework": framework,
                      "teardownFailures": list(getattr(config, "_slt_teardown_failures", None) or [])})
 
 
-def install(config, tier: str, source_root, is_case, case_dir) -> Recorder | None:
+def install(config, tier: str, source_root, is_case, case_dir, release=None) -> Recorder | None:
     """Register one recorder per process (both engines may load in one session; the first wins).
     None, and nothing registered, when records are off or anything here fails."""
     try:
@@ -263,7 +301,7 @@ def install(config, tier: str, source_root, is_case, case_dir) -> Recorder | Non
         existing = pm.get_plugin(_PLUGIN_NAME)
         if existing is not None:
             return existing
-        rec = Recorder(config, tier, source_root, is_case, case_dir)
+        rec = Recorder(config, tier, source_root, is_case, case_dir, release=release)
         pm.register(rec, _PLUGIN_NAME)
         return rec
     except Exception as e:              # noqa: BLE001 -- never fail a run over its records

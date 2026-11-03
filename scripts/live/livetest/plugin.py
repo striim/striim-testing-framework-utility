@@ -394,7 +394,8 @@ def _slt_install_case_records(config) -> None:
         print(f"[slt] case records disabled: {type(e).__name__}: {e}")
         return
     caserecord.install(config, "live", root, lambda item: isinstance(item, LiveItem),
-                       lambda item: Path(item.manifest_path).parent)
+                       lambda item: Path(item.manifest_path).parent,
+                       release=lambda: _resolve_release(config))
 
 
 @dataclass

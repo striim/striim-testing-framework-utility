@@ -1343,7 +1343,8 @@ def _install_case_records(config) -> None:
         print(f"[int] case records disabled: {type(e).__name__}: {e}")
         return
     caserecord.install(config, "integration", root, lambda item: isinstance(item, IntYamlItem),
-                       lambda item: Path(item.path).parent)
+                       lambda item: Path(item.path).parent,
+                       release=lambda: releases_mod.resolve_release(os.environ))
 
 
 # ============================================================================
