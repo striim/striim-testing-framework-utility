@@ -35,6 +35,7 @@ def _hermetic_stack_env(request, monkeypatch):
         return
     for name in [n for n in os.environ if n.startswith("SLT_")] + ["STRIIM_URL"]:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SLT_CASE_RECORDS", "off")   # in-process cases write no records into a checkout
     # The .env layer is environment too: a developer's .env must not reach a hermetic test.
     from livetest import paths
     monkeypatch.setattr(paths, "dotenv_values", lambda env=None: {})

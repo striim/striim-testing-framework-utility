@@ -191,3 +191,19 @@ def test_failure_text_masks_known_secrets(pytester, monkeypatch, tmp_path):
     assert "tgt-pw-42xyz" not in failure
     assert "s3cretpw-from-env" not in failure
     assert "[redacted]" in failure
+
+
+@pytest.mark.parametrize("emitted,status", [(1, "passed"), (True, "failed")])
+def test_each_case_is_recorded_for_incremental_certification(pytester, monkeypatch, tmp_path, emitted, status):
+    """livetest.caserecord: an integration run records its case, whatever started it."""
+    store = tmp_path / "records"
+    monkeypatch.setenv("SLT_CASE_RECORDS", str(store))
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(pytester.path))
+    out = {"metadata": {"TableName": "T"}, "data": {"values": [emitted], "present": [True]}}
+    run_case(pytester, monkeypatch, tmp_path, DATA_CASE, {"returns": [out]},
+             {"in.json": json.dumps([EVENT]), "out.json": json.dumps([EVENT])})
+    [path] = store.glob("*/main.jsonl")
+    session, item, end = [json.loads(line) for line in path.read_text().splitlines()]
+    assert session["tier"] == "integration" and session["kind"] == "session"
+    assert item["status"] == status and item["case"].endswith("case") and item["variants"] == [item["item"]]
+    assert end["exitstatus"] == (0 if status == "passed" else 1)

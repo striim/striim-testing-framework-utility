@@ -57,6 +57,7 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 | `SLT_SERVICES_DIR` | shell, `.env` | `scripts/live/services` | Live service definitions. |
 | `SLT_INT_SERVICES_DIR` | shell, `.env` | `scripts/integration/services` | Integration service definitions. |
 | `SLT_STATE_DIR` | shell, `.env` | `scripts/live` | Run directories and coordination files. |
+| `SLT_CASE_RECORDS` | shell | `<project>/.local-evidence/case-records` | Per-case run records (`livetest/caserecord.py`), written by every live and integration run for a consumer's incremental certification; `off` writes none. |
 | `SLT_MACHINE_ENV` | shell | `${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env` | The machine-wide settings file. |
 | `SLT_FRAMEWORK_DOTENV` | shell | the clone's `.env` | A file to read as the framework clone's `.env`, when `SLT_PROJECT_ROOT` is not set. |
 | `SLT_LOCK_DIR` | shell | `/tmp/slt-locks` | The coordination directory every run on the machine shares (mode 1777). |

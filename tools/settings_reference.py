@@ -85,6 +85,9 @@ SECTIONS = (
         ("SLT_SERVICES_DIR", "`scripts/live/services`", "Live service definitions."),
         ("SLT_INT_SERVICES_DIR", "`scripts/integration/services`", "Integration service definitions."),
         ("SLT_STATE_DIR", "`scripts/live`", "Run directories and coordination files."),
+        ("SLT_CASE_RECORDS", "`<project>/.local-evidence/case-records`",
+         "Per-case run records (`livetest/caserecord.py`), written by every live and integration run "
+         "for a consumer's incremental certification; `off` writes none."),
         ("SLT_MACHINE_ENV", "`${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env`",
          "The machine-wide settings file."),
         ("SLT_FRAMEWORK_DOTENV", "the clone's `.env`",

@@ -18,6 +18,7 @@ def _no_release_matrix(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_pre_up(monkeypatch):
     monkeypatch.setenv("SLT_PRE_UP", "0")
+    monkeypatch.setenv("SLT_CASE_RECORDS", "off")   # in-process cases write no records into a checkout
     # The tier reads the project manifest's servicesRoots (inttest.resources.consumer_roots):
     # a developer's GOLD_TARGETS must not add consumer services to a hermetic test.
     monkeypatch.delenv("GOLD_TARGETS", raising=False)

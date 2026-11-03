@@ -38,6 +38,8 @@ externaljars/
 .int-*
 .*-int-*
 .perf-results/
+# Per-case run records (SLT_CASE_RECORDS default: <project>/.local-evidence/case-records)
+.local-evidence/
 
 # ---- striim-test run directories and ownership ledgers (default state dir: scripts/live) ----
 scripts/live/runs/
