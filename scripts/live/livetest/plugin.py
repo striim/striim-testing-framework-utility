@@ -1613,7 +1613,10 @@ def build_modules(m: TestManifest, release: dict, report=None) -> list:
                 built = opartifacts.content_addressed(built)
                 # The content-named copy is what is uploaded; its bytes, read under the lock, are
                 # what the case record names.
-                built = dataclasses.replace(built, record_sha256=opartifacts.file_sha256(built.path))
+                try:
+                    built = dataclasses.replace(built, record_sha256=opartifacts.file_sha256(built.path))
+                except OSError:
+                    pass                # a record without the hash is never reused; the case runs on
             else:
                 digest = opartifacts.file_sha256(built.path)
                 built = dataclasses.replace(built, sha256=digest, record_sha256=digest)

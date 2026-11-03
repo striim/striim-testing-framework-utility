@@ -319,6 +319,10 @@ def test_build_modules_builds_each_module_against_the_release(monkeypatch, tmp_p
     assert [b.op_name for _, b in builts] == ["FooOp", "BarUdf"]
     # module dicts are passed through unchanged, paired with their BuiltArtifact
     assert [mod["token"] for mod, _ in builts] == ["FOO", "BAR"]
+    # The case record names the bytes loaded, hashed under the lock: the content-named copy for
+    # the OP, the built jar for the UDF.
+    assert [b.record_sha256 for _, b in builts] == [hashlib.sha256(b"FooOp-5.4.jar").hexdigest(),
+                                                    hashlib.sha256(b"BarUdf-5.4.jar").hexdigest()]
 
 def test_build_modules_reports_rebuild_trigger_per_module(monkeypatch, tmp_path):
     # A module whose build_jar fires the `report` callback surfaces the trigger reason

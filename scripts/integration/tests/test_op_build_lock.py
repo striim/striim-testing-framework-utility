@@ -42,6 +42,25 @@ def test_build_runs_under_the_modules_lock(isolated, monkeypatch):
     assert not _held_by_another_process(plugin._op_build_lock_path("java/OpenProcessors/SomeOp"))
 
 
+def test_the_case_record_hash_is_taken_under_the_lock(isolated, monkeypatch, tmp_path):
+    jar = tmp_path / "SomeOp-5.4.jar"
+    jar.write_bytes(b"jar bytes")
+
+    def fake_build(ref, release, report=None):
+        return opartifacts.BuiltArtifact(path=jar, name=jar.name, op_name="SomeOp", origin="reused")
+
+    real_sha = opartifacts.file_sha256
+    held = []
+
+    def sha_under_lock(path):
+        held.append(_held_by_another_process(plugin._op_build_lock_path("java/OpenProcessors/SomeOp")))
+        return real_sha(path)
+    monkeypatch.setattr(plugin.opartifacts_mod, "build_jar", fake_build)
+    monkeypatch.setattr(plugin.opartifacts_mod, "file_sha256", sha_under_lock)
+    built = plugin._build_operator_jar("case", "java/OpenProcessors/SomeOp")
+    assert held == [True] and built.record_sha256 == real_sha(jar) and built.origin == "reused"
+
+
 def test_a_failed_build_releases_the_lock_and_fails(isolated, monkeypatch):
     def failing_build(ref, release, report=None):
         raise opartifacts.OpBuildFailed("mvn package failed")

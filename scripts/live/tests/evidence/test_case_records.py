@@ -190,3 +190,11 @@ def test_the_jars_a_case_loaded_and_the_set_overrides_are_recorded(run_case, tmp
     assert jar["module"] == "java/OpenProcessors/StubOp"
     assert jar["origin"] == "preloaded"                   # the console pre-flight loaded the bytes: never reusable
     assert jar["sha256"] is not None
+
+
+def test_an_app_only_case_records_an_empty_jar_list(run_case, tmp_path, monkeypatch):
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    run, store = _run(run_case, tmp_path)                 # initial-load names no op:/udf:
+    assert run.ret == 0, run.text
+    _, item, _ = _records(store)["main"]
+    assert item["jars"] == []
