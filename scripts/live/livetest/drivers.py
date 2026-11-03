@@ -18,7 +18,8 @@ object by the same name. Every hook is optional; the framework calls the ones th
     Whether Compose should rebuild the service recipe (default True). Return False only
     for an explicitly supplied prebuilt image; validate that prerequisite in unavailable.
 ``admins(base, defn) -> dict``
-    The connections a test routes ``ddl:``/``data:``/``seed:`` to, keyed ``<service>-<role>``.
+    The connections a test routes ``ddl:``/``data:``/``seed:`` to, keyed ``<service>-<role>``
+    (``<family>-<role>`` for a service with ``family:``).
     ``base`` is the resolved connection; the driver may complete it in place.
 ``provision(admins, client, progress)``
     Setup on top of ``compose up``, given those admins and a Striim client. Run once across

@@ -203,6 +203,43 @@ def test_spanner_without_openssl_fails(monkeypatch, tmp_path):
     assert c.status == doctor.FAIL and c.code == INFRA and "openssl" in c.subject
 
 
+def _consumer_services(tmp_path, **families):
+    """Point the live registry at a consumer services root; one service per keyword, with its
+    `family:` value (None leaves the key out)."""
+    from livetest import layout, registry
+    root = tmp_path / "services"
+    for name, family in families.items():
+        name = name.replace("_", "-")
+        (root / name).mkdir(parents=True)
+        (root / name / "service.yaml").write_text(
+            f"name: {name}\nisolation: none\ncompose: compose.yaml\ncontainer: slt-{name}\n"
+            + (f"family: {family}\n" if family is not None else ""))
+    layout._reset()
+    registry._REPORTED.clear()
+    layout.set_roots(services=[root])
+
+
+@pytest.fixture
+def live_layout():
+    from livetest import layout, registry
+    yield
+    layout._reset()
+    registry._REPORTED.clear()
+
+
+def test_a_bigquery_family_service_without_openssl_fails(monkeypatch, tmp_path, live_layout):
+    _consumer_services(tmp_path, bigquery_stock='bigquery', extdb=None)
+    c, = gates(monkeypatch, tmp_path, m(requires=["bigquery-stock"]), openssl=False)
+    assert c.status == doctor.FAIL and c.code == INFRA and "openssl" in c.subject
+    assert gates(monkeypatch, tmp_path, m(requires=["extdb"]), openssl=False) == []
+
+
+def test_an_invalid_family_does_not_stop_the_case_gates(monkeypatch, tmp_path, live_layout):
+    # The services check reports the broken service.yaml; the gates read the name as its family.
+    _consumer_services(tmp_path, extdb='""')
+    assert gates(monkeypatch, tmp_path, m(requires=["extdb"]), openssl=False) == []
+
+
 # --- integration services and session ---------------------------------------------------------
 
 UP = lambda: (True, "Docker 29.0")                        # noqa: E731

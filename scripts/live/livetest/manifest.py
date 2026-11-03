@@ -576,11 +576,17 @@ def _parse_concurrent(action: dict, i: int, path, requires) -> list:
             if not op_db:
                 raise ManifestError(
                     f"{path}: action[{i}] concurrent[{j}] must have 'db' key")
-            if not any(op_db == s or str(op_db).startswith(f"{s}-") for s in requires):
+            from livetest import registry
+            try:   # by a service's name first; a family is read only when no name matches
+                owned = (any(op_db == s or str(op_db).startswith(f"{s}-") for s in requires)
+                         or any(registry.owns_route(s, str(op_db)) for s in requires))
+            except registry.RegistryError as e:
+                raise ManifestError(f"{path}: action[{i}] concurrent[{j}]: {e}") from e
+            if not owned:
                 raise ManifestError(
                     f"{path}: action[{i}] concurrent[{j}] db {op_db!r} is not a route of a "
-                    f"service in 'requires' {requires} (routes are '<service>-<role>', e.g. "
-                    f"postgres-source)")
+                    f"service in 'requires' {requires} (routes are '<service>-<role>' or "
+                    f"'<family>-<role>', e.g. postgres-source)")
             op_file = op.get("file")
             if not op_file:
                 raise ManifestError(
