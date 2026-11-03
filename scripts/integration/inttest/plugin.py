@@ -841,6 +841,17 @@ def pytest_runtest_makereport(item, call):
         rep._int_case = True
         exc = call.excinfo.value if call.excinfo is not None else None
         rep._int_env_skip = exc.cause if isinstance(exc, EnvSkip) else ""
+        rec = _case_recorder(item.config)
+        if rec is not None:
+            rec.mark(item, rep)
+
+
+def _case_recorder(config):
+    try:
+        from livetest import caserecord
+    except ImportError:
+        return None
+    return caserecord.recorder(config)
 
 
 def _test_failed(request) -> bool:
@@ -1318,6 +1329,21 @@ def pytest_configure(config):
     if os.environ.get("SLT_PARALLEL") and not os.environ.get("PYTEST_XDIST_WORKER"):
         if _docker_mod is not None:
             _docker_mod.clear_provision_registry()
+    _install_case_records(config)
+
+
+def _install_case_records(config) -> None:
+    """Per-case run records (livetest.caserecord, shared with the live engine), whatever started
+    the run. Perf items are not recorded: a perf step's measurements are one set."""
+    try:
+        from livetest import caserecord
+        from inttest import opartifacts
+        root = opartifacts._root()          # noqa: SLF001 -- where the cases' jar modules resolve
+    except Exception as e:              # noqa: BLE001 -- the live engine absent: nothing recorded
+        print(f"[int] case records disabled: {type(e).__name__}: {e}")
+        return
+    caserecord.install(config, "integration", root, lambda item: isinstance(item, IntYamlItem),
+                       lambda item: Path(item.path).parent)
 
 
 # ============================================================================

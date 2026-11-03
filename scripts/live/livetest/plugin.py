@@ -382,6 +382,19 @@ def pytest_configure(config):
     # the xdist controller collects no live item, so a distributed live run
     # declares ownership here, before any worker starts; a refusal is the C7.1 usage error (rc 4) with its message.
     _slt_infra.declare_if_distributed_live(config)
+    _slt_install_case_records(config)
+
+
+def _slt_install_case_records(config) -> None:
+    """Per-case run records (livetest.caserecord), whatever started the run."""
+    from livetest import caserecord
+    try:
+        root = _slt_evidence.consumer_root(config)
+    except Exception as e:              # noqa: BLE001 -- no project root: nothing to record against
+        print(f"[slt] case records disabled: {type(e).__name__}: {e}")
+        return
+    caserecord.install(config, "live", root, lambda item: isinstance(item, LiveItem),
+                       lambda item: Path(item.manifest_path).parent)
 
 
 @dataclass
@@ -4389,6 +4402,14 @@ def pytest_runtest_makereport(item, call):
         rep._slt_infra_skip = getattr(item, "_slt_infra_skip", "")
         _slt_collect_report(item.config, item, rep)
         _slt_evidence.finalize_from_report(item, rep)   # C7.4: one envelope per outcome
+        rec = _slt_case_recorder(item.config)
+        if rec is not None:
+            rec.mark(item, rep)
+
+
+def _slt_case_recorder(config):
+    from livetest import caserecord
+    return caserecord.recorder(config)
 
 
 # C7.4: tryfirst, so a failed teardown of owned infrastructure is known

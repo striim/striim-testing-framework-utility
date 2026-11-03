@@ -43,6 +43,7 @@ def child_env(missing: Path, base=None, **overrides) -> dict:
     env["SLT_MACHINE_ENV"] = str(missing)
     env["SLT_FRAMEWORK_DOTENV"] = str(missing)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    env.setdefault("SLT_CASE_RECORDS", "off")   # a child's cases write no records into a checkout
     env.update({k: str(v) for k, v in overrides.items()})
     return env
 
