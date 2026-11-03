@@ -175,3 +175,26 @@ def test_a_process_that_dies_in_its_first_case_leaves_a_file_without_an_end(run_
     assert run.ret != 0
     lines = _records(store)["main"]
     assert [ln["kind"] for ln in lines] == ["session"]
+
+
+def test_the_jars_a_case_loaded_and_the_set_overrides_are_recorded(run_case, tmp_path, monkeypatch):
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    run, store = _run(run_case, tmp_path, scenario={"initial_load": True, "op_stub": True, "op_poison": True},
+                      env={"SLT_OPS_PRELOADED": "1", "SLT_PREBUILT_JAR": "/somewhere/x.jar"},
+                      edit=lambda y: y.replace("requires: [postgres]\n",
+                                               "requires: [postgres]\nop: {jar: java/OpenProcessors/StubOp}\n"))
+    session, item, _ = _records(store)["main"]
+    assert "SLT_PREBUILT_JAR" in session["envNames"] and "SLT_OPS_PRELOADED" in session["envNames"]
+    assert "/somewhere/x.jar" not in json.dumps(session), "names only, never values"
+    [jar] = item["jars"]
+    assert jar["module"] == "java/OpenProcessors/StubOp"
+    assert jar["origin"] == "preloaded"                   # the console pre-flight loaded the bytes: never reusable
+    assert jar["sha256"] is not None
+
+
+def test_an_app_only_case_records_an_empty_jar_list(run_case, tmp_path, monkeypatch):
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    run, store = _run(run_case, tmp_path)                 # initial-load names no op:/udf:
+    assert run.ret == 0, run.text
+    _, item, _ = _records(store)["main"]
+    assert item["jars"] == []

@@ -10,7 +10,7 @@ import re
 import subprocess
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from livetest import opjarrelease
@@ -67,6 +67,10 @@ class BuiltArtifact:
                            # (a prebuilt jar: its sha256, see build_jar)
     built_name: str = ""   # OP jars: the name the build produced, before content naming
     module_name: str = ""  # OP jars: the manifest's Striim-Module-Name (the OP's identity)
+    origin: str = field(default="", compare=False)       # build_jar: "built" (mvn ran), "reused" (an up-to-date target/ jar)
+                           # or "prebuilt" (SLT_PREBUILT_*); what a case record says it loaded
+    record_sha256: str = field(default="", compare=False)  # the loaded file's sha256, taken under the
+                           # module build lock (build_modules), for the case record
 
     @property
     def content_tag(self) -> str:
@@ -268,11 +272,11 @@ def _content_addressed(built: BuiltArtifact, store: Path | None) -> BuiltArtifac
     if hit is not None:
         try:
             os.utime(hit.path)                   # still in use: keep it out of other lanes' prune
-            return hit
+            return dataclasses.replace(hit, origin=built.origin)
         except FileNotFoundError:
             pass                                 # pruned meanwhile: make it again
         except OSError:
-            return hit                           # another user's copy; it exists
+            return dataclasses.replace(hit, origin=built.origin)   # another user's copy; it exists
     result = _content_addressed_uncached(built, store)
     _CONTENT_MEMO[key] = result
     return result
@@ -714,7 +718,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         # A prebuilt jar is an exact artifact, not a rebuild: its raw digest is its identity, so
         # content_addressed copies and registers these bytes, never an older copy whose entries
         # merely match.
-        return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest, fingerprint=digest, built_name=jar_name, module_name=mod_id)
+        return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest, fingerprint=digest, built_name=jar_name, module_name=mod_id, origin="prebuilt")
 
     existing = _release_jar_candidates(module_dir, suffix)
     # >1 candidate is stale build output, not a broken repo: a version bump changes the
@@ -748,7 +752,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             _assert_jar_java_version(jar, java_release, module_dir)
             trigger = _stale_trigger(jar, module_dir)
             if trigger is None:
-                return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix))
+                return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="reused")
             # Any source change forces `mvn clean` -- this harness never does an
             # incremental rebuild. An incremental `package` reuses target/, and this pom
             # points shade's <outputFile> at the SAME path maven-jar-plugin writes (see
@@ -855,7 +859,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             f"clean rebuild, but this run resolves to {fingerprint}. The build is not "
             f"producing the release it was asked for -- check that STRIIM_RELEASE reaches "
             f"the pom in {module_dir}.")
-    return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix))
+    return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")
 
 def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = False) -> None:
     # Place each file into Striim's UploadedFiles/. Docker: docker cp into the cluster

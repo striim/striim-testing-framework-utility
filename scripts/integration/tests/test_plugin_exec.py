@@ -206,4 +206,6 @@ def test_each_case_is_recorded_for_incremental_certification(pytester, monkeypat
     session, item, end = [json.loads(line) for line in path.read_text().splitlines()]
     assert session["tier"] == "integration" and session["kind"] == "session"
     assert item["status"] == status and item["case"].endswith("case") and item["variants"] == [item["item"]]
+    assert [(j["module"], j["origin"]) for j in item["jars"]] == [("java/OpenProcessors/X", "unknown")]
+    assert "SLT_CASE_RECORDS" in session["envNames"]
     assert end["exitstatus"] == (0 if status == "passed" else 1)
