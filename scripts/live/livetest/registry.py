@@ -155,6 +155,13 @@ class ServiceDef:
     # A Python module in the service dir with the hooks `docker compose up` cannot express
     # (livetest.drivers lists them). None => the service needs no code of its own.
     driver: str | None = None
+    # What system the service is, for the engine's per-system handling (BigQuery's writer checks
+    # and emulator credentials, say) and its routes (`<family>-<role>`). A consumer's own emulator
+    # under another name sets the family of the service it stands in for. Default: its own name.
+    family: str = ""
+
+    def __post_init__(self):
+        self.family = self.family or self.name
 
 def _exec_hook(raw, key: str, path: Path) -> str | None:
     if raw is None:
@@ -337,7 +344,25 @@ def load_service(name: str, services_dir: Path | None = None, env=None) -> Servi
         python_module=_optional_str(raw.get("python_module"), "python_module", path),
         python_module_hint=_optional_str(raw.get("python_module_hint"), "python_module_hint", path),
         driver=_driver(raw.get("driver"), path),
+        family=_optional_str(raw.get("family"), "family", path) or name,
     )
+
+
+def family(name: str) -> str:
+    """The family of service ``name``: its service.yaml's ``family``, else the name itself. An
+    unknown name is its own family, so the requires check reports it in its usual place; an
+    invalid definition raises RegistryError."""
+    if _find(name) is None:
+        return name
+    return getattr(load_service(name), "family", name)
+
+
+def owns_route(service: str, route: str) -> bool:
+    """Whether ``route`` (an admins key: ``<service>-<role>`` or the bare name) belongs to
+    ``service``, by its name or by its family."""
+    def named(prefix):
+        return route == prefix or route.startswith(f"{prefix}-")
+    return named(service) or named(family(service))
 
 
 def _required_files_env(raw, path):

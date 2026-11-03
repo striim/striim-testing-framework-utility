@@ -548,3 +548,44 @@ def test_hooks_for_looks_up_graceful_stop_only_for_term(tmp_path, monkeypatch, s
 def test_hooks_for_restart_without_the_hook_raises(tmp_path):
     with pytest.raises(OutageError, match="gsx has no restart_in_place"):
         outage.hooks_for("gsx", "RESTART", env={}, services_dir=_svc(tmp_path, ""))
+
+
+# --- a route of the service's family (family: in service.yaml) --------------------------
+
+@pytest.fixture
+def family_services(tmp_path):
+    """A consumer services root: `orders-pg` (family: postgres) and `extdb` (family: "")."""
+    from livetest import layout, registry
+    root = tmp_path / "services"
+    for name, extra in (("orders-pg", "family: postgres\n"), ("extdb", 'family: ""\n')):
+        (root / name).mkdir(parents=True)
+        (root / name / "service.yaml").write_text(
+            f"name: {name}\nisolation: none\ncompose: compose.yaml\ncontainer: slt-{name}\n{extra}")
+    layout._reset()
+    registry._REPORTED.clear()
+    layout.set_roots(services=[root])
+    yield root
+    layout._reset()
+    registry._REPORTED.clear()
+
+
+def test_concurrent_route_of_the_services_family(tmp_path, family_services):
+    base = _BASE.replace("requires: [postgres]", "requires: [orders-pg]")
+    conc = "    concurrent:\n      - {db: postgres-source, file: loop.sql}\n"
+    m = _load(tmp_path, "  - type: stop_start_cycle\n" + conc, base=base)
+    assert m.action_specs[0]["concurrent"][0]["db"] == "postgres-source"
+
+
+def test_concurrent_route_of_another_family_is_refused(tmp_path, family_services):
+    base = _BASE.replace("requires: [postgres]", "requires: [orders-pg]")
+    conc = "    concurrent:\n      - {db: mysql-source, file: loop.sql}\n"
+    with pytest.raises(ManifestError, match="is not a route of a service in 'requires'"):
+        _load(tmp_path, "  - type: stop_start_cycle\n" + conc, base=base)
+
+
+def test_concurrent_route_check_reports_an_invalid_family(tmp_path, family_services):
+    # A broken service.yaml is a manifest error naming it, not a crash or a silent match.
+    base = _BASE.replace("requires: [postgres]", "requires: [extdb]")
+    conc = "    concurrent:\n      - {db: postgres-source, file: loop.sql}\n"
+    with pytest.raises(ManifestError, match="'family' must be a non-empty string"):
+        _load(tmp_path, "  - type: stop_start_cycle\n" + conc, base=base)

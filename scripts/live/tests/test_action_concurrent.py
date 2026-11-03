@@ -116,3 +116,37 @@ def test_both_actions_fail_the_case_on_a_problem(phrase):
     src = inspect.getsource(plugin)
     at = src.index(phrase)
     assert 'pytest.fail(f"{m.name}: action concurrent SQL: {_conc_problem}"' in src[at:at + 400]
+
+
+@pytest.fixture
+def family_services(tmp_path):
+    """A consumer services root holding `orders-pg`, family: postgres (its routes are postgres-*)."""
+    from livetest import layout, registry
+    root = tmp_path / "services"
+    (root / "orders-pg").mkdir(parents=True)
+    (root / "orders-pg" / "service.yaml").write_text(
+        "name: orders-pg\nisolation: none\ncompose: compose.yaml\ncontainer: slt-orders-pg\n"
+        "family: postgres\n")
+    layout._reset()
+    registry._REPORTED.clear()
+    layout.set_roots(services=[root])
+    yield root
+    layout._reset()
+    registry._REPORTED.clear()
+
+
+def test_outage_tolerance_covers_a_route_of_the_services_family(tmp_path, family_services):
+    flaky = iter([False, True] * 100)
+    assert _run(tmp_path, ["postgres-source"], fail=lambda admin: next(flaky), down_service="orders-pg",
+                requires=("orders-pg", "mysql")) is None
+    problem = _run(tmp_path, ["postgres-source"], fail=lambda admin: True, down_service="mysql",
+                   requires=("orders-pg", "mysql"))
+    assert problem and "postgres-source: 0 run(s) succeeded" in problem
+
+
+def test_a_route_named_for_a_required_service_belongs_to_it_not_to_its_family(tmp_path, family_services):
+    # postgres-source is postgres's own route; stopping orders-pg (family postgres) does not excuse it.
+    flaky = iter([False, True] * 100)
+    problem = _run(tmp_path, ["postgres-source"], fail=lambda admin: next(flaky), down_service="orders-pg",
+                   requires=("postgres", "orders-pg"))
+    assert problem and "postgres-source" in problem
