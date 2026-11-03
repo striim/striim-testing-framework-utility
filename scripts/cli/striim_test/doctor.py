@@ -717,10 +717,7 @@ def _family(name: str) -> str:
     """A live service's family (livetest.registry.family); a definition that cannot be read is
     its own name here, since check_services reports it."""
     from livetest import registry
-    try:
-        return registry.family(name)
-    except registry.RegistryError:
-        return name
+    return registry.probe_family(name)
 
 
 def check_case_gates(files: list, env: dict, dotenv: dict, tier_of=None, which=None, outage=None) -> list:

@@ -21,12 +21,7 @@ def service(manifest):
     the service, as before (this runs ahead of the Striim checks)."""
     from livetest import registry
 
-    def family(name):
-        try:
-            return registry.family(name)
-        except registry.RegistryError:
-            return name
-    found = sorted(s for s in getattr(manifest, "requires", ()) if family(s) == FAMILY)
+    found = sorted(s for s in getattr(manifest, "requires", ()) if registry.probe_family(s) == FAMILY)
     if len(found) > 1:
         raise ValueError(f"BigQuery emulator lane: requires {', '.join(found)}; a case uses "
                          f"one {FAMILY}-family service")

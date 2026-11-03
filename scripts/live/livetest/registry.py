@@ -350,11 +350,28 @@ def load_service(name: str, services_dir: Path | None = None, env=None) -> Servi
 
 def family(name: str) -> str:
     """The family of service ``name``: its service.yaml's ``family``, else the name itself. An
-    unknown name is its own family, so the requires check reports it in its usual place; an
-    invalid definition raises RegistryError."""
+    unknown name is its own family, so the requires check reports it in its usual place; a
+    definition that cannot be read, whatever the reason, raises RegistryError."""
     if _find(name) is None:
         return name
-    return getattr(load_service(name), "family", name)
+    try:
+        defn = load_service(name)
+    except RegistryError:
+        raise
+    except Exception as exc:  # a definition of the wrong shape (a list, a scalar where a map goes)
+        raise RegistryError(f"service {name}: its service.yaml cannot be read: {exc}") from exc
+    return getattr(defn, "family", name)
+
+
+def probe_family(name: str) -> str:
+    """family(name) for the checks that run ahead of load_service (the BigQuery writer check,
+    doctor, route ownership). A definition that cannot be read, whatever the reason, counts as its
+    own name here, so an infrastructure skip stays a skip; load_service reports the definition
+    where the case uses the service."""
+    try:
+        return family(name)
+    except RegistryError:
+        return name
 
 
 def owns_route(service: str, route: str) -> bool:

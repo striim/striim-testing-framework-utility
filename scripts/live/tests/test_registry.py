@@ -212,3 +212,21 @@ def test_a_route_belongs_to_its_service_or_the_services_family(tmp_path, overlay
     assert registry.owns_route("postgres", "postgres-source")
     assert registry.owns_route("postgres", "postgres")
     assert not registry.owns_route("extdb", "bigquery-target")
+
+
+@pytest.mark.parametrize("body", ["name: extdb\nisolation: none\ndocker_defaults: nope\n", "- extdb\n"])
+def test_a_family_probe_reads_a_malformed_definition_as_its_own_name(tmp_path, overlay, body):
+    # The BigQuery writer check, doctor and route ownership look at a service's family ahead of
+    # load_service. A definition with the wrong shape must not turn an infrastructure skip into an
+    # error there: it counts as its own name, and load_service reports it where the case uses it.
+    from types import SimpleNamespace
+    from livetest import bigquerycase, registry
+    d = tmp_path / "extdb"
+    d.mkdir()
+    (d / "service.yaml").write_text(body)
+    overlay.set_roots(services=[tmp_path])
+    assert registry.probe_family("extdb") == "extdb"
+    assert bigquerycase.service(SimpleNamespace(requires=["extdb"])) is None
+    # Route ownership is a manifest check, not a probe: it names the unreadable definition.
+    with pytest.raises(RegistryError, match="service extdb: its service.yaml cannot be read"):
+        registry.owns_route("extdb", "bigquery-target")
