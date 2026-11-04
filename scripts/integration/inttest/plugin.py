@@ -1389,11 +1389,18 @@ def _provision_requires(name: str, requires: list, lock: FileLock) -> None:
                 continue  # real Cloud Spanner: no emulator to start; admins_for checks the databases
         # Shared ownership: a running shared service is reused as it is. No pre_up, no
         # required-files check, no compose up: from another checkout (a lane) `up` recreates it.
+        # This host must still be able to use it (its python_module).
         try:
-            if _docker_mod.shared_reuse(svc):
-                continue
+            reused = _docker_mod.shared_reuse(svc)
         except _docker_mod.SharedServiceError as e:
             pytest.fail(f"{name}: {e}", pytrace=False)
+        if reused:
+            why = _docker_mod.host_unavailable(svc)
+            if why:
+                if _docker_mod._service_spec(svc).get("unavailable_policy") == "fail":
+                    pytest.fail(f"{name}: service {svc!r} unavailable: {why}", pytrace=False)
+                _env_skip("env", f"{name}: service {svc!r} unavailable: {why}")
+            continue
         # This case requires svc, so its host-side pre_up hook may run first
         # (inttest.services.run_pre_up says when it does not). A failed hook is an error,
         # not a skip: the files the case needs could not be fetched.

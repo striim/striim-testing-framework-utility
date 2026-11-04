@@ -88,34 +88,92 @@ def test_compose_up_runs_no_compose_command_for_a_reused_service(lane, monkeypat
     assert calls == [["docker", "container", "inspect", "int-teradata"]]
 
 
+class _Clock:
+    """A fake monotonic clock that sleep() advances."""
+    def __init__(self):
+        self.t = 0.0
+        self.sleeps = []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += s
+
+
+def _hc(interval=10, timeout=30, retries=180, start=0):
+    return {"Test": ["CMD", "true"], "Interval": int(interval * 1e9), "Timeout": int(timeout * 1e9),
+            "Retries": retries, "StartPeriod": int(start * 1e9)}
+
+
 def test_starting_container_is_waited_on_not_recreated(lane):
     states = iter([_info(health="starting"), _info(health="starting"), _info()])
-    sleeps = []
+    clock = _Clock()
 
     def staged(argv, **kw):
         return SimpleNamespace(returncode=0, stdout=json.dumps([next(states)]), stderr="")
-    assert services.shared_reuse("teradata", run=staged, sleep=sleeps.append) is True
-    assert len(sleeps) == 2
+    assert services.shared_reuse("teradata", run=staged, sleep=clock.sleep, clock=clock) is True
+    assert len(clock.sleeps) == 2
 
 
-def test_starting_container_that_never_turns_healthy_is_refused(lane):
-    run, _ = _docker({"int-teradata": _info(health="starting")})
+def test_health_budget_comes_from_the_containers_healthcheck():
+    # teradata: 180 x (10 s + 30 s) = 7200 s, longer than any fixed cap would allow.
+    assert services.health_budget_s({"Config": {"Healthcheck": _hc()}}) == 7200
+    assert services.health_budget_s({"Config": {"Healthcheck": _hc(5, 5, 3, start=60)}}) == \
+        services.SHARED_HEALTH_FLOOR_S
+    # docker's defaults, then the floor
+    assert services.health_budget_s({"Config": {}}) == services.SHARED_HEALTH_FLOOR_S
+
+
+def test_starting_container_is_waited_on_for_its_healthchecks_budget(lane):
+    info = _info(health="starting")
+    info["Config"]["Healthcheck"] = _hc()
+    run, _ = _docker({"int-teradata": info})
+    clock = _Clock()
+    with pytest.raises(services.SharedServiceError, match="not healthy after 7200s"):
+        services.shared_reuse("teradata", run=run, sleep=clock.sleep, clock=clock)
+    assert clock.t == 7200
+
+
+def test_the_wait_counts_wall_clock_time_not_sleeps(lane):
+    # a slow inspect uses the budget too
+    info = _info(health="starting")
+    clock = _Clock()
+
+    def slow(argv, **kw):
+        clock.t += 400
+        return SimpleNamespace(returncode=0, stdout=json.dumps([info]), stderr="")
     with pytest.raises(services.SharedServiceError, match="not healthy after"):
-        services.shared_reuse("teradata", run=run, sleep=lambda s: None, wait_s=30)
+        services.shared_reuse("teradata", run=slow, sleep=clock.sleep, clock=clock)
+    assert len(clock.sleeps) == 1          # 400 s, sleep 10, 810 s >= 600 s floor
 
 
-def test_unhealthy_container_is_refused(lane, monkeypatch):
+def test_unhealthy_container_is_refused_naming_the_owner_and_the_fix(lane, monkeypatch):
     run, calls = _docker({"int-teradata": _info(health="unhealthy")})
     monkeypatch.setattr(services.subprocess, "run", run)
-    with pytest.raises(services.SharedServiceError, match="unhealthy"):
+    with pytest.raises(services.SharedServiceError, match="unhealthy") as e:
         services.compose_up("teradata", MagicMock())
+    assert f"Owned by {MAIN}" in str(e.value)
+    assert "python -m inttest.cli stop teradata" in str(e.value)
     assert [c for c in calls if c[:2] == ["docker", "compose"]] == []
+
+
+@pytest.mark.parametrize("flag", ["Restarting", "Paused"])
+def test_restarting_or_paused_container_is_not_reused(lane, flag):
+    info = _info()                       # State.Running is true for both
+    info["State"][flag] = True
+    run, _ = _docker({"int-teradata": info})
+    with pytest.raises(services.SharedServiceError, match=f"{flag.lower()}") as e:
+        services.shared_reuse("teradata", run=run)
+    assert "python -m inttest.cli stop teradata" in str(e.value)
 
 
 def test_stopped_container_of_another_checkout_is_refused(lane):
     run, _ = _docker({"int-teradata": _info(running=False, health="", working_dir=MAIN)})
-    with pytest.raises(services.SharedServiceError, match=f"compose project in {MAIN}"):
+    with pytest.raises(services.SharedServiceError, match="another checkout") as e:
         services.shared_reuse("teradata", run=run)
+    assert f"Owned by {MAIN}" in str(e.value)
 
 
 def test_stopped_container_of_this_checkout_is_brought_up(lane):
@@ -142,6 +200,15 @@ def test_stack_prefix_names_the_inspected_container(lane, monkeypatch):
     assert calls == [["docker", "container", "inspect", "ec-int-teradata"]]
 
 
+def test_stack_prefix_set_only_in_dotenv_names_the_inspected_container(lane, monkeypatch):
+    from inttest import paths
+    monkeypatch.delenv("INT_STACK_PREFIX", raising=False)
+    monkeypatch.setattr(paths, "dotenv_values", lambda env=None: {"INT_STACK_PREFIX": "ec"})
+    run, calls = _docker({"ec-int-teradata": _info()})
+    assert services.shared_reuse("teradata", run=run) is True
+    assert calls == [["docker", "container", "inspect", "ec-int-teradata"]]
+
+
 # --- the YAML requires: path -------------------------------------------------------------
 
 def _mock_docker(reuse):
@@ -153,6 +220,7 @@ def _mock_docker(reuse):
     else:
         docker.shared_reuse.side_effect = lambda svc: reuse.get(svc, False)
     docker.unavailable.return_value = None
+    docker.host_unavailable.return_value = None
     docker._service_spec.return_value = {}
     return docker
 
@@ -177,3 +245,43 @@ def test_provision_requires_fails_on_a_shared_service_it_may_not_recreate(monkey
     with pytest.raises(pytest.fail.Exception, match="case-x: teradata: unhealthy"):
         plugin._provision_requires("case-x", ["teradata"], lock=MagicMock())
     docker.ensure_up.assert_not_called()
+
+
+@pytest.mark.parametrize("policy", ["fail", "skip"])
+def test_a_reused_service_still_needs_its_python_module_here(monkeypatch, policy):
+    from inttest import plugin
+    docker = _mock_docker({"teradata": True})
+    docker.host_unavailable.return_value = "python module 'teradatasql' is not installed"
+    docker._service_spec.return_value = {"unavailable_policy": policy}
+    monkeypatch.setattr(plugin, "_docker_mod", docker)
+    monkeypatch.setattr(plugin, "_require_service_opt_in", lambda svc: None)
+    raised = pytest.fail.Exception if policy == "fail" else pytest.skip.Exception
+    with pytest.raises(raised, match="teradatasql"):
+        plugin._provision_requires("case-x", ["teradata"], lock=MagicMock())
+    docker.run_pre_up.assert_not_called()
+    docker.unavailable.assert_not_called()           # the required-files check is skipped
+    docker.ensure_up.assert_not_called()
+
+
+def test_host_unavailable_reports_only_the_python_module(monkeypatch):
+    from livetest import registry
+    monkeypatch.setattr(services, "_service_spec", lambda svc: {"python_module": "teradatasql"})
+    monkeypatch.setattr(registry, "missing_python_module", lambda mod, hint: f"no {mod}")
+    monkeypatch.setattr(services, "required_files", lambda svc: pytest.fail("required files read"))
+    assert services.host_unavailable("teradata") == "no teradatasql"
+
+
+def test_fixture_path_fails_on_a_shared_service_it_may_not_recreate(monkeypatch, tmp_path):
+    from inttest import plugin, resources
+    docker = MagicMock()
+    docker.SharedServiceError = services.SharedServiceError
+    docker.is_up.return_value = True
+    docker.compose_up.side_effect = services.SharedServiceError("teradata: unhealthy; Owned by X")
+    compose = tmp_path / "compose.yaml"
+    compose.write_text("services: {}\n")
+    monkeypatch.setattr(plugin, "_docker_mod", docker)
+    monkeypatch.setattr(plugin, "_service_file", lambda name, f: compose)
+    monkeypatch.setattr(resources, "select_profile", lambda name: None)
+    monkeypatch.setattr(plugin, "_read_started", lambda: pytest.fail("registry read"))
+    with pytest.raises(pytest.fail.Exception, match="teradata: unhealthy; Owned by X"):
+        plugin._ensure_up("teradata", MagicMock())
