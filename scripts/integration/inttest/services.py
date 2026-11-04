@@ -45,6 +45,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -135,6 +136,111 @@ def _checked_compose_file(service_name: str) -> Path:
     return _resources.select_profile(service_name).origin / "compose.yaml"
 
 
+class SharedServiceError(RuntimeError):
+    """Under shared ownership, a service's containers exist but cannot be reused, and `up`
+    would recreate them."""
+
+
+SHARED_HEALTH_WAIT_S = 1800.0      # teradata's healthcheck window (10s x 180)
+_HEALTH_POLL_S = 10.0
+
+
+def shared_ownership(env=None) -> bool:
+    """True when this run declares SLT_INFRA_OWNERSHIP=shared (process env, then .env)."""
+    from inttest import paths
+    e = paths.effective_env(os.environ if env is None else env)
+    return (e.get("SLT_INFRA_OWNERSHIP") or "").strip() == "shared"
+
+
+def _inspect(container: str, run=None) -> dict | None:
+    """`docker container inspect` of one container, or None when it does not exist."""
+    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    try:
+        r = run(["docker", "container", "inspect", container])
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        data = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    return data[0] if data else None
+
+
+def _state(info: dict) -> tuple[bool, str]:
+    """(running, health): health is "" when the container has no healthcheck."""
+    st = info.get("State") or {}
+    return bool(st.get("Running")), ((st.get("Health") or {}).get("Status") or "")
+
+
+def _working_dir(info: dict) -> str:
+    return ((info.get("Config") or {}).get("Labels") or {}).get(
+        "com.docker.compose.project.working_dir", "")
+
+
+def _same_dir(a: str, b: Path) -> bool:
+    try:
+        return bool(a) and Path(a).resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def shared_reuse(service_name: str, env=None, run=None, sleep=None,
+                 wait_s: float = SHARED_HEALTH_WAIT_S) -> bool:
+    """Under SLT_INFRA_OWNERSHIP=shared: True when every container the service's compose file
+    declares is running and, if it has a healthcheck, healthy. The caller then reuses it and
+    runs no `compose up`.
+
+    A shared stack may have been started from another checkout (a lane worktree, say). `up`
+    from this checkout's compose file sees a different config (bind-mount paths differ) and
+    recreates the running container, so it is never run against a running shared service.
+    A container still `starting` is waited on. SharedServiceError when a declared container
+    is unhealthy, never turns healthy, or exists from another checkout's compose dir without
+    running. False (bring it up as usual) when ownership is not shared, the compose file
+    declares no container names, or no declared container exists or all belong to this
+    checkout."""
+    if not shared_ownership(env):
+        return False
+    names = compose_container_names(service_name)
+    if not names:
+        return False
+    sleep = sleep or time.sleep
+    here = _compose_file(service_name).parent
+    waited = 0.0
+    while True:
+        infos = {n: _inspect(n, run) for n in names}
+        existing = {n: i for n, i in infos.items() if i is not None}
+        foreign = [n for n, i in existing.items() if not _same_dir(_working_dir(i), here)]
+        states = {n: _state(i) for n, i in existing.items()}
+        if len(existing) == len(names) and all(r for r, _ in states.values()):
+            bad = [n for n, (_, h) in states.items() if h == "unhealthy"]
+            if bad:
+                raise SharedServiceError(
+                    f"{service_name}: shared container(s) {', '.join(bad)} are unhealthy; under "
+                    f"SLT_INFRA_OWNERSHIP=shared they are not recreated. Fix them from the "
+                    f"checkout that owns the stack.")
+            if all(h in ("", "healthy") for _, h in states.values()):
+                print(f"[integration] {service_name}: reusing running shared container(s) "
+                      f"{', '.join(names)} (SLT_INFRA_OWNERSHIP=shared); compose up not run")
+                return True
+            if waited >= wait_s:
+                raise SharedServiceError(
+                    f"{service_name}: shared container(s) {', '.join(names)} not healthy after "
+                    f"{wait_s:.0f}s; under SLT_INFRA_OWNERSHIP=shared they are not recreated.")
+            sleep(_HEALTH_POLL_S)
+            waited += _HEALTH_POLL_S
+            continue
+        if foreign:
+            dirs = sorted({_working_dir(existing[n]) or "?" for n in foreign})
+            raise SharedServiceError(
+                f"{service_name}: container(s) {', '.join(foreign)} belong to the compose project "
+                f"in {', '.join(dirs)}, not {here}, and are not all running. Under "
+                f"SLT_INFRA_OWNERSHIP=shared `compose up` from here would recreate them; start "
+                f"the service from the checkout that owns it.")
+        return False
+
+
 def compose_up(service_name: str, lock: FileLock) -> None:
     """Bring up the named service's docker-compose stack.
 
@@ -144,6 +250,9 @@ def compose_up(service_name: str, lock: FileLock) -> None:
     returning. The -d flag runs in detached mode (daemon). This operation is
     idempotent: calling it on an already-healthy stack returns silently.
 
+    Under SLT_INFRA_OWNERSHIP=shared a running shared service is reused and nothing runs
+    (`shared_reuse`).
+
     Args:
         service_name: name of the service (e.g. 'postgres', 'oracle', 'spanner')
         lock: FileLock coordinating across pytest-xdist workers (held by caller)
@@ -152,6 +261,8 @@ def compose_up(service_name: str, lock: FileLock) -> None:
         CalledProcessError: if `docker compose up` fails
         FileNotFoundError: if docker is not available
     """
+    if shared_reuse(service_name):
+        return
     from livetest import pgidle
     env = _compose_up_env(service_name)
     sql = pgidle.policy_sql(env, "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "intdb") if service_name == "postgres" else None

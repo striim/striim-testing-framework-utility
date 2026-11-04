@@ -298,6 +298,7 @@ def test_provision_requires_fails_when_compose_up_fails(monkeypatch):
     docker = MagicMock()
     docker.SUPPORTED_SERVICES = {"postgres"}
     docker.unavailable.return_value = None       # its required files are present
+    docker.shared_reuse.return_value = False     # not a running shared service
     docker.ensure_up.side_effect = subprocess.CalledProcessError(1, ["docker", "compose", "up"])
     monkeypatch.setattr(plugin, "_docker_mod", docker)
     monkeypatch.setattr(plugin, "_require_service_opt_in", lambda svc: None)
@@ -311,6 +312,7 @@ def test_provision_requires_still_skips_without_docker(monkeypatch):
     docker = MagicMock()
     docker.SUPPORTED_SERVICES = {"postgres"}
     docker.unavailable.return_value = None       # its required files are present
+    docker.shared_reuse.return_value = False     # not a running shared service
     docker.ensure_up.side_effect = FileNotFoundError("docker")
     monkeypatch.setattr(plugin, "_docker_mod", docker)
     monkeypatch.setattr(plugin, "_require_service_opt_in", lambda svc: None)

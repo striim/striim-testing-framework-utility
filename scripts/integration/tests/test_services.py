@@ -354,7 +354,7 @@ def test_outer_provision_requires_applies_policy_to_startup_and_connection_only(
     def missing(*a):
         raise FileNotFoundError('docker unavailable')
     monkeypatch.setattr(plugin, '_docker_mod', SimpleNamespace(SUPPORTED_SERVICES={'teradata'},
-        run_pre_up=lambda svc: True, unavailable=lambda svc: None, _service_spec=lambda svc: spec, ensure_up=missing))
+        shared_reuse=lambda svc: False, run_pre_up=lambda svc: True, unavailable=lambda svc: None, _service_spec=lambda svc: spec, ensure_up=missing))
     monkeypatch.setattr(plugin, '_load_service_yaml', lambda svc: spec)
     monkeypatch.setattr(plugin, '_require_service_opt_in', lambda svc: None)
     monkeypatch.delenv('CUSTOM_HOST', raising=False)
