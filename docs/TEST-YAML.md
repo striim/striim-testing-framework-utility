@@ -1770,7 +1770,14 @@ or the shell, and a run without it is refused.
   cluster and the service containers that are already up, starts what is missing, and never tears
   anything down or redeploys the cluster. Other people's tests may be running on the same Striim and
   databases. So every name carries `${TID}` or `${NS}`, and a test never assumes an empty database,
-  a fresh cluster or a quiet server log.
+  a fresh cluster or a quiet server log. The integration tier honours it too: a service whose
+  containers are running (and healthy, if they have a healthcheck) is reused as it is, without
+  `compose up`, so an edited `compose.yaml` is not applied until the service is stopped and
+  started. A container still starting is waited on for its healthcheck's own budget. One that is
+  unhealthy, restarting or paused, or stopped and from another checkout's compose project, fails
+  the case instead of being recreated; the message names the owning checkout. To fix it, run
+  `python -m inttest.cli stop <service>` and then `start <service>` from that checkout, once
+  nothing else uses the service.
 - **`exclusive`**: the run starts a stack of its own, refuses to start when anything already answers
   on its Striim endpoint, and tears the stack down at the end unless `SLT_KEEP_SERVICES=1`. With
   `--parallel` the controller tears down what its workers started.

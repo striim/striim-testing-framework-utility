@@ -45,6 +45,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -135,6 +136,146 @@ def _checked_compose_file(service_name: str) -> Path:
     return _resources.select_profile(service_name).origin / "compose.yaml"
 
 
+class SharedServiceError(RuntimeError):
+    """Under shared ownership, a service's containers exist but cannot be reused, and `up`
+    would recreate them."""
+
+
+SHARED_HEALTH_FLOOR_S = 600.0      # least time a `starting` container is waited on
+_HEALTH_POLL_S = 10.0
+# Docker's healthcheck defaults, for fields the container leaves unset (nanoseconds).
+_HC_DEFAULTS = {"Interval": 30e9, "Timeout": 30e9, "StartPeriod": 0, "Retries": 3}
+
+
+def shared_ownership(env=None) -> bool:
+    """True when this run declares SLT_INFRA_OWNERSHIP=shared (process env, then .env)."""
+    from inttest import paths
+    e = paths.effective_env(os.environ if env is None else env)
+    return (e.get("SLT_INFRA_OWNERSHIP") or "").strip() == "shared"
+
+
+def _inspect(container: str, run=None) -> dict | None:
+    """`docker container inspect` of one container, or None when it does not exist."""
+    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    try:
+        r = run(["docker", "container", "inspect", container])
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        data = json.loads(r.stdout or "[]")
+    except ValueError:
+        return None
+    return data[0] if data else None
+
+
+def _state(info: dict) -> tuple[str, str]:
+    """(state, health). state: running, restarting, paused or stopped; health is "" when the
+    container has no healthcheck."""
+    st = info.get("State") or {}
+    health = (st.get("Health") or {}).get("Status") or ""
+    if st.get("Restarting"):
+        return "restarting", health
+    if st.get("Paused"):
+        return "paused", health
+    return ("running" if st.get("Running") else "stopped"), health
+
+
+def _working_dir(info: dict) -> str:
+    return ((info.get("Config") or {}).get("Labels") or {}).get(
+        "com.docker.compose.project.working_dir", "")
+
+
+def _same_dir(a: str, b: Path) -> bool:
+    try:
+        return bool(a) and Path(a).resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def health_budget_s(info: dict) -> float:
+    """How long the container's own healthcheck may take to decide: start_period + retries x
+    (interval + timeout), never less than SHARED_HEALTH_FLOOR_S."""
+    hc = (info.get("Config") or {}).get("Healthcheck") or {}
+    v = {k: (hc.get(k) or d) for k, d in _HC_DEFAULTS.items()}
+    budget = (v["StartPeriod"] + v["Retries"] * (v["Interval"] + v["Timeout"])) / 1e9
+    return max(SHARED_HEALTH_FLOOR_S, budget)
+
+
+def _owner(info: dict) -> str:
+    return _working_dir(info) or "an unknown checkout (no compose working_dir label)"
+
+
+def _fix(service_name: str, containers, infos: dict) -> str:
+    owners = sorted({_owner(infos[c]) for c in containers})
+    return (f"Owned by {', '.join(owners)}. To fix: from that checkout run "
+            f"`python -m inttest.cli stop {service_name}` then `python -m inttest.cli start "
+            f"{service_name}`, or `docker rm -f {' '.join(containers)}`, once nothing else uses it.")
+
+
+def shared_reuse(service_name: str, env=None, run=None, sleep=None, clock=None) -> bool:
+    """Under SLT_INFRA_OWNERSHIP=shared: True when every container the service's compose file
+    declares is running and, if it has a healthcheck, healthy. The caller then reuses it as it
+    is and runs no `compose up`.
+
+    A shared stack may have been started from another checkout (a lane worktree, say). `up`
+    from this checkout's compose file sees a different config (bind-mount paths differ) and
+    recreates the running container, so it is never run against a running shared service.
+    A `starting` container is waited on, for as long as its own healthcheck may take.
+    SharedServiceError, naming the owning checkout and the fix, when a declared container is
+    unhealthy, restarting, paused, never turns healthy, or exists from another checkout's
+    compose dir without running. False (bring it up as usual) when ownership is not shared,
+    the compose file declares no container names, or no declared container exists or all
+    belong to this checkout."""
+    if not shared_ownership(env):
+        return False
+    names = compose_container_names(service_name, env)
+    if not names:
+        return False
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    here = _compose_file(service_name).parent
+    began = clock()
+    while True:
+        infos = {n: _inspect(n, run) for n in names}
+        existing = {n: i for n, i in infos.items() if i is not None}
+        foreign = [n for n, i in existing.items() if not _same_dir(_working_dir(i), here)]
+        states = {n: _state(i) for n, i in existing.items()}
+        stuck = [n for n, (st, _) in states.items() if st in ("restarting", "paused")]
+        if stuck:
+            what = ", ".join(f"{n} ({states[n][0]})" for n in stuck)
+            raise SharedServiceError(
+                f"{service_name}: shared container(s) {what} cannot be reused, and under "
+                f"SLT_INFRA_OWNERSHIP=shared they are not recreated. {_fix(service_name, stuck, existing)}")
+        if len(existing) == len(names) and all(st == "running" for st, _ in states.values()):
+            bad = [n for n, (_, h) in states.items() if h == "unhealthy"]
+            if bad:
+                raise SharedServiceError(
+                    f"{service_name}: shared container(s) {', '.join(bad)} are unhealthy, and under "
+                    f"SLT_INFRA_OWNERSHIP=shared they are not recreated. {_fix(service_name, bad, existing)}")
+            starting = [n for n, (_, h) in states.items() if h not in ("", "healthy")]
+            if not starting:
+                print(f"[integration] {service_name}: reusing running shared container(s) "
+                      f"{', '.join(names)} (SLT_INFRA_OWNERSHIP=shared); compose up not run")
+                return True
+            budget = max(health_budget_s(existing[n]) for n in starting)
+            if clock() - began >= budget:
+                raise SharedServiceError(
+                    f"{service_name}: shared container(s) {', '.join(starting)} not healthy after "
+                    f"{budget:.0f}s (their healthcheck's budget), and under SLT_INFRA_OWNERSHIP=shared "
+                    f"they are not recreated. {_fix(service_name, starting, existing)}")
+            sleep(_HEALTH_POLL_S)
+            continue
+        if foreign:
+            raise SharedServiceError(
+                f"{service_name}: container(s) {', '.join(foreign)} belong to the compose project "
+                f"of another checkout, not {here}, and are not all running. Under "
+                f"SLT_INFRA_OWNERSHIP=shared `compose up` from here would recreate them. "
+                f"{_fix(service_name, foreign, existing)}")
+        return False
+
+
 def compose_up(service_name: str, lock: FileLock) -> None:
     """Bring up the named service's docker-compose stack.
 
@@ -144,6 +285,9 @@ def compose_up(service_name: str, lock: FileLock) -> None:
     returning. The -d flag runs in detached mode (daemon). This operation is
     idempotent: calling it on an already-healthy stack returns silently.
 
+    Under SLT_INFRA_OWNERSHIP=shared a running shared service is reused and nothing runs
+    (`shared_reuse`).
+
     Args:
         service_name: name of the service (e.g. 'postgres', 'oracle', 'spanner')
         lock: FileLock coordinating across pytest-xdist workers (held by caller)
@@ -152,6 +296,8 @@ def compose_up(service_name: str, lock: FileLock) -> None:
         CalledProcessError: if `docker compose up` fails
         FileNotFoundError: if docker is not available
     """
+    if shared_reuse(service_name):
+        return
     from livetest import pgidle
     env = _compose_up_env(service_name)
     sql = pgidle.policy_sql(env, "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "intdb") if service_name == "postgres" else None
@@ -251,15 +397,22 @@ def required_files(service_name: str) -> list[Path]:
     return out
 
 
+def host_unavailable(service_name: str) -> str | None:
+    """Why this host cannot use the service even when it is already running (a missing
+    ``python_module``, the live tier's rule), or None."""
+    spec = _service_spec(service_name)
+    from livetest.registry import missing_python_module
+    return missing_python_module(spec.get("python_module"), spec.get("python_module_hint"))
+
+
 def unavailable(service_name: str) -> str | None:
     """Why the service cannot be brought up here (a required file missing), or None. With its
     existing instance set (``live_override_env``) nothing is brought up, so None. A missing
     ``python_module`` (the live tier's rule) comes first."""
-    spec = _service_spec(service_name)
-    from livetest.registry import missing_python_module
-    why = missing_python_module(spec.get("python_module"), spec.get("python_module_hint"))
+    why = host_unavailable(service_name)
     if why:
         return why
+    spec = _service_spec(service_name)
     gate = spec.get("live_override_env")
     if gate and (os.environ.get(gate) or "").strip():
         return None
@@ -325,14 +478,16 @@ _INTERPOLATION = re.compile(r"\$\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}")
 _RENAMED_CONTAINERS: dict = {}
 
 
-def declared_containers(compose_paths) -> list[str]:
+def declared_containers(compose_paths, env=None) -> list[str]:
     """Every container name `compose_paths` declare, prefix-scoped, plus their former names.
 
     The compose file, not service.yaml: `container:` names only the primary, while a service
     with a sidecar reserves that name just as exclusively. A line scan rather than PyYAML
     keeps this module dependency-light (`inttest.cli stop gcs` must work in a checkout with
     only the runtime deps installed)."""
-    prefix = os.environ.get("INT_STACK_PREFIX", "")
+    from inttest import paths
+    prefix = (paths.effective_env(os.environ if env is None else env).get("INT_STACK_PREFIX")
+              or "").strip()
     names: list[str] = []
     for path in compose_paths:
         try:
@@ -359,9 +514,9 @@ def orphaned_containers(compose_paths) -> list[str]:
     return [c for c in declared_containers(compose_paths) if container_exists(c)]
 
 
-def compose_container_names(service_name: str) -> list[str]:
+def compose_container_names(service_name: str, env=None) -> list[str]:
     """`declared_containers` for one registered service, by name."""
-    return declared_containers([_compose_file(service_name)])
+    return declared_containers([_compose_file(service_name)], env)
 
 
 def container_exists(container: str) -> bool:

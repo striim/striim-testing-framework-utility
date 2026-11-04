@@ -71,6 +71,8 @@ def _stack_env_names() -> list:
     names.add("SPANNER_ADMIN_PORT")
     # Sends Google's Spanner client to an emulator; inttest/spanneradmin.py refuses it in real mode.
     names.add("SPANNER_EMULATOR_HOST")
+    # shared makes services.shared_reuse inspect real containers before compose up.
+    names.add("SLT_INFRA_OWNERSHIP")
     names |= _published_token_names()
     return sorted(names)
 
