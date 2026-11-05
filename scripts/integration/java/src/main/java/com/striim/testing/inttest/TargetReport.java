@@ -58,6 +58,12 @@ public final class TargetReport {
      * leave unacked work to resume.</p>
      */
     public int eventsReplayed;
+
+    /**
+     * Events never delivered because a restart's at-or-equal filter dropped them on their first
+     * pass: siblings at a shared position the checkpoint already covered. Nonzero is data loss.
+     */
+    public int eventsDropped;
     /**
      * What the writer handed to the exception store: one entry per
      * notification, each the reason, the failure's text and the events' ordinals in the input --
