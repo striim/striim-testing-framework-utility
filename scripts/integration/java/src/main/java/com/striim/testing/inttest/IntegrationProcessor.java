@@ -194,14 +194,21 @@ public final class IntegrationProcessor {
         Objects.requireNonNull(request.inputFile, "request.inputFile is required");
         Objects.requireNonNull(request.outputFile, "request.outputFile is required");
 
-        List<Event> input = WAEventJsonFactory.readInputEvents(Files.readString(Path.of(request.inputFile)));
+        String inputJson = Files.readString(Path.of(request.inputFile));
+        List<Event> input = WAEventJsonFactory.readInputEvents(inputJson);
+        ScriptedPositions positions = ScriptedPositions.read(inputJson);
+        if (positions.explicit() && (request.target == null || !request.target.withPositions())) {
+            throw new IllegalArgumentException("the input fixture gives events a '"
+                    + ScriptedPositions.KEY + "', which only a target: case with positions: true"
+                    + " hands to the module. Remove it, or drive the module as a target.");
+        }
         if (request.target != null) {
             // A target emits nothing, so the output file carries the run REPORT -- what the writer
             // acked and the position it reports durable. The third observable output, the target
             // database, is asserted from the Python side against the database itself.
             TargetReport report = driveTarget(new File(request.opJar), request.properties,
                     waEventsOnly(input, "a target: case"),
-                    request.types, request.passwordProperties, request.target);
+                    request.types, request.passwordProperties, request.target, positions);
             Files.writeString(Path.of(request.outputFile),
                     new ObjectMapper().writeValueAsString(report));
             return;
@@ -226,7 +233,20 @@ public final class IntegrationProcessor {
     static TargetReport driveTarget(File targetJar, Map<String, Object> properties,
             List<WAEvent> input, Map<String, Object> types, List<String> passwordProperties,
             TargetSpec target) throws Exception {
+        return driveTarget(targetJar, properties, input, types, passwordProperties, target, null);
+    }
+
+    /** As above, with each event's scripted position; null is event i at ordinal i + 1. */
+    static TargetReport driveTarget(File targetJar, Map<String, Object> properties,
+            List<WAEvent> input, Map<String, Object> types, List<String> passwordProperties,
+            TargetSpec target, ScriptedPositions positions) throws Exception {
         requireCoherentTarget(target, input);
+        ScriptedPositions scripted = positions == null
+                ? ScriptedPositions.defaults(input.size()) : positions;
+        if (scripted.size() != input.size()) {
+            throw new IllegalArgumentException("scripted positions cover " + scripted.size()
+                    + " event(s) but the case feeds " + input.size());
+        }
 
         // A writer resolves a source event's columns through its typeUUID, so a target case needs
         // the same `types:` linkage an OP case does -- and needs it stamped before the first event
@@ -240,15 +260,30 @@ public final class IntegrationProcessor {
         TargetReport report = new TargetReport();
         try {
             int next = 0;
+            int highWater = 0;   // events delivered at least once, from index 0
+            Map<com.webaction.uuid.UUID, Long> durable = Map.of();
             final java.util.Set<Integer> fired = new java.util.HashSet<>();
             final java.util.Set<Integer> midRunFired = new java.util.HashSet<>();
             while (next < input.size()) {
-                int ordinal = next + 1;
-                core.accept(input.get(next), target.withPositions()
-                        ? new com.webaction.recovery.ImmutableStemma(
-                                POSITION_COMPONENT, distributionId, new OrdinalPosition(ordinal))
-                        : null);
-                report.eventsAccepted++;
+                int index = next;
+                boolean firstPass = index >= highWater;
+                if (scripted.filtered(index, durable)) {
+                    // The platform's at-or-equal filter. On a first pass this is an event the
+                    // source never delivered: the loss an over-wide checkpoint causes.
+                    if (firstPass) {
+                        report.eventsDropped++;
+                    }
+                } else {
+                    core.accept(input.get(index), target.withPositions()
+                            ? scripted.stemma(index, distributionId) : null);
+                    report.eventsAccepted++;
+                    if (!firstPass) {
+                        report.eventsReplayed++;
+                    }
+                }
+                if (firstPass) {
+                    highWater = index + 1;
+                }
                 next++;
 
                 // A SET of already-fired points, not a single boolean: with more than one
@@ -280,24 +315,20 @@ public final class IntegrationProcessor {
                 core.restart();
                 report.restarts++;
                 // THE POINT OF THE TIER. A restart does not skip ahead: the source resumes from
-                // what the target says is durable, so everything above that position -- including
-                // whatever sat unapplied in the accumulator, since close() deliberately does not
-                // flush -- is fed again. A writer that double-writes on replay shows it in the
-                // target table, which is the one place a fake driver could never reveal it.
-                long durable = core.durableOrdinal();
-                if (durable > next) {
-                    // A writer cannot be durable past what it was ever handed. Reported rather
-                    // than obeyed: obeying it would silently SKIP events, which is precisely the
-                    // data loss an over-advanced position causes in production -- the harness
-                    // would be reproducing the defect instead of reporting it.
-                    throw new IllegalStateException("after restarting, the target reports position "
-                            + durable + " as durable, but only " + next + " event(s) had been fed."
-                            + " A position ahead of the stream makes the source resume past data"
-                            + " it never delivered.");
+                // what the target says is durable and the platform drops every replayed event
+                // at or below it, per path. Everything above -- including whatever sat unapplied
+                // in the accumulator, since close() deliberately does not flush -- is fed again,
+                // and so is every sibling at a shared position the checkpoint stopped below.
+                durable = scripted.durable(core.endpointCheckpoint());
+                // Reported rather than obeyed: obeying would reproduce the defect, not report it.
+                scripted.requireReached(durable, highWater);
+                next = highWater;
+                for (int i = 0; i < highWater; i++) {
+                    if (!scripted.filtered(i, durable)) {
+                        next = i;
+                        break;
+                    }
                 }
-                int resumeFrom = (int) durable;
-                report.eventsReplayed += next - resumeFrom;
-                next = resumeFrom;
             }
             core.flush();
             report.durablePosition = core.durablePosition();
@@ -345,15 +376,6 @@ public final class IntegrationProcessor {
         core.close();
         return report;
     }
-
-    /**
-     * The component a scripted position is attributed to.
-     *
-     * <p>Fixed rather than generated, because a case asserts the durable position and a per-run
-     * UUID would make that assertion unwritable. {@code -1} keeps it clear of {@link LoadedOp}'s
-     * {@code types:} UUIDs, which count up from 1 in the same {@code time=0} space.</p>
-     */
-    private static final UUID POSITION_COMPONENT = new UUID(0L, -1L);
 
     /** Rejects a {@code target:} block the harness cannot honour, naming what to change. */
     private static void requireCoherentTarget(TargetSpec target, List<WAEvent> input) {

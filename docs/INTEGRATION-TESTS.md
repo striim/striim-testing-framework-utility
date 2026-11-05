@@ -554,6 +554,32 @@ assert:
   that double-writes on replay shows it in the target table. It requires `positions: true`:
   with no positions there is nothing to checkpoint, so the restart would replay everything and
   the case would be asserting idempotence rather than recovery.
+- **The resume rule is the platform's.** After a restart the driver reads the writer's
+  `getEndpointCheckpoint()` and drops every event at or below that position on its path (the
+  at-or-equal filter), then feeds the rest in order. `restart_after:` still counts events, not
+  positions. With no `"position"` keys, event *i* is at ordinal *i* on one path, and this is the
+  same as resuming at index *durable*. A durable position higher than any event fed on its path
+  fails the run.
+- **`"position"` in an input event** gives its recovery position: an ordinal (`"position": 2`) or
+  `{"ordinal": 2, "path": "b"}` for a second source path. Several events may share one, as an
+  upstream fan-out's siblings do (TableMappingOp's STG and LND rows of one source event). An event
+  without it is at its 1-based index on the default path. A path's ordinals may not decrease, and
+  the key is refused in an op case and with `positions: false`. To test a window cut inside a
+  shared position, put `restart_after:` between two siblings:
+
+  ```json
+  [
+    {"metadata": {"TableName": "SRC.STG"}, "data": {"values": [1]}, "position": 1},
+    {"metadata": {"TableName": "SRC.LND"}, "data": {"values": [1]}, "position": 1},
+    {"metadata": {"TableName": "SRC.STG"}, "data": {"values": [2]}, "position": 2},
+    {"metadata": {"TableName": "SRC.LND"}, "data": {"values": [2]}, "position": 2},
+    {"metadata": {"TableName": "SRC.STG"}, "data": {"values": [3]}, "position": 3}
+  ]
+  ```
+
+  With `restart_after: 3` the writer restarts after the STG row at 2. If it reports 2 as durable,
+  the LND row at 2 is never delivered and the report's `eventsDropped` is 1; if it reports 1, both
+  rows at 2 are fed again and it must not write the STG row twice.
 - **`positions: false`** drives the no-recovery path, where every event arrives with a null
   position and the writer's `isRecoveryEnabled` is false (RECOVERY off). Not a curiosity — it is
   the path a live app runs unless recovery is on.

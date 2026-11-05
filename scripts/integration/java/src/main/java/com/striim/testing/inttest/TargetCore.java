@@ -235,28 +235,9 @@ final class TargetCore implements TargetDriver {
         return String.join("|", parts);
     }
 
-    /**
-     * The highest ordinal the target reports as durable, or 0 when it reports none.
-     *
-     * <p>This is what a source resumes from. Everything above it was never acknowledged, so the
-     * platform replays it — and a writer that has already applied some of that work must absorb
-     * the replay without duplicating it. Reading the raw position rather than parsing
-     * {@link #durablePosition()}'s rendered string keeps the resume point independent of how the
-     * position happens to print.</p>
-     */
-    long durableOrdinal() throws Exception {
-        Position position = (Position) invoke(endpointCheckpoint, "getEndpointCheckpoint");
-        if (position == null) {
-            return 0L;
-        }
-        long highest = 0L;
-        for (Path path : position.values()) {
-            if (path.getLowSourcePosition() instanceof OrdinalPosition) {
-                highest = Math.max(highest,
-                        ((OrdinalPosition) path.getLowSourcePosition()).ordinal());
-            }
-        }
-        return highest;
+    /** The raw endpoint checkpoint the source resumes from, or null. */
+    Position endpointCheckpoint() throws Exception {
+        return (Position) invoke(endpointCheckpoint, "getEndpointCheckpoint");
     }
 
     /**
