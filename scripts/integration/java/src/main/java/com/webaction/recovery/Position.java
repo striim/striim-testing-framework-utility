@@ -43,6 +43,16 @@ public class Position implements Serializable {
         }
     }
 
+    /** As the platform's (5.4.0.6C): code compiled against it calls this exact signature. */
+    public Position(java.util.Set<Path> paths) {
+        this((Collection<Path>) paths);
+    }
+
+    /** As the platform's (5.4.0.6C). */
+    public Position(java.util.List<Path> paths) {
+        this((Collection<Path>) paths);
+    }
+
     private void add(Path path) {
         if (path != null) {
             paths.put(path.key().hashCode(), path);
