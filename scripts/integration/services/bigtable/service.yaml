@@ -7,6 +7,15 @@ isolation: none                 # fixed instance/tables; provisioned once per se
 # scripts/live from day one (mirrors scripts/live/services/bigtable/service.yaml's
 # SLT_BIGTABLE_HOST).
 live_override_env: INT_BIGTABLE_HOST
+# Intentionally NO opt_in_env here -- contrast scripts/live/services/bigtable/service.yaml's
+# `opt_in_env: SLT_BIGTABLE_SERVICE`. The live service opt-ins because its Striim overlay
+# (services/striim/compose.bigtable-emulator.yaml) sets the JVM-global BIGTABLE_EMULATOR_HOST,
+# which a reused slt-* cluster would otherwise let the empty emulator hijack on real Bigtable.
+# The integration tier has no such overlay: a `db: bigtable-target` manifest reaches the CBTEMULATOR
+# only through the harness's own admin (inttest/bigtableadmin, via inttest/dbroutes.py) at its
+# dedicated base port 19470, so nothing is redirected and a non-bigtable test never sees a hijacked
+# connection. The model (spanner) is ungated on BOTH tiers, so the gate must stay absent;
+# inttest/plugin.py's _require_service_opt_in is a no-op for a service that declares no gate.
 docker_defaults:
   host: localhost
   port: 19470                   # gRPC (data + admin); distinct from the live tier's 9470 so both

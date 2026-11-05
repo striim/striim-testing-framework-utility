@@ -43,6 +43,19 @@ def test_bigtable_service_def_parses_and_provides_tokens():
     assert raw["provides"] == EXPECTED_PROVIDES
 
 
+def test_bigtable_service_def_declares_no_opt_in_env():
+    # Unlike the LIVE service -- which gates on SLT_BIGTABLE_SERVICE because its Striim overlay sets
+    # a JVM-global BIGTABLE_EMULATOR_HOST that would hijack real Bigtable in a reused slt-* cluster --
+    # the INTEGRATION tier has no such overlay: a `db: bigtable-target` manifest reaches the
+    # CBTEMULATOR only through the harness admin at its base port 19470, so nothing is redirected and
+    # a non-bigtable test never sees a hijacked connection. The model (spanner, see
+    # test_services.py + the live test_registry test_opt_in_env_declared_per_service) is ungated on
+    # both tiers, so the gate must stay absent. This locks the decision so the divergence from the
+    # live tier is not later "fixed" into an accidental opt-in.
+    raw = tokens_mod._load_service_def("bigtable", _SERVICES_DIR)
+    assert raw.get("opt_in_env") is None
+
+
 def test_bigtable_tokens_render_docker_defaults():
     # (3) the tokens exist AND resolve to the concrete values on the integration port.
     t = tokens_mod.service_tokens("bigtable", env={}, services_dir=_SERVICES_DIR)
