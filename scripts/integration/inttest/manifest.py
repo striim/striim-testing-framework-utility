@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -911,6 +912,14 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
             f"'data'/'acked'/'monitor'/'restarts'/'replayed'/'exception_store'/'jmx' -- a failed drive writes no run "
             f"report, so there is nothing for those to read. 'assert.target:' IS allowed, and is "
             f"how a rollback is proved: query the table and the checkpoint row after the failure.")
+
+    if expect_error is not None and expect_log:
+        # The failure path asserts the error text and `target:` only; `expect_log` is not read.
+        warnings.warn(
+            f"{path}: 'assert.expect_log' is ignored when 'assert.expect_error' is set -- the "
+            f"failure path does not check what the operator logged. Put the expected text in "
+            f"'expect_error', or move 'expect_log' to a case whose run succeeds.",
+            UserWarning, stacklevel=2)
 
     return AssertSpec(data=data, smoke=smoke, gcs_objects=gcs_objects, target=target, acked=acked,
                       restarts=restarts, replayed=replayed, expect_error=expect_error,

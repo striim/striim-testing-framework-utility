@@ -3,6 +3,8 @@ assertions (T2a) -- pure parsing tests, no Docker/Striim/pytest-plugin collectio
 """
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from inttest.manifest import (ManifestError, TargetSpec, load_manifest, target_to_wire)
@@ -540,6 +542,30 @@ assert:
   expect_error: 'matched 2 tables'
 """)
     assert load_manifest(path).assert_.expect_error == "matched 2 tables"
+
+
+def test_expect_error_with_expect_log_warns_that_the_log_is_ignored(tmp_path):
+    path, _ = _write(tmp_path, BASE + """
+target:
+  input: input/events.json
+assert:
+  expect_error: 'matched 2 tables'
+  expect_log: 'CommitPolicy is set to'
+""")
+    with pytest.warns(UserWarning, match="'assert.expect_log' is ignored when 'assert.expect_error'"):
+        assert load_manifest(path).assert_.expect_error == "matched 2 tables"
+
+
+def test_expect_error_alone_does_not_warn(tmp_path):
+    path, _ = _write(tmp_path, BASE + """
+target:
+  input: input/events.json
+assert:
+  expect_error: 'matched 2 tables'
+""")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        load_manifest(path)
 
 
 def test_expect_error_rejects_a_substring_that_matches_anything(tmp_path):
