@@ -38,6 +38,9 @@ public class Position implements Serializable {
 
     /** A position over {@code paths}, keyed by each one's identity. */
     public Position(Collection<Path> paths) {
+        if (paths == null) {
+            return;   // as the platform's Set/List constructors: an empty position
+        }
         for (Path path : paths) {
             add(path);
         }
