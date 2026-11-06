@@ -680,6 +680,15 @@ _QUERIERS = {"postgres": _query_postgres, "oracle": _query_oracle,
              "spanner": _query_spanner, "sqlserver": _query_sqlserver, "mysql": _query_mysql,
              "teradata": _query_teradata, "vertica": _query_vertica}
 
+# The one engine with a driver but NO SQL surface: bigtable. It appears as a route so a
+# target/source can point at it, but its rows are read *whole* by the admin and compared to an
+# expected/*.json snapshot -- never queried or executed (see `_bigtable_admin` / `setup_bigtable`
+# / `read_cells` below). So `bigtable` is intentionally absent from `_RUNNERS`/`_QUERIERS`, and the
+# "every driver has a runner" invariant the self-test enforces applies to every driver *except* this
+# set. A single named constant keeps the test honest: it asserts the module's own view of which
+# engines are non-SQL, rather than a test-local literal.
+_NON_SQL_DRIVERS = frozenset({"bigtable"})
+
 
 # --- Bigtable (no SQL; the admin reads a whole table) -----------------------------------------
 # Bigtable is not a query engine -- the admin reads back a WHOLE table as
