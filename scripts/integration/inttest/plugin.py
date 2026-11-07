@@ -38,6 +38,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1122,14 +1123,15 @@ def _variant_groups(m, runs: list) -> list:
 
     Two variants share a group when any service they reach is the same: the variant's own route,
     its DDL routes, every explicit `mid_run` route, and every service whose tokens
-    (`${ORACLE_...}`) its token values name. Variants of one service share tables (one `${TID}`),
+    (`${ORACLE_...}`) its token values or the case's `properties:` values name. Variants of one service share tables (one `${TID}`),
     so they stay serial, as do a variant's matrix permutations. Returns
     `[(services, [(variant, overrides), ...]), ...]`.
     """
     def services(variant) -> set:
         out = {dbroutes_mod.parse_route(variant.db)[0]}
         out |= {dbroutes_mod.parse_route(spec.db)[0] for spec in variant.ddl}
-        named = " ".join(str(v) for v in variant.tokens.values())
+        # Case-level properties too: one every variant shares reaches that service from each.
+        named = " ".join(str(v) for v in (*variant.tokens.values(), *m.properties.values()))
         out |= {svc for svc in dbroutes_mod._PARAM_SPECS if "${" + svc.upper() + "_" in named}
         if m.target is not None:
             out |= {dbroutes_mod.parse_route(step.db)[0]
@@ -1355,10 +1357,11 @@ def pytest_configure(config):
                 "pytest-xdist (-n/--dist)."
             )
 
-    try:
-        _variant_workers(os.environ)
-    except ValueError as e:
-        raise pytest.UsageError(str(e)) from None
+    if not config.getoption("--perf"):
+        try:
+            _variant_workers(os.environ)
+        except ValueError as e:
+            raise pytest.UsageError(str(e)) from None
 
     # Refuse a second concurrent session against this checkout -- see the docstring, which
     # records what two of them actually do to each other. AFTER the parallel guard above so
@@ -2116,16 +2119,19 @@ class IntYamlItem(pytest.Item):
                 for g, future in zip(shared, futures):
                     outcomes.append((g, future.exception()))
             finally:
+                # ⚠ Waits for running drives. An interrupt sent to the whole process group (Ctrl-C,
+                # striim-test's cancel) ends their JVMs too; one sent to this PID alone waits for
+                # each running drive's timeout.
                 pool.shutdown(wait=True, cancel_futures=True)
+        for _, e in outcomes:
+            if e is not None and not isinstance(e, outcome_types):
+                raise e
         for g in alone:
             try:
                 run_all(g)
                 outcomes.append((g, None))
             except outcome_types as e:  # reported with the others below
                 outcomes.append((g, e))
-        for _, e in outcomes:
-            if e is not None and not isinstance(e, outcome_types):
-                raise e
 
         failed = [(g, e) for g, e in outcomes
                   if e is not None and not isinstance(e, pytest.skip.Exception)]
@@ -2135,9 +2141,10 @@ class IntYamlItem(pytest.Item):
             parts = []
             for g, e in failed:
                 names = ", ".join(dict.fromkeys(v.name for v, _ in g))
-                text = str(getattr(e, "msg", None) or e) or type(e).__name__
-                if not isinstance(e, (AssertionError, pytest.fail.Exception)):
-                    text = f"{type(e).__name__}: {text}"
+                if isinstance(e, (AssertionError, pytest.fail.Exception)):
+                    text = str(getattr(e, "msg", None) or e) or type(e).__name__
+                else:
+                    text = "".join(traceback.format_exception(e)).rstrip()
                 parts.append(f"--- variant group [{names}] ---\n{text}")
             pytest.fail(f"{m.name}: {len(failed)} of {len(outcomes)} variant groups failed "
                         f"(INT_VARIANT_WORKERS={workers}).\n" + "\n".join(parts))

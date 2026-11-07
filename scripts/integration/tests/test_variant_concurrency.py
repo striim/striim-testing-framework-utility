@@ -33,7 +33,7 @@ def log(event, **kw):
 
 class _Pg:
     def ensure_setup(self): pass
-    def reset_schemas(self): pass
+    def reset_schemas(self): log("reset")
     def reset_test_objects(self, tid): pass
 
 
@@ -46,6 +46,10 @@ def drive(op_jar, props, events, **kwargs):
         raise H.HarnessError(f"boom in {props['Run']}")
     if props["Run"] in SC.get("skip", []):
         pytest.skip(f"no java for {props['Run']}")
+    if SC.get("refuse"):
+        error = H.HarnessError("exited 1")
+        error.failure = f"java.lang.IllegalStateException: refused {props['Run']}"
+        raise error
     return {"ackedEvents": 1, "acknowledgeable": True}
 
 
@@ -68,7 +72,7 @@ def cleanup_postgres():
 '''
 
 
-def case(variants: dict, matrix: str = "") -> str:
+def case(variants: dict, matrix: str = "", asserts: str = "  acked: 1") -> str:
     lines = ["name: fan", "purpose: p", "op: {jar: java/OpenProcessors/X}",
              "requires: [postgres]", "properties: {Run: '${V_RUN}'}", "target: {input: in.json}"]
     if matrix:
@@ -77,7 +81,7 @@ def case(variants: dict, matrix: str = "") -> str:
     for name, db in variants.items():
         lines += [f"  {name}:", f"    db: {db}", f"    ddl: [{name}.sql]",
                   f"    tokens: {{V_RUN: {name}}}"]
-    lines += ["assert:", "  acked: 1"]
+    lines += ["assert:", asserts]
     return "\n".join(lines) + "\n"
 
 
@@ -210,6 +214,27 @@ def test_a_skip_without_a_failure_skips_the_case(pytester, monkeypatch, tmp_path
     result.assert_outcomes(skipped=1)
 
 
+def test_expect_error_variants_drive_at_once(pytester, monkeypatch, tmp_path):
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path,
+                                  case(THREE, asserts="  expect_error: 'refused'"), 3, {"refuse": True})
+    assert failure is None, failure
+    assert peak(events) == 3
+
+
+def test_teardown_runs_after_every_group_and_keeps_a_failed_case(pytester, monkeypatch, tmp_path):
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path, case(THREE), 3)
+    assert failure is None, failure
+    resets = [e["t"] for e in events if e["event"] == "reset"]
+    assert len(resets) == 2, "setup and teardown"
+    assert resets[-1] >= max(e["t"] for e in events if e["event"] == "end")
+
+
+def test_a_failed_group_keeps_the_resources(pytester, monkeypatch, tmp_path):
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path, case(THREE), 3, {"fail": ["ora"]})
+    assert failure is not None
+    assert len([e for e in events if e["event"] == "reset"]) == 1, "setup only"
+
+
 def test_a_bad_setting_is_a_usage_error(pytester, monkeypatch, tmp_path):
     result, _, events = run_case(pytester, monkeypatch, tmp_path, case(THREE), "0")
     assert result.ret == pytest.ExitCode.USAGE_ERROR
@@ -235,6 +260,12 @@ def _groups(tmp_path, text):
 def test_a_variant_naming_another_services_tokens_joins_its_group(tmp_path):
     text = case(THREE).replace("tokens: {V_RUN: mss}", "tokens: {V_RUN: mss, V_X: '${ORACLE_URL}'}")
     assert _groups(tmp_path, text) == [["pg"], ["mss", "ora"]]
+
+
+def test_a_service_token_in_shared_properties_joins_every_variant(tmp_path):
+    text = case(THREE).replace("properties: {Run: '${V_RUN}'}",
+                               "properties: {Run: '${V_RUN}', Ckpt: '${POSTGRES_URL}'}")
+    assert _groups(tmp_path, text) == [["mss", "ora", "pg"]]
 
 
 def test_an_explicit_mid_run_route_joins_every_variant(tmp_path):
