@@ -74,12 +74,28 @@ public class Path implements Serializable, Comparable<Path> {
      */
     public int getPathHash() {
         if (!pathHashed) {
-            String component = componentID != null ? componentID.toString() : "*";
-            String distribution = distributionID != null && !distributionID.isEmpty() ? distributionID : "*";
-            pathHash = (component + "+" + distribution).hashCode();
+            pathHash = internedHash(componentID, distributionID);
             pathHashed = true;
         }
         return pathHash;
+    }
+
+    /**
+     * The path hash per (component, distribution), worked out once per pair: the platform interns
+     * the item list ({@code ItemList.get}) and caches its string, so a new {@code Path} through a
+     * known pair costs a lookup there, not a string build. Without this every event's fresh path
+     * paid the build here.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<UUID,
+            java.util.concurrent.ConcurrentHashMap<String, Integer>> HASHES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static int internedHash(UUID componentID, String distributionID) {
+        String distribution = distributionID != null && !distributionID.isEmpty() ? distributionID : "*";
+        if (componentID == null) {
+            return ("*+" + distribution).hashCode();   // no component: not a path the platform keys
+        }
+        return HASHES.computeIfAbsent(componentID, c -> new java.util.concurrent.ConcurrentHashMap<>())
+                .computeIfAbsent(distribution, d -> (componentID + "+" + d).hashCode());
     }
 
     /**
