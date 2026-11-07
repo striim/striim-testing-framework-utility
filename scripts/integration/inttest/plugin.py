@@ -37,6 +37,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import traceback
 from datetime import datetime, timezone
@@ -1123,8 +1124,10 @@ def _variant_groups(m, runs: list) -> list:
 
     Two variants share a group when any service they reach is the same: the variant's own route,
     its DDL routes, every explicit `mid_run` route, and every service whose tokens
-    (`${ORACLE_...}`) its token values or the case's `properties:` values name. Variants of one service share tables (one `${TID}`),
-    so they stay serial, as do a variant's matrix permutations. Returns
+    (`${ORACLE_...}`, a database or a `requires:` service) its token values or the case's
+    `properties:` values name. A case with a `ConfigFile` property is one group. Variants of one
+    service share tables (one `${TID}`), so they stay serial, as do a variant's matrix
+    permutations. Returns
     `[(services, [(variant, overrides), ...]), ...]`.
     """
     def services(variant) -> set:
@@ -1132,7 +1135,10 @@ def _variant_groups(m, runs: list) -> list:
         out |= {dbroutes_mod.parse_route(spec.db)[0] for spec in variant.ddl}
         # Case-level properties too: one every variant shares reaches that service from each.
         named = " ".join(str(v) for v in (*variant.tokens.values(), *m.properties.values()))
-        out |= {svc for svc in dbroutes_mod._PARAM_SPECS if "${" + svc.upper() + "_" in named}
+        out |= {svc for svc in (*dbroutes_mod._PARAM_SPECS, *m.requires)
+                if "${" + svc.upper() + "_" in named}
+        if "ConfigFile" in m.properties:
+            out.add("ConfigFile")  # its contents are not scanned: every variant shares a group
         if m.target is not None:
             out |= {dbroutes_mod.parse_route(step.db)[0]
                     for step in m.target.mid_run if step.db_explicit}
@@ -2086,11 +2092,15 @@ class IntYamlItem(pytest.Item):
 
         Serial unless `INT_VARIANT_WORKERS` > 1 and the variants split into groups on disjoint
         services (`_variant_groups`): then up to that many groups drive at once, each serial
-        inside. Spanner's group runs alone, after the others. Every group runs to its end; the
-        failures are reported together, each naming its run.
+        inside. Spanner's group runs alone, after the others. Each group runs until its runs end
+        or one fails; the failures are reported together, each naming its run.
         """
+        stop = threading.Event()  # set on interrupt: no group starts another run
+
         def run_all(runs):
             for i, (variant, overrides) in enumerate(runs):
+                if stop.is_set():
+                    return
                 # A VARIANTS case has no case-level `ddl:` -- step 5 created nothing -- so every
                 # run including the FIRST must lay down its own engine's tables. A non-variant
                 # case had its DDL run in step 5, so it only needs the reset BETWEEN runs.
@@ -2118,10 +2128,13 @@ class IntYamlItem(pytest.Item):
                 futures = [pool.submit(run_all, g) for g in shared]
                 for g, future in zip(shared, futures):
                     outcomes.append((g, future.exception()))
+            except BaseException:
+                stop.set()
+                raise
             finally:
-                # ⚠ Waits for running drives. An interrupt sent to the whole process group (Ctrl-C,
-                # striim-test's cancel) ends their JVMs too; one sent to this PID alone waits for
-                # each running drive's timeout.
+                # ⚠ Waits for the runs in progress. An interrupt sent to the whole process group
+                # (Ctrl-C, striim-test's cancel) ends their JVMs too; one sent to this PID alone
+                # waits for each to finish or reach its timeout.
                 pool.shutdown(wait=True, cancel_futures=True)
         for _, e in outcomes:
             if e is not None and not isinstance(e, outcome_types):

@@ -268,6 +268,19 @@ def test_a_service_token_in_shared_properties_joins_every_variant(tmp_path):
     assert _groups(tmp_path, text) == [["mss", "ora", "pg"]]
 
 
+def test_a_requires_service_token_joins_its_variants(tmp_path):
+    text = (case(THREE).replace("requires: [postgres]", "requires: [postgres, gcs]")
+            .replace("tokens: {V_RUN: pg}", "tokens: {V_RUN: pg, V_B: '${GCS_BUCKET}'}")
+            .replace("tokens: {V_RUN: mss}", "tokens: {V_RUN: mss, V_B: '${GCS_BUCKET}'}"))
+    assert _groups(tmp_path, text) == [["mss", "pg"], ["ora"]]
+
+
+def test_a_config_file_case_is_one_group(tmp_path):
+    text = case(THREE).replace("properties: {Run: '${V_RUN}'}",
+                               "properties: {Run: '${V_RUN}', ConfigFile: '${TEST_DIR}/c.json'}")
+    assert _groups(tmp_path, text) == [["mss", "ora", "pg"]]
+
+
 def test_an_explicit_mid_run_route_joins_every_variant(tmp_path):
     text = case(THREE).replace(
         "target: {input: in.json}",
