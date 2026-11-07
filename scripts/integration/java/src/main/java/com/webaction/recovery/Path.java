@@ -20,6 +20,13 @@ public class Path implements Serializable, Comparable<Path> {
     private final String distributionID;
     private final SourcePosition low;
     private final SourcePosition high;
+    /**
+     * {@link #getPathHash}, computed on first use: the real class interns its item list and caches
+     * the list's string, so a repeated call costs nothing there and must cost nothing here, or the
+     * perf tier prices a call count the platform does not pay. 0 until computed.
+     */
+    private transient int pathHash;
+    private transient boolean pathHashed;
 
     /** A path at {@code low}, with no separate high water mark. */
     public Path(UUID componentID, String distributionID, SourcePosition low) {
@@ -66,9 +73,13 @@ public class Path implements Serializable, Comparable<Path> {
      * always) do not.</p>
      */
     public int getPathHash() {
-        String component = componentID != null ? componentID.toString() : "*";
-        String distribution = distributionID != null && !distributionID.isEmpty() ? distributionID : "*";
-        return (component + "+" + distribution).hashCode();
+        if (!pathHashed) {
+            String component = componentID != null ? componentID.toString() : "*";
+            String distribution = distributionID != null && !distributionID.isEmpty() ? distributionID : "*";
+            pathHash = (component + "+" + distribution).hashCode();
+            pathHashed = true;
+        }
+        return pathHash;
     }
 
     /**

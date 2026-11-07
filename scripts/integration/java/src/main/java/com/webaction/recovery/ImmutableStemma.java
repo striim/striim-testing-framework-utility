@@ -1,5 +1,7 @@
 package com.webaction.recovery;
 
+import java.util.List;
+
 import com.webaction.uuid.UUID;
 
 /**
@@ -15,6 +17,11 @@ public class ImmutableStemma extends Stemma {
 
     private final SourcePosition low;
     private final SourcePosition high;
+    /**
+     * {@link #toPaths}, built once: the platform's {@code InitialImmutableStemma} caches its paths,
+     * so a repeated call returns the same list there and must cost nothing here either.
+     */
+    private transient List<Path> cachedPaths;
 
     /** A position at {@code low}, with no separate high water mark. */
     public ImmutableStemma(UUID componentID, String distributionID, SourcePosition low) {
@@ -37,6 +44,16 @@ public class ImmutableStemma extends Stemma {
     @Override
     public SourcePosition getHighSourcePosition() {
         return high;
+    }
+
+    @Override
+    public List<Path> toPaths() {
+        List<Path> paths = cachedPaths;
+        if (paths == null) {
+            paths = super.toPaths();
+            cachedPaths = paths;
+        }
+        return paths;
     }
 
     /** The single stemma a one-path {@link Position} describes, or null when it has none. */
