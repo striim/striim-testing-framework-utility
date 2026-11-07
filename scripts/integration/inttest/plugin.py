@@ -2136,14 +2136,19 @@ class IntYamlItem(pytest.Item):
                 # (Ctrl-C, striim-test's cancel) ends their JVMs too; one sent to this PID alone
                 # waits for each to finish or reach its timeout.
                 pool.shutdown(wait=True, cancel_futures=True)
+        def ends_session(e) -> bool:
+            return not isinstance(e, outcome_types) or isinstance(e, pytest.exit.Exception)
+
         for _, e in outcomes:
-            if e is not None and not isinstance(e, outcome_types):
+            if e is not None and ends_session(e):
                 raise e
         for g in alone:
             try:
                 run_all(g)
                 outcomes.append((g, None))
             except outcome_types as e:  # reported with the others below
+                if ends_session(e):
+                    raise
                 outcomes.append((g, e))
 
         failed = [(g, e) for g, e in outcomes
