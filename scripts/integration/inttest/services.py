@@ -100,7 +100,7 @@ def started_registry_path(state_dir: Path | None = None) -> Path:
 # test_services_live.py, spanner in test_spanner_live.py; oracle has no standalone
 # live test today).
 _BUILTIN_SERVICES = frozenset({"postgres", "oracle", "spanner", "sqlserver", "gcs", "mysql",
-                               "teradata", "vertica"})
+                               "teradata", "vertica", "bigtable"})
 
 
 def supported_services() -> frozenset:

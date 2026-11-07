@@ -1,0 +1,28 @@
+# Redirect the cluster's Bigtable writers to the LOCAL emulator. BIGTABLE_EMULATOR_HOST is a
+# JVM-global redirect (+ no-auth) the Bigtable client (cloud-bigtable JVM lib) only honors via
+# this env, so Bigtable-emulator tests need it, exactly as SPANNER_EMULATOR_HOST does for
+# Spanner (../compose.spanner-emulator.yaml is the template).
+#
+# The framework applies this override automatically when it provisions the cluster
+# (livetest/striim_provision.py cluster_up -- its _COMPOSE_FILES now also loads
+# compose.bigtable-emulator.yaml), so SLT_BIGTABLE tests are self-provisioning like GCS/Kafka/
+# Spanner. It is kept OUT of the base compose.yaml so a plain `docker compose up` (or a reused
+# real cluster) still targets real Bigtable -- baked into the base it would silently send real-
+# Bigtable apps to the empty local emulator.
+#
+# The host tracks the emulator's PUBLISHED host port (services/bigtable/compose.yaml), which
+# remaps via SLT_BIGTABLE_GRPC_HOST_PORT -- the cluster reaches the emulator through that published
+# mapping on host.docker.internal, so when you override the port, export the SAME
+# SLT_BIGTABLE_GRPC_HOST_PORT for the cluster provision.
+services:
+  slt-striim:
+    environment:
+      BIGTABLE_EMULATOR_HOST: host.docker.internal:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}
+
+  slt-node:
+    environment:
+      BIGTABLE_EMULATOR_HOST: host.docker.internal:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}
+
+  slt-agent:
+    environment:
+      BIGTABLE_EMULATOR_HOST: host.docker.internal:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}

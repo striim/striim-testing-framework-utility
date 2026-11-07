@@ -86,6 +86,24 @@ def test_cluster_down_invokes_compose_down(tmp_path):
     assert "compose.spanner-emulator.yaml" in argv   # applies the emulator redirect on down too
 
 
+def test_cluster_up_self_provisions_bigtable_emulator(tmp_path):
+    # The Bigtable overlay loads unconditionally, exactly like Spanner's: the redirect is a
+    # harmless JVM-global that only the cloud-bigtable client honours, so it bakes onto every
+    # slt- container even though the emulator *container* stays gated behind SLT_BIGTABLE_SERVICE.
+    calls = []
+    sp.cluster_up(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
+    argv = calls[0][0]
+    assert "compose.bigtable-emulator.yaml" in argv
+    assert {"slt-striim", "slt-node", "slt-agent"}.issubset(set(argv))
+
+
+def test_cluster_down_applies_the_bigtable_emulator_redirect(tmp_path):
+    calls = []
+    sp.cluster_down(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
+    argv = calls[0][0]
+    assert "compose.bigtable-emulator.yaml" in argv   # applied on down too, with -v/volume cleanup
+
+
 # ---- release-awareness: version-tagged image + per-release deps ------------
 
 RELEASE_50 = {"STRIIM_RELEASE": "5.0.6.2F", "STRIIM_VERSION": "5.0.6.2F",

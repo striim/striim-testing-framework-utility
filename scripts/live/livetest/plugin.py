@@ -56,6 +56,7 @@ from livetest.oraadmin import OraAdmin
 from livetest.mssqladmin import MssqlAdmin
 from livetest import drivers as _drivers
 from livetest.spanneradmin import SpannerAdmin
+from livetest.bigtableadmin import BigtableAdmin
 from livetest.mysqlclient import MySQLAdmin
 from livetest.teradataadmin import TeradataAdmin
 from livetest.verticaadmin import VerticaAdmin
@@ -249,7 +250,7 @@ def _striim_dir():
 # Registered in pyproject.toml alongside `live`, not here: pytest_configure is called with a
 # bare fake config in seven hermetic tests, and marker registration is static configuration
 # anyway -- it does not belong in a hook.
-_SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "gcs", "kafka", "mysql", "teradata",
+_SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "bigtable", "gcs", "kafka", "mysql", "teradata",
                     "vertica", "servicenow", "bigquery")
 
 
@@ -2547,6 +2548,25 @@ class LiveItem(pytest.Item):
                                                 "schema": None}
                     admins["vertica-admin"] = {"admin": VerticaAdmin(resolved.base, role="admin"),
                                                "schema": None}
+                elif svc == "bigtable":
+                    # CBTEMULATOR: one instance, no source/target split, no schema, no SQL. The
+                    # admin reaches the emulator via {host}:{port} on this side; the Striim app
+                    # reaches it via the overlay-set JVM-global BIGTABLE_EMULATOR_HOST. There is
+                    # no DDL / seed SQL, so no ensure_setup -- the readiness gate (create + delete
+                    # the throwaway table) proves the emulator is accepting admin RPCs.
+                    _bt = BigtableAdmin({
+                        "project": resolved.base["project"],
+                        "instance": resolved.base["instance"],
+                        "emulator_host": resolved.base.get("emulator_host")
+                                         or f'{resolved.base["host"]}:{resolved.base["port"]}',
+                    })
+                    _bt_ensure = lambda ad=_bt: ad.ensure()
+                    if _parallel(os.environ):
+                        ensure_provisioned_once("bigtable-setup", _bt_ensure)
+                    else:
+                        _bt_ensure()
+                    admins["bigtable-target"] = {"admin": _bt, "schema": None}
+                    admins["bigtable-source"] = {"admin": _bt, "schema": None}
                 elif _drivers.hook(defn, "admins") or _drivers.hook(defn, "provision"):
                     # A service whose driver (livetest.drivers) supplies its connections, the
                     # setup compose cannot do, or both: provision runs once across xdist workers,

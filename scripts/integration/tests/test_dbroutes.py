@@ -10,7 +10,9 @@ from __future__ import annotations
 import pytest
 
 from inttest.dbroutes import (
+    _NON_SQL_DRIVERS,
     _PARAM_SPECS,
+    _QUERIERS,
     _RUNNERS,
     _ROUTE_DIRECTIONS,
     RouteError,
@@ -259,7 +261,19 @@ def test_spanner_route_directions_match_param_spec_directions():
 
 
 def test_every_param_spec_driver_has_a_runner():
-    assert set(spec["driver"] for spec in _PARAM_SPECS.values()) <= set(_RUNNERS)
+    # `bigtable` has a driver but NO SQL surface (its rows are read whole by the admin, not
+    # queried -- see dbroutes._NON_SQL_DRIVERS), so it is the one driver exempted from this
+    # invariant; every *other* driver must have both a runner and a querier.
+    drivers = {spec["driver"] for spec in _PARAM_SPECS.values()}
+    sql = drivers - _NON_SQL_DRIVERS
+    assert sql <= set(_RUNNERS)
+    assert sql <= set(_QUERIERS)
+    # the exempted engine must REALLY have no SQL surface, or the exemption would mask a gap:
+    # nothing non-SQL may appear in the runner/querier tables.
+    assert _NON_SQL_DRIVERS.isdisjoint(_RUNNERS)
+    assert _NON_SQL_DRIVERS.isdisjoint(_QUERIERS)
+    # and the driver that carries the exemption actually exists as a param spec.
+    assert _NON_SQL_DRIVERS <= drivers
 
 
 def test_connection_params_missing_token_raises_and_names_it():

@@ -1,0 +1,5 @@
+# CBTEMULATOR runs in-memory; nothing the emulator itself writes to a file under this dir. Keep the
+# dir free of stray runtime artifacts (a local probe's emulator log, a copied gcloud config) -- they
+# are never needed by the stack and would only pollute a review.
+*.log
+.gcloud/

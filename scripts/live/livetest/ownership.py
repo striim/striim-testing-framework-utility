@@ -79,7 +79,7 @@ UNSUPPORTED_KINDS = ("engine-tables", "topic", "bucket", "upload")   # not acqui
 FILE_KINDS = ("file-output", "server-file", "owned-dir")
 # Views before tables, and within each kind the reverse of creation order: a view or foreign key can
 # only name a relation that already existed, so every owned dependent is dropped before what it reads.
-CLEANUP_ORDER = ("oracle-trigger", "namespace", "deployment-group", "pg-view", "pg-table", "bigquery-table", "bigquery-dataset", "pg-slot", "pg-function", "spanner-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
+CLEANUP_ORDER = ("oracle-trigger", "namespace", "deployment-group", "pg-view", "pg-table", "bigquery-table", "bigquery-dataset", "pg-slot", "pg-function", "spanner-table", "bigtable-table", "kafka-topic", "engine-tables", "topic", "bucket", "file-output",
                  "server-file", "owned-dir", "upload")
 FAULT_ALIASES = {"table": "pg-table", "slot": "pg-slot", "dir": "owned-dir", "file": "file-output"}
 DOCKER_TIMEOUT_S = 60.0         # every docker command is killed after this
@@ -503,7 +503,7 @@ class Ledger:
         if kind in ("pg-table", "pg-slot", "bigquery-table"):
             return any(e["kind"] == kind and e["name"] == name and e.get("db") == db and e["attempt"] == mine
                        and e["state"] == "confirmed" for e in self.entries)
-        if kind in ("spanner-table", "topic"):
+        if kind in ("spanner-table", "bigtable-table", "topic"):
             actual_kind = "kafka-topic" if kind == "topic" else kind
             return any(e["kind"] == actual_kind and e["name"] == name and e.get("db") == db
                        and e["attempt"] == mine and e["state"] == "confirmed" for e in self.entries)
@@ -555,7 +555,7 @@ class Ledger:
             cur = (now.get("routes") or {}).get(entry.get("db"))
             if not was or not cur or was != cur:
                 return "BigQuery endpoint/project/dataset binding changed or unreadable"
-        elif kind in ("spanner-table", "kafka-topic"):
+        elif kind in ("spanner-table", "bigtable-table", "kafka-topic"):
             # These backends expose no immutable incarnation id. Never replay a prior
             # attempt's delete using only a matching endpoint configuration.
             if entry["attempt"] != self.ident.attempt:
@@ -917,7 +917,7 @@ class Ledger:
             client.deploy_tql(f"USE Global; DROP DG {name};")
         elif kind == "pg-function":
             make_catalog(_lifecycle._admin(admins, db)).run(f"DROP FUNCTION IF EXISTS {_quoted(name)}()", 30.0)
-        elif kind == "spanner-table":
+        elif kind in ("spanner-table", "bigtable-table"):
             _lifecycle._admin(admins, db).drop_owned_table(name)
         elif kind == "kafka-topic":
             _lifecycle._admin(admins, db).delete_topic(name)
@@ -979,7 +979,7 @@ class Ledger:
             rows = make_catalog(_lifecycle._admin(admins, db)).query(
                 "SELECT to_regprocedure(%s) IS NULL", (name + "()",), 30.0)
             return bool(rows[0][0])
-        if kind == "spanner-table":
+        if kind in ("spanner-table", "bigtable-table"):
             return name not in _lifecycle._admin(admins, db).list_owned_tables()
         if kind == "kafka-topic":
             return not _lifecycle._admin(admins, db).topic_exists(name)
