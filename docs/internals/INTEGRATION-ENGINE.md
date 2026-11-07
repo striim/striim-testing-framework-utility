@@ -166,7 +166,10 @@ mid-run leaves the file on disk with the lock free, and the next run proceeds. T
 `test_session_guard_cannot_strand_future_runs_with_a_stale_file`.
 
 Parallelism *within* one session is fine and is what `SLT_PARALLEL=1 -n N` is for — xdist workers
-share the controller's session and each test gets a unique `${TID}`. If you genuinely want two
+share the controller's session and each test gets a unique `${TID}`. Inside one case,
+`INT_VARIANT_WORKERS=N` drives variants on disjoint services in up to N threads
+(`IntYamlItem._drive_runs`, grouping in `_variant_groups`); variants keep one `${TID}`, so the
+grouping by service is what keeps their tables apart. If you genuinely want two
 stacks, give the second its own `INT_STACK_PREFIX` so it owns separate containers and state
 files. `INT_ALLOW_CONCURRENT_SESSIONS=1` bypasses the check for anyone who has read this and
 means it.

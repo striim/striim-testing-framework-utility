@@ -707,6 +707,13 @@ assert:
 - **It composes with `matrix:`.** Four variants × eight permutations is **32 executions of one
   authored case**.
 - **Every failure names the run**: `[postgres, UseUpsert=true]`.
+- **Runs are serial by default.** `INT_VARIANT_WORKERS=N` drives up to N variants at once, each
+  in its own worker. Variants that reach the same service (route, DDL route, explicit `mid_run`
+  route, or a `${<SERVICE>_...}` token, for a database or a `requires:` service, in a variant's
+  tokens or in `properties:`) share a worker and run in order, as do a variant's matrix
+  permutations. A case with a `ConfigFile` property runs serially. Spanner variants run alone, after the
+  others. Each worker runs until its runs end or one fails; the case then fails naming each
+  failed variant. Perf cases ignore it.
 
 **What this tier does NOT prove.** The harness stubs `RetriableWriter` and the recovery family,
 so a target case tests the writer against *our model* of the platform lifecycle — the same thing
