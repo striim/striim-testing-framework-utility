@@ -1107,6 +1107,47 @@ def _run_label(variant, overrides) -> str:
     return "" if not parts else " [" + ", ".join(parts) + "]"
 
 
+def _variant_workers(env) -> int:
+    """`INT_VARIANT_WORKERS`: how many of a case's variant groups may drive at once. Unset: 1."""
+    raw = (env.get("INT_VARIANT_WORKERS") or "").strip()
+    if not raw:
+        return 1
+    if not raw.isdigit() or int(raw) < 1:
+        raise ValueError(f"INT_VARIANT_WORKERS must be a whole number of at least 1, got {raw!r}")
+    return int(raw)
+
+
+def _variant_groups(m, runs: list) -> list:
+    """`runs` split into groups that can never touch the same database, in declaration order.
+
+    Two variants share a group when any service they reach is the same: the variant's own route,
+    its DDL routes, every explicit `mid_run` route, and every service whose tokens
+    (`${ORACLE_...}`) its token values name. Variants of one service share tables (one `${TID}`),
+    so they stay serial, as do a variant's matrix permutations. Returns
+    `[(services, [(variant, overrides), ...]), ...]`.
+    """
+    def services(variant) -> set:
+        out = {dbroutes_mod.parse_route(variant.db)[0]}
+        out |= {dbroutes_mod.parse_route(spec.db)[0] for spec in variant.ddl}
+        named = " ".join(str(v) for v in variant.tokens.values())
+        out |= {svc for svc in dbroutes_mod._PARAM_SPECS if "${" + svc.upper() + "_" in named}
+        if m.target is not None:
+            out |= {dbroutes_mod.parse_route(step.db)[0]
+                    for step in m.target.mid_run if step.db_explicit}
+        return out
+
+    names = list(dict.fromkeys(variant.name for variant, _ in runs))
+    reach = {variant.name: services(variant) for variant, _ in runs}
+    groups: list = []  # [services, set of variant names]
+    for name in names:
+        hit = [g for g in groups if g[0] & reach[name]]
+        groups = [g for g in groups if not g[0] & reach[name]]
+        groups.append([reach[name].union(*(g[0] for g in hit)),
+                       {name}.union(*(g[1] for g in hit))])
+    groups.sort(key=lambda g: min(names.index(n) for n in g[1]))
+    return [(g[0], [r for r in runs if r[0].name in g[1]]) for g in groups]
+
+
 def _id_safe(value) -> str:
     """Escapes the characters `_run_id` uses as separators, so a value containing one cannot
     forge a different run's id. `~` is the escape because it is not a separator here and is
@@ -1313,6 +1354,11 @@ def pytest_configure(config):
                 "supported, but you must opt in explicitly: set SLT_PARALLEL=1 to allow "
                 "pytest-xdist (-n/--dist)."
             )
+
+    try:
+        _variant_workers(os.environ)
+    except ValueError as e:
+        raise pytest.UsageError(str(e)) from None
 
     # Refuse a second concurrent session against this checkout -- see the docstring, which
     # records what two of them actually do to each other. AFTER the parallel guard above so
@@ -1793,10 +1839,7 @@ class IntYamlItem(pytest.Item):
             # include "source wider than target must refuse" (§28.1), which has no output to
             # compare and no rows to read back.
             if m.assert_.expect_error is not None:
-                for i, (variant, overrides) in enumerate(m.runs()):
-                    if variant is not None or i > 0:
-                        self._reset_fixtures(m, tok, overrides, variant)
-                    self._expect_error(m, overrides, variant)
+                self._drive_runs(m, tok, self._expect_error)
                 return
 
 
@@ -1807,14 +1850,7 @@ class IntYamlItem(pytest.Item):
                 # ONE case, every permutation of its `matrix:` flags, ONE assert block (§6.1a).
                 # Absent `matrix:` this is a single pass with no overrides -- the existing
                 # behaviour, expressed rather than special-cased.
-                for i, (variant, overrides) in enumerate(m.runs()):
-                    # A VARIANTS case has no case-level `ddl:` -- step 5 created nothing -- so
-                    # every run including the FIRST must lay down its own engine's tables. A
-                    # non-variant case had its DDL run in step 5, so it only needs the reset
-                    # BETWEEN runs.
-                    if variant is not None or i > 0:
-                        self._reset_fixtures(m, tok, overrides, variant)
-                    self._run_target_case(m, overrides, variant)
+                self._drive_runs(m, tok, self._run_target_case)
                 return
 
             # assert.data drives IntegrationProcessor (SPEC §7) per {input, match} entry
@@ -2042,6 +2078,73 @@ class IntYamlItem(pytest.Item):
             f"behaviour change, and silently writing what this case says must be rejected is the "
             f"outcome it exists to prevent.")
 
+    def _drive_runs(self, m, tok, drive) -> None:
+        """Every run of `m.runs()`: reset its fixtures, then `drive(m, overrides, variant)`.
+
+        Serial unless `INT_VARIANT_WORKERS` > 1 and the variants split into groups on disjoint
+        services (`_variant_groups`): then up to that many groups drive at once, each serial
+        inside. Spanner's group runs alone, after the others. Every group runs to its end; the
+        failures are reported together, each naming its run.
+        """
+        def run_all(runs):
+            for i, (variant, overrides) in enumerate(runs):
+                # A VARIANTS case has no case-level `ddl:` -- step 5 created nothing -- so every
+                # run including the FIRST must lay down its own engine's tables. A non-variant
+                # case had its DDL run in step 5, so it only needs the reset BETWEEN runs.
+                if variant is not None or i > 0:
+                    self._reset_fixtures(m, tok, overrides, variant)
+                drive(m, overrides, variant)
+
+        runs = m.runs()
+        workers = _variant_workers(os.environ)
+        groups = _variant_groups(m, runs) if workers > 1 and m.variants else []
+        if len(groups) < 2:
+            run_all(runs)
+            return
+
+        import concurrent.futures
+
+        outcome_types = (Exception, pytest.fail.Exception, pytest.skip.Exception)
+        outcomes = []  # (group runs, exception or None)
+        shared = [g for svcs, g in groups if "spanner" not in svcs]
+        alone = [g for svcs, g in groups if "spanner" in svcs]
+        if shared:
+            pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(workers, len(shared)), thread_name_prefix="int-variant")
+            try:
+                futures = [pool.submit(run_all, g) for g in shared]
+                for g, future in zip(shared, futures):
+                    outcomes.append((g, future.exception()))
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+        for g in alone:
+            try:
+                run_all(g)
+                outcomes.append((g, None))
+            except outcome_types as e:  # reported with the others below
+                outcomes.append((g, e))
+        for _, e in outcomes:
+            if e is not None and not isinstance(e, outcome_types):
+                raise e
+
+        failed = [(g, e) for g, e in outcomes
+                  if e is not None and not isinstance(e, pytest.skip.Exception)]
+        if len(failed) == 1:
+            raise failed[0][1]
+        if failed:
+            parts = []
+            for g, e in failed:
+                names = ", ".join(dict.fromkeys(v.name for v, _ in g))
+                text = str(getattr(e, "msg", None) or e) or type(e).__name__
+                if not isinstance(e, (AssertionError, pytest.fail.Exception)):
+                    text = f"{type(e).__name__}: {text}"
+                parts.append(f"--- variant group [{names}] ---\n{text}")
+            pytest.fail(f"{m.name}: {len(failed)} of {len(outcomes)} variant groups failed "
+                        f"(INT_VARIANT_WORKERS={workers}).\n" + "\n".join(parts))
+        skipped = [e for _, e in outcomes if e is not None]
+        if skipped:
+            raise skipped[0]
+
     def _variant_tokens(self, variant) -> dict:
         """This run's token table: the case's own, plus the variant's, each rendered.
 
@@ -2072,8 +2175,8 @@ class IntYamlItem(pytest.Item):
                 try:
                     dbroutes_mod.run_sql_file(spec.db, spec.path, tok)
                 except Exception as e:
-                    pytest.fail(f"{m.name}: {kind} {spec.file!r} against {spec.db!r} failed "
-                                f"before permutation {overrides}: {e}")
+                    pytest.fail(f"{m.name}{_run_label(variant, overrides)}: {kind} {spec.file!r} "
+                                f"against {spec.db!r} failed before permutation {overrides}: {e}")
 
     def _assert_expect_log(self, m, at: str, log_sink: list) -> None:
         """`assert.expect_log:` -- every named substring must appear in what the operator LOGGED.
