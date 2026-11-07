@@ -26,9 +26,16 @@
 name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
 services:
   slt-bigtable:
-    # Pinned by DIGEST for reproducibility. The :emulators tag is the gcloud-maintained image that
-    # bundles `cbtemulator`; the digest pins the exact build the CBTEMULATOR was validated against
-    # (resolves with `docker buildx imagetools inspect <image>` -- no daemon needed).
+    # EXTERNAL IMAGE -- the field's "dockerized Bigtable" artifact, like the BigQuery service's
+    # SLT_BIGQUERY_IMAGE. The framework owns the *connection* (livetest/bigtableadmin.py) and the
+    # orchestration, and NEVER the image: it supplies a validated default pin but does not build or
+    # distribute it, and SLT_BIGTABLE_IMAGE overrides to the field's own CBTEMULATOR image. Reuse
+    # an emulator you run yourself with SLT_BIGTABLE_HOST (live_override_env) instead.
+    #
+    # Default pin, below: pinned by DIGEST for reproducibility. The :emulators tag is the gcloud-
+    # maintained image that bundles `cbtemulator`; the digest pins the exact build the CBTEMULATOR
+    # was validated against (resolves with `docker buildx imagetools inspect <image>` -- no daemon
+    # needed).
     #
     # The tag is a multi-arch manifest LIST (index digest sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935).
     # We pin the linux/amd64 MANIFEST explicitly, because `platform: linux/amd64` under a manifest
@@ -41,7 +48,7 @@ services:
     # stream support may move: it does NOT implement change streams (a ReadChangeStream /
     # GenerateInitialChangeStreamPartitions RPC SIGSEGVs the bttest server -- see docs/
     # BIGTABLE_EMULATOR.md, "BCR-1"/"Probe record").
-    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    image: ${SLT_BIGTABLE_IMAGE:-gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a}
     container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
     # Measured ceilings (a limits sampler re-derives them). The CBTEMULATOR is an in-memory
     # store; it grows with the data it holds. 2g covers the serial pass.

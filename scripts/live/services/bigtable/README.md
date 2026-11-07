@@ -4,8 +4,13 @@ Using this service in a test (accounts, tokens, routes, using your own instance)
 
 How it is built:
 
-- Stock `gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061a…` (`:emulators`, pinned by
-  the linux/amd64 manifest digest): the image bundles `cbtemulator`, the official Cloud Bigtable
+- **External image, never built by the framework (mirrors the BigQuery service / `SLT_BIGQUERY_IMAGE`):**
+  the CBTEMULATOR image is the field's own "dockerized Bigtable" artifact, like BigQuery's `
+  SLT_BIGQUERY_IMAGE`. The framework owns the *connection* (`livetest/bigtableadmin.py`) and the
+  orchestration, and it **never builds or distributes the image** -- it supplies a validated default
+  pin and `SLT_BIGTABLE_IMAGE` overrides to the field's own CBTEMULATOR image. See "Who owns the
+  image" below. As the default pin, `gcr.io/.../google-cloud-cli@sha256:f6d5061a…` (`:emulators`,
+  pinned by the linux/amd64 manifest digest) bundles `cbtemulator`, the official Cloud Bigtable
   emulator. The service starts it with `gcloud beta emulators bigtable start` and publishes one gRPC
   port (`SLT_BIGTABLE_GRPC_HOST_PORT`, default 9470) to the host. There is no separate REST/admin
   port -- unlike Spanner, CBTEMULATOR is a single gRPC listener.
@@ -24,6 +29,29 @@ How it is built:
 Health gate: the healthcheck below / `services.ensure_up` runs an admin-table create+delete; it is
 the "really prove readiness" gate (a half-booted CBTEMULATOR opens its listener before it accepts
 admin RPCs). See README `Health gate` section below.
+
+## Who owns the image
+
+Mirrors the BigQuery service's split: the framework is the **connect + orchestration** layer
+(`livetest/bigtableadmin.py`, the `services/bigtable` recipe, the Striim overlay) and **never builds
+or distributes the CBTEMULATOR image**. The image is an **external artifact the field supplies** --
+its own "dockerized Bigtable" -- the same boundary as BigQuery's `SLT_BIGQUERY_IMAGE`.
+
+- **Supplied, not built.** `compose.yaml` resolves the emulator image from `SLT_BIGTABLE_IMAGE`,
+  defaulting to the validated gcloud pin. `docker compose up` *pulls* that ref; the framework never
+  runs `build` for it (BigQuery's driver returns `build_required=False`; the Bigtable service carries
+  no build of its own, so nothing to build).
+- **Validation is by pin, not by a build-owned label.** Unlike BigQuery -- a field-*built* image the
+  framework gates on its `org.opencontainers.image.version` / `.revision` OCI label -- CBTEMULATOR is
+  a *public* gcloud image, so the "qualified" boundary here is the **validated manifest digest** the
+  default pins: re-pin deliberately when the gcloud image moves, then RE-RUN the BCR-1 / BT-9 probes
+  (the binary's change-stream behaviour can shift). A `build_required` / OCI-label gate is *not*
+  wired for this service on purpose -- there is no field build to gate; the pin + the probe record is
+  the validation. (Explanatory note, not a TODO: if a real, field-built CBTEMULATOR image lands, the
+  BQ-style label gate + a `driver:` is the natural seam.)
+- **Point at your own.** `SLT_BIGTABLE_HOST` (`live_override_env`) reuses an emulator you run
+  yourself and skips `docker compose up` -- a separate intent from the `SLT_BIGTABLE_IMAGE` /
+  `SLT_BIGTABLE_GRPC_HOST_PORT` knobs, which move *the framework's* container.
 
 ## Health gate
 
