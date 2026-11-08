@@ -89,6 +89,14 @@ public abstract class Stemma implements Serializable {
     }
 
     /**
+     * Whether this stemma is a root of the lattice, with no parents. Always true here: the class note
+     * says why this mock has none. The real class answers false for a medial stemma.
+     */
+    public boolean isInitial() {
+        return true;
+    }
+
+    /**
      * {@code AFTER} semantics; always false here, for the reason {@link Path#isAfter()} gives.
      * Abstract on the real class, whose stemmas carry the source's {@code atOrAfter} marker.
      */
