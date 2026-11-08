@@ -17,6 +17,13 @@ import java.io.ObjectOutputStream;
  * existing checkpoint table and have the position already in it read correctly. <b>That is a T4
  * assertion against a real Striim, and nothing here substitutes for it.</b>
  *
+ * <p><b>Size.</b> Java serialization writes every class descriptor, about 700 bytes for one path,
+ * where the platform's registered-class Kryo writes tens. The perf tier writes a position into
+ * every checkpoint row, so that size was priced as if it were the writer's. A {@code Position}
+ * of the harness's own {@code OrdinalPosition} paths is therefore written compactly
+ * ({@link CompactPositions}, about 40 bytes a path); anything else is still Java-serialized, and
+ * {@link #read} tells the two apart by their first byte.</p>
+ *
  * <p>What this mock does certify is the property T2 is for: a position written to a real database
  * and read back out of it after a restart is the position that was written. That is the writer's
  * own round trip, and it is independent of the encoding.</p>
@@ -34,6 +41,10 @@ public class KryoSingleton {
      * @return the encoded bytes
      */
     public static byte[] write(Object value, boolean registeredOnly) {
+        final byte[] compact = CompactPositions.write(value);
+        if (compact != null) {
+            return compact;
+        }
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {
@@ -54,6 +65,9 @@ public class KryoSingleton {
      * @return the decoded object
      */
     public static Object read(byte[] bytes, boolean registeredOnly) {
+        if (CompactPositions.isCompact(bytes)) {
+            return CompactPositions.read(bytes);
+        }
         try (ObjectInputStream in = new ObjectInputStream(new ByteArrayInputStream(bytes))) {
             return in.readObject();
         } catch (Exception e) {
