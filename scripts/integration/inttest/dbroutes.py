@@ -726,7 +726,8 @@ def setup_bigtable(table: str, families: dict, *, gc_rules: dict | None = None,
 
 def teardown_bigtable(table: str, route: str = "bigtable-target",
                       tokens: Mapping[str, str] | None = None) -> None:
-    """Drop `table` at teardown via the route's BigtableAdmin.drop_table. Best-effort.
+    """Drop `table` at teardown via the route's BigtableAdmin.drop_table: an
+    already-missing table is fine, any other failure raises.
     Mirrors the framework's per-test teardown contract for a service the admin 'owns'."""
     admin = _bigtable_admin(route, dict(tokens or {}))
     admin.drop_table(table)

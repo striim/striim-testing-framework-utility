@@ -268,9 +268,10 @@ class BigtableAdmin:
         self._table_cache.pop(name, None)
         admin = self._admin()
         tac = admin.table_admin_client
-        try:               # best-effort teardown: a missing table no-ops
+        from google.api_core.exceptions import NotFound
+        try:               # an already-missing table is the only failure that means "gone"
             tac.delete_table(name=self._full_table_name(name))
-        except Exception:  # noqa: BLE001
+        except NotFound:
             pass
 
     def list_families(self, table_name: str) -> list:
@@ -389,14 +390,12 @@ class BigtableAdmin:
     def list_owned_tables(self) -> set:
         admin = self._admin()
         tac = admin.table_admin_client
-        try:
-            p = self._parent_instance()
-            names = set()
-            for t in tac.list_tables(_list_tables_req(p)):
-                names.add(t.name.split("/")[-1])
-            return names
-        except Exception:      # noqa: BLE001 -- best-effort teardown list
-            return set()
+        # A failed listing raises: an empty set would let the ledger verify a table absent
+        # that it never saw deleted.
+        names = set()
+        for t in tac.list_tables(_list_tables_req(self._parent_instance())):
+            names.add(t.name.split("/")[-1])
+        return names
 
 
 def _list_tables_req(instance_path: str):
