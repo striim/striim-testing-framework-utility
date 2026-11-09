@@ -338,7 +338,48 @@ def test_a_shared_cluster_redirecting_bigtable_passes_for_an_opted_in_run(tmp_pa
     from livetest import striim_provision
     monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
         argv, 0, stdout=json.dumps(["BIGTABLE_EMULATOR_HOST=host.docker.internal:9470"]), stderr=""))
-    monkeypatch.setenv("SLT_BIGTABLE_SERVICE", "1")
-    env = {**SHARED, "STRIIM_HOME": install(tmp_path)}
+    env = _shell(monkeypatch, tmp_path, SLT_BIGTABLE_SERVICE="1")
     c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
     assert c.status == "ok", c.message
+
+
+def _shell(monkeypatch, tmp_path, **exported):
+    # The doctor is handed the shell's environment; set it there too, as a real shell would.
+    for key, value in exported.items():
+        monkeypatch.setenv(key, value)
+    return {**SHARED, "STRIIM_HOME": install(tmp_path), **exported}
+
+
+def _members_on(monkeypatch, port):
+    import json
+    import subprocess
+    from livetest import striim_provision
+    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps([f"BIGTABLE_EMULATOR_HOST=host.docker.internal:{port}"]), stderr=""))
+
+
+@pytest.mark.parametrize("cluster_port, expected", [("9479", "ok"), ("9470", doctor.FAIL)],
+                         ids=["cluster-on-the-dotenv-port", "cluster-on-the-default-port"])
+def test_the_doctor_takes_the_bigtable_port_from_dotenv_as_the_run_does(tmp_path, monkeypatch,
+                                                                       cluster_port, expected):
+    # The port is set only in .env; the run fills it in (paths.effective_env), so the doctor must too.
+    from livetest import paths
+    dotenv_file = tmp_path / ".env"
+    dotenv_file.write_text("SLT_BIGTABLE_GRPC_HOST_PORT=9479\n")
+    dotenv = paths.read_dotenv(dotenv_file)
+    assert dotenv["SLT_BIGTABLE_GRPC_HOST_PORT"] == "9479"
+    _members_on(monkeypatch, cluster_port)
+    env = _shell(monkeypatch, tmp_path, SLT_BIGTABLE_SERVICE="1")
+    c, = doctor.check_cluster_identity(env, dotenv, running=lambda e: "5.4.0.6")
+    assert c.status == expected, c.message
+    assert "SLT_BIGTABLE_GRPC_HOST_PORT" not in __import__("os").environ   # nothing exported meanwhile
+
+
+@pytest.mark.parametrize("cluster_port, expected", [("9479", "ok"), ("9470", doctor.FAIL)],
+                         ids=["cluster-on-the-exported-port", "cluster-on-the-default-port"])
+def test_the_doctor_takes_an_exported_bigtable_port(tmp_path, monkeypatch, cluster_port, expected):
+    _members_on(monkeypatch, cluster_port)
+    env = _shell(monkeypatch, tmp_path, SLT_BIGTABLE_SERVICE="1", SLT_BIGTABLE_GRPC_HOST_PORT="9479")
+    c, = doctor.check_cluster_identity(env, {"SLT_BIGTABLE_GRPC_HOST_PORT": "9470"},
+                                       running=lambda e: "5.4.0.6")
+    assert c.status == expected, c.message                       # the shell wins over .env

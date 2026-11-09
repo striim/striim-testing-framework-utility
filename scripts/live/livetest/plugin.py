@@ -467,7 +467,8 @@ def _resolve_release(config) -> dict:
             pass
     return config._slt_release
 
-def _redeploy_reason(running_version, want_version, striim_dir, ownership: str = "") -> str | None:
+def _redeploy_reason(running_version, want_version, striim_dir, ownership: str = "",
+                     env=None) -> str | None:
     """Why a reachable Docker cluster must be torn down and redeployed, or None to reuse it.
 
     A separate function so the decision is testable: it was inline, and the tests for it
@@ -482,13 +483,15 @@ def _redeploy_reason(running_version, want_version, striim_dir, ownership: str =
     is most likely to have just made one.
 
     The Bigtable emulator redirect is held to this run's choice the same way, in every ownership
-    mode: reuse never runs compose, so a cluster started with (or without) the opt-in keeps it."""
+    mode: reuse never runs compose, so a cluster started with (or without) the opt-in keeps it.
+    ``env`` is the run's effective environment (the process environment by default, as the live run
+    has merged .env into it); the doctor, which has not, passes its own."""
     if running_version and want_version and _tryout.strip_tag(running_version) != want_version:
         return f"running version {_tryout.strip_tag(running_version)} != required {want_version}"
     why = _tryout_redeploy_reason(running_version, want_version)
     if why:
         return why
-    why = _sp.bigtable_redirect_reason(striim_dir or _STRIIM_DIR)     # doctor passes no directory
+    why = _sp.bigtable_redirect_reason(striim_dir or _STRIIM_DIR, env=env)   # doctor: no directory
     if why:
         return why
     if ownership != "shared" and want_version and not _sp.image_inputs_match(want_version, striim_dir):

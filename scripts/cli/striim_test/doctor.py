@@ -571,7 +571,7 @@ def check_cluster_identity(env: dict, dotenv: dict, running=None) -> list:
     """Docker mode, with a cluster already answering: will the run use it? A shared run never
     redeploys and an exclusive run never adopts one, so a mismatch skips every live case only when
     the live tier reaches it (livetest.plugin._redeploy_reason, livetest.infra.forbid_redeploy)."""
-    from livetest import infra, plugin, releases
+    from livetest import infra, paths, plugin, releases
     mode, source = _lookup(infra.OWNERSHIP_ENV, env, dotenv)
     if mode == "exclusive":
         return [_fail("cluster", f"exclusive ({infra.OWNERSHIP_ENV}, set in {source}) never adopts a running "
@@ -586,7 +586,8 @@ def check_cluster_identity(env: dict, dotenv: dict, running=None) -> list:
     have = (running or _running_version)(env)
     if not have:
         return [_warn("cluster", "a cluster answers, but its version could not be read from its image")]
-    why = plugin._redeploy_reason(have, want, None, "shared")
+    # The run fills unset settings in from .env (paths.effective_env) before it decides; so does this.
+    why = plugin._redeploy_reason(have, want, None, "shared", env=paths.effective_env(env, dotenv))
     if why:
         home = (env.get("STRIIM_HOME") or "").strip() or "unset"
         running_release = plugin._tryout.strip_tag(have)
