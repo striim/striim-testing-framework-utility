@@ -13,10 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from livetest import plugin, stack, striim_provision as sp
+from livetest import paths, plugin, stack, striim_provision as sp
 from tests.test_cluster_resolution import groups, resolve
 
 OPT_INS = ("SLT_BIGTABLE_SERVICE", "SLT_EMULATORS", "SLT_BIGTABLE_GRPC_HOST_PORT")
+DOTENV_VALUES = paths.dotenv_values     # the real .env layer; the root conftest stubs it out per test
 REDIRECT_9470 = "host.docker.internal:9470"
 
 
@@ -136,3 +137,26 @@ def test_a_member_docker_cannot_inspect_does_not_count_as_matching(tmp_path):
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr="no such container")
     why = sp.bigtable_redirect_reason(tmp_path, env={}, run=broken)
     assert "cannot be inspected" in why
+
+
+@pytest.mark.parametrize("dotenv,on", [("SLT_BIGTABLE_SERVICE=1\n", True), ("SLT_BIGTABLE_SERVICE=0\n", False)])
+def test_a_blank_process_opt_in_takes_the_dotenv_value_everywhere(monkeypatch, tmp_path, dotenv, on):
+    # A blank process value counts as unset, so .env fills it in. The service gate reads the run's
+    # settings that way; the cluster's redirect overlay and the reuse check must make the same choice.
+    from livetest import preflight
+    monkeypatch.setattr(paths, "dotenv_values", DOTENV_VALUES)
+    (tmp_path / "clone.env").write_text(dotenv)
+    for key in ("SLT_PROJECT_ROOT", "SLT_MACHINE_ENV", *OPT_INS):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("SLT_FRAMEWORK_DOTENV", str(tmp_path / "clone.env"))
+    monkeypatch.setenv("SLT_BIGTABLE_SERVICE", " ")
+    assert preflight._gated_out("bigtable", paths.effective_env()) is not on
+    calls = []
+    sp.cluster_up(tmp_path, run=lambda argv, cwd=None: calls.append(argv))
+    assert (sp._BIGTABLE_OVERLAY in calls[0]) is on
+    striim_dir = sp.Path(sp.__file__).resolve().parents[1] / "services" / "striim"
+    redirected, plain = Cluster(REDIRECT_9470).inspect, Cluster(None).inspect
+    assert sp.bigtable_redirect_reason(striim_dir, run=redirected if on else plain) is None
+    assert "this run" in sp.bigtable_redirect_reason(striim_dir, run=plain if on else redirected)

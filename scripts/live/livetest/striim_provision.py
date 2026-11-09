@@ -757,14 +757,15 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
 #
 # The Bigtable redirect (compose.bigtable-emulator.yaml) is applied only when the run opts in to
 # the Bigtable service -- its service.yaml opt_in_env or the SLT_EMULATORS umbrella, read by
-# registry.opted_in as preflight and doctor read them -- so a run that did not ask for the emulator never points a Striim
+# registry.opted_in from the run's effective settings (.env fills a blank process value), as
+# preflight and doctor read them -- so a run that did not ask for the emulator never points a Striim
 # Bigtable client at one. The overlay only adds that variable to the three services, so the
 # compose project and its containers are the same with or without it, and teardown finds them
 # either way. Reusing a running cluster never runs compose, so bigtable_redirect_reason holds a
 # reused cluster's members to the same choice before it is accepted.
 def _bigtable_emulator_requested(env=None) -> bool:
-    from livetest import registry
-    return registry.opted_in("SLT_BIGTABLE_SERVICE", os.environ if env is None else env)
+    from livetest import paths, registry
+    return registry.opted_in("SLT_BIGTABLE_SERVICE", paths.effective_env(env))
 
 
 def _compose_files():
