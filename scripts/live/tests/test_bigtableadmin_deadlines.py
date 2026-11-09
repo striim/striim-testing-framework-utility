@@ -110,3 +110,40 @@ def test_an_assertion_on_a_stalled_table_fails_at_its_timeout_and_keeps_its_reco
     (record,) = failed.value.records
     assert record["status"] == "failed" and record["target"] == "t1_rows"
     assert "did not finish within" in record["detail"]
+
+
+@pytest.mark.parametrize("pages", [1, 4], ids=["one-page", "four-pages"])
+def test_listing_pages_share_one_budget(monkeypatch, pages):
+    # Each page takes 0.15s; under a 0.25s budget one page fits, four must not.
+    from google.cloud.bigtable_admin_v2.types import ListTablesRequest, ListTablesResponse, Table
+    remaining = []
+
+    def list_tables(raw, context):
+        request = ListTablesRequest.deserialize(raw)
+        remaining.append(context.time_remaining())
+        time.sleep(0.15)
+        page = int(request.page_token or "0")
+        return ListTablesResponse.serialize(ListTablesResponse(
+            tables=[Table(name=f"projects/test-project/instances/test-instance/tables/t{page}")],
+            next_page_token=str(page + 1) if page + 1 < pages else ""))
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler(
+        "google.bigtable.admin.v2.BigtableTableAdmin",
+        {"ListTables": grpc.unary_unary_rpc_method_handler(list_tables)}),))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    monkeypatch.setattr(bigtableadmin, "_CLIENTS", {})
+    try:
+        admin = _admin(f"127.0.0.1:{port}")
+        started = time.monotonic()
+        if pages == 1:
+            assert admin.list_owned_tables(timeout=0.25) == {"t0"}
+        else:
+            with pytest.raises((DeadlineExceeded, TimeoutError)):
+                admin.list_owned_tables(timeout=0.25)
+            assert time.monotonic() - started < 0.25 + 0.5
+            assert len(remaining) <= 2                       # no page is asked for after expiry
+        assert all(r is not None and r <= 0.25 for r in remaining)
+    finally:
+        server.stop(0)

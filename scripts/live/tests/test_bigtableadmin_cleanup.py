@@ -31,7 +31,8 @@ class _TableAdmin:
         assert request.parent == INSTANCE
         if self.list_error is not None:
             raise self.list_error
-        return [SimpleNamespace(name=f"{INSTANCE}/tables/{n}") for n in self.listed]
+        return SimpleNamespace(tables=[SimpleNamespace(name=f"{INSTANCE}/tables/{n}") for n in self.listed],
+                               next_page_token="")
 
 
 def _admin(tac):

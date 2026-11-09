@@ -537,16 +537,22 @@ class BigtableAdmin:
         tac = admin.table_admin_client
         # A failed listing raises: an empty set would let the ledger verify a table absent
         # that it never saw deleted.
-        names = set()
-        for t in tac.list_tables(_list_tables_req(self._parent_instance()),
-                                 **_Budget(timeout, "list_owned_tables").admin()):
-            names.add(t.name.split("/")[-1])
-        return names
+        # Pages are fetched one at a time under one budget: the SDK's pager would hand every
+        # later page the first page's full timeout again. Only each response's own tables are
+        # read, and no page is requested once the budget is spent.
+        budget = _Budget(timeout, "list_owned_tables")
+        names, token = set(), ""
+        while True:
+            page = tac.list_tables(_list_tables_req(self._parent_instance(), token), **budget.admin())
+            names.update(t.name.split("/")[-1] for t in page.tables)
+            token = page.next_page_token
+            if not token:
+                return names
 
 
-def _list_tables_req(instance_path: str):
+def _list_tables_req(instance_path: str, page_token: str = ""):
     from google.cloud.bigtable_admin_v2.types import ListTablesRequest
-    return ListTablesRequest(parent=instance_path)
+    return ListTablesRequest(parent=instance_path, page_token=page_token)
 
 
 # --- CLI shim ------------------------------------------------------------------------
