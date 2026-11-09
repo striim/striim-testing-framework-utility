@@ -13,7 +13,7 @@ python_module_hint: Install the integration engine dependencies, including googl
 # `opt_in_env: SLT_BIGTABLE_SERVICE`. The live service opt-ins because its Striim overlay
 # (services/striim/compose.bigtable-emulator.yaml) sets the JVM-global BIGTABLE_EMULATOR_HOST,
 # which a reused slt-* cluster would otherwise let the empty emulator hijack on real Bigtable.
-# The integration tier has no such overlay: a `db: bigtable-target` manifest reaches the CBTEMULATOR
+# The integration tier has no such overlay: the CBTEMULATOR is reached
 # only through the harness's own admin (inttest/bigtableadmin, via inttest/dbroutes.py) at its
 # dedicated base port 19470, so nothing is redirected and a non-bigtable test never sees a hijacked
 # connection. The model (spanner) is ungated on BOTH tiers, so the gate must stay absent;

@@ -680,10 +680,9 @@ _QUERIERS = {"postgres": _query_postgres, "oracle": _query_oracle,
              "spanner": _query_spanner, "sqlserver": _query_sqlserver, "mysql": _query_mysql,
              "teradata": _query_teradata, "vertica": _query_vertica}
 
-# The one engine with a driver but NO SQL surface: bigtable. It appears as a route so a
-# target/source can point at it, but its rows are read *whole* by the admin and compared to an
-# expected/*.json snapshot -- never queried or executed (see `_bigtable_admin` / `setup_bigtable`
-# / `read_cells` below). So `bigtable` is intentionally absent from `_RUNNERS`/`_QUERIERS`, and the
+# The one engine with a driver but NO SQL surface: bigtable. It appears as a route, but its rows
+# are read *whole* by the admin -- never queried or executed (see `_bigtable_admin` /
+# `setup_bigtable` / `read_cells` below). So `bigtable` is intentionally absent from `_RUNNERS`/`_QUERIERS`, and the
 # "every driver has a runner" invariant the self-test enforces applies to every driver *except* this
 # set. A single named constant keeps the test honest: it asserts the module's own view of which
 # engines are non-SQL, rather than a test-local literal.
@@ -692,16 +691,16 @@ _NON_SQL_DRIVERS = frozenset({"bigtable"})
 
 # --- Bigtable (no SQL; the admin reads a whole table) -----------------------------------------
 # Bigtable is not a query engine -- the admin reads back a WHOLE table as
-# {row: <hex key>, cells: {<fam>:<qual>: <hex value>}} and the assert.target tier
-# compares that to an expected/*.json snapshot. So this module exposes two bigtable-
-# specific entry points that bypass the query-rows model entirely:
+# {row: <hex key>, cells: {<fam>:<qual>: <hex value>}}. These helpers bypass the query-rows
+# model entirely:
 #
 #   setup_bigtable(table, families, gc, seed)  -- create the table + families/GC + seed rows
-#   read_cells(route, table)                   -- read the table back for an assert snapshot
+#   read_cells(route, table)                   -- read the table back as a JSON snapshot
 #
-# `query_rows`/`run_sql_text`/`_RUNNERS`/`_QUERIERS` raise for driver 'bigtable' because
-# Bigtable has no SQL; the assert.target tier dispatches bigtable routes to `read_cells`
-# and `setup_bigtable` instead of `query_rows`.
+# They are groundwork: no test.yaml key and no assert tier calls them yet (inttest/plugin.py's
+# _assert_target_rows still reads through query_rows), so a manifest cannot set up or assert a Bigtable
+# table. `query_rows`/`run_sql_text`/`_RUNNERS`/`_QUERIERS` raise for driver 'bigtable' because
+# Bigtable has no SQL.
 
 
 def _bigtable_admin(route: str, tokens: Mapping[str, str]):
@@ -737,8 +736,7 @@ def read_cells(route: str, table: str,
                tokens: Mapping[str, str] | None = None,
                *, cells_per_column_limit: int = 1) -> dict:
     """Read the whole `table` from a `bigtable-*` route via its admin. Returns
-    `{"table": <name>, "rows": [{"row": <hex>, "cells": {<fam>:<qual>: <hex>}}]}` -- the
-    JSON snapshot the `assert.target` tier compares to `expected/*.json`."""
+    `{"table": <name>, "rows": [{"row": <hex>, "cells": {<fam>:<qual>: <hex>}}]}`."""
     admin = _bigtable_admin(route, dict(tokens or {}))
     rows = admin.read_all(table, cells_per_column_limit=cells_per_column_limit)
     return {"table": table, "rows": rows}
@@ -746,8 +744,8 @@ def read_cells(route: str, table: str,
 
 def assert_target(route: str, table: str, expected: list, tokens: Mapping[str, str] | None = None) -> None:
     """Compare a route's table snapshot to `expected`, raising with a clear mismatch message.
-    Used by the assert.target tier for `db: bigtable-target` manifests (a target that wrote to
-    a Bigtable emulator and the harness reads it back via the admin)."""
+    Groundwork: the assert.target tier does not call it yet, so a `db: bigtable-target`
+    manifest assertion is not supported."""
     got = read_cells(route, table, tokens)
     if got != {"table": table, "rows": list(expected)}:
         import json

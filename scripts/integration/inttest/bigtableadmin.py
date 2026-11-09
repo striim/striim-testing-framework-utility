@@ -8,8 +8,8 @@ generated (unlike Spanner/GCS).
 
 Unlike every other admin, Bigtable has NO SQL. So instead of run_sql/run_statements this
 admin builds the table + its column families + GC rules from a spec, writes reads rows via
-cells, and drops a row range. Reads render each cell as its raw value's hex string -- the
-JSON-comparable form the `assert.target` tier compares against `expected/*.json` -- and
+cells, and drops a row range. Reads render each cell as its raw value's hex string, a
+JSON-comparable form (no manifest assertion reads Bigtable yet: this is groundwork), and
 apply `CellsColumnLimitFilter(num_cells=1)` so one row yields its newest cell per
 (family, qualifier) column, i.e. Bigtable's own "latest version" semantics.
 
@@ -461,7 +461,7 @@ class BigtableAdmin:
         """Read every row in `table_name`; return a list of
         `{"row": <hex key>, "cells": {"<family>:<qualifier>": <hex value>}}` sorted by row
         key. `CellsColumnLimitFilter(num_cells=1)` makes each column return its newest cell --
-        Bigtable's own "latest version" semantics, and the form `expected/*.json` records."""
+        Bigtable's own "latest version" semantics."""
         from google.cloud.bigtable.data import ReadRowsQuery
         from google.cloud.bigtable.data.row_filters import CellsColumnLimitFilter
         table = self._table(table_name)
@@ -475,7 +475,7 @@ class BigtableAdmin:
         out.sort(key=lambda x: x["row"])
         return out
 
-    # Aliases for the assert.target read form.
+    # Other names callers use for the same read.
     read_cells = read_all
     read_table = read_all
 

@@ -1,5 +1,25 @@
 # Bigtable emulator service recipe
 
+**Status: groundwork.** This adds the emulator service and the framework's Bigtable admin, so a
+test can require `bigtable` and the framework can create tables, write and read rows, and drop
+them. What is supported:
+
+- the CBTEMULATOR service on both tiers (`requires: bigtable`), Linux x86-64;
+- `BigtableAdmin` table helpers (create with column families and GC rules, list families, drop,
+  drop rows by prefix or all) and row helpers (write cells, read a row, read a table, delete a
+  row), each with a time budget.
+
+Not supported yet:
+
+- manifest setup or assertions: no `test.yaml` key creates a Bigtable table, `bigtable` is not an
+  assertion tier, and the integration tier's `assert_target` is not wired in. This waits for the
+  BigtableWriter work;
+- a BigtableWriter or reader case;
+- real Bigtable (Cloud), credentials or IAM: `BigtableAdmin` refuses anything but an emulator;
+- change streams;
+- running on Apple silicon: the image is pinned to its linux/amd64 build and has not been
+  qualified under emulation.
+
 Using services in a test (tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
 It has no Bigtable section yet; the tokens this service provides are listed in `service.yaml`.
 

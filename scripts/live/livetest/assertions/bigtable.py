@@ -1,7 +1,8 @@
-"""Bigtable `assert.target` -- the live mirror of inttest.dbroutes.assert_target / read_cells.
+"""Bigtable table comparison for the live tier -- groundwork, not a manifest tier yet.
 
-A live manifest's `assert` block dispatches a `bigtable` route here: it reads the WHOLE table back
-via `BigtableAdmin.read_all` (`CellsColumnLimitFilter(num_cells=1)` -- the newest cell per
+No test.yaml `assert` key dispatches here and `bigtable` is not an assertion tier, so a live
+manifest cannot assert a Bigtable table today; wiring it waits for the BigtableWriter work. The
+comparison: read the WHOLE table back via `BigtableAdmin.read_all` (`CellsColumnLimitFilter(num_cells=1)` -- the newest cell per
 (family, qualifier), values rendered hex-for-bytes -- the same snapshot inttest.dbroutes.read_cells
 records to `expected/*.json`) and compares the row list to a hand-written `expected` list of
 `{"row": <hex>, "cells": {"<family>:<qualifier>": <hex>}}` rows.
@@ -68,7 +69,7 @@ def assert_bigtable(admin, specs: list[dict], timeout: int, poll: float = 2.0,
     satisfied or `timeout` elapses. Returns one passed record per spec; on a timeout raises
     AssertionFailed carrying the per-spec records so the sidecar still records what was read.
 
-    The signature mirrors assert_gcs / assert_json so the plugin's `assert.target` dispatch can call
+    The signature mirrors assert_gcs / assert_json so a future `assert.target` dispatch could call
     it as `assert_bigtable(admins[route]['admin'], specs, timeout=m.timeout, status_probe=…,
     progress=…, db=<route>)`."""
     deadline = time.monotonic() + timeout

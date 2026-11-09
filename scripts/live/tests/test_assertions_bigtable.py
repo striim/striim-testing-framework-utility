@@ -181,3 +181,10 @@ def test_assert_bigtable_lets_a_non_timeout_read_error_through():
 
     with pytest.raises(PermissionError):
         assert_bigtable(Broken({}), [{"table": "emp", "expected": EMP}], timeout=1, poll=0)
+
+
+def test_bigtable_is_not_a_manifest_assertion_tier_yet():
+    # The service README and this module call the comparison groundwork; adding the tier means
+    # updating them too.
+    from livetest.manifest import VALID_ASSERT_TIERS
+    assert "bigtable" not in VALID_ASSERT_TIERS

@@ -1,4 +1,4 @@
-# Cloud Bigtable emulator (CBTEMULATOR) for the live tier (a BigtableWriter target).
+# Cloud Bigtable emulator (CBTEMULATOR) for the live tier: groundwork for BigtableWriter tests.
 # Same emulator the integration tier uses (scripts/integration/services/bigtable/compose.yaml),
 # on gcloud's emulators image -- the Bigtable admin/data client (google-cloud-bigtable) only
 # honors the official CBTEMULATOR binary, which ships inside
