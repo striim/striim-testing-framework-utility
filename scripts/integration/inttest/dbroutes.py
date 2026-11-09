@@ -280,9 +280,9 @@ def connection_params(route: str, tokens: Mapping[str, str]) -> dict:
         else:
             params["emulator_host"] = f'{params["host"]}:{params["port"]}'
     elif params["driver"] == "bigtable":
-        # BigtableAdmin's dsn shape: {project, instance, emulator_host, credentials}.
-        # CBTEMULATOR skips auth via BIGTABLE_EMULATOR_HOST; a real-instance path
-        # (INT_BIGTABLE_CREDENTIALS) carries the key instead.
+        # BigtableAdmin's dsn shape: {project, instance, emulator_host}. It is emulator-only
+        # for now and refuses a dsn that carries credentials, so a BIGTABLE_CREDENTIALS token
+        # fails before any client is built instead of reaching real Bigtable.
         credentials = tokens.get("BIGTABLE_CREDENTIALS")
         if credentials:
             params["credentials"] = credentials

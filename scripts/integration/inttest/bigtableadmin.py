@@ -102,6 +102,17 @@ def _as_bytes(v):
     raise TypeError(f"unexpected key/value type {type(v).__name__}")
 
 
+def _require_emulator(dsn: dict) -> None:
+    """Refuse anything but a CBTEMULATOR. Real Bigtable is not supported yet: it would need
+    explicit credential binding and the ${TID}/ownership checks real Spanner has before any
+    destructive call, and without them create_table's drop-first could delete a real table."""
+    if dsn.get("credentials"):
+        raise ValueError("BigtableAdmin is emulator-only: real Bigtable credentials are not "
+                         "supported; remove BIGTABLE_CREDENTIALS and use the bigtable service")
+    if not (dsn.get("emulator_host") or "").strip():
+        raise ValueError("BigtableAdmin is emulator-only: the dsn names no emulator_host")
+
+
 class _EmulatorTableAdmin:
     """The admin side of one emulator: `.table_admin_client`, as on the SDK's own admin Client."""
 
@@ -141,9 +152,10 @@ def _emulator_clients(project: str, endpoint: str):
 class BigtableAdmin:
     """One admin bound to one project + instance. Inject client/data_client to test hermetically.
 
-    dsn shape: {project, instance, emulator_host, credentials(=None optional)}."""
+    dsn shape: {project, instance, emulator_host}. Emulator-only: see _require_emulator."""
 
     def __init__(self, dsn: dict, client=None, data_client=None):
+        _require_emulator(dsn)
         self.dsn = dsn
         self._inj_admin = client   # injectable table-admin-capable Client (admin="instance")
         self._inj_data = data_client  # injectable BigtableDataClient
@@ -152,18 +164,11 @@ class BigtableAdmin:
     def _pair(self):
         if self._inj_admin is not None:
             return self._inj_admin, self._inj_data
-        emulator = self.dsn.get("emulator_host")
+        emulator = self.dsn["emulator_host"]
         key = (self.dsn["project"], emulator)
         with _CLIENTS_LOCK:
             if key not in _CLIENTS:
-                if emulator:
-                    _CLIENTS[key] = _emulator_clients(self.dsn["project"], emulator)
-                else:
-                    from google.cloud.bigtable.client import Client
-                    from google.cloud.bigtable.data import BigtableDataClient
-                    admin = Client(project=self.dsn["project"], admin="instance")
-                    data = BigtableDataClient(project=self.dsn["project"])
-                    _CLIENTS[key] = (admin, data)
+                _CLIENTS[key] = _emulator_clients(self.dsn["project"], emulator)
             return _CLIENTS[key]
 
     def _admin(self):
