@@ -89,7 +89,8 @@ import sys
 import importlib.util
 import requests, yaml, fastavro, filelock, psutil, pytest
 import psycopg2, oracledb, pymssql, pymysql, vertica_python, sqlalchemy, confluent_kafka
-from google.cloud import spanner, storage
+from google.cloud import spanner, storage, bigtable_admin_v2
+from google.cloud.bigtable.data import BigtableDataClient
 import livetest.plugin, inttest.plugin, striim_test.cli
 assert sys.prefix != sys.base_prefix
 assert importlib.util.find_spec('teradatasql') is None

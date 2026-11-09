@@ -146,3 +146,17 @@ def test_live_striim_overlay_injects_emulator_host_on_all_three_containers():
     for svc in ("slt-striim", "slt-node", "slt-agent"):
         assert overlay["services"][svc]["environment"]["BIGTABLE_EMULATOR_HOST"] == expected
     assert "BIGTABLE_EMULATOR_HOST" not in _LIVE_BASE_STRIIM.read_text()
+
+
+def test_bigtable_service_names_its_python_module(monkeypatch):
+    # Without google-cloud-bigtable a bigtable test must skip with the install hint, before the
+    # emulator is provisioned, rather than fail at the first admin call.
+    from livetest import registry
+    defn = load_service("bigtable")
+    assert defn.python_module == "google.cloud.bigtable"
+    assert "google-cloud-bigtable" in defn.python_module_hint
+    real = registry.importlib.util.find_spec
+    monkeypatch.setattr(registry.importlib.util, "find_spec",
+                        lambda name, *a: None if name == defn.python_module else real(name, *a))
+    assert registry.unavailable(defn, {}) == (
+        f"Python module google.cloud.bigtable is not installed: {defn.python_module_hint}")

@@ -1,7 +1,7 @@
 """Bigtable admin + data client for the INTEGRATION tier -- ported from
 `scripts/live/livetest/bigtableadmin.py`, self-contained (no `livetest` import, like
 `inttest/spanneradmin.py`). On the google-cloud-bigtable client (google-cloud-bigtable
-2.50.x, google-cloud-bigtable-admin 2.55.x, both confirmed against the CBTEMULATOR).
+2.50.x, which also ships the table-admin API, confirmed against the CBTEMULATOR).
 Talks to the CBTEMULATOR -- gcloud's Cloud Bigtable emulator -- exactly when
 `BIGTABLE_EMULATOR_HOST` is set, which also skips auth. No service-account key is
 generated (unlike Spanner/GCS).

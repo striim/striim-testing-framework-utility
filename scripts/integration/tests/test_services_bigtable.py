@@ -115,3 +115,17 @@ def test_integration_compose_published_port_is_the_overridable_host_port():
     data = yaml.safe_load(_INT_COMPOSE.read_text())
     ports = data["services"]["int-bigtable"]["ports"]
     assert ports == ["${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:${INT_BIGTABLE_GRPC_HOST_PORT:-19470}"]
+
+
+def test_bigtable_service_names_its_python_module(monkeypatch):
+    # Without google-cloud-bigtable a bigtable test must skip with the install hint, before the
+    # emulator is provisioned, rather than fail at the first admin call.
+    from livetest import registry
+    raw = tokens_mod._load_service_def("bigtable", _SERVICES_DIR)
+    assert raw["python_module"] == "google.cloud.bigtable"
+    assert "google-cloud-bigtable" in raw["python_module_hint"]
+    real = registry.importlib.util.find_spec
+    monkeypatch.setattr(registry.importlib.util, "find_spec",
+                        lambda name, *a: None if name == raw["python_module"] else real(name, *a))
+    assert services_mod.host_unavailable("bigtable") == (
+        f"Python module google.cloud.bigtable is not installed: {raw['python_module_hint']}")

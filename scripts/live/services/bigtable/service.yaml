@@ -10,6 +10,8 @@ isolation: none                 # fixed instance/tables; provisioned once per se
 # (services.resolve() returns mode="live"/started=False) -- a different intent from remapping the
 # published gRPC port via SLT_BIGTABLE_GRPC_HOST_PORT.
 live_override_env: SLT_BIGTABLE_HOST
+python_module: google.cloud.bigtable
+python_module_hint: Install the live engine dependencies, including google-cloud-bigtable.
 # Like Spanner, the Bigtable emulator redirect is JVM-global (BIGTABLE_EMULATOR_HOST, set by the
 # striim overlay), so opt-in: a test that requires this service is skipped unless its own env or the
 # SLT_EMULATORS umbrella is set. A plain `docker compose up` (or a reused real cluster) still

@@ -56,6 +56,24 @@ class TestEnvironment(unittest.TestCase):
             self.assertIn("--default-index https://pypi.org/simple", content)
             self.assertIn("--python-version 3.12", content)
 
+    def test_platform_locks_pin_every_engine_dependency(self):
+        # An engine dependency the locks cannot pin is one the supported environment lacks,
+        # or one no index can resolve.
+        def name(requirement):
+            return re.split(r"[<>=!~\s#\[;]", requirement.strip(), 1)[0].lower().replace("_", "-")
+
+        locks = {}
+        for filename in ("requirements-test.txt", "requirements-test.macos-arm64.txt"):
+            locks[filename] = {name(line) for line in (REPO / filename).read_text().splitlines()
+                               if line and not line.lstrip().startswith("#")}
+        for directory in (REPO / "scripts/live", REPO / "scripts/integration"):
+            project = tomllib.loads((directory / "pyproject.toml").read_text())["project"]
+            declared = {name(item) for item in project["dependencies"] + project["optional-dependencies"]["dev"]}
+            declared |= {name(line) for line in (directory / "requirements.txt").read_text().splitlines()
+                         if line.strip() and not line.lstrip().startswith("#")}
+            for filename, pinned in locks.items():
+                self.assertEqual(set(), declared - pinned, f"{directory.name} vs {filename}")
+
     @unittest.skipUnless(sys.version_info[:2] == (3, 12), "bootstrap locks require Python 3.12")
     def test_bootstrap_refuses_system_site_packages_without_changing_venv(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -151,9 +151,10 @@ def _admin(tac=None, tables=None):
 
 
 # --- stub the leaf google-cloud-bigtable modules the admin imports lazily -----------
-# google-cloud-bigtable / -admin are not a dependency yet, so stand up the leaf modules
-# the admin imports inside its methods as recording fakes. Every OTHER google.* module
-# (in particular the real google.protobuf.duration_pb2 the GC rule needs) is left intact.
+# These tests assert what the admin hands the SDK's types, so the leaf modules the admin
+# imports inside its methods are recording fakes here even when google-cloud-bigtable is
+# installed, and a real module already imported is restored afterwards. Every OTHER google.*
+# module (in particular the real google.protobuf.duration_pb2 the GC rule needs) is left intact.
 @pytest.fixture(autouse=True)
 def _bigtable_stub_modules():
     modules = [
@@ -171,8 +172,6 @@ def _bigtable_stub_modules():
     created = []
     restored = []
     for name, attrs in modules:
-        if name in sys.modules:      # a real install wins; leave it untouched
-            continue
         mod = _types.ModuleType(name)
         for k, v in attrs.items():
             setattr(mod, k, v)
@@ -183,13 +182,16 @@ def _bigtable_stub_modules():
             original = getattr(parent, leaf, None)
             setattr(parent, leaf, mod)
             restored.append((parent, leaf, had, original))
+        created.append((name, sys.modules.get(name)))
         sys.modules[name] = mod
-        created.append(name)
     try:
         yield
     finally:
-        for name in reversed(created):
-            sys.modules.pop(name, None)
+        for name, previous in reversed(created):
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
         for parent, leaf, had, original in restored:
             if had:
                 setattr(parent, leaf, original)
