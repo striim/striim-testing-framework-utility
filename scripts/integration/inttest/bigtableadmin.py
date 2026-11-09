@@ -2,8 +2,8 @@
 `scripts/live/livetest/bigtableadmin.py`, self-contained (no `livetest` import, like
 `inttest/spanneradmin.py`). On the google-cloud-bigtable client (google-cloud-bigtable
 2.50.x, which also ships the table-admin API, confirmed against the CBTEMULATOR).
-Talks to the CBTEMULATOR -- gcloud's Cloud Bigtable emulator -- exactly when
-`BIGTABLE_EMULATOR_HOST` is set, which also skips auth. No service-account key is
+Talks to the CBTEMULATOR -- gcloud's Cloud Bigtable emulator -- at the dsn's
+`emulator_host`, over an insecure channel without auth. No service-account key is
 generated (unlike Spanner/GCS).
 
 Unlike every other admin, Bigtable has NO SQL. So instead of run_sql/run_statements this
@@ -37,6 +37,7 @@ timestamp_micros)`; a read cell exposes `.family` (str), `.qualifier` (bytes), `
 from __future__ import annotations
 import os
 import re
+import threading
 import time
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")    # a Bigtable identifier (table / family / col)
@@ -51,6 +52,9 @@ HEALTH_TABLE = ".__slt_readiness"
 # a client + every Table it hands out own gRPC channels that are never closed, and each burns
 # fds. Keyed so a long SLT_KEEP_SERVICES session reuses one channel pair instead of leaking.
 _CLIENTS: dict = {}
+_CLIENTS_LOCK = threading.Lock()
+# The SDK reads this once, when a client is constructed, and then dials it for that client's life.
+_EMULATOR_ENV = "BIGTABLE_EMULATOR_HOST"
 
 
 def _check_ident(name, what: str = "name") -> str:
@@ -98,6 +102,42 @@ def _as_bytes(v):
     raise TypeError(f"unexpected key/value type {type(v).__name__}")
 
 
+class _EmulatorTableAdmin:
+    """The admin side of one emulator: `.table_admin_client`, as on the SDK's own admin Client."""
+
+    def __init__(self, table_admin_client):
+        self.table_admin_client = table_admin_client
+
+
+def _emulator_clients(project: str, endpoint: str):
+    """An (admin, data) pair that dials `endpoint` and nothing else, whatever
+    BIGTABLE_EMULATOR_HOST says later. Call with _CLIENTS_LOCK held.
+
+    The table-admin client gets its own insecure channel to `endpoint` -- what the SDK's admin
+    Client builds for an emulator, minus the environment lookup. The data client has no public
+    way to name an emulator: it reads BIGTABLE_EMULATOR_HOST in its constructor, so the variable
+    is set for that call only and put back. A variable that already names a different emulator
+    is refused rather than overridden: something else in this process is pointed there."""
+    current = os.environ.get(_EMULATOR_ENV)
+    if current and current != endpoint:
+        raise ValueError(f"{_EMULATOR_ENV}={current} conflicts with this Bigtable dsn's emulator "
+                         f"{endpoint}; unset it or point both at the same emulator")
+    import grpc
+    from google.cloud.bigtable.data import BigtableDataClient
+    from google.cloud.bigtable_admin_v2 import BaseBigtableTableAdminClient
+    from google.cloud.bigtable_admin_v2.services.bigtable_table_admin.transports import (
+        BigtableTableAdminGrpcTransport)
+    admin = _EmulatorTableAdmin(BaseBigtableTableAdminClient(transport=BigtableTableAdminGrpcTransport(
+        channel=grpc.insecure_channel(endpoint), host=endpoint)))
+    os.environ[_EMULATOR_ENV] = endpoint
+    try:
+        data = BigtableDataClient(project=project)
+    finally:
+        if current is None:
+            os.environ.pop(_EMULATOR_ENV, None)
+    return admin, data
+
+
 class BigtableAdmin:
     """One admin bound to one project + instance. Inject client/data_client to test hermetically.
 
@@ -113,16 +153,18 @@ class BigtableAdmin:
         if self._inj_admin is not None:
             return self._inj_admin, self._inj_data
         emulator = self.dsn.get("emulator_host")
-        if emulator:
-            os.environ.setdefault("BIGTABLE_EMULATOR_HOST", emulator)
         key = (self.dsn["project"], emulator)
-        if key not in _CLIENTS:
-            from google.cloud.bigtable.client import Client
-            from google.cloud.bigtable.data import BigtableDataClient
-            admin = Client(project=self.dsn["project"], admin="instance")
-            data = BigtableDataClient(project=self.dsn["project"])
-            _CLIENTS[key] = (admin, data)
-        return _CLIENTS[key]
+        with _CLIENTS_LOCK:
+            if key not in _CLIENTS:
+                if emulator:
+                    _CLIENTS[key] = _emulator_clients(self.dsn["project"], emulator)
+                else:
+                    from google.cloud.bigtable.client import Client
+                    from google.cloud.bigtable.data import BigtableDataClient
+                    admin = Client(project=self.dsn["project"], admin="instance")
+                    data = BigtableDataClient(project=self.dsn["project"])
+                    _CLIENTS[key] = (admin, data)
+            return _CLIENTS[key]
 
     def _admin(self):
         if self._inj_admin is not None:
@@ -135,10 +177,6 @@ class BigtableAdmin:
             return self._inj_data
         _, data = self._pair()
         return data
-
-    def _instance(self):
-        # `admin.instance(I)` is the admin-Instance -- the entry to `table(...).create(...)`.
-        return self._admin().instance(self.dsn["instance"])
 
     def _table(self, table_name: str):
         name = _check_ident(table_name, "table")
