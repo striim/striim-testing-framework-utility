@@ -38,3 +38,10 @@ def _hermetic_env(monkeypatch):
     # Docker free space: doctor and the build gate would otherwise ask the real daemon.
     from livetest import docker_disk
     monkeypatch.setattr(docker_disk, "vm_free_bytes", lambda run=None: (None, "hermetic test"))
+    # The cluster-reuse check inspects each member's BIGTABLE_EMULATOR_HOST: a test that does not
+    # inject its own members sees a cluster without the redirect, and the daemon is never asked.
+    import json
+    import subprocess
+    from livetest import striim_provision
+    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps(["PATH=/usr/bin"]), stderr=""))

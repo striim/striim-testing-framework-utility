@@ -43,7 +43,9 @@ How it is built:
   `bigtable` route) reads/writes the table directly from the host at `{host}:{port}`
   (localhost:9470), with `google-cloud-bigtable`. The Striim app (`BigtableWriter`) reaches the same
   emulator through `BIGTABLE_EMULATOR_HOST`, set by `compose.bigtable-emulator.yaml` only
-  when the run opts in (`SLT_BIGTABLE_SERVICE=1` or `SLT_EMULATORS=1`).
+  when the run opts in (`SLT_BIGTABLE_SERVICE=1` or `SLT_EMULATORS=1`). A running cluster is
+  reused only if its redirect already matches that choice and port; a shared or exclusive run
+  refuses a mismatched cluster and says how to resolve it.
 - Change streams are not supported: the admin offers no change-stream surface, and
   `enable_change_stream` / `disable_change_stream` raise rather than fake one.
 

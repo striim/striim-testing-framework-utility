@@ -760,7 +760,8 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
 # preflight reads them -- so a run that did not ask for the emulator never points a Striim
 # Bigtable client at one. The overlay only adds that variable to the three services, so the
 # compose project and its containers are the same with or without it, and teardown finds them
-# either way.
+# either way. Reusing a running cluster never runs compose, so bigtable_redirect_reason holds a
+# reused cluster's members to the same choice before it is accepted.
 _BIGTABLE_OPT_IN = ("SLT_BIGTABLE_SERVICE", "SLT_EMULATORS")
 
 
@@ -779,6 +780,80 @@ def _compose_files():
 
 
 _COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
+
+_BIGTABLE_OVERLAY = "compose.bigtable-emulator.yaml"
+_BIGTABLE_ENV = "BIGTABLE_EMULATOR_HOST"
+_UNREAD = object()
+_INSPECT_TIMEOUT_S = 30.0
+
+
+def _inspect(argv):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=_INSPECT_TIMEOUT_S)
+
+
+def _member_redirect(container: str, run=None):
+    """The member's configured BIGTABLE_EMULATOR_HOST, None when it has none, or _UNREAD when Docker
+    cannot say. Only that one variable is taken from the container's environment."""
+    argv = ["docker", "container", "inspect", "-f", "{{json .Config.Env}}", container]
+    try:
+        r = (run or _inspect)(argv)
+    except (OSError, subprocess.TimeoutExpired):
+        return _UNREAD
+    if getattr(r, "returncode", 1) != 0:
+        return _UNREAD
+    try:
+        entries = json.loads((getattr(r, "stdout", "") or "").strip() or "null")
+    except ValueError:
+        return _UNREAD
+    if not isinstance(entries, list):
+        return _UNREAD
+    prefix = _BIGTABLE_ENV + "="
+    return next((e[len(prefix):] for e in entries if isinstance(e, str) and e.startswith(prefix)), None)
+
+
+def _interpolate(value: str, env) -> str:
+    """Compose's ${NAME:-default} and ${NAME} for one value, with nothing else supported."""
+    return re.sub(r"\$\{([A-Za-z_]\w*)(?::-([^}]*))?\}",
+                  lambda m: env.get(m.group(1)) or (m.group(2) or ""), value)
+
+
+def bigtable_redirect_reason(striim_dir: Path, env=None, run=None) -> str | None:
+    """Why the running cluster's Bigtable emulator redirect is not what this run asks for, or None.
+
+    Every member (primary, second node, agent) is inspected. Opted in, each must carry
+    BIGTABLE_EMULATOR_HOST with the value compose.bigtable-emulator.yaml gives that service under this
+    run's settings; opted out, none may carry it. A member Docker cannot inspect is not known to match.
+    Reusing a cluster never runs compose, so this is how a reused cluster is held to the run's choice."""
+    env = os.environ if env is None else env
+    requested = _bigtable_emulator_requested(env)
+    services = ("slt-striim", "slt-node", "slt-agent")
+    if requested:
+        try:
+            import yaml
+            overlay = yaml.safe_load((Path(striim_dir) / _BIGTABLE_OVERLAY).read_text()) or {}
+            wants = [_interpolate(str(overlay["services"][s]["environment"][_BIGTABLE_ENV]), env)
+                     for s in services]
+        except (OSError, KeyError, TypeError) as e:
+            return f"the Bigtable emulator overlay cannot be read: {type(e).__name__}: {e}"
+    else:
+        wants = [None] * len(services)
+    for container, want in zip(stack.cluster_containers(env), wants):
+        got = _member_redirect(container, run)
+        if got is _UNREAD:
+            return f"{container}'s environment cannot be inspected for its Bigtable emulator redirect"
+        if got == want:
+            continue
+        if want is None:
+            return (f"{container} sends Bigtable clients to the emulator at {got}, and this run did not opt "
+                    f"in to the bigtable service: set SLT_BIGTABLE_SERVICE=1 (or SLT_EMULATORS=1) to use "
+                    f"that cluster as it is, or restart it without the opt-in")
+        if got is None:
+            return (f"{container} has no Bigtable emulator redirect, and this run opts in to the bigtable "
+                    f"service: unset SLT_BIGTABLE_SERVICE and SLT_EMULATORS to use that cluster as it is, "
+                    f"or restart it with the opt-in")
+        return (f"{container} sends Bigtable clients to {got}, not {want}: set SLT_BIGTABLE_GRPC_HOST_PORT "
+                f"to the port that cluster was started with, or restart it")
+    return None
 
 def compose_files(striim_dir: Path) -> list[Path]:
     """The cluster's compose files as paths, for callers that read them rather than run them

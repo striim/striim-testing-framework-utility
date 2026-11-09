@@ -479,10 +479,16 @@ def _redeploy_reason(running_version, want_version, striim_dir, ownership: str =
     `<prefix>-slt-striim:<version>` and does not change when entrypoint.sh does), and the reuse
     path is the one flow that never
     reaches ensure_image -- so without this an edit stays invisible exactly where a developer
-    is most likely to have just made one."""
+    is most likely to have just made one.
+
+    The Bigtable emulator redirect is held to this run's choice the same way, in every ownership
+    mode: reuse never runs compose, so a cluster started with (or without) the opt-in keeps it."""
     if running_version and want_version and _tryout.strip_tag(running_version) != want_version:
         return f"running version {_tryout.strip_tag(running_version)} != required {want_version}"
     why = _tryout_redeploy_reason(running_version, want_version)
+    if why:
+        return why
+    why = _sp.bigtable_redirect_reason(striim_dir or _STRIIM_DIR)     # doctor passes no directory
     if why:
         return why
     if ownership != "shared" and want_version and not _sp.image_inputs_match(want_version, striim_dir):
@@ -785,11 +791,12 @@ def _resolve_striim(config):
                     if reason and _slt_infra.forbid_redeploy(config, reason):
                         return None
                 else:
-                    # An undeclared caller reuses a booted cluster as before, except that its tryout jars must
-                    # match the setting: a booting tryout cluster with the setting unset (or the reverse) is
-                    # redeployed, as on the warm path.
+                    # An undeclared caller reuses a booted cluster as before, except that its tryout jars and
+                    # its Bigtable emulator redirect must match the settings: a booting cluster that does not
+                    # is redeployed, as on the warm path.
                     rel = _resolve_release(config)
-                    reason = _tryout_redeploy_reason(_running_striim_version(), rel.get("STRIIM_VERSION"))
+                    reason = (_tryout_redeploy_reason(_running_striim_version(), rel.get("STRIIM_VERSION"))
+                              or _sp.bigtable_redirect_reason(_STRIIM_DIR))
                     if reason:
                         report, _clear_progress = _make_progress(config)
                         report("cluster", f"{reason} — redeploying")

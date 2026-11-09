@@ -61,6 +61,20 @@ def test_a_shared_cluster_of_the_required_release_passes(tmp_path):
     assert c.status == "ok"
 
 
+def test_a_shared_cluster_still_redirecting_bigtable_fails_for_an_opted_out_run(tmp_path, monkeypatch):
+    # Started by a run that opted in to the bigtable service; this run did not, and a shared run
+    # never redeploys, so the doctor names the setting that would make the cluster usable.
+    import json
+    import subprocess
+    from livetest import striim_provision
+    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps(["BIGTABLE_EMULATOR_HOST=host.docker.internal:9470"]), stderr=""))
+    env = {**SHARED, "STRIIM_HOME": install(tmp_path)}
+    c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
+    assert c.status == doctor.FAIL
+    assert "SLT_BIGTABLE_SERVICE=1" in c.message and "never redeploys" in c.message
+
+
 def test_an_exclusive_run_with_a_cluster_already_answering_fails():
     env = {"SLT_INFRA_OWNERSHIP": "exclusive"}
     c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.2")
@@ -315,3 +329,16 @@ def test_a_tryout_mismatch_at_the_same_release_says_to_restart_not_repoint(tmp_p
     c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
     assert c.status == doctor.FAIL and "tryout jars differ" in c.message
     assert "Stop the shared stack" in c.message and "Point STRIIM_HOME" not in c.message
+
+
+def test_a_shared_cluster_redirecting_bigtable_passes_for_an_opted_in_run(tmp_path, monkeypatch):
+    # The doctor passes no cluster directory; the expected endpoint still comes from the overlay.
+    import json
+    import subprocess
+    from livetest import striim_provision
+    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
+        argv, 0, stdout=json.dumps(["BIGTABLE_EMULATOR_HOST=host.docker.internal:9470"]), stderr=""))
+    monkeypatch.setenv("SLT_BIGTABLE_SERVICE", "1")
+    env = {**SHARED, "STRIIM_HOME": install(tmp_path)}
+    c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
+    assert c.status == "ok", c.message
