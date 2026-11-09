@@ -325,3 +325,75 @@ def test_fake_key_names_its_project_throughout():
     assert key['project_id'] == 'lane-project'
     assert key['client_email'] == 'fake-sa@lane-project.iam.gserviceaccount.com'
     assert key['client_x509_cert_url'].endswith('/fake-sa%40lane-project.iam.gserviceaccount.com')
+
+
+# ---- family: bigquery -- a consumer's BigQuery emulator under another name ----------------
+
+@pytest.fixture
+def consumer_services(tmp_path):
+    """A consumer services root: `bigquery-stock` (family: bigquery), `extdb` (no family) and
+    `baddb` (an invalid family)."""
+    from livetest import layout
+    root = tmp_path / "services"
+    for name, extra in (("bigquery-stock", "family: bigquery\n"), ("extdb", ""), ("baddb", 'family: ""\n')):
+        (root / name).mkdir(parents=True)
+        (root / name / "service.yaml").write_text(
+            f"name: {name}\nisolation: none\ncompose: compose.yaml\ncontainer: slt-{name}\n{extra}")
+    layout._reset()
+    registry._REPORTED.clear()
+    layout.set_roots(services=[root])
+    yield root
+    layout._reset()
+    registry._REPORTED.clear()
+
+
+REFUSED_WRITER = "CREATE TARGET t USING Global.BigQueryWriter (StreamingUpload:true);"
+
+
+def test_a_bigquery_family_service_under_another_name_gets_writer_validation(consumer_services):
+    from livetest.bigquerycase import validate_writer
+    manifest = SimpleNamespace(requires=["bigquery-stock"], lifecycle=None, action_specs=[])
+    with pytest.raises(ValueError, match="UseLegacyStreamingAPI=true"):
+        validate_writer(manifest, REFUSED_WRITER)
+
+
+def test_a_bigquery_family_service_is_validated_before_render(consumer_services, tmp_path):
+    (tmp_path / "app.tql").write_text(REFUSED_WRITER)
+    manifest = SimpleNamespace(source_dir=tmp_path, tql="app.tql", requires=["bigquery-stock"],
+                               lifecycle=None, action_specs=[])
+    with pytest.raises(ValueError, match="BigQuery emulator lane"):
+        plugin._rendered_tql(manifest, {}, {})
+
+
+def test_a_service_without_family_is_not_validated_as_bigquery(consumer_services):
+    from livetest.bigquerycase import validate_writer
+    manifest = SimpleNamespace(requires=["extdb"], lifecycle=None, action_specs=[])
+    assert validate_writer(manifest, REFUSED_WRITER) is None
+
+
+def test_an_unreadable_definition_is_left_to_load_service(consumer_services):
+    # The writer check runs before the Striim checks; a broken service.yaml must not turn a
+    # no-Striim skip into an error there. load_service reports it once the case runs.
+    from livetest.bigquerycase import validate_writer
+    manifest = SimpleNamespace(requires=["baddb"], lifecycle=None, action_specs=[])
+    assert validate_writer(manifest, REFUSED_WRITER) is None
+    with pytest.raises(registry.RegistryError, match="'family' must be a non-empty string"):
+        registry.load_service("baddb")
+
+
+def test_two_bigquery_family_services_are_refused(consumer_services):
+    from livetest.bigquerycase import validate_writer
+    manifest = SimpleNamespace(requires=["bigquery", "bigquery-stock"], lifecycle=None, action_specs=[])
+    with pytest.raises(ValueError, match="bigquery, bigquery-stock.*one bigquery-family service"):
+        validate_writer(manifest, "CREATE TARGET t USING Global.BigQueryWriter (StreamingUpload:false);")
+
+
+def test_runtest_keys_bigquery_handling_on_the_family():
+    # The token, endpoint and key setup needs a live Striim and emulator, so the call sites are
+    # pinned at source level (as test_plugin_routing does for _runtest).
+    import inspect
+    src = inspect.getsource(plugin.LiveItem._runtest)
+    assert '"bigquery" in m.requires' not in src
+    assert 'svc == "bigquery"' not in src
+    assert "if _bigquerycase.service(m):" in src
+    assert 'if getattr(defn, "family", svc) == _bigquerycase.FAMILY:' in src

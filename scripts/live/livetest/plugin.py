@@ -2239,9 +2239,9 @@ class LiveItem(pytest.Item):
         # A case without an exact: block keeps its old outcome for a missing input: the send fails, or it skips first.
         self._slt_inputs = _slt_inputs.snapshot(m, self.manifest_path, strict=m.exact is not None)
         m._slt_inputs = self._slt_inputs   # send sites that hold only the manifest record through it
-        from livetest.bigquerycase import validate_writer
-        if "bigquery" in m.requires:
-            validate_writer(m, (m.source_dir / m.tql).read_text())
+        from livetest import bigquerycase as _bigquerycase
+        if _bigquerycase.service(m):
+            _bigquerycase.validate_writer(m, (m.source_dir / m.tql).read_text())
         ctx = _resolve_striim(self.config)
         _fail_on_hard_striim_failure(self.config, ctx)
         if ctx is None:
@@ -2572,7 +2572,7 @@ class LiveItem(pytest.Item):
                     # rejects host.docker.internal); GcsAdmin still uses base host:port.
                     tokens["GCS_ENDPOINT"] = f"http://{gcs_ip}:{resolved.base['port']}"
 
-                if svc == "bigquery":
+                if getattr(defn, "family", svc) == _bigquerycase.FAMILY:   # a stand-in def may lack it
                     endpoints_explicit = all(os.environ.get(k) for k in (
                         "SLT_BIGQUERY_WRITER_ENDPOINT", "SLT_BIGQUERY_TOKEN_URI"))
                     endpoint_ip = None if endpoints_explicit else _gcs_endpoint_ip(ctx)
@@ -3459,8 +3459,11 @@ class LiveItem(pytest.Item):
                             for _t in _action_threads:
                                 _op = _t.slt_op
                                 _errs = _op.get("errors", [])
+                                # The route's own service by name, else the one whose family it is.
+                                from livetest import registry as _registry
                                 _owner = max((s for s in m.requires if _op["db"] == s or _op["db"].startswith(f"{s}-")),
-                                             key=len, default=None)
+                                             key=len, default=None) or next(
+                                    (s for s in m.requires if _registry.owns_route(s, _op["db"])), None)
                                 _expected = down_service is not None and _owner == down_service
                                 if not _op.get("ok") and _t.is_alive():
                                     problems.append(f"{_op['file']} on {_op['db']}: no run succeeded and one was still "

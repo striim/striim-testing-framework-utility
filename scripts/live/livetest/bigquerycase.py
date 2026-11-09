@@ -10,11 +10,26 @@ connectionretrypolicy datalocation encoding excludedtables ignorableexceptioncod
 mode nullmarker optimizedmerge parallelthreads privateserviceconnectendpoint projectid
 quotecharacter serviceaccountkey standardsql streamingconfiguration streamingupload tables
 uploadpolicy maxuploadingthreads queuesize _h_maxtaskqueuesize""".split())
+FAMILY = "bigquery"
 _TOKEN = re.compile(r"\s+|--[^\n]*|//[^\n]*|/\*.*?\*/|'(?:\\.|''|[^'\\])*'|\"(?:\\.|\"\"|[^\"\\])*\"|[A-Za-z_][A-Za-z_0-9]*|[^\s]", re.S)
 
 
+def service(manifest):
+    """The one service in ``requires`` whose family is bigquery, or None. A case that requires two
+    is refused: the BigQuery tokens, the fake key and the ``bigquery-target`` route are one each.
+    A definition that cannot be read is not counted: load_service reports it where the case uses
+    the service, as before (this runs ahead of the Striim checks)."""
+    from livetest import registry
+
+    found = sorted(s for s in getattr(manifest, "requires", ()) if registry.probe_family(s) == FAMILY)
+    if len(found) > 1:
+        raise ValueError(f"BigQuery emulator lane: requires {', '.join(found)}; a case uses "
+                         f"one {FAMILY}-family service")
+    return found[0] if found else None
+
+
 def validate_writer(manifest, text, bindings=None):
-    if "bigquery" not in getattr(manifest, "requires", ()):
+    if not service(manifest):
         return
     tokens = [m.group() for m in _TOKEN.finditer(text)
               if not m.group().isspace() and not m.group().startswith(("--", "//", "/*"))]
