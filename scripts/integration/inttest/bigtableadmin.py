@@ -401,17 +401,21 @@ class BigtableAdmin:
     def drop_row_range(self, table_name: str, *, row_key_prefix=None,
                        start_row_key=None, end_row_key=None,
                        timeout: float | None = None) -> None:
+        """Drop every row whose key starts with `row_key_prefix`. DropRowRange targets only a
+        key prefix or the whole table (drop_all_rows); it has no start/end form, so bounded keys
+        are refused rather than sent."""
         name = _check_ident(table_name, "table")
+        if start_row_key is not None or end_row_key is not None:
+            raise ValueError("drop_row_range takes only row_key_prefix: DropRowRange cannot drop "
+                             "a start/end key range")
+        prefix = b"" if row_key_prefix is None else _as_bytes(row_key_prefix)
+        if not prefix:
+            raise ValueError("drop_row_range needs a non-empty row_key_prefix; "
+                             "drop_all_rows empties the whole table")
         admin = self._admin()
         tac = admin.table_admin_client
         from google.cloud.bigtable_admin_v2.types import DropRowRangeRequest
-        req = DropRowRangeRequest(name=self._full_table_name(name))
-        if row_key_prefix is not None:
-            req.row_key_prefix = _as_bytes(row_key_prefix)
-        if start_row_key is not None:
-            req.start_row_key = _as_bytes(start_row_key)
-        if end_row_key is not None:
-            req.end_row_key = _as_bytes(end_row_key)
+        req = DropRowRangeRequest(name=self._full_table_name(name), row_key_prefix=prefix)
         tac.drop_row_range(req, **_Budget(timeout, f"drop_row_range {name}").admin())
 
     def delete_row(self, table_name: str, key, *, timeout: float | None = None) -> None:
