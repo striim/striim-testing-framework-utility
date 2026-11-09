@@ -749,26 +749,36 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
                           progress=progress)
     return ref
 
-# Bring the cluster up with the Spanner and Bigtable emulator redirects baked in. The
-# framework's cluster is emulator-only, so SPANNER_EMULATOR_HOST and BIGTABLE_EMULATOR_HOST
-# are always safe here -- the JVM-global redirect is honored ONLY by that backend's own
-# client (cloud-spanner / cloud-bigtable), so it is harmless for non-Spanner / non-Bigtable
-# tests, and it makes SLT_SPANNER / SLT_BIGTABLE tests self-provisioning like GCS/Kafka. Each
-# overlay is kept OUT of the base compose.yaml so a plain `docker compose up` (or a reused real
-# cluster) still targets the real backend; and the emulator *container* itself is brought up
-# under its own opt-in -- the Bigtable service's SLT_BIGTABLE_SERVICE (see
-# services/bigtable/service.yaml) -- so a non-Bigtable run neither starts an empty emulator nor
-# diverts anything, even though the harmless env is always injected.
+# Bring the cluster up with the Spanner emulator redirect baked in. The framework's
+# cluster is emulator-only, so SPANNER_EMULATOR_HOST is always safe here (only Spanner
+# clients read it — harmless for non-Spanner tests) and it makes SLT_SPANNER tests
+# self-provisioning like GCS/Kafka. It stays out of the base compose so a plain
+# `docker compose up` still targets real Spanner.
+#
+# The Bigtable redirect (compose.bigtable-emulator.yaml) is applied only when the run opts in to
+# the Bigtable service -- its service.yaml opt_in_env or the SLT_EMULATORS umbrella, read as
+# preflight reads them -- so a run that did not ask for the emulator never points a Striim
+# Bigtable client at one. The overlay only adds that variable to the three services, so the
+# compose project and its containers are the same with or without it, and teardown finds them
+# either way.
+_BIGTABLE_OPT_IN = ("SLT_BIGTABLE_SERVICE", "SLT_EMULATORS")
+
+
+def _bigtable_emulator_requested(env=None) -> bool:
+    env = os.environ if env is None else env
+    return any(env.get(name) for name in _BIGTABLE_OPT_IN)
+
+
 def _compose_files():
     files = list(_COMPOSE_FILES)
+    if _bigtable_emulator_requested():
+        files += ["-f", "compose.bigtable-emulator.yaml"]
     if os.environ.get("SLT_ENABLE_NODE_FAULTS") == "1":
         files += ["-f", "compose.node-fault.yaml"]
     return files
 
 
-_COMPOSE_FILES = ["-f", "compose.yaml",
-                  "-f", "compose.spanner-emulator.yaml",
-                  "-f", "compose.bigtable-emulator.yaml"]
+_COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
 
 def compose_files(striim_dir: Path) -> list[Path]:
     """The cluster's compose files as paths, for callers that read them rather than run them

@@ -86,22 +86,70 @@ def test_cluster_down_invokes_compose_down(tmp_path):
     assert "compose.spanner-emulator.yaml" in argv   # applies the emulator redirect on down too
 
 
-def test_cluster_up_self_provisions_bigtable_emulator(tmp_path):
-    # The Bigtable overlay loads unconditionally, exactly like Spanner's: the redirect is a
-    # harmless JVM-global that only the cloud-bigtable client honours, so it bakes onto every
-    # slt- container even though the emulator *container* stays gated behind SLT_BIGTABLE_SERVICE.
+_BIGTABLE_OPT_IN = ("SLT_BIGTABLE_SERVICE", "SLT_EMULATORS")
+
+
+def _opt(monkeypatch, name=None):
+    for key in _BIGTABLE_OPT_IN:
+        monkeypatch.delenv(key, raising=False)
+    if name:
+        monkeypatch.setenv(name, "1")
+
+
+@pytest.mark.parametrize("opt_in", _BIGTABLE_OPT_IN)
+def test_cluster_up_applies_the_bigtable_overlay_when_the_run_opts_in(tmp_path, monkeypatch, opt_in):
+    # The Bigtable service's own opt-in, or the emulators umbrella, as preflight reads them.
+    _opt(monkeypatch, opt_in)
     calls = []
     sp.cluster_up(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
     argv = calls[0][0]
     assert "compose.bigtable-emulator.yaml" in argv
+    assert "compose.spanner-emulator.yaml" in argv
     assert {"slt-striim", "slt-node", "slt-agent"}.issubset(set(argv))
 
 
-def test_cluster_down_applies_the_bigtable_emulator_redirect(tmp_path):
+def test_cluster_up_leaves_the_bigtable_overlay_out_unless_the_run_opts_in(tmp_path, monkeypatch):
+    # Without the opt-in, no Striim JVM gets BIGTABLE_EMULATOR_HOST, so a real-Bigtable app on a
+    # reused cluster is never pointed at an emulator nobody started.
+    _opt(monkeypatch)
+    monkeypatch.setenv("SLT_BIGTABLE_SERVICE", "")
+    calls = []
+    sp.cluster_up(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
+    argv = calls[0][0]
+    assert "compose.bigtable-emulator.yaml" not in argv
+    assert "compose.spanner-emulator.yaml" in argv      # the Spanner overlay is unchanged
+
+
+@pytest.mark.parametrize("opt_in", [None, "SLT_BIGTABLE_SERVICE"])
+def test_cluster_down_matches_the_bigtable_overlay_choice(tmp_path, monkeypatch, opt_in):
+    _opt(monkeypatch, opt_in)
     calls = []
     sp.cluster_down(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
     argv = calls[0][0]
-    assert "compose.bigtable-emulator.yaml" in argv   # applied on down too, with -v/volume cleanup
+    assert ("compose.bigtable-emulator.yaml" in argv) is bool(opt_in)
+    assert argv[-3:] == ["down", "-v", "--remove-orphans"]
+
+
+def test_teardown_finds_the_same_containers_with_or_without_the_bigtable_overlay(monkeypatch):
+    # The overlay only adds an environment variable to the three services the base file declares:
+    # no project name, no container, no service of its own. A teardown run without it therefore
+    # still names, finds and removes every container a run with it started.
+    import yaml
+    from livetest.services import declared_containers
+    striim = Path(sp.__file__).resolve().parents[1] / "services" / "striim"
+    overlay = yaml.safe_load((striim / "compose.bigtable-emulator.yaml").read_text())
+    assert set(overlay) == {"services"}
+    assert set(overlay["services"]) == {"slt-striim", "slt-node", "slt-agent"}
+    assert all(set(svc) == {"environment"} for svc in overlay["services"].values())
+    for opt_in in (None, "SLT_BIGTABLE_SERVICE"):
+        _opt(monkeypatch, opt_in)
+        assert declared_containers(sp.compose_files(striim), {}) == \
+            declared_containers([striim / "compose.yaml"], {})
+
+
+def test_the_overlay_opt_in_is_the_bigtable_services_own():
+    from livetest.registry import load_service
+    assert load_service("bigtable").opt_in_env == "SLT_BIGTABLE_SERVICE"
 
 
 # ---- release-awareness: version-tagged image + per-release deps ------------

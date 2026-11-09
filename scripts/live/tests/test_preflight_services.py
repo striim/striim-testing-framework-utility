@@ -728,10 +728,9 @@ def test_the_cluster_and_a_service_ask_the_same_question(monkeypatch, tmp_path):
     preflight.teardown_cluster()
 
     assert asked[0] == ["/svc/postgres/compose.yaml"]
-    # teardown_cluster routes through compose_files, which now carries every emulator overlay
-    # (Spanner + Bigtable), so orphaned_containers must see all of them.
+    # The Bigtable overlay declares no container of its own, so the orphan check does not need it.
     assert [p.rsplit("/", 1)[-1] for p in asked[1]] == \
-        ["compose.yaml", "compose.spanner-emulator.yaml", "compose.bigtable-emulator.yaml"]
+        ["compose.yaml", "compose.spanner-emulator.yaml"]
 
 
 def test_a_failed_gcs_lookup_does_not_abort_the_whole_preflight(monkeypatch):

@@ -42,7 +42,8 @@ How it is built:
 - The framework's own admin client (`livetest/bigtableadmin.py`, via `inttest.dbroutes`'
   `bigtable` route) reads/writes the table directly from the host at `{host}:{port}`
   (localhost:9470), with `google-cloud-bigtable`. The Striim app (`BigtableWriter`) reaches the same
-  emulator through `BIGTABLE_EMULATOR_HOST`, set by `compose.bigtable-emulator.yaml`.
+  emulator through `BIGTABLE_EMULATOR_HOST`, set by `compose.bigtable-emulator.yaml` only
+  when the run opts in (`SLT_BIGTABLE_SERVICE=1` or `SLT_EMULATORS=1`).
 - Change streams are not supported: the admin offers no change-stream surface, and
   `enable_change_stream` / `disable_change_stream` raise rather than fake one.
 
