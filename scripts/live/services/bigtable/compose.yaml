@@ -76,9 +76,10 @@ services:
       # A listening-port probe keeps `--wait` honest: CBTEMULATOR opens the published port, so a
       # TCP connect succeeds once the Go binary has booted the listener. The real "ready for admin
       # RPCs" proof is the admin-table ensure() the pre-up hook runs (see services.py / this dir's
-      # README "Health gate"); this check only guards against a half-booted listener. /dev/tcp is the
-      # stock sh builtin -- the image ships `sh` but no `nc`/`curl`, so we use the shell's own TCP.
-      test: ["CMD-SHELL", "sh -c 'exec 3<>/dev/tcp/127.0.0.1/${SLT_BIGTABLE_GRPC_HOST_PORT:-9470} || exit 1'"]
+      # README "Health gate"); this check only guards against a half-booted listener. /dev/tcp is a
+      # bash feature: the image is Debian-based, so its /bin/sh is dash, which lacks it. bash is
+      # Essential on Debian, so the probe runs under bash explicitly rather than through CMD-SHELL.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"]
       interval: 3s
       timeout: 3s
       retries: 10

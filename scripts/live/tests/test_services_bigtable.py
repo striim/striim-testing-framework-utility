@@ -160,3 +160,41 @@ def test_bigtable_service_names_its_python_module(monkeypatch):
                         lambda name, *a: None if name == defn.python_module else real(name, *a))
     assert registry.unavailable(defn, {}) == (
         f"Python module google.cloud.bigtable is not installed: {defn.python_module_hint}")
+
+
+def _healthcheck_argv(env):
+    # What Docker runs for the healthcheck, after compose interpolation: CMD-SHELL hands its one
+    # string to /bin/sh -c; CMD runs its arguments directly.
+    import re
+    kind, *args = yaml.safe_load(_LIVE_COMPOSE.read_text())["services"]["slt-bigtable"]["healthcheck"]["test"]
+    expand = lambda s: re.sub(r"\$\{(\w+):-([^}]*)\}", lambda m: env.get(m[1], m[2]), s)
+    return ["/bin/sh", "-c", expand(args[0])] if kind == "CMD-SHELL" else [expand(a) for a in args]
+
+
+def test_live_healthcheck_runs_its_tcp_probe_under_bash():
+    # The emulator image is Debian-based, so its sh is dash, which has no /dev/tcp.
+    argv = _healthcheck_argv({})
+    assert Path(argv[0]).name == "bash"
+    assert "sh -c" not in " ".join(argv[1:])
+
+
+def test_live_healthcheck_passes_on_a_listener_and_fails_without_one_when_sh_is_dash(tmp_path):
+    import os
+    import shutil
+    import socket
+    import subprocess
+    import pytest
+    dash, bash = shutil.which("dash"), shutil.which("bash")
+    if not (dash and bash):
+        pytest.skip("needs dash and bash on this host")
+    shells = tmp_path / "bin"
+    shells.mkdir()
+    (shells / "sh").symlink_to(dash)
+    env = {"PATH": f"{shells}{os.pathsep}{os.environ['PATH']}"}
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        argv = _healthcheck_argv({"SLT_BIGTABLE_GRPC_HOST_PORT": str(listener.getsockname()[1])})
+        argv[0] = str(shells / "sh") if argv[0] == "/bin/sh" else argv[0]
+        assert subprocess.run(argv, env=env, timeout=10).returncode == 0
+    assert subprocess.run(argv, env=env, timeout=10).returncode != 0
