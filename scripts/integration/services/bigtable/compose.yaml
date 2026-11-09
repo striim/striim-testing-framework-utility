@@ -9,7 +9,7 @@
 #
 # Pinned by DIGEST: the linux/amd64 manifest of `gcr.io/google.com/cloudsdktool/google-cloud-cli`
 # (:emulators; index digest sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935).
-# Re-pin deliberately when upgrading; then RE-RUN the BCR-1/BT-9 probes (scripts/dev/bigtable_probe/).
+# Re-pin deliberately when upgrading, and re-run the bigtable service's tests against the new image.
 name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-bigtable
 services:
   int-bigtable:

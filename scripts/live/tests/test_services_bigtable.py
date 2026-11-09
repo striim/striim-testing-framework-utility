@@ -1,7 +1,7 @@
 """Hermetic, no-Docker self-test for the LIVE bigtable service definition.
 
-Deliverable 8a / BIGTABLE_EMULATOR_SERVICE_PLAN.md §9.1 ("a bigtable service parses and
-provides the expected BIGTABLE_* tokens on each tier"), the live-half. Mirrors
+The bigtable service parses and provides the expected BIGTABLE_* tokens on the live tier
+(scripts/integration/tests/test_services_bigtable.py covers the integration tier). Mirrors
 scripts/live/tests/test_spanner_service.py for the CBTEMULATOR service: it parses
 services/bigtable/service.yaml off disk through the real loader the harness uses
 (livetest.registry.load_service) and renders its `provides:` the way the tier resolves it
@@ -14,7 +14,7 @@ render those templates to the expected concrete values -- including the gRPC-por
 the emulator and the admin client that dials it must follow together (the "the container
 moves, the client does not" hazard service.yaml's docker_env is written to close).
 
-§9.2 adds the compose-rendering half, in the same hermetic style: the bigtable compose.yaml
+The compose-rendering half, in the same hermetic style: the bigtable compose.yaml
 renders its name:, container_name: and published port correctly with and without
 SLT_STACK_PREFIX, and the Striim `compose.bigtable-emulator.yaml` overlay injects
 BIGTABLE_EMULATOR_HOST on slt-striim/slt-node/slt-agent at the published port -- while
@@ -95,10 +95,10 @@ def test_bigtable_emulator_host_carries_the_containerised_view_host():
         "jdbc:bigtable:/projects/test-project/instances/test-instance")
 
 
-# --- §9.2 compose rendering: name / container_name / published port + the Striim overlay ------
+# --- compose rendering: name / container_name / published port + the Striim overlay ------
 # No Docker, no CBTEMULATOR: render the compose files' own text the way the harness does --
 # via the framework's own declared_containers/stack (live reads SLT_STACK_PREFIX) and a YAML
-# parse of the overlay. The claim in each test is the one §9.2 names: the rendered names/ports
+# parse of the overlay. The claim in each test: the rendered names/ports
 # and the overlay's per-container injection are *correct*.
 
 _LIVE_COMPOSE = Path(__file__).resolve().parents[1] / "services" / "bigtable" / "compose.yaml"

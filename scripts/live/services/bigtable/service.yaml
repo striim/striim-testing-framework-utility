@@ -5,7 +5,7 @@ isolation: none                 # fixed instance/tables; provisioned once per se
 # EXTERNAL IMAGE: the CBTEMULATOR image is the field's own "dockerized Bigtable" artifact, like
 # the BigQuery service's SLT_BIGQUERY_IMAGE -- the framework owns the connection (livetest/
 # bigtableadmin.py) and the orchestration, and NEVER builds or distributes the image; it supplies
-# a validated default pin (compose.yaml) and SLT_BIGTABLE_IMAGE overrides to the field's own image.
+# a pinned default (compose.yaml) and SLT_BIGTABLE_IMAGE overrides to the field's own image.
 # SLT_BIGTABLE_HOST, set, reuses an emulator/run you run yourself and skips `docker compose up`
 # (services.resolve() returns mode="live"/started=False) -- a different intent from remapping the
 # published gRPC port via SLT_BIGTABLE_GRPC_HOST_PORT.

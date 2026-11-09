@@ -1,20 +1,18 @@
-"""Hermetic, no-Docker self-test for the INTEGRATION BigtableAdmin's command surface --
-BIGTABLE_EMULATOR_SERVICE_PLAN.md §9.4 ("Admin parse + command surface"), the
-integration-half. Mirror of scripts/live/tests/test_bigtableadmin.py: the two
-BigtableAdmin modules are byte-identical on the command surface (§9.4), differing only
-in `readiness()`, which is not exercised here, so the body is the same.
+"""Hermetic, no-Docker self-test for the INTEGRATION BigtableAdmin's command surface.
+Mirror of scripts/live/tests/test_bigtableadmin.py: the two BigtableAdmin modules are the
+same on the command surface, differing only in `readiness()`, which is not exercised here,
+so the body is the same.
 
 Mirrors test_spanneradmin.py / test_gcsadmin.py: the admin's google-cloud-bigtable
 Client + data layer are injected as FAKES (the admin's __init__ client/data_client
 knobs) so a test asserts WHAT the admin asks for -- the families + GC rules it requests
 at create time, the SetCell it stamps with a MILLIS-aligned timestamp, the DropRowRange
 it issues with delete_all_data_from_table=True, and the read form it reads back as hex
-with cells_per_column_limit(1). No Docker, no CBTEMULATOR, and -- because
-google-cloud-bigtable / -admin are not a dependency yet (§5 pins them) -- the
-proto/mutation types the admin builds inside its methods are recording stand-ins, so the
-test never needs them installed.
+with cells_per_column_limit(1). No Docker and no CBTEMULATOR; the proto/mutation types the
+admin builds inside its methods are recording stand-ins here (test_bigtableadmin_requests.py
+checks the requests on the real SDK types).
 
-The admin offers NO change-stream surface (BCR-1): enable_change_stream/disable_change_stream
+The admin offers NO change-stream surface: enable_change_stream/disable_change_stream
 must RAISE rather than fake one, and that refusal is asserted here too.
 """
 import sys
@@ -271,7 +269,7 @@ def test_write_cells_stamps_one_setcell_per_cell_with_a_millis_timestamp():
     assert key == b"user1"
     name = {(m.family, m.qualifier): m for m in muts}[("cf1", b"name")]
     assert name.new_value == b"alice"
-    # CBTEMULATOR enforces MILLIS granularity: the admin millis-aligns the timestamp.
+    # Bigtable's default timestamp granularity is milliseconds: the admin millis-aligns it.
     assert isinstance(name.timestamp_micros, int)
     assert name.timestamp_micros % 1000 == 0
 
@@ -328,7 +326,7 @@ def test_read_row_returns_none_for_an_absent_row():
     assert admin.read_row("emp", "nope") is None
 
 
-# --- drop_all_rows (BT-9: DropRowRange delete-all) -----------------------------------
+# --- drop_all_rows (DropRowRange delete-all) -----------------------------------------
 
 def test_drop_all_rows_issues_a_droprowrange_delete_all():
     tac = _FakeTableAdminClient()
@@ -349,11 +347,11 @@ def test_list_families_returns_the_tables_family_ids():
     assert admin.list_families("emp") == ["cf1", "cf2"]
 
 
-# --- change streams: NOT SUPPORTED (BCR-1) -------------------------------------------
+# --- change streams: NOT SUPPORTED -------------------------------------------------
 
 def test_change_streams_refuse_rather_than_fake():
     admin = _admin()
-    with pytest.raises(RuntimeError, match="BCR-1"):
+    with pytest.raises(RuntimeError, match="change streams are not supported"):
         admin.enable_change_stream()
-    with pytest.raises(RuntimeError, match="BCR-1"):
+    with pytest.raises(RuntimeError, match="change streams are not supported"):
         admin.disable_change_stream()

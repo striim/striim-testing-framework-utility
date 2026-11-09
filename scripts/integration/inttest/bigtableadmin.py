@@ -1,7 +1,7 @@
 """Bigtable admin + data client for the INTEGRATION tier -- ported from
 `scripts/live/livetest/bigtableadmin.py`, self-contained (no `livetest` import, like
 `inttest/spanneradmin.py`). On the google-cloud-bigtable client (google-cloud-bigtable
-2.50.x, which also ships the table-admin API, confirmed against the CBTEMULATOR).
+2.50.x, which also ships the table-admin API).
 Talks to the CBTEMULATOR -- gcloud's Cloud Bigtable emulator -- at the dsn's
 `emulator_host`, over an insecure channel without auth. No service-account key is
 generated (unlike Spanner/GCS).
@@ -13,25 +13,22 @@ JSON-comparable form the `assert.target` tier compares against `expected/*.json`
 apply `CellsColumnLimitFilter(num_cells=1)` so one row yields its newest cell per
 (family, qualifier) column, i.e. Bigtable's own "latest version" semantics.
 
-The emulator does NOT support Bigtable Change Streams (GenerateInitialChangeStreamPartitions
-and ReadChangeStream both SIGSEGV the bttest server -- see docs/BIGTABLE_EMULATOR.md
-"BCR-1"), so this admin offers NO change-stream surface: `enable_change_stream`/
-`disable_change_stream` raise rather than fake one. That decision belongs to a product
-owner; the framework does not ship a fake.
+Bigtable change streams are not supported here: nothing in the framework reads one from the
+emulator, so this admin offers NO change-stream surface and `enable_change_stream`/
+`disable_change_stream` raise rather than fake one. Whether a fake is acceptable belongs to a
+product owner; the framework does not ship one.
 
 The client reaches the emulator at {emulator_host} (a "host:port" string). The framework
 reaches it at the base host:port (localhost:9470) on this side, while the Striim app
 reaches it through the JVM-global BIGTABLE_EMULATOR_HOST (the striim overlay sets it).
 The admin is injectable for hermetic tests via its __init__ client/data_client knobs.
 
-Confirmed API (google-cloud-bigtable 2.50.2, Python 3.15, probe one_probe.py against the
-gcloud 591.0.0 CBTEMULATOR): an admin `Client(project=P, admin="instance")` exposes
-`.table_admin_client` (create_table/get_table/delete_table/list_tables/drop_row_range) and
-`.instance(I).table(T)`; the data `BigtableDataClient(project=P)` exposes `.get_table(I, T)`
-→ a `Table` with `.mutate_row(key, [SetCell(...)])`, `.read_row(key)`,
-`.read_rows(start_key, end_key, filter_=...)`. `SetCell(family, qualifier, new_value,
-timestamp_micros)`; a read cell exposes `.family` (str), `.qualifier` (bytes), `.value`
-(bytes). CBTEMULATOR enforces MILLIS timestamp granularity, so timestamps are millis-aligned.
+SDK surface used (google-cloud-bigtable 2.50.2): the table-admin client's create_table/
+get_table/delete_table/list_tables/drop_row_range, and the data `BigtableDataClient`'s
+`.get_table(I, T)` → a `Table` with `.mutate_row(key, [SetCell(...)])`, `.read_row(key)` and
+`.read_rows(query)`. `SetCell(family, qualifier, new_value, timestamp_micros)`; a read cell
+exposes `.family` (str), `.qualifier` (bytes), `.value` (bytes). Bigtable tables default to
+millisecond timestamp granularity, so timestamps are millis-aligned.
 """
 
 from __future__ import annotations
@@ -263,8 +260,7 @@ class BigtableAdmin:
         raise RuntimeError(f"CBTEMULATOR not ready within {budget.seconds:g}s for "
                            f"{self.dsn['project']}/{self.dsn['instance']}: {last!r}")
 
-    # `ensure()` is the readiness gate the provision loop calls; the smoke `setup` step calls
-    # create_table + write_cells to build its table.
+    # `ensure()` is the readiness gate; create_table + write_cells build a table.
     def ensure(self, *, attempts: int = 20, delay: float = 1.5,
                timeout: float = READINESS_TIMEOUT_S) -> None:
         self.readiness(attempts=attempts, delay=delay, timeout=timeout)
@@ -387,8 +383,7 @@ class BigtableAdmin:
     read_table = read_all
 
     def drop_all_rows(self, table_name: str, *, timeout: float | None = None) -> None:
-        """Drop every row in one call via DropRowRange(delete_all_data_from_table=True).
-        CBTEMULATOR supports this (BT-9 confirmed; see docs/BIGTABLE_EMULATOR.md)."""
+        """Drop every row in one call via DropRowRange(delete_all_data_from_table=True)."""
         from google.cloud.bigtable_admin_v2.types import DropRowRangeRequest
         name = _check_ident(table_name, "table")
         admin = self._admin()
@@ -424,14 +419,10 @@ class BigtableAdmin:
 
     # -- change streams: NOT SUPPORTED by the CBTEMULATOR ---------------------------
     def enable_change_stream(self, *_a, **_k):
-        # BCR-1: the CBTEMULATOR in gcloud 591.0.0 (and earlier) does NOT support Bigtable
-        # Change Streams -- GenerateInitialChangeStreamPartitions and ReadChangeStream both
-        # SIGSEGV the bttest server (see docs/BIGTABLE_EMULATOR.md). No fake is offered; a
-        # product owner decides if a fake is acceptable for the reader's live read tier.
+        # No fake is offered; a product owner decides whether one is acceptable.
         raise RuntimeError(
-            "BCR-1: the CBTEMULATOR in the pinned gcloud/emulators image does not support "
-            "Bigtable Change Streams -- GenerateInitialChangeStreamPartitions/ReadChangeStream "
-            "SIGSEGV the bttest server. No fake is in place; a product owner must decide.")
+            "Bigtable change streams are not supported against the emulator: this admin offers "
+            "no change-stream surface and no fake is in place.")
 
     disable_change_stream = enable_change_stream
 

@@ -60,7 +60,7 @@ def test_parse_rejects_malformed(bad):
         parse_bigtable_specs(bad)
 
 
-# ---- the compare (the read-vs-expected the smoke's negative control rests on) ---------
+# ---- the compare (the read-vs-expected comparison) --------------------------------------
 
 def test_check_pass_when_the_table_matches_expected():
     a = FakeTableAdmin({"emp": EMP})

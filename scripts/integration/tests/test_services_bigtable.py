@@ -1,7 +1,7 @@
 """Hermetic, no-Docker self-test for the INTEGRATION bigtable service definition.
 
-Deliverable 8a / BIGTABLE_EMULATOR_SERVICE_PLAN.md §9.1 ("a bigtable service parses and
-provides the expected BIGTABLE_* tokens on each tier"), the integration-half. Mirror of
+The bigtable service parses and provides the expected BIGTABLE_* tokens on the integration
+tier. Mirror of
 scripts/live/tests/test_services_bigtable.py: parse services/bigtable/service.yaml through
 inttest's own loader (inttest.tokens._load_service_def / service_tokens) and assert the
 service publishes EXACTLY the BIGTABLE_* tokens the integration tier resolves -- no Docker.
@@ -79,8 +79,8 @@ def test_bigtable_grpc_host_port_override_moves_the_client(monkeypatch):
     assert t["BIGTABLE_EMULATOR_HOST"] == "localhost:19110"
 
 
-# --- §9.2 compose rendering: name / container_name / published port (integration half) ---------
-# Mirror of the live §9.2 block at scripts/live/tests/test_services_bigtable.py: this tier
+# --- compose rendering: name / container_name / published port (integration half) ---------
+# Mirror of the live compose-rendering block at scripts/live/tests/test_services_bigtable.py: this tier
 # honours INT_STACK_PREFIX (not SLT_STACK_PREFIX), so it uses inttest.services' own
 # declared_containers / compose_container_names, which read the prefix from the environment --
 # the same idiom test_services.py::test_container_names_carry_the_stack_prefix uses. No Docker.

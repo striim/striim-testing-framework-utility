@@ -6,10 +6,8 @@ via `BigtableAdmin.read_all` (`CellsColumnLimitFilter(num_cells=1)` -- the newes
 records to `expected/*.json`) and compares the row list to a hand-written `expected` list of
 `{"row": <hex>, "cells": {"<family>:<qualifier>": <hex>}}` rows.
 
-Bigtable has NO SQL -- a table is read whole and compared, never queried -- so this is exactly the
-branch the live `assert.target` tier was missing: the int tier already wires it through
-`inttest.dbroutes.assert_target` (dbroutes.py:737), which is why the int smoke (§4.1) works today
-while the live smoke (§4.2) needs this mirror (plan §3).
+Bigtable has NO SQL -- a table is read whole and compared, never queried. The integration tier's
+`inttest.dbroutes.assert_target` makes the same comparison.
 
 It polls like the other service asserts (a `SetCell` write can be async-consistent before the read
 sees it) and, on a timeout, raises AssertionFailed carrying the per-spec sidecar records -- the same
@@ -72,7 +70,7 @@ def assert_bigtable(admin, specs: list[dict], timeout: int, poll: float = 2.0,
 
     The signature mirrors assert_gcs / assert_json so the plugin's `assert.target` dispatch can call
     it as `assert_bigtable(admins[route]['admin'], specs, timeout=m.timeout, status_probe=…,
-    progress=…, db=<route>)` -- the one wiring the live smoke (§4.2) needs beside this module."""
+    progress=…, db=<route>)`."""
     deadline = time.monotonic() + timeout
     while True:
         if status_probe:
