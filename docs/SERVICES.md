@@ -46,6 +46,7 @@ the setting when the port is busy.
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
 | `bigquery` | user-supplied BigQuery emulator image + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
+| `bigtable` | Bigtable emulator in Google's `google-cloud-cli` image (amd64), opt-in | no | 9470 | admin and row helpers only; no manifest setup or assertions | `SLT_BIGTABLE_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -516,6 +517,7 @@ other ports, so both tiers can run at once. Same accounts and passwords.
 | `oracle` (Oracle Free 23ai, amd64) | 11521 | `INT_ORA_HOST` and `INT_ORA_*` |
 | `sqlserver` (SQL Server 2022) | 11433 | `INT_MSSQL_HOST` and `INT_MSSQL_*` |
 | `spanner` (emulator 1.5.55) | 19010, 19020 | `INT_SPANNER_HOST` and `INT_SPANNER_*` |
+| `bigtable` (Bigtable emulator, admin helpers only) | 19470 | `INT_BIGTABLE_HOST` and `INT_BIGTABLE_*` |
 | `gcs` (`fake-gcs-server` 1.54.0) | 14443 | `INT_GCS_HOST` and `INT_GCS_*` |
 | `vertica` (as the live tier, database `intdb`) | 15433 | `INT_VERTICA_HOST` and `INT_VERTICA_*` |
 | `teradata` | your instance | `INT_TERADATA_HOST` and `INT_TERADATA_*` |
@@ -638,3 +640,26 @@ staging objects, records exact ownership and endpoint/project/dataset bindings,
 and removes that dataset only after app cleanup. The shared bootstrap dataset is
 preserved. Kept resources use the same ledger for replay. This is not a recovery,
 operation-order or replay-multiplicity qualification.
+
+## Bigtable emulator (`bigtable`)
+
+Groundwork: the Cloud Bigtable emulator (`cbtemulator`, started by `gcloud beta emulators bigtable
+start`) in Google's public `google-cloud-cli` image, pinned to its linux/amd64 build by digest, and
+the framework's `BigtableAdmin` for it. [The service README](../scripts/live/services/bigtable/README.md)
+has the details.
+
+| | |
+|---|---|
+| Accounts | none: the emulator has no authentication |
+| Tokens | `BIGTABLE_PROJECT`, `BIGTABLE_INSTANCE`, `BIGTABLE_URL`, `BIGTABLE_HOST`, `BIGTABLE_GRPC_PORT`, `BIGTABLE_EMULATOR_HOST` |
+| Settings | `SLT_BIGTABLE_HOST` and the other `SLT_BIGTABLE_*` keys; port `SLT_BIGTABLE_GRPC_HOST_PORT`; image `SLT_BIGTABLE_IMAGE` |
+
+- **Opt-in on the live tier.** A test that requires `bigtable` is skipped unless
+  `SLT_BIGTABLE_SERVICE=1` (or `SLT_EMULATORS=1`). The integration tier has no opt-in.
+- **Supported:** the service on both tiers, and `BigtableAdmin`'s table helpers (create with
+  column families and GC rules, list families, drop, drop rows by key prefix or all) and row
+  helpers (write cells, read a row, read a table, delete a row), each bounded by a time budget.
+- **Not supported:** manifest setup or assertions (no `test.yaml` key creates a Bigtable table,
+  and `bigtable` is not an assertion tier); a BigtableWriter or reader case; real Bigtable,
+  credentials or IAM (`BigtableAdmin` refuses anything but an emulator); change streams; running
+  on Apple silicon (not qualified under emulation).

@@ -38,6 +38,8 @@ PUBLIC_IMAGES = {
     "mcr.microsoft.com/mssql/server:2022-latest",
     "opentext/vertica-k8s:25.3.0-8-multiarch",
     "amd64/ubuntu:22.04", "ubuntu:24.04",
+    # Google's Cloud SDK emulators image (Bigtable emulator), its linux/amd64 build by digest.
+    "gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a",
 }
 # Customer inputs have no implicit default: the cluster license and the supplied emulator image.
 CUSTOMER_INPUTS = {"live/striim/compose.yaml": {"CLUSTER_NAME", "COMPANY_NAME", "PRODUCT_KEY",
@@ -124,7 +126,7 @@ def test_the_catalog_ships_only_the_public_services():
     assert not [k for k in keys if k.split("/")[1] == "teradata"], keys
     fault_overlay = "live/striim/compose.node-fault.yaml"
     assert fault_overlay in keys
-    assert len(keys - {fault_overlay}) == 18, sorted(keys)
+    assert len(keys - {fault_overlay}) == 21, sorted(keys)
 
 
 @pytest.mark.parametrize("path", COMPOSE_FILES, ids=_key)

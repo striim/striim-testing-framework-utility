@@ -193,6 +193,8 @@ SERVICE_EXTRAS = {
     "SLT_BIGQUERY_TOKEN_URI": (None, "Dedicated local fake OAuth endpoint ending in `/token`."),
     "SLT_BIGQUERY_IMAGE": (None, "Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence."),
     "SLT_BIGQUERY_TOKEN_IMAGE": (None, "Override the dedicated fake token server image; use a pinned digest."),
+    "SLT_BIGTABLE_IMAGE": (None, "Another Bigtable emulator image to run instead of the pinned google-cloud-cli build; the framework does not build it."),
+    "SLT_BIGTABLE_SERVICE": ("unset", "`1`: opt in to the `bigtable` service. Unset (and `SLT_EMULATORS` unset), a test that requires it is skipped."),
     "SLT_PG_FIXTURE_TIMEOUT": (None,
         "Optional live-engine Postgres fixture statement deadline in positive finite seconds, at most "
         "2147483.647. Also opts into a lock deadline of min(15 seconds, half the statement budget). "
@@ -235,7 +237,7 @@ NOT_SETTINGS = {"SLT_BIGQUERY_GOMEMLIMIT", "STRIIM_RELEASE", "STRIIM_VERSION", "
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
-         "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
+         "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "bigtable": "Bigtable emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
 FIELDS = {
     "writer_endpoint": "the writer's local IPv4 HTTP PSC endpoint",
     "token_uri": "the dedicated local fake OAuth /token URI",
@@ -251,7 +253,8 @@ FIELDS = {
     "cdc_user": "the account CDC reads with", "cdc_password": "its password",
     "service": "service name of the pluggable database", "cdb_service": "service name of the container "
                                                                           "database",
-    "project": "the project id", "instance": "the instance", "gsql_db": "GoogleSQL-dialect database",
+    "project": "the project id", "instance": "the instance",
+    "emulator_host": "the emulator as one `host:port`; the live tier's admin dials it when set, otherwise `{host}:{port}`", "gsql_db": "GoogleSQL-dialect database",
     "pg_db": "PostgreSQL-dialect database", "admin_port": "its REST admin port",
     "credentials": "path of a service-account key file (in `.env`, relative to its folder); set, the "
                    "tests use real Cloud Spanner, not the "
@@ -367,7 +370,7 @@ def build() -> str:
     prefixes = {"PG": "postgres", "POSTGRES": "postgres", "ORA": "oracle", "ORACLE": "oracle",
                 "MSSQL": "mssql", "MYSQL": "mysql", "VERTICA": "vertica", "KAFKA": "kafka",
                 "SCHEMA": "kafka", "ZOOKEEPER": "kafka", "SPANNER": "spanner", "GCS": "gcs",
-                "TOKEN": "gcs", "BIGQUERY": "bigquery", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
+                "TOKEN": "gcs", "BIGQUERY": "bigquery", "BIGTABLE": "bigtable", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
     for name in sorted((allowed | set(SERVICE_EXTRAS)) - listed - set(paths.LICENCE_KEYS)):
         tier, _, rest = name.partition("_")
         service = prefixes.get(rest.split("_")[0])
