@@ -15,9 +15,11 @@ class FakeTableAdmin:
     def __init__(self, tables):
         self._tables = tables
         self.tables_read = []   # (table, cells_per_column_limit) pairs seen
+        self.timeouts = []      # the timeout each read_all was given
 
-    def read_all(self, table, cells_per_column_limit=1):
+    def read_all(self, table, cells_per_column_limit=1, timeout=None):
         self.tables_read.append((table, cells_per_column_limit))
+        self.timeouts.append(timeout)
         return list(self._tables.get(table, []))
 
     # the inttest/CLI surface keeps these aliases; the assert tier only uses read_all, but exercise
@@ -129,3 +131,53 @@ def test_assert_bigtable_polls_status_probe_each_pass_before_success():
     assert_bigtable(a, [{"table": "emp", "expected": EMP}], timeout=1, poll=0,
                     status_probe=probes.append("t"))
     assert probes == ["t"]   # satisfied on the first poll → exactly one probe
+
+
+# ---- assert_bigtable deadline: one budget, checked before a pass ------------------------
+
+def test_assert_bigtable_hands_each_read_what_is_left_of_its_timeout():
+    a = FakeTableAdmin({"emp": EMP, "dept": []})
+    assert_bigtable(a, [{"table": "emp", "expected": EMP}, {"table": "dept", "expected": []}],
+                    timeout=5, poll=0)
+    assert len(a.timeouts) == 2 and all(0 < t <= 5 for t in a.timeouts)
+    assert a.timeouts[1] <= a.timeouts[0]
+
+
+def test_assert_bigtable_fails_a_read_that_matches_only_after_its_timeout():
+    import time
+
+    class Slow(FakeTableAdmin):
+        def read_all(self, table, cells_per_column_limit=1, timeout=None):
+            time.sleep(0.3)
+            return super().read_all(table, cells_per_column_limit, timeout)
+
+    with pytest.raises(AssertionFailed) as e:
+        assert_bigtable(Slow({"emp": EMP}), [{"table": "emp", "expected": EMP}], timeout=0.1, poll=0)
+    (record,) = e.value.records
+    assert record["status"] == "failed"
+    assert "after the 0.1s deadline" in record["detail"]
+    assert record["actual"]["rows"] == EMP          # what was read is still recorded
+
+
+def test_assert_bigtable_keeps_a_failed_record_when_a_read_expires():
+    from google.api_core.exceptions import DeadlineExceeded
+
+    class Expiring(FakeTableAdmin):
+        def read_all(self, table, cells_per_column_limit=1, timeout=None):
+            raise DeadlineExceeded("read rows timed out")
+
+    with pytest.raises(AssertionFailed) as e:
+        assert_bigtable(Expiring({}), [{"table": "emp", "expected": EMP}], timeout=1, poll=0)
+    (record,) = e.value.records
+    assert record["status"] == "failed"
+    assert "did not finish within 1s" in record["detail"]
+    assert record["expected"]["rows"] == EMP and record["actual"] is None
+
+
+def test_assert_bigtable_lets_a_non_timeout_read_error_through():
+    class Broken(FakeTableAdmin):
+        def read_all(self, table, cells_per_column_limit=1, timeout=None):
+            raise PermissionError("not a deadline")
+
+    with pytest.raises(PermissionError):
+        assert_bigtable(Broken({}), [{"table": "emp", "expected": EMP}], timeout=1, poll=0)

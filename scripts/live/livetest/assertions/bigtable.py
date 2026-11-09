@@ -43,11 +43,11 @@ def parse_bigtable_specs(raw: list) -> list[dict]:
     return raw
 
 
-def _evaluate(admin, spec: dict):
+def _evaluate(admin, spec: dict, timeout=None):
     """Read the table whole and compare to `expected`; also return the expected/actual row-list
     snapshots for the sidecar record. Mirrors inttest.dbroutes.assert_target: the comparison is on
     the `read_all` row list (inttest wraps both sides identically as `{table, rows}`, equivalent)."""
-    got = list(admin.read_all(spec["table"]))
+    got = list(admin.read_all(spec["table"], timeout=timeout))
     want = list(spec["expected"])
     expected = {"kind": "rows", "rows": want}
     actual = {"kind": "rows", "rows": got}
@@ -77,23 +77,58 @@ def assert_bigtable(admin, specs: list[dict], timeout: int, poll: float = 2.0,
     while True:
         if status_probe:
             status_probe()
-        results = [_evaluate(admin, s) for s in specs]
+        results = []
+        try:
+            for s in specs:   # every read gets only what is left of the one deadline
+                results.append(_evaluate(admin, s, timeout=deadline - time.monotonic()))
+        except Exception as exc:
+            if not _expired(exc):
+                raise
+            raise AssertionFailed(
+                f"bigtable assertion not satisfied within {timeout}s: a read expired: {exc}",
+                _records(specs, results, db, f"read did not finish within {timeout}s: {exc}")) from exc
         detail = next((d for ok, d, _, _ in results if not ok), None)
+        if detail is None and time.monotonic() > deadline:
+            # A read that matches only after the deadline is not a pass.
+            detail = f"the table matched only after the {timeout}s deadline"
+            raise AssertionFailed(f"bigtable assertion not satisfied within {timeout}s: {detail}",
+                                  _records(specs, results, db, detail))
         if detail is None:
             return [build_assertion_result(type="bigtable", status="passed", spec=s,
                                            target=s["table"], db=db, detail="ok",
                                            expected=exp, actual=act)
                     for s, (ok, d, exp, act) in zip(specs, results)]
         if time.monotonic() >= deadline:
-            records = [build_assertion_result(type="bigtable", status="passed" if ok else "failed",
-                                              spec=s, target=s["table"], db=db,
-                                              detail="ok" if ok else d, expected=expected, actual=actual)
-                      for s, (ok, d, expected, actual) in zip(specs, results)]
             raise AssertionFailed(
-                f"bigtable assertion not satisfied within {timeout}s: {detail}", records)
+                f"bigtable assertion not satisfied within {timeout}s: {detail}",
+                _records(specs, results, db))
         if progress:
             try:
                 progress(timeout - (deadline - time.monotonic()), float(timeout))
             except Exception:
                 pass
-        time.sleep(poll or 0.05)
+        time.sleep(max(0.0, min(poll or 0.05, deadline - time.monotonic())))
+
+
+def _expired(exc: BaseException) -> bool:
+    """An RPC that ran out of time: the admin's own budget, or the SDK's DeadlineExceeded."""
+    if isinstance(exc, TimeoutError):
+        return True
+    from google.api_core.exceptions import DeadlineExceeded
+    return isinstance(exc, DeadlineExceeded)
+
+
+def _records(specs: list[dict], results: list, db, late: str | None = None) -> list[dict]:
+    """One sidecar record per spec. A spec read in time keeps its comparison; with `late` set,
+    every spec fails with that detail -- a spec never read records only what was expected."""
+    records = []
+    for i, s in enumerate(specs):
+        if i < len(results):
+            ok, d, expected, actual = results[i]
+        else:
+            ok, d, expected, actual = False, None, {"kind": "rows", "rows": list(s["expected"])}, None
+        failed = late is not None or not ok
+        records.append(build_assertion_result(
+            type="bigtable", status="failed" if failed else "passed", spec=s, target=s["table"], db=db,
+            detail=(late or d) if failed else "ok", expected=expected, actual=actual))
+    return records

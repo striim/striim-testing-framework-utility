@@ -56,6 +56,39 @@ _CLIENTS_LOCK = threading.Lock()
 _EMULATOR_ENV = "BIGTABLE_EMULATOR_HOST"
 
 
+# One monotonic budget per operation (see _Budget). The SDK's own defaults are far longer -- the
+# data client allows a read or mutation 600s -- and they would not stop at a case's deadline.
+OPERATION_TIMEOUT_S = 30.0   # one admin operation, however many RPCs it makes
+READINESS_TIMEOUT_S = 60.0   # the readiness gate, all of its attempts together
+
+
+class _Budget:
+    """One monotonic deadline for one operation. Each RPC gets what is left of it: a table-admin
+    call as its gRPC timeout with no retry (a retry could outlive the budget), a data call as its
+    operation_timeout (the data client retries only within that). Once the budget is spent, the
+    next RPC is not sent: TimeoutError is raised instead."""
+
+    def __init__(self, seconds, what: str):
+        self.seconds = OPERATION_TIMEOUT_S if seconds is None else float(seconds)
+        self.what = what
+        self._end = time.monotonic() + self.seconds
+
+    def left(self) -> float:
+        return self._end - time.monotonic()
+
+    def _remaining(self) -> float:
+        left = self.left()
+        if left <= 0:
+            raise TimeoutError(f"Bigtable {self.what} exceeded its {self.seconds:g}s budget")
+        return left
+
+    def admin(self) -> dict:
+        return {"timeout": self._remaining(), "retry": None}
+
+    def data(self) -> dict:
+        return {"operation_timeout": self._remaining()}
+
+
 def _check_ident(name, what: str = "name") -> str:
     if not isinstance(name, str) or not _IDENT.fullmatch(name):
         raise ValueError(f"unsafe {what}: {name!r} must match {_IDENT.pattern}")
@@ -200,7 +233,9 @@ class BigtableAdmin:
     # -- service bootstrap ---------------------------------------------------------
     # The admin client retries this loop until the CBTEMULATOR is accepting admin RPCs; it is
     # the readiness gate the provision step once across xdist workers.
-    def readiness(self, attempts: int = 20, delay: float = 1.5) -> None:
+    def readiness(self, attempts: int = 20, delay: float = 1.5,
+                  timeout: float = READINESS_TIMEOUT_S) -> None:
+        budget = _Budget(timeout, "readiness")
         from google.cloud.bigtable_admin_v2.types import ColumnFamily, Table, CreateTableRequest
         admin = self._admin()
         p = self._parent_instance()
@@ -216,25 +251,29 @@ class BigtableAdmin:
                 try:
                     tac.create_table(CreateTableRequest(parent=p, table_id=HEALTH_TABLE,
                                                         table=Table(name=full,
-                                                                    column_families={"slt": ColumnFamily()})))
+                                                                    column_families={"slt": ColumnFamily()})),
+                                    **budget.admin())
                 except _gx.AlreadyExists:
                     pass
                 try:
-                    tac.delete_table(name=full)
+                    tac.delete_table(name=full, **budget.admin())
                 except _gx.NotFound:    # noqa: BLE001 -- a delete that already settled is fine
                     pass
                 self._table_cache.pop(HEALTH_TABLE, None)
                 return
             except Exception as exc:    # noqa: BLE001 -- a half-booted emulator; retry the whole gate
                 last = exc
-                time.sleep(delay)
-        raise RuntimeError(f"CBTEMULATOR not ready for {self.dsn['project']}/{self.dsn['instance']}: "
-                           f"{last!r}")
+                if budget.left() <= 0:
+                    break
+                time.sleep(min(delay, budget.left()))
+        raise RuntimeError(f"CBTEMULATOR not ready within {budget.seconds:g}s for "
+                           f"{self.dsn['project']}/{self.dsn['instance']}: {last!r}")
 
     # `ensure()` is the readiness gate the provision loop calls; the smoke `setup` step calls
     # create_table + write_cells to build its table.
-    def ensure(self, *, attempts: int = 20, delay: float = 1.5) -> None:
-        self.readiness(attempts=attempts, delay=delay)
+    def ensure(self, *, attempts: int = 20, delay: float = 1.5,
+               timeout: float = READINESS_TIMEOUT_S) -> None:
+        self.readiness(attempts=attempts, delay=delay, timeout=timeout)
 
     # -- schema --------------------------------------------------------------------
     @staticmethod
@@ -250,7 +289,8 @@ class BigtableAdmin:
             out[fam] = cf
         return out
 
-    def create_table(self, table_name: str, families: dict, *, gc_rules=None) -> None:
+    def create_table(self, table_name: str, families: dict, *, gc_rules=None,
+                     timeout: float | None = None) -> None:
         """Create `table_name` with the given families + GC rules.
         Idempotent: `drop_table(...)` first -- a re-run of a case rebuilds its table."""
         name = _check_ident(table_name, "table")
@@ -258,43 +298,48 @@ class BigtableAdmin:
         tac = admin.table_admin_client
         p = self._parent_instance()
         full = self._full_table_name(name)
+        budget = _Budget(timeout, f"create_table {name}")
         try:                      # drop-first keeps a re-run clean; a missing table is the common case
-            tac.delete_table(name=full)
+            tac.delete_table(name=full, **budget.admin())
         except Exception:         # noqa: BLE001
             pass
         from google.cloud.bigtable_admin_v2.types import ColumnFamily, Table, CreateTableRequest
         cf = self._column_families(families, gc_rules or {})
         tac.create_table(CreateTableRequest(parent=p, table_id=name,
-                                            table=Table(name=full, column_families=cf)))
+                                            table=Table(name=full, column_families=cf)),
+                         **budget.admin())
         self._table_cache.pop(name, None)
 
-    def drop_table(self, table_name: str) -> None:
+    def drop_table(self, table_name: str, *, timeout: float | None = None) -> None:
         name = _check_ident(table_name, "table")
+        budget = _Budget(timeout, f"drop_table {name}")
         self._table_cache.pop(name, None)
         admin = self._admin()
         tac = admin.table_admin_client
         from google.api_core.exceptions import NotFound
         try:               # an already-missing table is the only failure that means "gone"
-            tac.delete_table(name=self._full_table_name(name))
+            tac.delete_table(name=self._full_table_name(name), **budget.admin())
         except NotFound:
             pass
 
-    def list_families(self, table_name: str) -> list:
+    def list_families(self, table_name: str, *, timeout: float | None = None) -> list:
         name = _check_ident(table_name, "table")
+        budget = _Budget(timeout, f"list_families {name}")
         admin = self._admin()
         tac = admin.table_admin_client
         from google.cloud.bigtable_admin_v2.types import GetTableRequest
-        tbl = tac.get_table(GetTableRequest(name=self._full_table_name(name)))
+        tbl = tac.get_table(GetTableRequest(name=self._full_table_name(name)), **budget.admin())
         return list(tbl.column_families.keys())
 
     # -- rows (cells) --------------------------------------------------------------
-    def write_cells(self, table_name: str, rows: list) -> None:
+    def write_cells(self, table_name: str, rows: list, *, timeout: float | None = None) -> None:
         """rows: a list of `{"row": key, "cells": {"<family>:<qualifier>": value}}`.
         value may be str (UTF-8 encoded), bytes, or a hex token "0xAB...".
         Each cell is written via `SetCell(family, qualifier, new_value,
         timestamp_micros=<now, millis-aligned>)` -- CBTEMULATOR enforces MILLIS granularity."""
         from google.cloud.bigtable.data import SetCell
         table = self._table(table_name)
+        budget = _Budget(timeout, f"write_cells {table_name}")   # every row's mutation together
         now = int(time.time() * _MILLIS) * _MILLIS
         for row in rows:
             key = _as_bytes(row["row"])
@@ -307,16 +352,16 @@ class BigtableAdmin:
                                     qualifier=_as_bytes(qual),
                                     new_value=_as_bytes(value),
                                     timestamp_micros=now))
-            table.mutate_row(key, muts)
+            table.mutate_row(key, muts, **budget.data())
 
     # The task/CLI call this `write_rows`; keep the alias.
     write_rows = write_cells
 
-    def read_row(self, table_name: str, key) -> dict:
+    def read_row(self, table_name: str, key, *, timeout: float | None = None) -> dict:
         """Read one row by key; return `{"cells": {"<family>:<qualifier>": <hex value>}}` or
         None if the row is absent."""
         table = self._table(table_name)
-        row = table.read_row(_as_bytes(key))
+        row = table.read_row(_as_bytes(key), **_Budget(timeout, f"read_row {table_name}").data())
         if row is None:
             return None
         cells = {}
@@ -324,7 +369,8 @@ class BigtableAdmin:
             cells[f"{c.family}:{c.qualifier.decode()}"] = c.value.hex()
         return {"cells": cells}
 
-    def read_all(self, table_name: str, *, cells_per_column_limit=1) -> list:
+    def read_all(self, table_name: str, *, cells_per_column_limit=1,
+                 timeout: float | None = None) -> list:
         """Read every row in `table_name`; return a list of
         `{"row": <hex key>, "cells": {"<family>:<qualifier>": <hex value>}}` sorted by row
         key. `CellsColumnLimitFilter(num_cells=1)` makes each column return its newest cell --
@@ -334,7 +380,7 @@ class BigtableAdmin:
         table = self._table(table_name)
         q = ReadRowsQuery(row_filter=CellsColumnLimitFilter(num_cells=cells_per_column_limit))
         out = []
-        for r in table.read_rows(q):
+        for r in table.read_rows(q, **_Budget(timeout, f"read_all {table_name}").data()):
             cells = {}
             for c in r.cells:
                 cells[f"{c.family}:{c.qualifier.decode()}"] = c.value.hex()
@@ -346,7 +392,7 @@ class BigtableAdmin:
     read_cells = read_all
     read_table = read_all
 
-    def drop_all_rows(self, table_name: str) -> None:
+    def drop_all_rows(self, table_name: str, *, timeout: float | None = None) -> None:
         """Drop every row in one call via DropRowRange(delete_all_data_from_table=True).
         CBTEMULATOR supports this (BT-9 confirmed; see docs/BIGTABLE_EMULATOR.md)."""
         from google.cloud.bigtable_admin_v2.types import DropRowRangeRequest
@@ -354,10 +400,12 @@ class BigtableAdmin:
         admin = self._admin()
         tac = admin.table_admin_client
         tac.drop_row_range(DropRowRangeRequest(
-            name=self._full_table_name(name), delete_all_data_from_table=True))
+            name=self._full_table_name(name), delete_all_data_from_table=True),
+            **_Budget(timeout, f"drop_all_rows {name}").admin())
 
     def drop_row_range(self, table_name: str, *, row_key_prefix=None,
-                       start_row_key=None, end_row_key=None) -> None:
+                       start_row_key=None, end_row_key=None,
+                       timeout: float | None = None) -> None:
         name = _check_ident(table_name, "table")
         admin = self._admin()
         tac = admin.table_admin_client
@@ -369,11 +417,12 @@ class BigtableAdmin:
             req.start_row_key = _as_bytes(start_row_key)
         if end_row_key is not None:
             req.end_row_key = _as_bytes(end_row_key)
-        tac.drop_row_range(req)
+        tac.drop_row_range(req, **_Budget(timeout, f"drop_row_range {name}").admin())
 
-    def delete_row(self, table_name: str, key) -> None:
+    def delete_row(self, table_name: str, key, *, timeout: float | None = None) -> None:
         from google.cloud.bigtable.data import DeleteAllFromRow
-        self._table(table_name).mutate_row(_as_bytes(key), [DeleteAllFromRow()])
+        self._table(table_name).mutate_row(_as_bytes(key), [DeleteAllFromRow()],
+                                           **_Budget(timeout, f"delete_row {table_name}").data())
 
     # -- change streams: NOT SUPPORTED by the CBTEMULATOR ---------------------------
     def enable_change_stream(self, *_a, **_k):
@@ -389,16 +438,17 @@ class BigtableAdmin:
     disable_change_stream = enable_change_stream
 
     # -- ownership-ledger hooks ----------------------------------------------------
-    def drop_owned_table(self, table_name: str) -> None:
-        self.drop_table(table_name)
+    def drop_owned_table(self, table_name: str, *, timeout: float | None = None) -> None:
+        self.drop_table(table_name, timeout=timeout)
 
-    def list_owned_tables(self) -> set:
+    def list_owned_tables(self, *, timeout: float | None = None) -> set:
         admin = self._admin()
         tac = admin.table_admin_client
         # A failed listing raises: an empty set would let the ledger verify a table absent
         # that it never saw deleted.
         names = set()
-        for t in tac.list_tables(_list_tables_req(self._parent_instance())):
+        for t in tac.list_tables(_list_tables_req(self._parent_instance()),
+                                 **_Budget(timeout, "list_owned_tables").admin()):
             names.add(t.name.split("/")[-1])
         return names
 

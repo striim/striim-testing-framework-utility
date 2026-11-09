@@ -20,12 +20,12 @@ class _TableAdmin:
         self.delete_error, self.list_error, self.listed = delete_error, list_error, list(listed)
         self.deleted = []
 
-    def delete_table(self, name):
+    def delete_table(self, name, **_deadline):
         self.deleted.append(name)
         if self.delete_error is not None:
             raise self.delete_error
 
-    def list_tables(self, request):
+    def list_tables(self, request, **_deadline):
         assert request.parent == INSTANCE
         if self.list_error is not None:
             raise self.list_error

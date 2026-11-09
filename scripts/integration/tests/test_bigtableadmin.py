@@ -63,7 +63,7 @@ class _FakeDataTable:
         self.mutations = []      # (row_key, [mutation]) from mutate_row
         self.read_queries = []   # queries seen by read_rows
 
-    def mutate_row(self, key, mutations):
+    def mutate_row(self, key, mutations, **_deadline):
         self.mutations.append((key, list(mutations)))
         for m in mutations:
             for r in self._rows:
@@ -74,13 +74,13 @@ class _FakeDataTable:
                 self._rows.append(_FakeRow(key,
                                            [_FakeCell(m.family, m.qualifier, m.new_value)]))
 
-    def read_row(self, key):
+    def read_row(self, key, **_deadline):
         for r in self._rows:
             if r.row_key == key:
                 return r
         return None
 
-    def read_rows(self, query):
+    def read_rows(self, query, **_deadline):
         self.read_queries.append(query)
         return list(self._rows)
 
@@ -109,19 +109,19 @@ class _FakeTableAdminClient:
         self._got = got_table
         self._listed = list(listed)
 
-    def create_table(self, req):
+    def create_table(self, req, **_deadline):
         self.created.append(req)
 
-    def delete_table(self, name):
+    def delete_table(self, name, **_deadline):
         self.deleted.append(name)
 
-    def get_table(self, req):
+    def get_table(self, req, **_deadline):
         return self._got
 
-    def drop_row_range(self, req):
+    def drop_row_range(self, req, **_deadline):
         self.dropped.append(req)
 
-    def list_tables(self, req):
+    def list_tables(self, req, **_deadline):
         return list(self._listed)
 
 
