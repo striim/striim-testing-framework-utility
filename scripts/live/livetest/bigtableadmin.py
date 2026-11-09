@@ -49,8 +49,6 @@ HEALTH_TABLE = ".__slt_readiness"
 # fds. Keyed so a long SLT_KEEP_SERVICES session reuses one channel pair instead of leaking.
 _CLIENTS: dict = {}
 _CLIENTS_LOCK = threading.Lock()
-# The SDK reads this once, when a client is constructed, and then dials it for that client's life.
-_EMULATOR_ENV = "BIGTABLE_EMULATOR_HOST"
 
 
 # One monotonic budget per operation (see _Budget). The SDK's own defaults are far longer -- the
@@ -148,32 +146,131 @@ class _EmulatorTableAdmin:
         self.table_admin_client = table_admin_client
 
 
-def _emulator_clients(project: str, endpoint: str):
-    """An (admin, data) pair that dials `endpoint` and nothing else, whatever
-    BIGTABLE_EMULATOR_HOST says later. Call with _CLIENTS_LOCK held.
+class _EmulatorDataClient:
+    """The data side of one emulator, on the SDK's GAPIC `BigtableClient` with an explicit channel.
 
-    The table-admin client gets its own insecure channel to `endpoint` -- what the SDK's admin
-    Client builds for an emulator, minus the environment lookup. The data client has no public
-    way to name an emulator: it reads BIGTABLE_EMULATOR_HOST in its constructor, so the variable
-    is set for that call only and put back. A variable that already names a different emulator
-    is refused rather than overridden: something else in this process is pointed there."""
-    current = os.environ.get(_EMULATOR_ENV)
-    if current and current != endpoint:
-        raise ValueError(f"{_EMULATOR_ENV}={current} conflicts with this Bigtable dsn's emulator "
-                         f"{endpoint}; unset it or point both at the same emulator")
+    The SDK's `BigtableDataClient` can reach an emulator only through BIGTABLE_EMULATOR_HOST, read
+    in its constructor and shared by every client in the process, so it is not used. This exposes
+    the part of its surface BigtableAdmin uses -- `.get_table(I, T)` -> a table with mutate_row /
+    read_row / read_rows taking the SDK's own SetCell, DeleteAllFromRow and ReadRowsQuery and
+    returning its Row/Cell -- and sends each call as one bigtable_v2 RPC bounded by
+    `operation_timeout` (no retry, as on the admin side)."""
+
+    def __init__(self, project: str, gapic_client):
+        self.project = project
+        self._gapic_client = gapic_client
+
+    def get_table(self, instance_id: str, table_id: str):
+        return _EmulatorTable(self._gapic_client,
+                              f"projects/{self.project}/instances/{instance_id}/tables/{table_id}")
+
+
+class _EmulatorTable:
+    def __init__(self, gapic_client, table_name: str):
+        self._gapic = gapic_client
+        self.table_name = table_name
+
+    @staticmethod
+    def _mutation(m):
+        from google.cloud.bigtable.data import DeleteAllFromRow, SetCell
+        from google.cloud.bigtable_v2.types import Mutation
+        if isinstance(m, SetCell):
+            return Mutation(set_cell=Mutation.SetCell(
+                family_name=m.family, column_qualifier=m.qualifier, timestamp_micros=m.timestamp_micros,
+                value=m.new_value))
+        if isinstance(m, DeleteAllFromRow):
+            return Mutation(delete_from_row=Mutation.DeleteFromRow())
+        raise TypeError(f"unsupported Bigtable mutation {type(m).__name__}")
+
+    def mutate_row(self, row_key: bytes, mutations, *, operation_timeout: float):
+        from google.cloud.bigtable_v2.types import MutateRowRequest
+        self._gapic.mutate_row(
+            request=MutateRowRequest(table_name=self.table_name, row_key=row_key,
+                                     mutations=[self._mutation(m) for m in mutations]),
+            timeout=operation_timeout, retry=None)
+
+    def _read(self, request, operation_timeout: float):
+        return list(_rows_from_chunks(self._gapic.read_rows(request=request, timeout=operation_timeout,
+                                                            retry=None)))
+
+    def read_row(self, row_key: bytes, *, operation_timeout: float):
+        from google.cloud.bigtable_v2.types import ReadRowsRequest, RowSet
+        rows = self._read(ReadRowsRequest(table_name=self.table_name, rows=RowSet(row_keys=[row_key]),
+                                          rows_limit=1), operation_timeout)
+        return rows[0] if rows else None
+
+    def read_rows(self, query, *, operation_timeout: float):
+        from google.cloud.bigtable.data.row_filters import CellsColumnLimitFilter
+        from google.cloud.bigtable_v2.types import ReadRowsRequest, RowFilter
+        if query.row_keys or query.row_ranges or query.limit:
+            raise TypeError("only a whole-table ReadRowsQuery is supported")
+        request = ReadRowsRequest(table_name=self.table_name)
+        if isinstance(query.filter, CellsColumnLimitFilter):
+            request.filter = RowFilter(cells_per_column_limit_filter=query.filter.num_cells)
+        elif query.filter is not None:
+            raise TypeError(f"unsupported Bigtable row filter {type(query.filter).__name__}")
+        return self._read(request, operation_timeout)
+
+
+def _rows_from_chunks(responses):
+    """Merge a ReadRows response stream's cell chunks into the SDK's own Row/Cell objects.
+
+    A row starts with a chunk naming its row_key; family_name and qualifier carry over until a
+    chunk names new ones; a value split across chunks carries value_size on every chunk but its
+    last; reset_row discards the row so far; commit_row ends it."""
+    from google.cloud.bigtable.data import Cell, Row
+    from google.cloud.bigtable_v2.types import ReadRowsResponse
+    key = family = qualifier = None
+    cells, value, timestamp, labels = [], None, 0, []
+    for response in responses:
+        if isinstance(response, ReadRowsResponse):
+            response = ReadRowsResponse.pb(response)
+        for chunk in response.chunks:
+            if chunk.reset_row:
+                key = family = qualifier = None
+                cells, value = [], None
+                continue
+            if chunk.row_key:
+                key, cells = chunk.row_key, []
+            if key is None:
+                raise ValueError("ReadRows chunk outside a row")
+            if chunk.HasField("family_name"):
+                family = chunk.family_name.value
+            if chunk.HasField("qualifier"):
+                qualifier = chunk.qualifier.value
+            if value is None:                      # the first chunk of a cell
+                value, timestamp, labels = [], chunk.timestamp_micros, list(chunk.labels)
+            value.append(chunk.value)
+            if chunk.value_size == 0:              # its last chunk
+                cells.append(Cell(b"".join(value), key, family, qualifier, timestamp, labels))
+                value = None
+            if chunk.commit_row:
+                if value is not None:
+                    raise ValueError("ReadRows committed a row inside a split cell value")
+                yield Row(key, cells)
+                key = family = qualifier = None
+                cells = []
+    if key is not None or value is not None:
+        raise ValueError("ReadRows stream ended inside a row")
+
+
+def _emulator_clients(project: str, endpoint: str):
+    """An (admin, data) pair that dials `endpoint` and nothing else. Call with _CLIENTS_LOCK held.
+
+    Both sides are the SDK's GAPIC clients on their own insecure channel to `endpoint` -- what the
+    SDK builds for an emulator, minus its BIGTABLE_EMULATOR_HOST lookup. Nothing here reads or
+    writes the process environment, so another client in the process cannot redirect these and
+    these cannot redirect it; and with a transport supplied, no credentials are looked up."""
     import grpc
-    from google.cloud.bigtable.data import BigtableDataClient
     from google.cloud.bigtable_admin_v2 import BaseBigtableTableAdminClient
     from google.cloud.bigtable_admin_v2.services.bigtable_table_admin.transports import (
         BigtableTableAdminGrpcTransport)
+    from google.cloud.bigtable_v2 import BigtableClient
+    from google.cloud.bigtable_v2.services.bigtable.transports import BigtableGrpcTransport
     admin = _EmulatorTableAdmin(BaseBigtableTableAdminClient(transport=BigtableTableAdminGrpcTransport(
         channel=grpc.insecure_channel(endpoint), host=endpoint)))
-    os.environ[_EMULATOR_ENV] = endpoint
-    try:
-        data = BigtableDataClient(project=project)
-    finally:
-        if current is None:
-            os.environ.pop(_EMULATOR_ENV, None)
+    data = _EmulatorDataClient(project, BigtableClient(transport=BigtableGrpcTransport(
+        channel=grpc.insecure_channel(endpoint), host=endpoint)))
     return admin, data
 
 
