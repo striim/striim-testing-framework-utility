@@ -120,6 +120,18 @@ def test_cluster_up_leaves_the_bigtable_overlay_out_unless_the_run_opts_in(tmp_p
     assert "compose.spanner-emulator.yaml" in argv      # the Spanner overlay is unchanged
 
 
+@pytest.mark.parametrize("name,value", [("SLT_EMULATORS", "0"), ("SLT_BIGTABLE_SERVICE", "0"),
+                                        ("SLT_EMULATORS", "false"), ("SLT_BIGTABLE_SERVICE", "off")])
+def test_an_opt_in_set_off_leaves_the_bigtable_overlay_out(tmp_path, monkeypatch, name, value):
+    # SLT_EMULATORS=0 reads as off, as preflight and doctor read it, not as a non-empty opt-in.
+    _opt(monkeypatch)
+    monkeypatch.setenv(name, value)
+    calls = []
+    sp.cluster_up(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
+    assert "compose.bigtable-emulator.yaml" not in calls[0][0]
+    assert sp._bigtable_emulator_requested({name: value}) is False
+
+
 @pytest.mark.parametrize("opt_in", [None, "SLT_BIGTABLE_SERVICE"])
 def test_cluster_down_matches_the_bigtable_overlay_choice(tmp_path, monkeypatch, opt_in):
     _opt(monkeypatch, opt_in)

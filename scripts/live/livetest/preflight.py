@@ -49,7 +49,7 @@ from livetest.plugin import (
     _EXTRA_LIVE_CASES, _LIVE_CASES, _STATE_DIR, _STRIIM_DIR, _gcs_endpoint_ip, _loaded_jar_probe, _op_jar_fingerprint,
     _module_build_lock, _register_op_jar, _registry_key, _resolve_release, _resolve_striim,
 )
-from livetest.registry import RegistryError, load_service, unavailable as registry_unavailable
+from livetest.registry import RegistryError, load_service, opted_in, unavailable as registry_unavailable
 from livetest import prestart as _prestart
 from livetest.services import (
     clear_provision_registry, compose_down, container_exists, container_running,
@@ -385,7 +385,7 @@ def _gated_out(svc: str, env) -> bool:
     ``SLT_EMULATORS`` is skipped — the subprocesses requiring it will ``pytest.skip`` too, so
     provisioning it would waste a container no test uses (mirrors plugin.py's runtest gate)."""
     gate = load_service(svc).opt_in_env
-    return bool(gate) and not (env.get(gate) or env.get("SLT_EMULATORS"))
+    return bool(gate) and not opted_in(gate, env)
 
 
 # ---------------------------------------------------------------------------------------------
