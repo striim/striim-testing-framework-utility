@@ -215,7 +215,8 @@ class _EmulatorTable:
 def _rows_from_chunks(responses):
     """Merge a ReadRows response stream's cell chunks into the SDK's own Row/Cell objects.
 
-    A row starts with a chunk naming its row_key; family_name and qualifier carry over until a
+    A row starts with a chunk naming its row_key (a later chunk may restate that key, but not
+    name another before the row ends); family_name and qualifier carry over until a
     chunk names new ones; a value split across chunks carries value_size on every chunk but its
     last; reset_row discards the row so far; commit_row ends it."""
     from google.cloud.bigtable.data import Cell, Row
@@ -231,7 +232,11 @@ def _rows_from_chunks(responses):
                 cells, value = [], None
                 continue
             if chunk.row_key:
-                key, cells = chunk.row_key, []
+                if key is None:                    # the first chunk of a row
+                    key, cells = chunk.row_key, []
+                elif chunk.row_key != key:
+                    raise ValueError("ReadRows chunk names a new row before the open row was "
+                                     "committed or reset")
             if key is None:
                 raise ValueError("ReadRows chunk outside a row")
             if chunk.HasField("family_name"):

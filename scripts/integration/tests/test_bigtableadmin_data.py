@@ -162,3 +162,46 @@ def test_a_reset_row_discards_what_was_sent_for_that_row():
 def test_a_stream_ending_inside_a_row_is_an_error():
     with pytest.raises(ValueError, match="ended inside a row"):
         _rows(_response({"row_key": b"r1", "family_name": "cf", "qualifier": b"a", "value": b"v"}))
+
+
+def test_a_row_key_restated_inside_the_open_row_keeps_its_cells(monkeypatch):
+    # A server may name the open row's key again on a later chunk (here, in the next response).
+    # Compare with the SDK's own reader on the same stream: both must return both cells.
+    from google.cloud.bigtable.data import BigtableDataClient
+
+    def read_rows(raw, context):
+        for qualifier, value, committed in ((b"a", b"one", False), (b"b", b"two", True)):
+            response = ReadRowsResponse.pb()()
+            chunk = response.chunks.add()
+            chunk.row_key = b"r1"
+            chunk.family_name.value = "cf"
+            chunk.qualifier.value = qualifier
+            chunk.timestamp_micros = 1000
+            chunk.value = value
+            chunk.commit_row = committed
+            yield response.SerializeToString()
+
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler(
+        "google.bigtable.v2.Bigtable", {"ReadRows": grpc.unary_stream_rpc_method_handler(read_rows)}),))
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    endpoint = f"127.0.0.1:{port}"
+    monkeypatch.setattr(bigtableadmin, "_CLIENTS", {})
+    monkeypatch.setenv("BIGTABLE_EMULATOR_HOST", endpoint)      # for the SDK's own reader only
+    dsn = {"project": "test-project", "instance": "test-instance", "emulator_host": endpoint}
+    sdk = BigtableDataClient(project="test-project")
+    try:
+        expected = [{"row": b"r1".hex(), "cells": {"cf:a": b"one".hex(), "cf:b": b"two".hex()}}]
+        assert BigtableAdmin(dsn, data_client=sdk).read_all("t1_rows", timeout=5) == expected
+        assert BigtableAdmin(dsn).read_all("t1_rows", timeout=5) == expected
+    finally:
+        sdk.close()
+        server.stop(0)
+
+
+def test_a_different_row_key_before_commit_is_an_error():
+    with pytest.raises(ValueError, match="before the open row"):
+        _rows(_response({"row_key": b"r1", "family_name": "cf", "qualifier": b"a", "value": b"v"},
+                        {"row_key": b"r2", "family_name": "cf", "qualifier": b"a", "value": b"w",
+                         "commit_row": True}))
