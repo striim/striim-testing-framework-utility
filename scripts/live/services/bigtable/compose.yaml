@@ -17,8 +17,9 @@
 # serves gRPC on 9470; a TCP probe of that port proves the server is listening, but listening is
 # not the same as *ready to accept admin RPCs* (CBTEMULATOR boots its in-memory store after the
 # listener opens). The admin client's ensure() -- a create + delete of a throwaway table on the
-# emulator (livetest/bigtableadmin.py's ensure(), called from livetest.prestart for this
-# service) -- is the real readiness proof; the healthcheck below only keeps `--wait` honest.
+# emulator (livetest/bigtableadmin.py's ensure(), which livetest/plugin.py's LiveItem.runtest
+# calls for a test that requires this service) -- is the real readiness proof; the healthcheck
+# below only keeps `--wait` honest.
 #
 # Parallel stacks: SLT_STACK_PREFIX namespaces the compose project and every container_name below
 # -- unset/empty, it interpolates to today's exact names (see docs/internals/ENGINE.md
@@ -71,7 +72,7 @@ services:
     healthcheck:
       # A listening-port probe keeps `--wait` honest: CBTEMULATOR opens the published port, so a
       # TCP connect succeeds once the Go binary has booted the listener. The real "ready for admin
-      # RPCs" proof is the admin-table ensure() the pre-up hook runs (see services.py / this dir's
+      # RPCs" proof is the admin-table ensure() the live tier runs before a bigtable test (this dir's
       # README "Health gate"); this check only guards against a half-booted listener. /dev/tcp is a
       # bash feature: the image is Debian-based, so its /bin/sh is dash, which lacks it. bash is
       # Essential on Debian, so the probe runs under bash explicitly rather than through CMD-SHELL.

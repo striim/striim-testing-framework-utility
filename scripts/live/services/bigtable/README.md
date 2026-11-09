@@ -1,6 +1,7 @@
 # Bigtable emulator service recipe
 
-Using this service in a test (accounts, tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
+Using services in a test (tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
+It has no Bigtable section yet; the tokens this service provides are listed in `service.yaml`.
 
 How it is built:
 
@@ -25,9 +26,9 @@ How it is built:
 - Change streams are not supported: the admin offers no change-stream surface, and
   `enable_change_stream` / `disable_change_stream` raise rather than fake one.
 
-Health gate: the healthcheck below / `services.ensure_up` runs an admin-table create+delete; it is
-the "really prove readiness" gate (a half-booted CBTEMULATOR opens its listener before it accepts
-admin RPCs). See README `Health gate` section below.
+Health gate: the compose healthcheck only proves the port is listening; the admin-table
+create+delete that the live tier runs before a bigtable test is the readiness gate (a half-booted
+CBTEMULATOR opens its listener before it accepts admin RPCs). See "Health gate" below.
 
 ## Who owns the image
 
@@ -54,12 +55,14 @@ its own "dockerized Bigtable" -- the same boundary as BigQuery's `SLT_BIGQUERY_I
 
 ## Health gate
 
-The `docker compose up --wait` block below waits on `slt-bigtable`'s healthcheck, AND the
-framework's `livetest.services.ensure_up` runs `bigtableadmin.BigtableAdmin(dsn).ensure()` -- it
-creates and deletes a throwaway `.__slt_readiness` table, retrying until the listener is ready to
-accept admin RPCs. The healthcheck (a TCP probe of the published port) only keeps `--wait` honest;
-the admin `ensure()` is the real "ready for admin RPCs" proof.
+`docker compose up --wait` waits on `slt-bigtable`'s healthcheck, a TCP probe of the published
+port that only keeps `--wait` honest. The readiness proof is `BigtableAdmin(dsn).ensure()`, which
+creates and deletes a throwaway `.__slt_readiness` table, retrying within its time budget until the
+emulator accepts admin RPCs. On the live tier, `LiveItem.runtest` in `livetest/plugin.py` calls it
+when a test requires the bigtable service (once across pytest-xdist workers). The integration tier
+does not call it.
 
 To use an emulator you run yourself (not via Docker), set `SLT_BIGTABLE_HOST`/`SLT_BIGTABLE_
-GRPC_HOST_PORT`/`SLT_BIGTABLE_PROJECT`/`SLT_BIGTABLE_INSTANCE` (the `live_override_env` path), or
-point a test at real Bigtable via `SLT_BIGTABLE_*` + credentials.
+GRPC_HOST_PORT`/`SLT_BIGTABLE_PROJECT`/`SLT_BIGTABLE_INSTANCE` (the `live_override_env` path).
+Real Bigtable is not supported: `BigtableAdmin` refuses a connection that carries credentials or
+names no emulator endpoint.
