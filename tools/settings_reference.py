@@ -313,6 +313,9 @@ def service_settings(services: Path) -> list:
             what = FIELDS.get(field) or field.replace("_", " ")
             if file.parent.name == "oracle" and field == "admin_user":
                 what = "the optional observer admin account, owning database logon triggers in the data PDB"
+            if services.parent.name == "integration" and field == "emulator_host":
+                what = ("the emulator as one `host:port`; the integration tier's admin does not read it yet "
+                        "and dials `{host}:{port}`")
             if name == "SLT_MYSQL_ADMIN_USER":
                 what = "the admin account, which makes missing schemas and cleans up; it never creates or changes an account"
             add(name, code(defaults.get(field)), "Your own instance: " + what + "." if field != "host"
