@@ -97,10 +97,12 @@ def _check_ident(name, what: str = "name") -> str:
 
 
 def _gc_to_rule(gc):
-    """Turn a YAML/JSON GC rule dict into a `GcRule` proto. Two supported shapes:
-        {"num_versions": N}                 -> GcRule(max_num_versions=N)
+    """Turn a YAML/JSON GC rule dict into a `GcRule` proto. Exactly one key, two shapes:
+        {"num_versions": N}  -> GcRule(max_num_versions=N): keep the newest N versions
         {"age_millis": M} / {"age_seconds": S} / {"age_days": D}
-                                    -> GcRule(max_age=Duration(...), max_num_versions=1)
+            -> the union of max_age and max_num_versions=1: keep one version, and collect it
+               once it is older than the age
+    GcRule's `rule` is a oneof, so the two limits of an age rule are combined explicitly.
     None / empty -> None (the family has no GC rule; it never expires)."""
     if not gc:
         return None
@@ -110,18 +112,15 @@ def _gc_to_rule(gc):
     if not keys <= _GC_KINDS:
         raise ValueError(f"unknown GC rule keys {sorted(keys - _GC_KINDS)!r}; "
                          f"allowed: {sorted(_GC_KINDS)}")
-    if "num_versions" in keys:
-        return GcRule(max_num_versions=int(gc["num_versions"]))
-    if "age_millis" in keys:
-        age_millis = int(gc["age_millis"])
-    elif "age_seconds" in keys:
-        age_millis = int(gc["age_seconds"]) * _MILLIS
-    elif "age_days" in keys:
-        age_millis = int(gc["age_days"]) * _MILLIS_PER_DAY
-    else:
-        raise ValueError("a GC rule must set exactly one of num_versions/age_*/age_days")
-    return GcRule(max_age=Duration(milliseconds=age_millis, seconds=age_millis // 1000),
-                  max_num_versions=1)
+    if len(keys) != 1:
+        raise ValueError(f"a GC rule must set exactly one of {sorted(_GC_KINDS)}, got {sorted(keys)}")
+    (kind,) = keys
+    if kind == "num_versions":
+        return GcRule(max_num_versions=int(gc[kind]))
+    scale = {"age_millis": 1, "age_seconds": _MILLIS, "age_days": _MILLIS_PER_DAY}[kind]
+    age = Duration()
+    age.FromMilliseconds(int(gc[kind]) * scale)
+    return GcRule(union=GcRule.Union(rules=[GcRule(max_age=age), GcRule(max_num_versions=1)]))
 
 
 def _as_bytes(v):

@@ -6,9 +6,9 @@ field the message does not have, or a oneof set twice, fails here as it would be
 from types import SimpleNamespace
 
 import pytest
-from google.cloud.bigtable_admin_v2.types import DropRowRangeRequest
+from google.cloud.bigtable_admin_v2.types import CreateTableRequest, DropRowRangeRequest, GcRule
 
-from livetest.bigtableadmin import BigtableAdmin
+from livetest.bigtableadmin import BigtableAdmin, _gc_to_rule
 
 TABLE = "projects/test-project/instances/test-instance/tables/t1_rows"
 
@@ -19,6 +19,12 @@ class _Recorder:
 
     def drop_row_range(self, request, **_deadline):
         self.requests.append(request)
+
+    def create_table(self, request, **_deadline):
+        self.requests.append(request)
+
+    def delete_table(self, name, **_deadline):
+        pass
 
 
 def _admin():
@@ -66,3 +72,47 @@ def test_drop_all_rows_sends_a_delete_all_request():
     admin.drop_all_rows("t1_rows")
     (request,) = tac.requests
     assert _target(request) == "delete_all_data_from_table" and request.delete_all_data_from_table
+
+
+# --- GC rules: GcRule's `rule` is a oneof, so a combined policy is an explicit union ----------
+
+def _which(rule):
+    return GcRule.pb(rule).WhichOneof("rule")
+
+
+def test_num_versions_is_a_versions_only_rule():
+    rule = _gc_to_rule({"num_versions": 3})
+    assert isinstance(rule, GcRule)
+    assert _which(rule) == "max_num_versions" and rule.max_num_versions == 3
+
+
+@pytest.mark.parametrize("gc, seconds, nanos", [
+    ({"age_millis": 1500}, 1, 500_000_000),
+    ({"age_seconds": 90}, 90, 0),
+    ({"age_days": 2}, 172_800, 0),
+])
+def test_an_age_rule_keeps_one_version_and_expires_it_by_age(gc, seconds, nanos):
+    # union: a cell is collected when it is older than the age OR is not the newest version.
+    rule = _gc_to_rule(gc)
+    assert _which(rule) == "union"
+    age, versions = rule.union.rules
+    assert _which(age) == "max_age"
+    duration = GcRule.pb(age).max_age
+    assert (duration.seconds, duration.nanos) == (seconds, nanos)
+    assert _which(versions) == "max_num_versions" and versions.max_num_versions == 1
+
+
+@pytest.mark.parametrize("gc", [{"num_versions": 2, "age_days": 1}, {"age_seconds": 1, "age_days": 1}])
+def test_a_rule_naming_two_limits_is_refused(gc):
+    with pytest.raises(ValueError, match="exactly one"):
+        _gc_to_rule(gc)
+
+
+def test_create_table_sends_the_age_rule_on_its_family():
+    admin, tac = _admin()
+    admin.create_table("t1_rows", {"cf": None, "plain": None}, gc_rules={"cf": {"age_days": 7}})
+    (request,) = tac.requests
+    assert isinstance(request, CreateTableRequest)
+    families = request.table.column_families
+    assert _which(families["cf"].gc_rule) == "union"
+    assert _which(families["plain"].gc_rule) is None          # no rule: the family never expires

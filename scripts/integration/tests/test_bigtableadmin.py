@@ -215,8 +215,8 @@ def test_check_ident_accepts_valid_rejects_injection():
         _check_ident(123, "table")                     # non-string
 
 def test_gc_to_rule_num_versions_and_none_and_unknown_key():
-    # The num_versions shape only -- an age_* GC rule builds a real protobuf Duration and
-    # is exercised by the live/emulator run, not this hermetic tier.
+    # The num_versions shape only, on the recording stubs; the age forms are checked on the
+    # real admin_v2 types in test_bigtableadmin_requests.py.
     assert _gc_to_rule({"num_versions": 3}).max_num_versions == 3
     assert _gc_to_rule(None) is None
     assert _gc_to_rule({}) is None
