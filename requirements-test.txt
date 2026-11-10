@@ -21,6 +21,7 @@ filelock==4.0.12
 google-api-core==2.41.0
     # via
     #   google-cloud-bigquery
+    #   google-cloud-bigtable
     #   google-cloud-core
     #   google-cloud-monitoring
     #   google-cloud-spanner
@@ -29,25 +30,32 @@ google-auth==2.60.0
     # via
     #   google-api-core
     #   google-cloud-bigquery
+    #   google-cloud-bigtable
     #   google-cloud-core
     #   google-cloud-monitoring
     #   google-cloud-spanner
     #   google-cloud-storage
 google-cloud-bigquery==3.46.1
     # via -r requirements-test.in
+google-cloud-bigtable==2.50.2
+    # via -r requirements-test.in
 google-cloud-core==2.8.0
     # via
     #   google-cloud-bigquery
+    #   google-cloud-bigtable
     #   google-cloud-spanner
     #   google-cloud-storage
 google-cloud-monitoring==2.32.0
-    # via google-cloud-spanner
+    # via
+    #   google-cloud-bigtable
+    #   google-cloud-spanner
 google-cloud-spanner==3.71.0
     # via -r requirements-test.in
 google-cloud-storage==3.16.0
     # via -r requirements-test.in
 google-crc32c==1.9.0
     # via
+    #   google-cloud-bigtable
     #   google-cloud-storage
     #   google-resumable-media
 google-resumable-media==2.11.0
@@ -60,12 +68,15 @@ googleapis-common-protos==1.75.5
     #   grpc-google-iam-v1
     #   grpcio-status
 grpc-google-iam-v1==0.14.5
-    # via google-cloud-spanner
+    # via
+    #   google-cloud-bigtable
+    #   google-cloud-spanner
 grpc-interceptor==0.15.4
     # via google-cloud-spanner
 grpcio==1.84.0
     # via
     #   google-api-core
+    #   google-cloud-bigtable
     #   google-cloud-monitoring
     #   google-cloud-spanner
     #   googleapis-common-protos
@@ -83,6 +94,7 @@ mmh3==5.3.1
 opentelemetry-api==1.45.0
     # via
     #   google-api-core
+    #   google-cloud-bigtable
     #   google-cloud-spanner
     #   opentelemetry-resourcedetector-gcp
     #   opentelemetry-sdk
@@ -91,6 +103,7 @@ opentelemetry-resourcedetector-gcp==1.14.0
     # via google-cloud-spanner
 opentelemetry-sdk==1.45.0
     # via
+    #   google-cloud-bigtable
     #   google-cloud-spanner
     #   opentelemetry-resourcedetector-gcp
 opentelemetry-semantic-conventions==0.66b0
@@ -109,11 +122,13 @@ pluggy==1.6.0
 proto-plus==1.29.0
     # via
     #   google-api-core
+    #   google-cloud-bigtable
     #   google-cloud-monitoring
     #   google-cloud-spanner
 protobuf==7.36.2
     # via
     #   google-api-core
+    #   google-cloud-bigtable
     #   google-cloud-monitoring
     #   google-cloud-spanner
     #   googleapis-common-protos

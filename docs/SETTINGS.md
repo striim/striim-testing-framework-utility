@@ -124,6 +124,19 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_BIGQUERY_TOKEN_IMAGE` | shell, `.env`, machine | `python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1` | Override the dedicated fake token server image; use a pinned digest. |
 | `SLT_BIGQUERY_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
+### Bigtable emulator (`bigtable`)
+
+| Setting | Where | Docker default | What it does |
+|---|---|---|---|
+| `SLT_BIGTABLE_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
+| `SLT_BIGTABLE_PORT` | shell, `.env`, machine | `9470` | Your own instance: its port. |
+| `SLT_BIGTABLE_PROJECT` | shell, `.env`, machine | `test-project` | Your own instance: the project id. |
+| `SLT_BIGTABLE_INSTANCE` | shell, `.env`, machine | `test-instance` | Your own instance: the instance. |
+| `SLT_BIGTABLE_GRPC_HOST_PORT` | shell, `.env` | `9470` | Host port the container publishes; change it when the port is in use. |
+| `SLT_BIGTABLE_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
+| `SLT_BIGTABLE_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |
+| `SLT_BIGTABLE_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
+
 ### GCS emulator (`gcs`)
 
 | Setting | Where | Docker default | What it does |
@@ -336,6 +349,18 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_ALLOW_CONCURRENT_SESSIONS` | shell | unset | `1`: allow a second integration session on the same stack at the same time. |
 | `INT_ALLOW_ALL_SKIPPED` | shell | unset | `1`: do not fail a run in which every case skipped because a service or Docker was missing. A build prerequisite missing still fails it. |
 | `INT_SHARED_SERVICES` | shell | unset | Reserved: a broker owns the services, and the session does not tear them down. |
+
+### Bigtable emulator, integration (`bigtable`)
+
+| Setting | Where | Docker default | What it does |
+|---|---|---|---|
+| `INT_BIGTABLE_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
+| `INT_BIGTABLE_PORT` | shell, `.env`, machine | `19470` | Your own instance: its port. |
+| `INT_BIGTABLE_PROJECT` | shell, `.env`, machine | `test-project` | Your own instance: the project id. |
+| `INT_BIGTABLE_INSTANCE` | shell, `.env`, machine | `test-instance` | Your own instance: the instance. |
+| `INT_BIGTABLE_GRPC_HOST_PORT` | shell, `.env` | `19470` | Host port the container publishes; change it when the port is in use. |
+| `INT_BIGTABLE_CPUS` | shell, `.env`, machine | `0.5` | CPUs the container may use. |
+| `INT_BIGTABLE_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |
 
 ### GCS emulator, integration (`gcs`)
 

@@ -86,6 +86,28 @@ def test_cluster_down_invokes_compose_down(tmp_path):
     assert "compose.spanner-emulator.yaml" in argv   # applies the emulator redirect on down too
 
 
+def test_cluster_up_and_down_apply_the_bigtable_emulator_redirect(tmp_path):
+    # Always applied, as the Spanner one is: the framework's cluster is emulator-only.
+    for step in (sp.cluster_up, sp.cluster_down):
+        calls = []
+        step(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
+        assert "compose.bigtable-emulator.yaml" in calls[0][0]
+        assert "compose.spanner-emulator.yaml" in calls[0][0]
+
+
+def test_the_bigtable_overlay_only_sets_the_redirect_on_the_three_members():
+    # No project name, container or service of its own, so it changes nothing teardown looks for.
+    import yaml
+    from livetest.services import declared_containers
+    striim = Path(sp.__file__).resolve().parents[1] / "services" / "striim"
+    overlay = yaml.safe_load((striim / "compose.bigtable-emulator.yaml").read_text())
+    assert overlay == {"services": {s: {"environment": {
+        "BIGTABLE_EMULATOR_HOST": "host.docker.internal:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"}}
+        for s in ("slt-striim", "slt-node", "slt-agent")}}
+    assert declared_containers(sp.compose_files(striim), {}) == \
+        declared_containers([striim / "compose.yaml"], {})
+
+
 # ---- release-awareness: version-tagged image + per-release deps ------------
 
 RELEASE_50 = {"STRIIM_RELEASE": "5.0.6.2F", "STRIIM_VERSION": "5.0.6.2F",

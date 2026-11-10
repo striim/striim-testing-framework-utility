@@ -1,0 +1,47 @@
+# Cloud Bigtable emulator (cbtemulator) for the live tier. Same emulator as the integration tier
+# (scripts/integration/services/bigtable/compose.yaml). Google ships no standalone Bigtable
+# emulator image like the Spanner one; the emulator is a component of the gcloud CLI's
+# :emulators image, whose entrypoint is `gcloud`, so the service starts it explicitly.
+#
+# The emulator listens on 9470 inside the container. SLT_BIGTABLE_GRPC_HOST_PORT remaps only the
+# host side and, via service.yaml's docker_env, moves the admin client that dials it the same way;
+# Striim reaches it at host.docker.internal:<host port> (../striim/compose.bigtable-emulator.yaml).
+# SLT_BIGTABLE_HOST (live_override_env) reuses an emulator you run yourself and skips
+# `docker compose up` -- a different intent from remapping the published port.
+#
+# The emulator needs no credentials: BIGTABLE_EMULATOR_HOST makes Striim's clients target it and
+# skip auth, so no service-account key is generated (contrast Spanner/GCS, which still parse one).
+#
+# Parallel stacks: SLT_STACK_PREFIX namespaces the compose project and every container_name below
+# -- unset/empty, it interpolates to today's exact names (see docs/internals/ENGINE.md
+# "Parallel stacks", mirroring scripts/live/services/spanner/compose.yaml).
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
+services:
+  slt-bigtable:
+    # Pinned by DIGEST to the linux/amd64 manifest of the :emulators tag (index digest
+    # sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935), so an upgrade is
+    # deliberate. Re-pin by hand and re-run this service's tests against the new image.
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
+    # The emulator is an in-memory store; it grows with the data it holds.
+    cpus: ${SLT_BIGTABLE_CPUS:-1}
+    mem_limit: ${SLT_BIGTABLE_MEM_LIMIT:-2g}
+    platform: linux/amd64
+    command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
+    ports:
+      - "${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"
+    healthcheck:
+      # Keeps `--wait` honest: a TCP connect succeeds once the listener is up. Readiness for admin
+      # RPCs is BigtableAdmin.ensure(), which LiveItem.runtest runs before a bigtable test. /dev/tcp
+      # is a bash feature and the image's /bin/sh is Debian's dash, so the probe runs under bash.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9470"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - slt-bigtable-net
+
+networks:
+  slt-bigtable-net:
+    driver: bridge

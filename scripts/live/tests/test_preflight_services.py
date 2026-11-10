@@ -729,7 +729,7 @@ def test_the_cluster_and_a_service_ask_the_same_question(monkeypatch, tmp_path):
 
     assert asked[0] == ["/svc/postgres/compose.yaml"]
     assert [p.rsplit("/", 1)[-1] for p in asked[1]] == \
-        ["compose.yaml", "compose.spanner-emulator.yaml"]
+        ["compose.yaml", "compose.spanner-emulator.yaml", "compose.bigtable-emulator.yaml"]
 
 
 def test_a_failed_gcs_lookup_does_not_abort_the_whole_preflight(monkeypatch):

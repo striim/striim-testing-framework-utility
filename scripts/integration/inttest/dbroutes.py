@@ -195,6 +195,24 @@ _PARAM_SPECS: dict[str, dict] = {
                          "const":  {"dialect": "postgresql"}},
         },
     },
+    "bigtable": {
+        "driver": "bigtable",
+        # The Cloud Bigtable emulator, reached by the framework's BigtableAdmin at
+        # BIGTABLE_HOST:BIGTABLE_GRPC_PORT over a plaintext channel, without auth. One instance,
+        # no databases or dialects -- so it has `directions` (source/target) but the
+        # directions only pick the role, not a per-direction token. The admin gets
+        # `{project, instance, emulator_host, credentials}`.
+        "common": {
+            "project": "BIGTABLE_PROJECT",
+            "instance": "BIGTABLE_INSTANCE",
+            "host": "BIGTABLE_HOST",
+            "port": "BIGTABLE_GRPC_PORT",
+        },
+        "directions": {
+            "source": {"tokens": {}, "const": {}},
+            "target": {"tokens": {}, "const": {}},
+        },
+    },
 }
 
 
@@ -257,6 +275,16 @@ def connection_params(route: str, tokens: Mapping[str, str]) -> dict:
         if credentials:
             # Real Spanner (spanneradmin.real_tokens): the key authenticates, there is no
             # emulator, and the test's ${TID} is the only prefix the admin's guard allows.
+            params["credentials"] = credentials
+            params["tid"] = tokens.get("TID", "")
+        else:
+            params["emulator_host"] = f'{params["host"]}:{params["port"]}'
+    elif params["driver"] == "bigtable":
+        # BigtableAdmin's dsn shape: {project, instance, emulator_host}. It is emulator-only
+        # for now and refuses a dsn that carries credentials, so a BIGTABLE_CREDENTIALS token
+        # fails before any client is built instead of reaching real Bigtable.
+        credentials = tokens.get("BIGTABLE_CREDENTIALS")
+        if credentials:
             params["credentials"] = credentials
             params["tid"] = tokens.get("TID", "")
         else:
@@ -652,6 +680,87 @@ _QUERIERS = {"postgres": _query_postgres, "oracle": _query_oracle,
              "spanner": _query_spanner, "sqlserver": _query_sqlserver, "mysql": _query_mysql,
              "teradata": _query_teradata, "vertica": _query_vertica}
 
+# The one engine with a driver but NO SQL surface: bigtable. It appears as a route, but its rows
+# are read *whole* by the admin -- never queried or executed (see `_bigtable_admin` /
+# `setup_bigtable` / `read_cells` below). So `bigtable` is intentionally absent from `_RUNNERS`/`_QUERIERS`, and the
+# "every driver has a runner" invariant the self-test enforces applies to every driver *except* this
+# set. A single named constant keeps the test honest: it asserts the module's own view of which
+# engines are non-SQL, rather than a test-local literal.
+_NON_SQL_DRIVERS = frozenset({"bigtable"})
+
+
+# --- Bigtable (no SQL; the admin reads a whole table) -----------------------------------------
+# Bigtable is not a query engine -- the admin reads back a WHOLE table as
+# {row: <hex key>, cells: {<fam>:<qual>: <hex value>}}. These helpers bypass the query-rows
+# model entirely:
+#
+#   setup_bigtable(table, families, gc, seed)  -- create the table + families/GC + seed rows
+#   read_cells(route, table)                   -- read the table back as a JSON snapshot
+#
+# They are groundwork: no test.yaml key and no assert tier calls them yet (inttest/plugin.py's
+# _assert_target_rows still reads through query_rows), so a manifest cannot set up or assert a Bigtable
+# table. `query_rows`/`run_sql_text`/`_RUNNERS`/`_QUERIERS` raise for driver 'bigtable' because
+# Bigtable has no SQL.
+
+
+def _bigtable_admin(route: str, tokens: Mapping[str, str]):
+    """Build a BigtableAdmin from a `bigtable-*` route + the run's tokens.
+    `connection_params` already produced {project, instance, emulator_host, [credentials]}."""
+    from inttest import bigtableadmin as _bigtable_mod
+    params = connection_params(route, tokens)
+    return _bigtable_mod.BigtableAdmin(params, client=None, data_client=None)
+
+
+def setup_bigtable(table: str, families: dict, *, gc_rules: dict | None = None,
+                   seed: list | None = None, route: str = "bigtable-target",
+                   tokens: Mapping[str, str] | None = None) -> None:
+    """Create `table` with `families` + optional `gc_rules` and seed rows from a YAML/JSON
+    spec, driving the route's BigtableAdmin. This is the Bigtable 'setup' step that
+    takes the role of `ddl:`/`seed:` for a non-SQL target."""
+    admin = _bigtable_admin(route, dict(tokens or {}))
+    admin.create_table(table, families, gc_rules=gc_rules or {})
+    if seed:
+        admin.write_cells(table, seed)
+
+
+def teardown_bigtable(table: str, route: str = "bigtable-target",
+                      tokens: Mapping[str, str] | None = None) -> None:
+    """Drop `table` at teardown via the route's BigtableAdmin.drop_table: an
+    already-missing table is fine, any other failure raises.
+    Mirrors the framework's per-test teardown contract for a service the admin 'owns'."""
+    admin = _bigtable_admin(route, dict(tokens or {}))
+    admin.drop_table(table)
+
+
+def read_cells(route: str, table: str,
+               tokens: Mapping[str, str] | None = None,
+               *, cells_per_column_limit: int = 1) -> dict:
+    """Read the whole `table` from a `bigtable-*` route via its admin. Returns
+    `{"table": <name>, "rows": [{"row": <hex>, "cells": {<fam>:<qual>: <hex>}}]}`."""
+    admin = _bigtable_admin(route, dict(tokens or {}))
+    rows = admin.read_all(table, cells_per_column_limit=cells_per_column_limit)
+    return {"table": table, "rows": rows}
+
+
+def assert_target(route: str, table: str, expected: list, tokens: Mapping[str, str] | None = None) -> None:
+    """Compare a route's table snapshot to `expected`, raising with a clear mismatch message.
+    Groundwork: the assert.target tier does not call it yet, so a `db: bigtable-target`
+    manifest assertion is not supported."""
+    got = read_cells(route, table, tokens)
+    if got != {"table": table, "rows": list(expected)}:
+        import json
+        raise AssertionError(
+            f"assert.target({route!r}/{table!r}) mismatch:\n"
+            f"  expected: {json.dumps(list(expected), sort_keys=True)}\n"
+            f"  actual:   {json.dumps(got, sort_keys=True)}"
+        )
+
+
+def assert_target_rows(route: str, table: str, expected_rows: list,
+                       tokens: Mapping[str, str] | None = None) -> None:
+    """Like assert_target but pass just the rows list (no {"table": ...} wrapper)."""
+    assert_target(route, table, expected_rows, tokens)
+
 
 def query_rows(route: str, sql: str, tokens: Mapping[str, str]) -> list[list]:
     """Token-substitute `sql`, run it as ONE query against `route`, and return its rows.
@@ -674,8 +783,9 @@ def query_rows(route: str, sql: str, tokens: Mapping[str, str]) -> list[list]:
             f"itself.")
     params = connection_params(route, tokens)
     querier = _QUERIERS.get(params["driver"])
-    if querier is None:  # pragma: no cover - unreachable while _PARAM_SPECS <-> _QUERIERS stay in sync
-        raise RouteError(f"no SQL query support for driver {params['driver']!r}")
+    if querier is None:   # a non-SQL driver (_NON_SQL_DRIVERS): bigtable is read by its admin
+        raise RouteError(f"no SQL query support for driver {params['driver']!r}: route {route!r} "
+                         f"has no SQL surface")
     return querier(params, rendered)
 
 
@@ -692,8 +802,9 @@ def run_sql_text(route: str, sql: str, tokens: Mapping[str, str]) -> None:
         return
     params = connection_params(route, tokens)
     runner = _RUNNERS.get(params["driver"])
-    if runner is None:  # pragma: no cover - unreachable while _PARAM_SPECS <-> _RUNNERS stay in sync
-        raise RouteError(f"no SQL execution support for driver {params['driver']!r}")
+    if runner is None:   # a non-SQL driver (_NON_SQL_DRIVERS): bigtable is read by its admin
+        raise RouteError(f"no SQL execution support for driver {params['driver']!r}: route {route!r} "
+                         f"has no SQL surface")
     runner(params, statements)
 
 

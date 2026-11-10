@@ -1,0 +1,30 @@
+# Cloud Bigtable emulator (cbtemulator) for the integration tier -- same image as the live tier
+# (scripts/live/services/bigtable/compose.yaml; see its comments), on host port 19470 so both
+# stacks can run at once. The emulator listens on 9470 inside the container; INT_BIGTABLE_GRPC_
+# HOST_PORT remaps only the host side.
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-bigtable
+services:
+  int-bigtable:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-bigtable
+    cpus: ${INT_BIGTABLE_CPUS:-0.5}
+    mem_limit: ${INT_BIGTABLE_MEM_LIMIT:-2g}
+    platform: linux/amd64
+    command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
+    ports:
+      # Do NOT set INT_BIGTABLE_HOST to "point the framework at it": that is live_override_env, which
+      # makes services.resolve() return mode="live"/started=False and skip `docker compose up`.
+      - "${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:9470"
+    healthcheck:
+      # /dev/tcp is a bash feature and the image's /bin/sh is Debian's dash, so run it under bash.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9470"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - int-bigtable-net
+
+networks:
+  int-bigtable-net:
+    driver: bridge

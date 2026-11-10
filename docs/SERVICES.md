@@ -46,6 +46,7 @@ the setting when the port is busy.
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
 | `bigquery` | user-supplied BigQuery emulator image + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
+| `bigtable` | Bigtable emulator in Google's `google-cloud-cli` image (amd64) | no | 9470 | admin and row helpers only; no manifest setup or assertions | `SLT_BIGTABLE_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -414,6 +415,26 @@ Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (Goo
   Start with [07-spanner-exact](../samples/live/07-spanner-exact/README.md).
 - The emulator runs one read-write transaction at a time: run Spanner tests serially.
 
+## Bigtable (`bigtable`)
+
+Groundwork: the Cloud Bigtable emulator, from Google's `google-cloud-cli` `:emulators` image
+(linux/amd64, pinned by digest), and the framework's `BigtableAdmin` table and row helpers.
+
+| | |
+|---|---|
+| Accounts | none |
+| Tokens | `BIGTABLE_PROJECT`, `BIGTABLE_INSTANCE`, `BIGTABLE_URL`; integration tier also `BIGTABLE_HOST`, `BIGTABLE_GRPC_PORT` |
+| Settings | `SLT_BIGTABLE_HOST` and the other `SLT_BIGTABLE_*` keys; port `SLT_BIGTABLE_GRPC_HOST_PORT` |
+
+- Striim's Bigtable clients reach an emulator only through `BIGTABLE_EMULATOR_HOST` on the Striim
+  server. The framework sets it on the Docker cluster it starts, as it sets
+  `SPANNER_EMULATOR_HOST`; a Striim server you provide needs it set yourself. No key is needed.
+- Not supported yet: manifest setup or assertions (no `test.yaml` key creates a Bigtable table,
+  and `bigtable` is not an `assert:` tier; `livetest.assertions.bigtable.assert_bigtable` is
+  written for one, but nothing calls it), a BigtableWriter or reader case, real Bigtable
+  (`BigtableAdmin` refuses credentials and Google API endpoints), change streams, and Apple
+  silicon (not qualified under emulation).
+
 ## GCS (`gcs`)
 
 `fake-gcs-server` as a Cloud Storage reader and writer target, plus a small fake token server.
@@ -518,6 +539,7 @@ other ports, so both tiers can run at once. Same accounts and passwords.
 | `oracle` (Oracle Free 23ai, amd64) | 11521 | `INT_ORA_HOST` and `INT_ORA_*` |
 | `sqlserver` (SQL Server 2022) | 11433 | `INT_MSSQL_HOST` and `INT_MSSQL_*` |
 | `spanner` (emulator 1.5.55) | 19010, 19020 | `INT_SPANNER_HOST` and `INT_SPANNER_*` |
+| `bigtable` (Bigtable emulator, admin helpers only) | 19470 | `INT_BIGTABLE_HOST` and `INT_BIGTABLE_*` |
 | `gcs` (`fake-gcs-server` 1.54.0) | 14443 | `INT_GCS_HOST` and `INT_GCS_*` |
 | `vertica` (as the live tier, database `intdb`) | 15433 | `INT_VERTICA_HOST` and `INT_VERTICA_*` |
 | `teradata` | your instance | `INT_TERADATA_HOST` and `INT_TERADATA_*` |

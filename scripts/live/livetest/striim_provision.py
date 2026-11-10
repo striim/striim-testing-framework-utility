@@ -749,11 +749,11 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
                           progress=progress)
     return ref
 
-# Bring the cluster up with the Spanner emulator redirect baked in. The framework's
-# cluster is emulator-only, so SPANNER_EMULATOR_HOST is always safe here (only Spanner
-# clients read it — harmless for non-Spanner tests) and it makes SLT_SPANNER tests
-# self-provisioning like GCS/Kafka. It stays out of the base compose so a plain
-# `docker compose up` still targets real Spanner.
+# Bring the cluster up with the Spanner and Bigtable emulator redirects baked in. The framework's
+# cluster is emulator-only, so SPANNER_EMULATOR_HOST and BIGTABLE_EMULATOR_HOST are always safe here
+# (only Spanner and Bigtable clients read them — harmless for other tests) and they make Spanner and
+# Bigtable tests self-provisioning like GCS/Kafka. They stay out of the base compose so a plain
+# `docker compose up` still targets real Spanner and Bigtable.
 def _compose_files():
     files = list(_COMPOSE_FILES)
     if os.environ.get("SLT_ENABLE_NODE_FAULTS") == "1":
@@ -761,7 +761,8 @@ def _compose_files():
     return files
 
 
-_COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml"]
+_COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml",
+                  "-f", "compose.bigtable-emulator.yaml"]
 
 def compose_files(striim_dir: Path) -> list[Path]:
     """The cluster's compose files as paths, for callers that read them rather than run them

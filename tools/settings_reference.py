@@ -238,7 +238,7 @@ NOT_SETTINGS = {"SLT_BIGQUERY_GOMEMLIMIT", "STRIIM_RELEASE", "STRIIM_VERSION", "
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
-         "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
+         "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "bigtable": "Bigtable emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
 FIELDS = {
     "writer_endpoint": "the writer's local IPv4 HTTP PSC endpoint",
     "token_uri": "the dedicated local fake OAuth /token URI",
@@ -370,7 +370,7 @@ def build() -> str:
     prefixes = {"PG": "postgres", "POSTGRES": "postgres", "ORA": "oracle", "ORACLE": "oracle",
                 "MSSQL": "mssql", "MYSQL": "mysql", "VERTICA": "vertica", "KAFKA": "kafka",
                 "SCHEMA": "kafka", "ZOOKEEPER": "kafka", "SPANNER": "spanner", "GCS": "gcs",
-                "TOKEN": "gcs", "BIGQUERY": "bigquery", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
+                "TOKEN": "gcs", "BIGQUERY": "bigquery", "BIGTABLE": "bigtable", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
     for name in sorted((allowed | set(SERVICE_EXTRAS)) - listed - set(paths.LICENCE_KEYS)):
         tier, _, rest = name.partition("_")
         service = prefixes.get(rest.split("_")[0])

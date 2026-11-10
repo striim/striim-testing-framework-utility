@@ -1060,7 +1060,7 @@ def check_services(need: dict, env: dict, tcp=None, login=None, docker=None,
             checks.append(_fail(subject, f"required by {cases}: {why}", INFRA) if fail
                           else _skip(subject, f"required by {cases}: {why}; they skip until then"))
             continue
-        if defn.opt_in_env and not (env.get(defn.opt_in_env) or env.get("SLT_EMULATORS")):
+        if defn.opt_in_env and not registry.opted_in(defn.opt_in_env, env):
             checks.append(_warn(subject, f"opt-in: `start all` and other bring-ups not tied to a "
                                          f"case leave it out unless {defn.opt_in_env}=1 or "
                                          f"SLT_EMULATORS=1; a live case that requires it ({cases}) "

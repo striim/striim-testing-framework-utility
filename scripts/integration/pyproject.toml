@@ -8,7 +8,7 @@ version = "0.3.2"
 license = {file = "LICENSE"}
 description = "Integration Test framework for Striim operators"
 requires-python = ">=3.12"
-dependencies = ["pyyaml>=6", "requests>=2.31", "psycopg2-binary>=2.9", "oracledb>=2", "google-cloud-spanner>=3", "google-cloud-storage>=2", "filelock>=3", "psutil>=5.9"]
+dependencies = ["pyyaml>=6", "requests>=2.31", "psycopg2-binary>=2.9", "oracledb>=2", "google-cloud-spanner>=3", "google-cloud-bigtable>=2.50", "google-cloud-storage>=2", "filelock>=3", "psutil>=5.9"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-xdist>=3"]

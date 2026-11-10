@@ -10,12 +10,21 @@ from __future__ import annotations
 import pytest
 
 from inttest.dbroutes import (
+    _NON_SQL_DRIVERS,
     _PARAM_SPECS,
+    _QUERIERS,
     _RUNNERS,
     _ROUTE_DIRECTIONS,
     RouteError,
+    assert_target,
+    assert_target_rows,
     connection_params,
     parse_route,
+    query_rows,
+    read_cells,
+    run_sql_text,
+    setup_bigtable,
+    teardown_bigtable,
     split_statements,
 )
 from inttest.tokens import SubstitutionError, render
@@ -259,7 +268,19 @@ def test_spanner_route_directions_match_param_spec_directions():
 
 
 def test_every_param_spec_driver_has_a_runner():
-    assert set(spec["driver"] for spec in _PARAM_SPECS.values()) <= set(_RUNNERS)
+    # `bigtable` has a driver but NO SQL surface (its rows are read whole by the admin, not
+    # queried -- see dbroutes._NON_SQL_DRIVERS), so it is the one driver exempted from this
+    # invariant; every *other* driver must have both a runner and a querier.
+    drivers = {spec["driver"] for spec in _PARAM_SPECS.values()}
+    sql = drivers - _NON_SQL_DRIVERS
+    assert sql <= set(_RUNNERS)
+    assert sql <= set(_QUERIERS)
+    # the exempted engine must REALLY have no SQL surface, or the exemption would mask a gap:
+    # nothing non-SQL may appear in the runner/querier tables.
+    assert _NON_SQL_DRIVERS.isdisjoint(_RUNNERS)
+    assert _NON_SQL_DRIVERS.isdisjoint(_QUERIERS)
+    # and the driver that carries the exemption actually exists as a param spec.
+    assert _NON_SQL_DRIVERS <= drivers
 
 
 def test_connection_params_missing_token_raises_and_names_it():
@@ -360,3 +381,132 @@ def test_split_statements_delimiter_directive_keeps_a_routine_body_whole():
 def test_split_statements_delimiter_word_inside_a_statement_is_not_a_directive():
     sql = "INSERT INTO t (note) VALUES ('DELIMITER $$');\nSELECT 1;"
     assert split_statements(sql) == ["INSERT INTO t (note) VALUES ('DELIMITER $$')", "SELECT 1"]
+
+
+# ============================================================================
+# bigtable routes: connection_params, read_cells, assert_target, setup/teardown
+#
+# These build a BigtableAdmin through `inttest.bigtableadmin.BigtableAdmin`, which the tests below
+# replace with a recording fake returning canned `read_all` rows, so nothing connects. The admin's
+# own behaviour is covered by scripts/live/tests/test_bigtableadmin*.py.
+# ============================================================================
+
+# Two rows, newest cell per (family, qualifier), values as hex.
+_EMP = [
+    {"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}},
+    {"row": "02", "cells": {"emp:name": "6b6b"}},
+]
+
+# An emulator `bigtable-target` route: no BIGTABLE_CREDENTIALS.
+_EMULATOR_TOKENS = {
+    "BIGTABLE_PROJECT": "test-project",
+    "BIGTABLE_INSTANCE": "test-instance",
+    "BIGTABLE_HOST": "localhost",
+    "BIGTABLE_GRPC_PORT": "19470",
+}
+
+
+class _FakeBigtableAdmin:
+    """A `BigtableAdmin` stand-in with canned reads; every action is a recording no-op."""
+    _TABLES: dict = {}
+
+    def __init__(self, params, client=None, data_client=None):
+        self.params = params
+        self.created = []
+        self.written = []
+        self.dropped = []
+
+    def create_table(self, table, families, gc_rules=None):
+        self.created.append((table, families, gc_rules))
+
+    def write_cells(self, table, rows):
+        self.written.append((table, list(rows)))
+
+    def read_all(self, table, cells_per_column_limit=1):
+        return list(self._TABLES.get(table, []))
+
+    def drop_table(self, table):
+        self.dropped.append(table)
+
+
+def _with_fake(tables, monkeypatch):
+    """Point the routes at a fresh `_FakeBigtableAdmin`; return a dict holding the last admin built."""
+    _FakeBigtableAdmin._TABLES = dict(tables)
+    last = {}
+
+    def factory(params, client=None, data_client=None):
+        inst = _FakeBigtableAdmin(params, client=client, data_client=data_client)
+        last["admin"] = inst
+        return inst
+
+    monkeypatch.setattr("inttest.bigtableadmin.BigtableAdmin", factory, raising=False)
+    return last
+
+
+def test_connection_params_bigtable_emulator_dsn():
+    # No credentials: no TID, and the admin dials host:port, as the Spanner emulator routes do.
+    params = connection_params("bigtable-target", _EMULATOR_TOKENS)
+    assert params["driver"] == "bigtable"
+    assert params["emulator_host"] == "localhost:19470"
+    assert params["port"] == 19470          # coerced to int
+    assert "credentials" not in params and "tid" not in params
+
+
+def test_read_cells_shape(monkeypatch):
+    last = _with_fake({"emp": _EMP}, monkeypatch)
+    got = read_cells("bigtable-target", "emp", _EMULATOR_TOKENS)
+    assert got == {"table": "emp", "rows": _EMP}
+    assert last["admin"].params["emulator_host"] == "localhost:19470"
+
+
+def test_assert_target_passes_when_the_table_matches(monkeypatch):
+    _with_fake({"emp": _EMP}, monkeypatch)
+    assert_target("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)      # no raise
+
+
+def test_assert_target_raises_when_a_row_is_short(monkeypatch):
+    _with_fake({"emp": [_EMP[0]]}, monkeypatch)
+    with pytest.raises(AssertionError, match="mismatch"):
+        assert_target("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)
+
+
+def test_assert_target_raises_when_a_cell_value_differs(monkeypatch):
+    got = [dict(_EMP[0], cells=dict(_EMP[0]["cells"], **{"emp:age": "20"})), _EMP[1]]
+    _with_fake({"emp": got}, monkeypatch)
+    with pytest.raises(AssertionError, match="mismatch"):
+        assert_target("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)
+
+
+def test_assert_target_rows_passes_when_the_table_matches(monkeypatch):
+    _with_fake({"emp": _EMP}, monkeypatch)
+    assert_target_rows("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)
+
+
+def test_setup_bigtable_creates_and_seeds(monkeypatch):
+    last = _with_fake({}, monkeypatch)
+    seed = [{"row": "01", "cells": {"emp:name": b"abc"}}]
+    setup_bigtable("emp", {"emp": {}}, seed=seed, route="bigtable-target", tokens=_EMULATOR_TOKENS)
+    a = last["admin"]
+    assert [c[0] for c in a.created] == ["emp"]
+    assert a.written == [("emp", seed)]
+
+
+def test_teardown_bigtable_drops_at_the_exact_name(monkeypatch):
+    last = _with_fake({}, monkeypatch)
+    teardown_bigtable("emp", route="bigtable-target", tokens=_EMULATOR_TOKENS)
+    assert last["admin"].dropped == ["emp"]
+
+
+def test_a_credentials_route_is_refused_before_a_client_is_built():
+    # The real admin: it refuses in its constructor, so nothing is dialled.
+    tokens = {**_EMULATOR_TOKENS, "BIGTABLE_CREDENTIALS": "/keys/sa.json", "TID": "t1_"}
+    with pytest.raises(ValueError, match="emulator-only"):
+        setup_bigtable("t1_rows", {"cf": None}, tokens=tokens)
+
+
+@pytest.mark.parametrize("call", [lambda: query_rows("bigtable-target", "SELECT 1", _EMULATOR_TOKENS),
+                                  lambda: run_sql_text("bigtable-target", "SELECT 1", _EMULATOR_TOKENS)],
+                         ids=["query_rows", "run_sql_text"])
+def test_a_bigtable_route_has_no_sql_surface(call):
+    with pytest.raises(RouteError, match="no SQL .* support for driver 'bigtable'"):
+        call()

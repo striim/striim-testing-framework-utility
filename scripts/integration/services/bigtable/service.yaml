@@ -1,0 +1,32 @@
+name: bigtable
+compose: compose.yaml            # relative to this file
+container: int-bigtable
+isolation: none                 # fixed instance/tables; provisioned once per session
+# IF INT_BIGTABLE_HOST is set, reuse a live emulator (from INT_BIGTABLE_* env), skip Docker
+# (mirrors scripts/live/services/bigtable/service.yaml's SLT_BIGTABLE_HOST).
+live_override_env: INT_BIGTABLE_HOST
+python_module: google.cloud.bigtable
+python_module_hint: Install the integration engine dependencies, including google-cloud-bigtable.
+docker_defaults:
+  host: localhost
+  port: 19470                   # gRPC (data + admin); distinct from the live tier's 9470 so both
+                                # stacks can run at once
+  project: test-project
+  instance: test-instance
+# Published host port, overridable exactly as compose.yaml interpolates it -- so remapping a busy
+# port moves the emulator AND the admin client that dials it (mirrors the live tier's docker_env).
+docker_env:
+  port: INT_BIGTABLE_GRPC_HOST_PORT
+live_env:
+  host: INT_BIGTABLE_HOST
+  port: INT_BIGTABLE_PORT
+  project: INT_BIGTABLE_PROJECT
+  instance: INT_BIGTABLE_INSTANCE
+# The framework's admin (inttest/bigtableadmin.py, via inttest/dbroutes.py) dials
+# {BIGTABLE_HOST}:{BIGTABLE_GRPC_PORT}, as the Spanner routes dial SPANNER_HOST/SPANNER_GRPC_PORT.
+provides:
+  BIGTABLE_PROJECT: "{project}"
+  BIGTABLE_INSTANCE: "{instance}"
+  BIGTABLE_URL: "jdbc:bigtable:/projects/{project}/instances/{instance}?app_profile_id=default"
+  BIGTABLE_HOST: "{host}"
+  BIGTABLE_GRPC_PORT: "{port}"

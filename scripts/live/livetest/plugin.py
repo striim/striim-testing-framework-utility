@@ -56,6 +56,7 @@ from livetest.oraadmin import OraAdmin
 from livetest.mssqladmin import MssqlAdmin
 from livetest import drivers as _drivers
 from livetest.spanneradmin import SpannerAdmin
+from livetest.bigtableadmin import BigtableAdmin
 from livetest.mysqlclient import MySQLAdmin
 from livetest.teradataadmin import TeradataAdmin
 from livetest.verticaadmin import VerticaAdmin
@@ -249,7 +250,7 @@ def _striim_dir():
 # Registered in pyproject.toml alongside `live`, not here: pytest_configure is called with a
 # bare fake config in seven hermetic tests, and marker registration is static configuration
 # anyway -- it does not belong in a hook.
-_SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "gcs", "kafka", "mysql", "teradata",
+_SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "bigtable", "gcs", "kafka", "mysql", "teradata",
                     "vertica", "servicenow", "bigquery")
 
 
@@ -1166,6 +1167,20 @@ def _spanner_admins(base) -> list:
     _spanner_ensure(google)   # creates the instance + the GoogleSQL database
     _spanner_ensure(pg)       # instance already exists; creates the PostgreSQL database
     return [(google, "spanner-google"), (pg, "spanner-postgres")]
+
+def _bigtable_admins(base) -> list:
+    # One admin for the single emulator instance, under both roles: Bigtable has no source/target
+    # split. The framework reaches the emulator at the base host:port (localhost:9470); the Striim
+    # app reaches it through BIGTABLE_EMULATOR_HOST, which compose.bigtable-emulator.yaml sets.
+    # ensure() creates and deletes one fixed health table, so under xdist it runs once across
+    # workers rather than racing itself.
+    admin = BigtableAdmin({"project": base["project"], "instance": base["instance"],
+                           "emulator_host": f"{base['host']}:{base['port']}"})
+    if _parallel(os.environ):
+        ensure_provisioned_once("bigtable-setup", admin.ensure)
+    else:
+        admin.ensure()
+    return [(admin, "bigtable-target"), (admin, "bigtable-source")]
 
 _FAKE_KEY_NAME = "fake-gcp-key.json"
 
@@ -2547,6 +2562,9 @@ class LiveItem(pytest.Item):
                                                 "schema": None}
                     admins["vertica-admin"] = {"admin": VerticaAdmin(resolved.base, role="admin"),
                                                "schema": None}
+                elif svc == "bigtable":
+                    for admin, key in _bigtable_admins(resolved.base):
+                        admins[key] = {"admin": admin, "schema": None}
                 elif _drivers.hook(defn, "admins") or _drivers.hook(defn, "provision"):
                     # A service whose driver (livetest.drivers) supplies its connections, the
                     # setup compose cannot do, or both: provision runs once across xdist workers,

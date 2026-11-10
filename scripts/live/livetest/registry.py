@@ -268,6 +268,17 @@ def missing_python_module(module: str | None, hint: str | None = None) -> str | 
     return f"Python module {module} is not installed" + (f": {hint}" if hint else "")
 
 
+_OFF = ("", "0", "false", "no", "off")
+
+
+def opted_in(gate: str | None, env) -> bool:
+    """True when a service's opt-in setting ``gate`` (its ``opt_in_env``) or the ``SLT_EMULATORS``
+    umbrella is on. Each is read as a flag, so empty, ``0``, ``false``, ``no`` and ``off`` (any case)
+    leave it off: ``SLT_EMULATORS=0`` opts in to nothing. Provisioning, preflight and doctor all ask
+    here, so they agree."""
+    return any(str(env.get(name) or "").strip().lower() not in _OFF for name in (gate, "SLT_EMULATORS") if name)
+
+
 def unavailable(defn: ServiceDef, env) -> str | None:
     """Why ``defn`` cannot be brought up here, or None. With its existing-instance setting
     (``live_override_env``) set, nothing is brought up, so None. Otherwise: a connection-only

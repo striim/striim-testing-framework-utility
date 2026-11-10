@@ -682,6 +682,9 @@ def test_opt_in_service_warns_until_opted_in(tmp_path, monkeypatch):
     for opted in ({"SLT_EMULATORS": "1"}, {"SLT_EMU": "1"}):
         c, = services({"emu": ["s1"]}, opted)
         assert c.line() == "[ ok ] service emu: Docker (slt-emu) at localhost:9010"
+    for off in ({"SLT_EMULATORS": "0"}, {"SLT_EMU": "false"}):     # set, but off: still opt-in
+        c, = services({"emu": ["s1"]}, off)
+        assert c.line().startswith("[warn] service emu: opt-in:")
 
 
 def test_absent_directory_mount_is_a_warning_and_a_file_like_one_a_failure(tmp_path, monkeypatch):
