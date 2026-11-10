@@ -367,7 +367,7 @@ def snapshot_targets(admins, ctx, nodes=None, env=None) -> dict:
             rec["role"] = getattr(admin, "role", "source")
             rec["systemIdentifier"] = pg_system_identifier(make_catalog(admin))
             routes[route] = rec
-        elif (route.startswith("spanner-") or route == "kafka") and isinstance(dsn, dict):
+        elif (route.startswith(("spanner-", "bigtable-")) or route == "kafka") and isinstance(dsn, dict):
             routes[route] = {k: v for k, v in dsn.items() if "password" not in k}
     striim = None
     if ctx is not None:

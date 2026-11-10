@@ -94,6 +94,10 @@ def assert_bigtable(admin, specs: list[dict], timeout: int, poll: float = 2.0,
                     f"bigtable assertion not satisfied within {timeout}s: {exc}",
                     _records(specs, results, db, f"read failed until the {timeout}s deadline: {exc}")) from exc
             time.sleep(max(0.0, min(poll or 0.05, deadline - time.monotonic())))
+            if time.monotonic() >= deadline:     # no time left for another read: report this one
+                raise AssertionFailed(
+                    f"bigtable assertion not satisfied within {timeout}s: {exc}",
+                    _records(specs, results, db, f"read failed until the {timeout}s deadline: {exc}")) from exc
             continue
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None and time.monotonic() > deadline:
@@ -116,6 +120,12 @@ def assert_bigtable(admin, specs: list[dict], timeout: int, poll: float = 2.0,
             except Exception:
                 pass
         time.sleep(max(0.0, min(poll or 0.05, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
+            # No time left for another read, which would expire before it is sent: fail on what
+            # this read showed, so the record keeps the mismatch and the rows actually read.
+            raise AssertionFailed(
+                f"bigtable assertion not satisfied within {timeout}s: {detail}",
+                _records(specs, results, db))
 
 
 def _expired(exc: BaseException) -> bool:

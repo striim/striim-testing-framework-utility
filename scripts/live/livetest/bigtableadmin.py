@@ -100,7 +100,8 @@ def _check_qualifier(qual) -> str:
 
 def _qualifier_text(qual: bytes) -> str:
     # A qualifier read back: its UTF-8 text, or "0x<hex>" for bytes that are not UTF-8 -- the form
-    # write_cells accepts for the same bytes, so a read cell key can be written back unchanged.
+    # write_cells accepts for the same bytes. (UTF-8 text that itself starts with "0x" is the one
+    # qualifier that does not write back unchanged: write_cells reads it as hex.)
     try:
         return qual.decode("utf-8")
     except UnicodeDecodeError:
@@ -136,7 +137,7 @@ def _gc_to_rule(gc):
 
 
 def _as_bytes(v):
-    # A row key or value may be str (utf-8), bytes, or a hex token "0xAB" / "ABCD".
+    # A row key, qualifier or value may be bytes, a hex token "0xAB", or other str (UTF-8 encoded).
     if isinstance(v, bytes):
         return v
     if isinstance(v, str):

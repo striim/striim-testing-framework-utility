@@ -113,15 +113,36 @@ def test_assert_bigtable_carries_the_read_snapshot_into_the_record_even_on_pass(
     assert recs[0]["actual"]["rows"] == EMP
 
 
-def test_assert_bigtable_timeout_raises_with_a_failed_record():
-    a = FakeTableAdmin({"emp": [EMP[0]]})     # the table never reaches the 2 expected rows
-    with pytest.raises(AssertionFailed) as e:
-        # timeout=0 forces the "deadline expired" branch without a real poll-and-wait
-        assert_bigtable(a, [{"table": "emp", "expected": EMP}], timeout=0, poll=0)
-    recs = e.value.records
-    assert len(recs) == 1
-    assert recs[0]["status"] == "failed"
-    assert "expected 2" in recs[0]["detail"]
+class BudgetedTableAdmin(FakeTableAdmin):
+    """Like BigtableAdmin: a read whose budget is already spent raises before it is sent."""
+
+    def read_all(self, table, cells_per_column_limit=1, timeout=None):
+        if timeout is not None and timeout <= 0:
+            raise TimeoutError(f"Bigtable read_all {table} exceeded its {timeout:.4f}s budget")
+        return super().read_all(table, cells_per_column_limit, timeout)
+
+
+def test_assert_bigtable_timeout_keeps_the_last_mismatch_and_rows_read():
+    a = BudgetedTableAdmin({"emp": [EMP[0]]})     # the table never reaches the 2 expected rows
+    with pytest.raises(AssertionFailed, match="expected 2") as e:
+        assert_bigtable(a, [{"table": "emp", "expected": EMP}], timeout=0.2, poll=0.05)
+    (rec,) = e.value.records
+    assert rec["status"] == "failed" and "expected 2" in rec["detail"]
+    assert rec["actual"]["rows"] == [EMP[0]]
+    assert all(t > 0 for t in a.timeouts)        # no read was sent with a spent budget
+
+
+def test_assert_bigtable_on_a_missing_table_reports_it_at_the_deadline():
+    from google.api_core.exceptions import NotFound
+
+    class Missing(BudgetedTableAdmin):
+        def read_all(self, table, cells_per_column_limit=1, timeout=None):
+            if timeout is not None and timeout <= 0:
+                return super().read_all(table, cells_per_column_limit, timeout)
+            raise NotFound("table emp not found")
+
+    with pytest.raises(AssertionFailed, match="table emp not found"):
+        assert_bigtable(Missing({}), [{"table": "emp", "expected": EMP}], timeout=0.2, poll=0.05)
 
 
 def test_assert_bigtable_polls_status_probe_each_pass_before_success():

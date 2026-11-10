@@ -93,3 +93,11 @@ def test_ledger_keeps_the_entry_unverified_when_only_the_listing_fails(tmp_path)
     assert entry["state"] == "deleted"
     assert result.verified is False
     assert any("test_rows: verification read failed" in gap for gap in result.gaps)
+
+
+def test_the_ledger_snapshot_binds_bigtable_routes_so_replay_can_check_them():
+    # target_problem requires a bigtable-table entry's route to be recorded and unchanged, as for
+    # spanner-table; snapshot_targets must therefore record bigtable-* routes.
+    admin = _admin(_TableAdmin())
+    snap = ownership.snapshot_targets({"bigtable-target": {"admin": admin}}, None)
+    assert snap["routes"]["bigtable-target"] == admin.dsn
