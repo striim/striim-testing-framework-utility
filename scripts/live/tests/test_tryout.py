@@ -280,7 +280,7 @@ def test_cluster_up_runs_the_tryout_image_and_never_builds(tmp_path, monkeypatch
     seen = {}
 
     def run(argv, cwd=None):
-        override = Path(argv[argv.index("-f", argv.index("compose.spanner-emulator.yaml")) + 1])
+        override = Path(argv[argv.index("-f", argv.index("compose.bigtable-emulator.yaml")) + 1])
         seen.update(argv=argv, override=override.read_text())
     sp.cluster_up(tmp_path, {"STRIIM_VERSION": V}, run=run,
                   query_run=FakeDocker(images={ref: TRYOUT_ID}))
@@ -301,7 +301,7 @@ def test_cluster_up_without_tryouts_is_unchanged(tmp_path):
     seen = []
     sp.cluster_up(tmp_path, {"STRIIM_VERSION": V}, run=lambda argv, cwd=None: seen.append(argv))
     assert seen == [["docker", "compose", "-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml",
-                     "up", "-d", "--remove-orphans", "slt-striim", "slt-node", "slt-agent"]]
+                     "-f", "compose.bigtable-emulator.yaml", "up", "-d", "--remove-orphans", "slt-striim", "slt-node", "slt-agent"]]
 
 
 # --- a running cluster --------------------------------------------------------------------------

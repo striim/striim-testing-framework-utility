@@ -471,7 +471,7 @@ class BigtableAdmin:
             return None
         cells = {}
         for c in row.cells:
-            cells[f"{c.family}:{_qualifier_text(c.qualifier)}"] = c.value.hex()
+            cells.setdefault(f"{c.family}:{_qualifier_text(c.qualifier)}", c.value.hex())   # newest first
         return {"cells": cells}
 
     def read_all(self, table_name: str, *, cells_per_column_limit=1,
@@ -488,7 +488,7 @@ class BigtableAdmin:
         for r in table.read_rows(q, **_Budget(timeout, f"read_all {table_name}").data()):
             cells = {}
             for c in r.cells:
-                cells[f"{c.family}:{_qualifier_text(c.qualifier)}"] = c.value.hex()
+                cells.setdefault(f"{c.family}:{_qualifier_text(c.qualifier)}", c.value.hex())   # newest first
             out.append({"row": r.row_key.hex(), "cells": cells})
         out.sort(key=lambda x: x["row"])
         return out
