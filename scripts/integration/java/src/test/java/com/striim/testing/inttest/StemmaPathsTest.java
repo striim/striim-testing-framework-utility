@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 
@@ -66,6 +67,16 @@ class StemmaPathsTest {
         assertEquals((SOURCE + "+*").hashCode(), new Path(SOURCE, null, new OrdinalPosition(1)).getPathHash());
         assertEquals((SOURCE + "+*").hashCode(), new Path(SOURCE, "", new OrdinalPosition(1)).getPathHash());
         assertEquals("*+d".hashCode(), new Path(null, "d", new OrdinalPosition(1)).getPathHash());
+    }
+
+    @Test
+    void everyPathThroughOnePairHashesAlikeAndAStemmaHereIsARoot() {
+        // Interned per (component, distribution), as the platform interns the item list.
+        for (int i = 0; i < 3; i++) {
+            assertEquals((SOURCE + "+d").hashCode(), new Path(SOURCE, "d", new OrdinalPosition(i)).getPathHash());
+        }
+        assertTrue(new ImmutableStemma(SOURCE, "d", new OrdinalPosition(1)).isInitial());
+        assertTrue(new MutableStemma(SOURCE, "d").isInitial());
     }
 
     @Test

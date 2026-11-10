@@ -92,6 +92,7 @@ Every key a `service.yaml` can hold:
 | Key | Required | Meaning |
 |---|---|---|
 | `name` | yes | the service's name, as tests write it in `requires:`; equal to the folder name |
+| `family` | no | the system the service is, when its name says otherwise: a second emulator of a system the framework ships, under its own name. Default: the name. The engine's handling for that system applies, and its routes are `<family>-<role>`. `family: bigquery` gives the service the BigQuery writer checks, emulator endpoint and fake key, and the `bigquery-target` route; its settings need `port`, `token_port` and `project`, as the shipped `bigquery` service's do. A case requires at most one `bigquery`-family service |
 | `isolation` | yes | `none` for every shipped service: tests keep apart by `${TID}` in their object names |
 | `compose` | yes, to start it in Docker | the compose file, relative to `service.yaml` |
 | `container` | yes, to start it in Docker | the name of the container that compose starts. The framework checks whether it runs, and reuses it when it does |
@@ -480,7 +481,7 @@ framework calls the ones the module defines (`livetest/drivers.py` has the full 
 | `unsupported_mode(mode)` | first, before any `pre_up` hook | why the service cannot run in this run mode (`docker` / `native`), or `None` |
 | `unavailable(env, mode)` | after the framework's own availability checks pass | why it cannot be brought up here, or `None` |
 | `compose_env(env)` | before bring-up | settings to publish to compose and the test process |
-| `admins(base, defn)` | for each test that requires the service | the connections `ddl:`/`data:`/`seed:` route to, keyed `<service>-<role>` |
+| `admins(base, defn)` | for each test that requires the service | the connections `ddl:`/`data:`/`seed:` route to, keyed `<service>-<role>`, or `<family>-<role>` for a service with `family:` |
 | `provision(admins, client, progress)` | after `admins` (with `{}` when the driver has no `admins`); once across xdist workers, otherwise per test | nothing; must be idempotent |
 | `reader_mode(tql)`, `reader_mark()`, `wait_reader_ready(mode, mark, timeout, progress)` | around deploy: `post_start` seeds wait until the reader is reading, and again after `drop_recreate_app` | the mode a rendered TQL selects (or `None`), a position in the reader's evidence, and the seconds waited |
 | `ENV_PATH_KEYS` (a tuple) | by `striim-test doctor` | settings checked as existing paths when set |
