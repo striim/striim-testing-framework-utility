@@ -118,3 +118,14 @@ def test_group_requires_keeps_a_service_no_variant_reaches(tmp_path):
     m = load_manifest(tmp_path / "test.yaml")
     items = {suffix: requires for suffix, _, requires in P._group_items(m)}
     assert items == {"[ora]": ["gcs", "oracle"], "[mss]": ["gcs", "sqlserver"]}
+
+
+def test_an_empty_marker_selection_is_ok_when_asked(pytester, monkeypatch, tmp_path):
+    result, cases, _ = run(pytester, monkeypatch, tmp_path, case(THREE), "-m", "spanner",
+                           env={"INT_EMPTY_SELECTION_OK": "1"})
+    assert result.ret == 0 and cases == {}
+
+
+def test_an_empty_marker_selection_fails_by_default(pytester, monkeypatch, tmp_path):
+    result, _, _ = run(pytester, monkeypatch, tmp_path, case(THREE), "-m", "spanner")
+    assert result.ret == 5

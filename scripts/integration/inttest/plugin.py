@@ -624,6 +624,12 @@ def pytest_sessionfinish(session, exitstatus):
     decided = _int_all_skipped_guard(session, exitstatus)
     if decided != exitstatus:
         session.exitstatus = decided
+    # INT_EMPTY_SELECTION_OK=1: a `-m` that deselected every item is not a failure (a runner's
+    # marker-split pass that this selection happens to leave empty).
+    if (session.exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED
+            and os.environ.get("INT_EMPTY_SELECTION_OK") == "1"
+            and session.config.getoption("markexpr", "")):
+        session.exitstatus = pytest.ExitCode.OK
     if _shared_services():
         return
     if os.environ.get("PYTEST_XDIST_WORKER"):
