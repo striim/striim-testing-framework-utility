@@ -796,6 +796,22 @@ def spanner_admins(spanner_config, compose_lock):
     return {route: admin for admin, route in admins}
 
 
+@pytest.fixture
+def bigtable_admin(compose_lock, tmp_path):
+    """A BigtableAdmin on the integration emulator, brought up and past its readiness gate, for
+    standalone tests (tests/test_bigtable_live.py). The YAML `requires:` pipeline calls
+    `_ensure_bigtable` from `IntYamlItem.runtest` instead."""
+    _require_service_opt_in("bigtable")
+    _ensure_up("bigtable", compose_lock)
+    from . import bigtableadmin as bigtableadmin_mod
+    from .tokens import build_tokens
+
+    tokens = build_tokens(tmp_path, requires=["bigtable"], parallel=False)
+    admin = bigtableadmin_mod.BigtableAdmin(dbroutes_mod.connection_params("bigtable-target", tokens))
+    admin.ensure()
+    return admin
+
+
 def _refuse_real_spanner() -> None:
     """The fixture path drives the emulator only: its tokens never carry real Spanner's
     settings, and `spanner_client` sets SPANNER_EMULATOR_HOST for the whole process."""
@@ -1083,6 +1099,16 @@ def _ensure_spanner_databases(tokens: dict) -> None:
     from . import spanneradmin as spanneradmin_mod
 
     spanneradmin_mod.admins_for(tokens)
+
+
+def _ensure_bigtable(tokens: dict) -> None:
+    """Wait until this test's Bigtable emulator accepts admin RPCs. Like Spanner and GCS it is
+    `isolation: none`, and like them this runs even for a test with no `ddl:`/`seed:`: the compose
+    healthcheck only proves the port is listening. Not memoized, for the reason
+    `_ensure_spanner_databases` gives."""
+    from . import bigtableadmin as bigtableadmin_mod
+
+    bigtableadmin_mod.BigtableAdmin(dbroutes_mod.connection_params("bigtable-target", tokens)).ensure()
 
 
 def _ensure_gcs_bucket(tokens: dict) -> None:
@@ -1846,6 +1872,8 @@ class IntYamlItem(pytest.Item):
                 # dbroutes never runs for such a test.
                 _ensure_spanner_databases(tok)
                 self._spanner_prefix = tok["TID"] or None
+            if "bigtable" in self.requires:
+                _ensure_bigtable(tok)
             if "gcs" in self.requires:
                 # `isolation: none` like Spanner -- one fixed bucket, no per-test
                 # reset (services/gcs/README.md's "Bucket lifecycle" section). Must

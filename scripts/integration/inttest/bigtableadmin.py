@@ -1,49 +1,24 @@
-"""Bigtable admin + data client for the INTEGRATION tier -- ported from
-`scripts/live/livetest/bigtableadmin.py`, self-contained (no `livetest` import, like
-`inttest/spanneradmin.py`). On the google-cloud-bigtable client (google-cloud-bigtable
-2.50.x, which also ships the table-admin API).
-Talks to the CBTEMULATOR -- gcloud's Cloud Bigtable emulator -- at the dsn's
-`emulator_host`, over an insecure channel without auth. No service-account key is
-generated (unlike Spanner/GCS).
+"""Bigtable admin + data client for the INTEGRATION tier. The same code as
+`scripts/live/livetest/bigtableadmin.py` below this docstring, kept self-contained (no `livetest`
+import, like `inttest/spanneradmin.py`); tests/test_bigtableadmin_tiers.py fails if the two drift.
+See the live module's docstring for what it does.
 
-Unlike every other admin, Bigtable has NO SQL. So instead of run_sql/run_statements this
-admin builds the table + its column families + GC rules from a spec, writes reads rows via
-cells, and drops a row range. Reads render each cell as its raw value's hex string, a
-JSON-comparable form (no manifest assertion reads Bigtable yet: this is groundwork), and
-apply `CellsColumnLimitFilter(num_cells=1)` so one row yields its newest cell per
-(family, qualifier) column, i.e. Bigtable's own "latest version" semantics.
-
-Bigtable change streams are not supported here: nothing in the framework reads one from the
-emulator, so this admin offers NO change-stream surface and `enable_change_stream`/
-`disable_change_stream` raise rather than fake one. Whether a fake is acceptable belongs to a
-product owner; the framework does not ship one.
-
-The client reaches the emulator at {emulator_host} (a "host:port" string). The framework
-reaches it at the base host:port (localhost:9470) on this side, while the Striim app
-reaches it through the JVM-global BIGTABLE_EMULATOR_HOST (the striim overlay sets it).
-The admin is injectable for hermetic tests via its __init__ client/data_client knobs.
-
-SDK surface used (google-cloud-bigtable 2.50.2): the table-admin client's create_table/
-get_table/delete_table/list_tables/drop_row_range, and the data `BigtableDataClient`'s
-`.get_table(I, T)` → a `Table` with `.mutate_row(key, [SetCell(...)])`, `.read_row(key)` and
-`.read_rows(query)`. `SetCell(family, qualifier, new_value, timestamp_micros)`; a read cell
-exposes `.family` (str), `.qualifier` (bytes), `.value` (bytes). Bigtable tables default to
-millisecond timestamp granularity, so timestamps are millis-aligned.
+The framework reaches the emulator at the base host:port (localhost:19470 on this tier).
 """
 
 from __future__ import annotations
-import os
 import re
 import threading
 import time
 
-_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_$#]*$")    # a Bigtable identifier (table / family / col)
+# Bigtable table IDs and column family names: [_a-zA-Z0-9][-_.a-zA-Z0-9]*. A qualifier may be any bytes.
+_IDENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
 _GC_KINDS = frozenset({"num_versions", "age_millis", "age_seconds", "age_days"})
 _MILLIS = 1000
 _MILLIS_PER_DAY = 86_400 * 1000
 # The "really prove readiness" gate: create + delete this throwaway table so a half-booted
 # CBTEMULATOR (listener up, store not accepting admin RPCs yet) is caught rather than wedged.
-HEALTH_TABLE = ".__slt_readiness"
+HEALTH_TABLE = "_slt_readiness"
 
 # Cache of Clients by (project, emulator_host) -- the same fd-leak hazard as SpannerAdmin's:
 # a client + every Table it hands out own gRPC channels that are never closed, and each burns
@@ -91,13 +66,28 @@ def _check_ident(name, what: str = "name") -> str:
     return name
 
 
+def _check_qualifier(qual) -> str:
+    # Bigtable accepts any bytes as a qualifier; only an empty one is refused here, since a
+    # "<family>:" cell key names no column.
+    if not isinstance(qual, str) or not qual:
+        raise ValueError(f"unsafe qualifier: {qual!r} must be a non-empty string")
+    return qual
+
+
+def _qualifier_text(qual: bytes) -> str:
+    # A qualifier read back: its UTF-8 text, or "0x<hex>" for bytes that are not UTF-8 -- the form
+    # write_cells accepts for the same bytes, so a read cell key can be written back unchanged.
+    try:
+        return qual.decode("utf-8")
+    except UnicodeDecodeError:
+        return "0x" + qual.hex()
+
+
 def _gc_to_rule(gc):
     """Turn a YAML/JSON GC rule dict into a `GcRule` proto. Exactly one key, two shapes:
         {"num_versions": N}  -> GcRule(max_num_versions=N): keep the newest N versions
         {"age_millis": M} / {"age_seconds": S} / {"age_days": D}
-            -> the union of max_age and max_num_versions=1: keep one version, and collect it
-               once it is older than the age
-    GcRule's `rule` is a oneof, so the two limits of an age rule are combined explicitly.
+            -> GcRule(max_age=...): collect every version older than the age
     None / empty -> None (the family has no GC rule; it never expires)."""
     if not gc:
         return None
@@ -110,12 +100,15 @@ def _gc_to_rule(gc):
     if len(keys) != 1:
         raise ValueError(f"a GC rule must set exactly one of {sorted(_GC_KINDS)}, got {sorted(keys)}")
     (kind,) = keys
+    value = int(gc[kind])
+    if value <= 0:
+        raise ValueError(f"GC rule {kind} must be greater than 0, got {gc[kind]!r}")
     if kind == "num_versions":
-        return GcRule(max_num_versions=int(gc[kind]))
+        return GcRule(max_num_versions=value)
     scale = {"age_millis": 1, "age_seconds": _MILLIS, "age_days": _MILLIS_PER_DAY}[kind]
     age = Duration()
-    age.FromMilliseconds(int(gc[kind]) * scale)
-    return GcRule(union=GcRule.Union(rules=[GcRule(max_age=age), GcRule(max_num_versions=1)]))
+    age.FromMilliseconds(value * scale)
+    return GcRule(max_age=age)
 
 
 def _as_bytes(v):
@@ -136,8 +129,13 @@ def _require_emulator(dsn: dict) -> None:
     if dsn.get("credentials"):
         raise ValueError("BigtableAdmin is emulator-only: real Bigtable credentials are not "
                          "supported; remove BIGTABLE_CREDENTIALS and use the bigtable service")
-    if not (dsn.get("emulator_host") or "").strip():
+    endpoint = (dsn.get("emulator_host") or "").strip()
+    if not endpoint:
         raise ValueError("BigtableAdmin is emulator-only: the dsn names no emulator_host")
+    host, _, port = endpoint.rpartition(":")
+    if host.lower().rstrip(".").endswith("googleapis.com") or port == "443":
+        raise ValueError(f"BigtableAdmin is emulator-only: {endpoint!r} is a Google API endpoint, "
+                         f"not an emulator")
 
 
 class _EmulatorTableAdmin:
@@ -194,23 +192,30 @@ class _EmulatorTable:
         return list(_rows_from_chunks(self._gapic.read_rows(request=request, timeout=operation_timeout,
                                                             retry=None)))
 
-    def read_row(self, row_key: bytes, *, operation_timeout: float):
+    def read_row(self, row_key: bytes, *, row_filter=None, operation_timeout: float):
         from google.cloud.bigtable_v2.types import ReadRowsRequest, RowSet
-        rows = self._read(ReadRowsRequest(table_name=self.table_name, rows=RowSet(row_keys=[row_key]),
-                                          rows_limit=1), operation_timeout)
+        request = ReadRowsRequest(table_name=self.table_name, rows=RowSet(row_keys=[row_key]), rows_limit=1)
+        _apply_filter(request, row_filter)
+        rows = self._read(request, operation_timeout)
         return rows[0] if rows else None
 
     def read_rows(self, query, *, operation_timeout: float):
-        from google.cloud.bigtable.data.row_filters import CellsColumnLimitFilter
-        from google.cloud.bigtable_v2.types import ReadRowsRequest, RowFilter
+        from google.cloud.bigtable_v2.types import ReadRowsRequest
         if query.row_keys or query.row_ranges or query.limit:
             raise TypeError("only a whole-table ReadRowsQuery is supported")
         request = ReadRowsRequest(table_name=self.table_name)
-        if isinstance(query.filter, CellsColumnLimitFilter):
-            request.filter = RowFilter(cells_per_column_limit_filter=query.filter.num_cells)
-        elif query.filter is not None:
-            raise TypeError(f"unsupported Bigtable row filter {type(query.filter).__name__}")
+        _apply_filter(request, query.filter)
         return self._read(request, operation_timeout)
+
+
+def _apply_filter(request, row_filter) -> None:
+    # The one row filter the admin uses: newest N cells per column.
+    from google.cloud.bigtable.data.row_filters import CellsColumnLimitFilter
+    from google.cloud.bigtable_v2.types import RowFilter
+    if isinstance(row_filter, CellsColumnLimitFilter):
+        request.filter = RowFilter(cells_per_column_limit_filter=row_filter.num_cells)
+    elif row_filter is not None:
+        raise TypeError(f"unsupported Bigtable row filter {type(row_filter).__name__}")
 
 
 def _rows_from_chunks(responses):
@@ -339,19 +344,25 @@ class BigtableAdmin:
         admin = self._admin()
         p = self._parent_instance()
         full = self._full_table_name(HEALTH_TABLE)
+        from google.api_core import exceptions as _gx
         last = None
         for _ in range(attempts):
             try:
                 tac = admin.table_admin_client
+                # Creating the throwaway proves the store accepts admin RPCs. `AlreadyExists`
+                # (our own async delete from a prior gate not yet settled) is ALSO that proof,
+                # so it counts as success; the delete is best-effort async-consistent.
+                try:
+                    tac.create_table(CreateTableRequest(parent=p, table_id=HEALTH_TABLE,
+                                                        table=Table(name=full,
+                                                                    column_families={"slt": ColumnFamily()})),
+                                    **budget.admin())
+                except _gx.AlreadyExists:
+                    pass
                 try:
                     tac.delete_table(name=full, **budget.admin())
-                except Exception:      # noqa: BLE001 -- absent on a fresh instance is the common case
+                except _gx.NotFound:    # noqa: BLE001 -- a delete that already settled is fine
                     pass
-                tac.create_table(CreateTableRequest(parent=p, table_id=HEALTH_TABLE,
-                                                    table=Table(name=full,
-                                                                column_families={"slt": ColumnFamily()})),
-                                **budget.admin())
-                tac.delete_table(name=full, **budget.admin())
                 self._table_cache.pop(HEALTH_TABLE, None)
                 return
             except Exception as exc:    # noqa: BLE001 -- a half-booted emulator; retry the whole gate
@@ -439,7 +450,7 @@ class BigtableAdmin:
             for col, value in row.get("cells", {}).items():
                 fam, _, qual = col.partition(":")
                 _check_ident(fam, "family")
-                _check_ident(qual, "qualifier")
+                _check_qualifier(qual)
                 muts.append(SetCell(family=fam,
                                     qualifier=_as_bytes(qual),
                                     new_value=_as_bytes(value),
@@ -450,15 +461,17 @@ class BigtableAdmin:
     write_rows = write_cells
 
     def read_row(self, table_name: str, key, *, timeout: float | None = None) -> dict:
-        """Read one row by key; return `{"cells": {"<family>:<qualifier>": <hex value>}}` or
-        None if the row is absent."""
+        """Read one row by key; return `{"cells": {"<family>:<qualifier>": <hex value>}}` with the
+        newest cell per column, as read_all does, or None if the row is absent."""
+        from google.cloud.bigtable.data.row_filters import CellsColumnLimitFilter
         table = self._table(table_name)
-        row = table.read_row(_as_bytes(key), **_Budget(timeout, f"read_row {table_name}").data())
+        row = table.read_row(_as_bytes(key), row_filter=CellsColumnLimitFilter(num_cells=1),
+                             **_Budget(timeout, f"read_row {table_name}").data())
         if row is None:
             return None
         cells = {}
         for c in row.cells:
-            cells[f"{c.family}:{c.qualifier.decode()}"] = c.value.hex()
+            cells[f"{c.family}:{_qualifier_text(c.qualifier)}"] = c.value.hex()
         return {"cells": cells}
 
     def read_all(self, table_name: str, *, cells_per_column_limit=1,
@@ -475,7 +488,7 @@ class BigtableAdmin:
         for r in table.read_rows(q, **_Budget(timeout, f"read_all {table_name}").data()):
             cells = {}
             for c in r.cells:
-                cells[f"{c.family}:{c.qualifier.decode()}"] = c.value.hex()
+                cells[f"{c.family}:{_qualifier_text(c.qualifier)}"] = c.value.hex()
             out.append({"row": r.row_key.hex(), "cells": cells})
         out.sort(key=lambda x: x["row"])
         return out
@@ -553,55 +566,3 @@ class BigtableAdmin:
 def _list_tables_req(instance_path: str, page_token: str = ""):
     from google.cloud.bigtable_admin_v2.types import ListTablesRequest
     return ListTablesRequest(parent=instance_path, page_token=page_token)
-
-
-# --- CLI shim ------------------------------------------------------------------------
-# `python3 -m livetest.bigtableadmin <subcommand> ...`. The integration and live tiers both
-# drive these from run.sh. Subcommands:
-#   setup    <families.json>     create a table with named families/GC rules (+ optional seed)
-#   write    <table> <rows.json> write rows from a JSON spec
-#   read     <table>            print the read_all JSON
-#   drop     <table>           drop_table
-#   families <table>           list_families
-#   drop-all-rows <table>      drop_all_rows
-def _cli(argv) -> int:
-    import json
-    import sys
-    dsn = {
-        "project": os.environ.get("BIGTABLE_PROJECT", "test-project"),
-        "instance": os.environ.get("BIGTABLE_INSTANCE", "test-instance"),
-        "emulator_host": os.environ.get("BIGTABLE_EMULATOR_HOST", "127.0.0.1:9470"),
-    }
-    admin = BigtableAdmin(dsn)
-    sub = argv[0] if argv else "help"
-    if sub == "setup":
-        spec = json.loads(open(argv[1]).read())
-        admin.create_table(spec["table"], spec.get("families", {}), gc_rules=spec.get("gc_rules"))
-        for row in spec.get("seed", []):
-            admin.write_cells(spec["table"], [row])
-    elif sub == "write":
-        admin.write_cells(argv[1], json.loads(open(argv[2]).read()))
-    elif sub == "read":
-        print(json.dumps(admin.read_all(argv[1]), indent=2, sort_keys=True))
-    elif sub == "drop":
-        admin.drop_table(argv[1])
-    elif sub == "families":
-        print("\n".join(admin.list_families(argv[1])))
-    elif sub == "drop-all-rows":
-        admin.drop_all_rows(argv[1])
-    elif sub in ("help", None, "-h", "--help"):
-        print(__doc__)
-    else:
-        print(f"unknown subcommand {sub!r}", file=sys.stderr)
-        return 1
-    return 0
-
-
-def main(argv=None) -> int:
-    import sys
-    return _cli(argv if argv is not None else sys.argv[1:])
-
-
-if __name__ == "__main__":
-    import sys
-    sys.exit(main())

@@ -81,11 +81,20 @@ def assert_bigtable(admin, specs: list[dict], timeout: int, poll: float = 2.0,
             for s in specs:   # every read gets only what is left of the one deadline
                 results.append(_evaluate(admin, s, timeout=deadline - time.monotonic()))
         except Exception as exc:
-            if not _expired(exc):
+            if _expired(exc):
+                raise AssertionFailed(
+                    f"bigtable assertion not satisfied within {timeout}s: a read expired: {exc}",
+                    _records(specs, results, db, f"read did not finish within {timeout}s: {exc}")) from exc
+            if not _not_yet(exc):
                 raise
-            raise AssertionFailed(
-                f"bigtable assertion not satisfied within {timeout}s: a read expired: {exc}",
-                _records(specs, results, db, f"read did not finish within {timeout}s: {exc}")) from exc
+            # The table is not there yet (the writer creates it) or the emulator is briefly
+            # unavailable: poll on, as for rows that have not arrived.
+            if time.monotonic() >= deadline:
+                raise AssertionFailed(
+                    f"bigtable assertion not satisfied within {timeout}s: {exc}",
+                    _records(specs, results, db, f"read failed until the {timeout}s deadline: {exc}")) from exc
+            time.sleep(max(0.0, min(poll or 0.05, deadline - time.monotonic())))
+            continue
         detail = next((d for ok, d, _, _ in results if not ok), None)
         if detail is None and time.monotonic() > deadline:
             # A read that matches only after the deadline is not a pass.
@@ -115,6 +124,12 @@ def _expired(exc: BaseException) -> bool:
         return True
     from google.api_core.exceptions import DeadlineExceeded
     return isinstance(exc, DeadlineExceeded)
+
+
+def _not_yet(exc: BaseException) -> bool:
+    """A read that may succeed later: the table does not exist yet, or the emulator is unavailable."""
+    from google.api_core.exceptions import NotFound, ServiceUnavailable
+    return isinstance(exc, (NotFound, ServiceUnavailable))
 
 
 def _records(specs: list[dict], results: list, db, late: str | None = None) -> list[dict]:

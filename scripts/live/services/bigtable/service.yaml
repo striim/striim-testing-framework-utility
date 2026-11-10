@@ -2,27 +2,15 @@ name: bigtable
 compose: compose.yaml            # relative to this file
 container: slt-bigtable
 isolation: none                 # fixed instance/tables; provisioned once per session
-# EXTERNAL IMAGE: the CBTEMULATOR image is the field's own "dockerized Bigtable" artifact, like
-# the BigQuery service's SLT_BIGQUERY_IMAGE -- the framework owns the connection (livetest/
-# bigtableadmin.py) and the orchestration, and NEVER builds or distributes the image; it supplies
-# a pinned default (compose.yaml) and SLT_BIGTABLE_IMAGE overrides to the field's own image.
-# SLT_BIGTABLE_HOST, set, reuses an emulator/run you run yourself and skips `docker compose up`
+# SLT_BIGTABLE_HOST, set, reuses an emulator you run yourself and skips `docker compose up`
 # (services.resolve() returns mode="live"/started=False) -- a different intent from remapping the
 # published gRPC port via SLT_BIGTABLE_GRPC_HOST_PORT.
 live_override_env: SLT_BIGTABLE_HOST
 python_module: google.cloud.bigtable
 python_module_hint: Install the live engine dependencies, including google-cloud-bigtable.
-# Opt-in, unlike Spanner. Both emulator redirects are JVM-global (the striim overlays set
-# SPANNER_EMULATOR_HOST and BIGTABLE_EMULATOR_HOST), but Spanner's overlay is always applied: the
-# framework treats its cluster as emulator-only for Spanner. The Bigtable overlay is applied only
-# when SLT_BIGTABLE_SERVICE or the SLT_EMULATORS umbrella is on (livetest/striim_provision.py), so a
-# run that did not ask for the emulator, such as a real-Bigtable app on a reused cluster, is never
-# pointed at this empty local one. A plain `docker compose up` still targets real Bigtable.
-opt_in_env: SLT_BIGTABLE_SERVICE
 docker_defaults:
   host: localhost
-  port: 9470                    # gRPC, the CBTEMULATOR listener on host 9080 (data + admin over
-                                # one gRPC port, unlike Spanner's gRPC+REST split)
+  port: 9470                    # gRPC (data + admin over one port, unlike Spanner's gRPC+REST split)
   project: test-project
   instance: test-instance
 # Published host port, overridable exactly as compose.yaml interpolates it -- so remapping a busy
@@ -34,18 +22,11 @@ live_env:
   port: SLT_BIGTABLE_PORT
   project: SLT_BIGTABLE_PROJECT
   instance: SLT_BIGTABLE_INSTANCE
-  # The bigtable data/admin client reads the emulator via host:port; the harness passes it on the
-  # live client path. (No separate REST port -- CBTEMULATOR is one gRPC listener.)
-  emulator_host: SLT_BIGTABLE_EMULATOR_HOST
-# Tokens for the Striim app + the framework's own admin. The BigtableWriter reaches the emulator
-# only through the JVM-wide BIGTABLE_EMULATOR_HOST (+ no-auth), set by the striim overlay. The
-# connection token is the static JDBC URL (the emulator host comes via env, not the URL). The
-# framework's own admin (livetest/bigtableadmin.py, via inttest.dbroutes) dials base
-# {host}:{port} (localhost:9470) -- that is why BIGTABLE_HOST/BIGTABLE_GRPC_PORT are provided.
+# Tokens for the Striim app. Striim's Bigtable clients reach the emulator through the JVM-wide
+# BIGTABLE_EMULATOR_HOST, which the striim overlay (../striim/compose.bigtable-emulator.yaml) always
+# sets, as compose.spanner-emulator.yaml sets SPANNER_EMULATOR_HOST; the URL carries no host. The
+# framework's own admin (livetest/bigtableadmin.py) dials the base {host}:{port} (localhost:9470).
 provides:
   BIGTABLE_PROJECT: "{project}"
   BIGTABLE_INSTANCE: "{instance}"
   BIGTABLE_URL: "jdbc:bigtable:/projects/{project}/instances/{instance}?app_profile_id=default"
-  BIGTABLE_HOST: "{host}"
-  BIGTABLE_GRPC_PORT: "{port}"
-  BIGTABLE_EMULATOR_HOST: "{view_host}:{port}"

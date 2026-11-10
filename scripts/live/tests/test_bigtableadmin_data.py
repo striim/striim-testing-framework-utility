@@ -102,8 +102,27 @@ def test_written_cells_read_back_newest_per_column_as_hex(admin):
         {"row": b"r1".hex(), "cells": {"cf:age": "1f", "cf:name": b"alice".hex(), "meta:x": "00"}},
         {"row": b"r2".hex(), "cells": {"cf:name": b"bob".hex()}},
     ]
-    assert admin.read_all("t1_rows", cells_per_column_limit=2)[0]["cells"]["cf:name"] in (
-        b"alice".hex(), b"al".hex())
+    # Two versions come back, newest first; the row still shows the newest.
+    assert admin.read_all("t1_rows", cells_per_column_limit=2)[0]["cells"]["cf:name"] == b"alice".hex()
+
+
+@pytest.mark.filterwarnings("ignore:Connecting to Bigtable emulator:RuntimeWarning")
+def test_read_row_returns_the_newest_version_of_each_column(admin):
+    admin.write_cells("t1_rows", [{"row": "r1", "cells": {"cf:name": "al"}}])
+    time.sleep(0.002)                                  # a later millisecond: the newer version
+    admin.write_cells("t1_rows", [{"row": "r1", "cells": {"cf:name": "alice"}}])
+    assert admin.read_row("t1_rows", "r1") == {"cells": {"cf:name": b"alice".hex()}}
+
+
+@pytest.mark.filterwarnings("ignore:Connecting to Bigtable emulator:RuntimeWarning")
+def test_a_binary_qualifier_reads_back_in_the_form_write_cells_takes(admin):
+    # Bigtable qualifiers are bytes; one that is not UTF-8 reads as "0x<hex>", which write_cells
+    # turns back into the same bytes. A ':' inside a qualifier is kept: only the first splits.
+    admin.write_cells("t1_rows", [{"row": "r1", "cells": {"cf:0xff00": "v", "cf:a:b": "w"}}])
+    cells = admin.read_row("t1_rows", "r1")["cells"]
+    assert cells == {"cf:0xff00": b"v".hex(), "cf:a:b": b"w".hex()}
+    admin.write_cells("t1_rows", [{"row": "r2", "cells": dict.fromkeys(cells, "x")}])
+    assert set(admin.read_row("t1_rows", "r2")["cells"]) == set(cells)
 
 
 @pytest.mark.filterwarnings("ignore:Connecting to Bigtable emulator:RuntimeWarning")

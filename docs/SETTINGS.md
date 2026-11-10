@@ -132,11 +132,8 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_BIGTABLE_PORT` | shell, `.env`, machine | `9470` | Your own instance: its port. |
 | `SLT_BIGTABLE_PROJECT` | shell, `.env`, machine | `test-project` | Your own instance: the project id. |
 | `SLT_BIGTABLE_INSTANCE` | shell, `.env`, machine | `test-instance` | Your own instance: the instance. |
-| `SLT_BIGTABLE_EMULATOR_HOST` | shell, `.env`, machine |  | Your own instance: the emulator as one `host:port`; the live tier's admin dials it when set, otherwise `{host}:{port}`. |
 | `SLT_BIGTABLE_GRPC_HOST_PORT` | shell, `.env` | `9470` | Host port the container publishes; change it when the port is in use. |
-| `SLT_BIGTABLE_SERVICE` | shell, `.env`, machine |  | `1`: opt in to the `bigtable` service. Unset (and `SLT_EMULATORS` unset), a test that requires it is skipped. |
 | `SLT_BIGTABLE_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
-| `SLT_BIGTABLE_IMAGE` | shell, `.env`, machine | `gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a` | Another Bigtable emulator image to run instead of the pinned google-cloud-cli build; the framework does not build it. |
 | `SLT_BIGTABLE_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |
 | `SLT_BIGTABLE_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
@@ -361,7 +358,6 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_BIGTABLE_PORT` | shell, `.env`, machine | `19470` | Your own instance: its port. |
 | `INT_BIGTABLE_PROJECT` | shell, `.env`, machine | `test-project` | Your own instance: the project id. |
 | `INT_BIGTABLE_INSTANCE` | shell, `.env`, machine | `test-instance` | Your own instance: the instance. |
-| `INT_BIGTABLE_EMULATOR_HOST` | shell, `.env`, machine |  | Your own instance: the emulator as one `host:port`; the integration tier's admin does not read it yet and dials `{host}:{port}`. |
 | `INT_BIGTABLE_GRPC_HOST_PORT` | shell, `.env` | `19470` | Host port the container publishes; change it when the port is in use. |
 | `INT_BIGTABLE_CPUS` | shell, `.env`, machine | `0.5` | CPUs the container may use. |
 | `INT_BIGTABLE_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |

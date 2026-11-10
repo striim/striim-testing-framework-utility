@@ -20,7 +20,9 @@ from inttest.dbroutes import (
     assert_target_rows,
     connection_params,
     parse_route,
+    query_rows,
     read_cells,
+    run_sql_text,
     setup_bigtable,
     teardown_bigtable,
     split_statements,
@@ -382,30 +384,20 @@ def test_split_statements_delimiter_word_inside_a_statement_is_not_a_directive()
 
 
 # ============================================================================
-# bigtable assert.target — the §3.5 int positive+negative hermetic test
+# bigtable routes: connection_params, read_cells, assert_target, setup/teardown
 #
-# `inttest.dbroutes.assert_target` / `read_cells` / `setup_bigtable` / `teardown_bigtable` are
-# the integration-tier "target read" surface the §4.1 smoke case asserts through. They build a
-# BigtableAdmin via the module's `_bigtable_admin` (Bigtable-by-host:port; the CBTEMULATOR skips
-# auth), so a hermetic test patches `inttest.bigtableadmin.BigtableAdmin` with a fake that records
-# create/write/drop and returns a canned `read_all` snapshot — the int mirror of the live
-# assertions test (scripts/live/tests/test_assertions_bigtable.py, where the live `assert_bigtable`
-# is covered). Positive: an identical re-read matches. Negative: one row short, or one cell off,
-# makes `assert_target` raise with a "mismatch" message.
-#
-# No Docker, no DB, no client: the fake's methods are no-ops, so no `google.*` leaf module is
-# ever imported — the test stays hermetic (the admin module imports google only lazily inside its
-# own methods, which the fake never runs).
+# These build a BigtableAdmin through `inttest.bigtableadmin.BigtableAdmin`, which the tests below
+# replace with a recording fake returning canned `read_all` rows, so nothing connects. The admin's
+# own behaviour is covered by scripts/live/tests/test_bigtableadmin*.py.
 # ============================================================================
 
-# The snapshot an int `setup_bigtable` + `assert_target` would record: two rows, newest cell per
-# (family, qualifier), values hex-for-bytes.
+# Two rows, newest cell per (family, qualifier), values as hex.
 _EMP = [
     {"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}},
     {"row": "02", "cells": {"emp:name": "6b6b"}},
 ]
 
-# tokens for an emulator `bigtable-target` route — no BIGTABLE_CREDENTIALS, so the emulator_host path.
+# An emulator `bigtable-target` route: no BIGTABLE_CREDENTIALS.
 _EMULATOR_TOKENS = {
     "BIGTABLE_PROJECT": "test-project",
     "BIGTABLE_INSTANCE": "test-instance",
@@ -415,8 +407,7 @@ _EMULATOR_TOKENS = {
 
 
 class _FakeBigtableAdmin:
-    """A `BigtableAdmin` stand-in with canned reads; every action is a recording no-op, so no
-    `google.*` leaf module is ever imported — the test stays hermetic."""
+    """A `BigtableAdmin` stand-in with canned reads; every action is a recording no-op."""
     _TABLES: dict = {}
 
     def __init__(self, params, client=None, data_client=None):
@@ -439,8 +430,7 @@ class _FakeBigtableAdmin:
 
 
 def _with_fake(tables, monkeypatch):
-    """Point `_bigtable_admin` at a fresh `_FakeBigtableAdmin`; return the dict holding the last
-    admin so a test can read its create/write/drop records after the call."""
+    """Point the routes at a fresh `_FakeBigtableAdmin`; return a dict holding the last admin built."""
     _FakeBigtableAdmin._TABLES = dict(tables)
     last = {}
 
@@ -453,11 +443,8 @@ def _with_fake(tables, monkeypatch):
     return last
 
 
-# ---- the dsn the route renders (emulator path: no credentials, no tid) ----------------
-
-def test_connection_params_bigtable_emulator_dsn(monkeypatch):
-    # §3.2: on the §4 smoke's emulator path (no credentials) no TID is plumbed — exactly like
-    # Spanner; the admin reaches the CBTEMULATOR through emulator_host = host:port.
+def test_connection_params_bigtable_emulator_dsn():
+    # No credentials: no TID, and the admin dials host:port, as the Spanner emulator routes do.
     params = connection_params("bigtable-target", _EMULATOR_TOKENS)
     assert params["driver"] == "bigtable"
     assert params["emulator_host"] == "localhost:19470"
@@ -465,54 +452,61 @@ def test_connection_params_bigtable_emulator_dsn(monkeypatch):
     assert "credentials" not in params and "tid" not in params
 
 
-# ---- read shape (what assert.target compares) ------------------------------------------
-
 def test_read_cells_shape(monkeypatch):
     last = _with_fake({"emp": _EMP}, monkeypatch)
     got = read_cells("bigtable-target", "emp", _EMULATOR_TOKENS)
     assert got == {"table": "emp", "rows": _EMP}
-    assert last["admin"] is not None        # the fake admin was reached (no real client)
+    assert last["admin"].params["emulator_host"] == "localhost:19470"
 
 
-# ---- the positive+negative compare the §4.1 smoke's negative control rests on ----------
-
-def test_assert_target_positive_passes_when_the_table_matches(monkeypatch):
+def test_assert_target_passes_when_the_table_matches(monkeypatch):
     _with_fake({"emp": _EMP}, monkeypatch)
     assert_target("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)      # no raise
 
 
-def test_assert_target_negative_raises_when_a_row_is_short(monkeypatch):
-    _with_fake({"emp": [_EMP[0]]}, monkeypatch)                         # one row short
+def test_assert_target_raises_when_a_row_is_short(monkeypatch):
+    _with_fake({"emp": [_EMP[0]]}, monkeypatch)
     with pytest.raises(AssertionError, match="mismatch"):
         assert_target("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)
 
 
-def test_assert_target_negative_raises_when_a_cell_value_differs(monkeypatch):
+def test_assert_target_raises_when_a_cell_value_differs(monkeypatch):
     got = [dict(_EMP[0], cells=dict(_EMP[0]["cells"], **{"emp:age": "20"})), _EMP[1]]
-    _with_fake({"emp": got}, monkeypatch)                                # age 0x20 vs 0x1f
+    _with_fake({"emp": got}, monkeypatch)
     with pytest.raises(AssertionError, match="mismatch"):
         assert_target("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)
 
 
-def test_assert_target_rows_rows_only_variant_passes(monkeypatch):
+def test_assert_target_rows_passes_when_the_table_matches(monkeypatch):
     _with_fake({"emp": _EMP}, monkeypatch)
-    assert_target_rows("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)  # the rows-only wrapper
+    assert_target_rows("bigtable-target", "emp", _EMP, _EMULATOR_TOKENS)
 
-
-# ---- setup + teardown drive the admin's create/write/drop at the exact name -------------
 
 def test_setup_bigtable_creates_and_seeds(monkeypatch):
     last = _with_fake({}, monkeypatch)
-    setup_bigtable(
-        "emp", {"emp": {}}, seed=[{"row": "01", "cells": {"emp:name": b"abc"}}],
-        route="bigtable-target", tokens=_EMULATOR_TOKENS,
-    )
+    seed = [{"row": "01", "cells": {"emp:name": b"abc"}}]
+    setup_bigtable("emp", {"emp": {}}, seed=seed, route="bigtable-target", tokens=_EMULATOR_TOKENS)
     a = last["admin"]
-    assert a.created and a.created[0][0] == "emp"
-    assert a.written and a.written[0][0] == "emp"
+    assert [c[0] for c in a.created] == ["emp"]
+    assert a.written == [("emp", seed)]
 
 
 def test_teardown_bigtable_drops_at_the_exact_name(monkeypatch):
     last = _with_fake({}, monkeypatch)
     teardown_bigtable("emp", route="bigtable-target", tokens=_EMULATOR_TOKENS)
     assert last["admin"].dropped == ["emp"]
+
+
+def test_a_credentials_route_is_refused_before_a_client_is_built():
+    # The real admin: it refuses in its constructor, so nothing is dialled.
+    tokens = {**_EMULATOR_TOKENS, "BIGTABLE_CREDENTIALS": "/keys/sa.json", "TID": "t1_"}
+    with pytest.raises(ValueError, match="emulator-only"):
+        setup_bigtable("t1_rows", {"cf": None}, tokens=tokens)
+
+
+@pytest.mark.parametrize("call", [lambda: query_rows("bigtable-target", "SELECT 1", _EMULATOR_TOKENS),
+                                  lambda: run_sql_text("bigtable-target", "SELECT 1", _EMULATOR_TOKENS)],
+                         ids=["query_rows", "run_sql_text"])
+def test_a_bigtable_route_has_no_sql_surface(call):
+    with pytest.raises(RouteError, match="no SQL .* support for driver 'bigtable'"):
+        call()

@@ -197,8 +197,8 @@ _PARAM_SPECS: dict[str, dict] = {
     },
     "bigtable": {
         "driver": "bigtable",
-        # CBTEMULATOR (gcloud's Cloud Bigtable emulator), reached by the framework's
-        # BigtableAdmin via host:port (BIGTABLE_EMULATOR_HOST skips auth). One instance,
+        # The Cloud Bigtable emulator, reached by the framework's BigtableAdmin at
+        # BIGTABLE_HOST:BIGTABLE_GRPC_PORT over a plaintext channel, without auth. One instance,
         # no databases or dialects -- so it has `directions` (source/target) but the
         # directions only pick the role, not a per-direction token. The admin gets
         # `{project, instance, emulator_host, credentials}`.
@@ -783,8 +783,9 @@ def query_rows(route: str, sql: str, tokens: Mapping[str, str]) -> list[list]:
             f"itself.")
     params = connection_params(route, tokens)
     querier = _QUERIERS.get(params["driver"])
-    if querier is None:  # pragma: no cover - unreachable while _PARAM_SPECS <-> _QUERIERS stay in sync
-        raise RouteError(f"no SQL query support for driver {params['driver']!r}")
+    if querier is None:   # a non-SQL driver (_NON_SQL_DRIVERS): bigtable is read by its admin
+        raise RouteError(f"no SQL query support for driver {params['driver']!r}: route {route!r} "
+                         f"has no SQL surface")
     return querier(params, rendered)
 
 
@@ -801,8 +802,9 @@ def run_sql_text(route: str, sql: str, tokens: Mapping[str, str]) -> None:
         return
     params = connection_params(route, tokens)
     runner = _RUNNERS.get(params["driver"])
-    if runner is None:  # pragma: no cover - unreachable while _PARAM_SPECS <-> _RUNNERS stay in sync
-        raise RouteError(f"no SQL execution support for driver {params['driver']!r}")
+    if runner is None:   # a non-SQL driver (_NON_SQL_DRIVERS): bigtable is read by its admin
+        raise RouteError(f"no SQL execution support for driver {params['driver']!r}: route {route!r} "
+                         f"has no SQL surface")
     runner(params, statements)
 
 

@@ -232,16 +232,16 @@ def test_a_family_probe_reads_a_malformed_definition_as_its_own_name(tmp_path, o
         registry.owns_route("extdb", "bigquery-target")
 
 @pytest.mark.parametrize("env", [{}, {"SLT_EMULATORS": ""}, {"SLT_EMULATORS": "0"}, {"SLT_EMULATORS": "false"},
-                                 {"SLT_EMULATORS": " Off "}, {"SLT_BIGTABLE_SERVICE": "0"},
-                                 {"SLT_BIGTABLE_SERVICE": "no", "SLT_EMULATORS": "FALSE"}])
+                                 {"SLT_EMULATORS": " Off "}, {"SLT_EMU": "0"},
+                                 {"SLT_EMU": "no", "SLT_EMULATORS": "FALSE"}])
 def test_an_opt_in_set_off_does_not_opt_in(env):
     from livetest import registry
-    assert registry.opted_in("SLT_BIGTABLE_SERVICE", env) is False
+    assert registry.opted_in("SLT_EMU", env) is False
 
 
-@pytest.mark.parametrize("env", [{"SLT_EMULATORS": "1"}, {"SLT_BIGTABLE_SERVICE": "1"},
-                                 {"SLT_BIGTABLE_SERVICE": "true"}, {"SLT_BIGTABLE_SERVICE": "0", "SLT_EMULATORS": "1"}])
+@pytest.mark.parametrize("env", [{"SLT_EMULATORS": "1"}, {"SLT_EMU": "1"},
+                                 {"SLT_EMU": "true"}, {"SLT_EMU": "0", "SLT_EMULATORS": "1"}])
 def test_an_opt_in_set_on_opts_in(env):
     from livetest import registry
-    assert registry.opted_in("SLT_BIGTABLE_SERVICE", env) is True
+    assert registry.opted_in("SLT_EMU", env) is True
     assert registry.opted_in(None, env) is ("SLT_EMULATORS" in env)

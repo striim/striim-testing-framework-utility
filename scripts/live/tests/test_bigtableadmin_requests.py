@@ -91,15 +91,18 @@ def test_num_versions_is_a_versions_only_rule():
     ({"age_seconds": 90}, 90, 0),
     ({"age_days": 2}, 172_800, 0),
 ])
-def test_an_age_rule_keeps_one_version_and_expires_it_by_age(gc, seconds, nanos):
-    # union: a cell is collected when it is older than the age OR is not the newest version.
+def test_an_age_rule_expires_versions_by_age_only(gc, seconds, nanos):
+    # Bigtable's own max_age: every version older than the age is collected, and no other.
     rule = _gc_to_rule(gc)
-    assert _which(rule) == "union"
-    age, versions = rule.union.rules
-    assert _which(age) == "max_age"
-    duration = GcRule.pb(age).max_age
+    assert _which(rule) == "max_age"
+    duration = GcRule.pb(rule).max_age
     assert (duration.seconds, duration.nanos) == (seconds, nanos)
-    assert _which(versions) == "max_num_versions" and versions.max_num_versions == 1
+
+
+@pytest.mark.parametrize("gc", [{"num_versions": 0}, {"age_days": 0}, {"age_millis": -1}])
+def test_a_rule_that_is_not_positive_is_refused(gc):
+    with pytest.raises(ValueError, match="greater than 0"):
+        _gc_to_rule(gc)
 
 
 @pytest.mark.parametrize("gc", [{"num_versions": 2, "age_days": 1}, {"age_seconds": 1, "age_days": 1}])
@@ -114,5 +117,5 @@ def test_create_table_sends_the_age_rule_on_its_family():
     (request,) = tac.requests
     assert isinstance(request, CreateTableRequest)
     families = request.table.column_families
-    assert _which(families["cf"].gc_rule) == "union"
+    assert _which(families["cf"].gc_rule) == "max_age"
     assert _which(families["plain"].gc_rule) is None          # no rule: the family never expires

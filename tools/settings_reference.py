@@ -196,8 +196,6 @@ SERVICE_EXTRAS = {
     "SLT_BIGQUERY_TOKEN_URI": (None, "Dedicated local fake OAuth endpoint ending in `/token`."),
     "SLT_BIGQUERY_IMAGE": (None, "Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence."),
     "SLT_BIGQUERY_TOKEN_IMAGE": (None, "Override the dedicated fake token server image; use a pinned digest."),
-    "SLT_BIGTABLE_IMAGE": (None, "Another Bigtable emulator image to run instead of the pinned google-cloud-cli build; the framework does not build it."),
-    "SLT_BIGTABLE_SERVICE": ("unset", "`1`: opt in to the `bigtable` service. Unset (and `SLT_EMULATORS` unset), a test that requires it is skipped."),
     "SLT_PG_FIXTURE_TIMEOUT": (None,
         "Optional live-engine Postgres fixture statement deadline in positive finite seconds, at most "
         "2147483.647. Also opts into a lock deadline of min(15 seconds, half the statement budget). "
@@ -256,8 +254,7 @@ FIELDS = {
     "cdc_user": "the account CDC reads with", "cdc_password": "its password",
     "service": "service name of the pluggable database", "cdb_service": "service name of the container "
                                                                           "database",
-    "project": "the project id", "instance": "the instance",
-    "emulator_host": "the emulator as one `host:port`; the live tier's admin dials it when set, otherwise `{host}:{port}`", "gsql_db": "GoogleSQL-dialect database",
+    "project": "the project id", "instance": "the instance", "gsql_db": "GoogleSQL-dialect database",
     "pg_db": "PostgreSQL-dialect database", "admin_port": "its REST admin port",
     "credentials": "path of a service-account key file (in `.env`, relative to its folder); set, the "
                    "tests use real Cloud Spanner, not the "
@@ -316,9 +313,6 @@ def service_settings(services: Path) -> list:
             what = FIELDS.get(field) or field.replace("_", " ")
             if file.parent.name == "oracle" and field == "admin_user":
                 what = "the optional observer admin account, owning database logon triggers in the data PDB"
-            if services.parent.name == "integration" and field == "emulator_host":
-                what = ("the emulator as one `host:port`; the integration tier's admin does not read it yet "
-                        "and dials `{host}:{port}`")
             if name == "SLT_MYSQL_ADMIN_USER":
                 what = "the admin account, which makes missing schemas and cleans up; it never creates or changes an account"
             add(name, code(defaults.get(field)), "Your own instance: " + what + "." if field != "host"

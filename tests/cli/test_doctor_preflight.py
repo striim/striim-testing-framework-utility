@@ -61,20 +61,6 @@ def test_a_shared_cluster_of_the_required_release_passes(tmp_path):
     assert c.status == "ok"
 
 
-def test_a_shared_cluster_still_redirecting_bigtable_fails_for_an_opted_out_run(tmp_path, monkeypatch):
-    # Started by a run that opted in to the bigtable service; this run did not, and a shared run
-    # never redeploys, so the doctor names the setting that would make the cluster usable.
-    import json
-    import subprocess
-    from livetest import striim_provision
-    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
-        argv, 0, stdout=json.dumps(["BIGTABLE_EMULATOR_HOST=host.docker.internal:9470"]), stderr=""))
-    env = {**SHARED, "STRIIM_HOME": install(tmp_path)}
-    c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
-    assert c.status == doctor.FAIL
-    assert "SLT_BIGTABLE_SERVICE=1" in c.message and "never redeploys" in c.message
-
-
 def test_an_exclusive_run_with_a_cluster_already_answering_fails():
     env = {"SLT_INFRA_OWNERSHIP": "exclusive"}
     c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.2")
@@ -366,57 +352,3 @@ def test_a_tryout_mismatch_at_the_same_release_says_to_restart_not_repoint(tmp_p
     c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
     assert c.status == doctor.FAIL and "tryout jars differ" in c.message
     assert "Stop the shared stack" in c.message and "Point STRIIM_HOME" not in c.message
-
-
-def test_a_shared_cluster_redirecting_bigtable_passes_for_an_opted_in_run(tmp_path, monkeypatch):
-    # The doctor passes no cluster directory; the expected endpoint still comes from the overlay.
-    import json
-    import subprocess
-    from livetest import striim_provision
-    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
-        argv, 0, stdout=json.dumps(["BIGTABLE_EMULATOR_HOST=host.docker.internal:9470"]), stderr=""))
-    env = _shell(monkeypatch, tmp_path, SLT_BIGTABLE_SERVICE="1")
-    c, = doctor.check_cluster_identity(env, {}, running=lambda e: "5.4.0.6")
-    assert c.status == "ok", c.message
-
-
-def _shell(monkeypatch, tmp_path, **exported):
-    # The doctor is handed the shell's environment; set it there too, as a real shell would.
-    for key, value in exported.items():
-        monkeypatch.setenv(key, value)
-    return {**SHARED, "STRIIM_HOME": install(tmp_path), **exported}
-
-
-def _members_on(monkeypatch, port):
-    import json
-    import subprocess
-    from livetest import striim_provision
-    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
-        argv, 0, stdout=json.dumps([f"BIGTABLE_EMULATOR_HOST=host.docker.internal:{port}"]), stderr=""))
-
-
-@pytest.mark.parametrize("cluster_port, expected", [("9479", "ok"), ("9470", doctor.FAIL)],
-                         ids=["cluster-on-the-dotenv-port", "cluster-on-the-default-port"])
-def test_the_doctor_takes_the_bigtable_port_from_dotenv_as_the_run_does(tmp_path, monkeypatch,
-                                                                       cluster_port, expected):
-    # The port is set only in .env; the run fills it in (paths.effective_env), so the doctor must too.
-    from livetest import paths
-    dotenv_file = tmp_path / ".env"
-    dotenv_file.write_text("SLT_BIGTABLE_GRPC_HOST_PORT=9479\n")
-    dotenv = paths.read_dotenv(dotenv_file)
-    assert dotenv["SLT_BIGTABLE_GRPC_HOST_PORT"] == "9479"
-    _members_on(monkeypatch, cluster_port)
-    env = _shell(monkeypatch, tmp_path, SLT_BIGTABLE_SERVICE="1")
-    c, = doctor.check_cluster_identity(env, dotenv, running=lambda e: "5.4.0.6")
-    assert c.status == expected, c.message
-    assert "SLT_BIGTABLE_GRPC_HOST_PORT" not in __import__("os").environ   # nothing exported meanwhile
-
-
-@pytest.mark.parametrize("cluster_port, expected", [("9479", "ok"), ("9470", doctor.FAIL)],
-                         ids=["cluster-on-the-exported-port", "cluster-on-the-default-port"])
-def test_the_doctor_takes_an_exported_bigtable_port(tmp_path, monkeypatch, cluster_port, expected):
-    _members_on(monkeypatch, cluster_port)
-    env = _shell(monkeypatch, tmp_path, SLT_BIGTABLE_SERVICE="1", SLT_BIGTABLE_GRPC_HOST_PORT="9479")
-    c, = doctor.check_cluster_identity(env, {"SLT_BIGTABLE_GRPC_HOST_PORT": "9470"},
-                                       running=lambda e: "5.4.0.6")
-    assert c.status == expected, c.message                       # the shell wins over .env

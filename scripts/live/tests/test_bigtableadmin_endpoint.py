@@ -254,7 +254,11 @@ def _no_client_may_be_built(monkeypatch):
     {"project": "test-project", "instance": "test-instance", "credentials": "/keys/sa.json", "tid": "t1_"},
     {"project": "test-project", "instance": "test-instance", "emulator_host": "localhost:9470",
      "credentials": "/keys/sa.json"},
-], ids=["no-endpoint", "empty-endpoint", "credentials-only", "credentials-and-endpoint"])
+    {"project": "test-project", "instance": "test-instance", "emulator_host": "bigtable.googleapis.com:443"},
+    {"project": "test-project", "instance": "test-instance", "emulator_host": "BigTableAdmin.GoogleAPIs.com.:8086"},
+    {"project": "test-project", "instance": "test-instance", "emulator_host": "10.0.0.5:443"},
+], ids=["no-endpoint", "empty-endpoint", "credentials-only", "credentials-and-endpoint",
+        "google-api-endpoint", "google-api-host", "tls-port"])
 def test_anything_but_an_emulator_is_refused_before_a_client_is_built(_no_client_may_be_built, dsn):
     # Real Bigtable is not supported yet: with ambient Google credentials, create_table's
     # drop-first would delete a real table.

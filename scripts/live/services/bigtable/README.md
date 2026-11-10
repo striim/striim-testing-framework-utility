@@ -1,91 +1,27 @@
 # Bigtable emulator service recipe
 
-**Status: groundwork.** This adds the emulator service and the framework's Bigtable admin, so a
-test can require `bigtable` and the framework can create tables, write and read rows, and drop
-them. What is supported:
+Using this service in a test (tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
 
-- the CBTEMULATOR service on both tiers (`requires: bigtable`), Linux x86-64;
-- `BigtableAdmin` table helpers (create with column families and GC rules, list families, drop,
-  drop rows by prefix or all) and row helpers (write cells, read a row, read a table, delete a
-  row), each with a time budget.
-
-Not supported yet:
-
-- manifest setup or assertions: no `test.yaml` key creates a Bigtable table, `bigtable` is not an
-  assertion tier, and the integration tier's `assert_target` is not wired in. This waits for the
-  BigtableWriter work;
-- a BigtableWriter or reader case;
-- real Bigtable (Cloud), credentials or IAM: `BigtableAdmin` refuses anything but an emulator;
-- change streams;
-- running on Apple silicon: the image is pinned to its linux/amd64 build and has not been
-  qualified under emulation.
-
-Using services in a test (tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
-It has no Bigtable section yet; the tokens this service provides are listed in `service.yaml`.
+**Groundwork.** The service and the framework's `BigtableAdmin` (table and row helpers) only. Not
+supported yet: manifest setup or assertions, a BigtableWriter or reader case, real Bigtable,
+change streams, and Apple silicon (the image is linux/amd64 and not qualified under emulation).
 
 How it is built:
 
-- **External image, never built by the framework (mirrors the BigQuery service / `SLT_BIGQUERY_IMAGE`):**
-  the CBTEMULATOR image is the field's own "dockerized Bigtable" artifact, like BigQuery's `
-  SLT_BIGQUERY_IMAGE`. The framework owns the *connection* (`livetest/bigtableadmin.py`) and the
-  orchestration, and it **never builds or distributes the image** -- it supplies a pinned default
-  image and `SLT_BIGTABLE_IMAGE` overrides to the field's own CBTEMULATOR image. See "Who owns the
-  image" below. As the default pin, `gcr.io/.../google-cloud-cli@sha256:f6d5061a…` (`:emulators`,
-  pinned by the linux/amd64 manifest digest) bundles `cbtemulator`, the official Cloud Bigtable
-  emulator. The service starts it with `gcloud beta emulators bigtable start` and publishes one gRPC
-  port (`SLT_BIGTABLE_GRPC_HOST_PORT`, default 9470) to the host. There is no separate REST/admin
-  port -- unlike Spanner, CBTEMULATOR is a single gRPC listener.
-- No fake GCP key: the Bigtable client (and the framework's admin) reach the emulator via
-  `BIGTABLE_EMULATOR_HOST`, which skips auth, unlike Spanner/GCS. So the cluster override
-  (`../striim/compose.bigtable-emulator.yaml`) only injects `BIGTABLE_EMULATOR_HOST` -- nothing is
-  uploaded to UploadedFiles.
-- The framework's own admin client (`livetest/bigtableadmin.py`, via `inttest.dbroutes`'
-  `bigtable` route) reads/writes the table directly from the host at `{host}:{port}`
-  (localhost:9470), with `google-cloud-bigtable`. The Striim app (`BigtableWriter`) reaches the same
-  emulator through `BIGTABLE_EMULATOR_HOST`, set by `compose.bigtable-emulator.yaml` only
-  when the run opts in (`SLT_BIGTABLE_SERVICE=1` or `SLT_EMULATORS=1`). A running cluster is
-  reused only if its redirect already matches that choice and port; a shared or exclusive run
-  refuses a mismatched cluster and says how to resolve it.
-- Change streams are not supported: the admin offers no change-stream surface, and
-  `enable_change_stream` / `disable_change_stream` raise rather than fake one.
-
-Health gate: the compose healthcheck only proves the port is listening; the admin-table
-create+delete that the live tier runs before a bigtable test is the readiness gate (a half-booted
-CBTEMULATOR opens its listener before it accepts admin RPCs). See "Health gate" below.
-
-## Who owns the image
-
-Mirrors the BigQuery service's split: the framework is the **connect + orchestration** layer
-(`livetest/bigtableadmin.py`, the `services/bigtable` recipe, the Striim overlay) and **never builds
-or distributes the CBTEMULATOR image**. The image is an **external artifact the field supplies** --
-its own "dockerized Bigtable" -- the same boundary as BigQuery's `SLT_BIGQUERY_IMAGE`.
-
-- **Supplied, not built.** `compose.yaml` resolves the emulator image from `SLT_BIGTABLE_IMAGE`,
-  defaulting to the pinned gcloud image. `docker compose up` *pulls* that ref; the framework never
-  runs `build` for it (BigQuery's driver returns `build_required=False`; the Bigtable service carries
-  no build of its own, so nothing to build).
-- **The boundary is the pin, not a build-owned label.** Unlike BigQuery -- a field-*built* image the
-  framework gates on its `org.opencontainers.image.version` / `.revision` OCI label -- CBTEMULATOR is
-  a *public* gcloud image, so the boundary here is the **manifest digest** the
-  default pins: re-pin deliberately when the gcloud image moves, then re-run this service's tests
-  against it (the emulator binary changes across gcloud versions). A `build_required` / OCI-label
-  gate is *not* wired for this service on purpose -- there is no field build to gate; the pin is the
-  boundary. (Explanatory note, not a TODO: if a real, field-built CBTEMULATOR image lands, the
-  BQ-style label gate + a `driver:` is the natural seam.)
-- **Point at your own.** `SLT_BIGTABLE_HOST` (`live_override_env`) reuses an emulator you run
-  yourself and skips `docker compose up` -- a separate intent from the `SLT_BIGTABLE_IMAGE` /
-  `SLT_BIGTABLE_GRPC_HOST_PORT` knobs, which move *the framework's* container.
-
-## Health gate
-
-`docker compose up --wait` waits on `slt-bigtable`'s healthcheck, a TCP probe of the published
-port that only keeps `--wait` honest. The readiness proof is `BigtableAdmin(dsn).ensure()`, which
-creates and deletes a throwaway `.__slt_readiness` table, retrying within its time budget until the
-emulator accepts admin RPCs. On the live tier, `LiveItem.runtest` in `livetest/plugin.py` calls it
-when a test requires the bigtable service (once across pytest-xdist workers). The integration tier
-does not call it.
-
-To use an emulator you run yourself (not via Docker), set `SLT_BIGTABLE_HOST`/`SLT_BIGTABLE_
-GRPC_HOST_PORT`/`SLT_BIGTABLE_PROJECT`/`SLT_BIGTABLE_INSTANCE` (the `live_override_env` path).
-Real Bigtable is not supported: `BigtableAdmin` refuses a connection that carries credentials or
-names no emulator endpoint.
+- Google ships no standalone Bigtable emulator image. The emulator (`cbtemulator`) is a component
+  of the gcloud CLI's `:emulators` image, pinned here by its linux/amd64 manifest digest; the
+  service starts it with `gcloud beta emulators bigtable start`. One gRPC port, 9470, serves data
+  and admin.
+- Striim's Bigtable clients reach an emulator only through the JVM-wide `BIGTABLE_EMULATOR_HOST`.
+  The Docker cluster the framework starts applies `../striim/compose.bigtable-emulator.yaml`, which
+  sets it, as it applies the Spanner overlay; it stays out of the base compose file so a cluster
+  started by hand still reaches real Bigtable. No service-account key is needed: the emulator
+  redirect skips auth.
+- `BigtableAdmin` (`livetest/bigtableadmin.py`) dials `{host}:{port}` from the host. Before a test
+  that requires `bigtable`, the live tier runs its readiness gate, `ensure()`: it creates and
+  deletes an `_slt_readiness` table until the emulator accepts admin RPCs (once across pytest-xdist
+  workers). The compose healthcheck only proves the port is listening.
+- `BigtableAdmin` refuses a connection that carries credentials or names a Google API endpoint.
+- An emulator you run yourself (`SLT_BIGTABLE_HOST`) serves the framework's admin only; the
+  cluster's redirect still points at `host.docker.internal:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}`.
+  Spanner has the same limit.

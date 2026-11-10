@@ -1,15 +1,7 @@
-# Cloud Bigtable emulator (CBTEMULATOR) for the integration tier -- same image as the live tier
-# (scripts/live/services/bigtable/compose.yaml), on a non-conflicting host port so both stacks can
-# run at once. 19470 = gRPC (data + admin, one listener -- CBTEMULATOR has no REST/admin split,
-# unlike Spanner's 19010/19020).
-#
-# The gcloud CLI image's default entrypoint is `gcloud` itself, NOT the emulator, so the service
-# starts CBTEMULATOR explicitly and publishes it. See the live compose for the full comments; the
-# integration dir is structurally identical, namespaced `int-` and on different ports.
-#
-# Pinned by DIGEST: the linux/amd64 manifest of `gcr.io/google.com/cloudsdktool/google-cloud-cli`
-# (:emulators; index digest sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935).
-# Re-pin deliberately when upgrading, and re-run the bigtable service's tests against the new image.
+# Cloud Bigtable emulator (cbtemulator) for the integration tier -- same image as the live tier
+# (scripts/live/services/bigtable/compose.yaml; see its comments), on host port 19470 so both
+# stacks can run at once. The emulator listens on 9470 inside the container; INT_BIGTABLE_GRPC_
+# HOST_PORT remaps only the host side.
 name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-bigtable
 services:
   int-bigtable:
@@ -18,14 +10,14 @@ services:
     cpus: ${INT_BIGTABLE_CPUS:-0.5}
     mem_limit: ${INT_BIGTABLE_MEM_LIMIT:-2g}
     platform: linux/amd64
-    command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:${INT_BIGTABLE_GRPC_HOST_PORT:-19470}"]
+    command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
     ports:
       # Do NOT set INT_BIGTABLE_HOST to "point the framework at it": that is live_override_env, which
       # makes services.resolve() return mode="live"/started=False and skip `docker compose up`.
-      - "${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:${INT_BIGTABLE_GRPC_HOST_PORT:-19470}"
+      - "${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:9470"
     healthcheck:
       # /dev/tcp is a bash feature and the image's /bin/sh is Debian's dash, so run it under bash.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/${INT_BIGTABLE_GRPC_HOST_PORT:-19470}"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9470"]
       interval: 3s
       timeout: 3s
       retries: 10

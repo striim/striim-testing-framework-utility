@@ -68,13 +68,6 @@ def test_where_follows_the_files_rules():
     assert rows["SLT_PARALLEL"].strip() == "shell"
 
 
-def test_each_tier_names_its_own_tier():
-    rows = dict(re.findall(r"^\| `([A-Z][A-Z0-9_]*)` \|[^|]*\|[^|]*\| ([^|]*) \|", _tool().build(), re.M))
-    assert "the live tier's admin" in rows["SLT_BIGTABLE_EMULATOR_HOST"]
-    assert "the integration tier's admin does not read it" in rows["INT_BIGTABLE_EMULATOR_HOST"]
-    assert "live" not in rows["INT_BIGTABLE_EMULATOR_HOST"]
-
-
 def _page_rows():
     return re.findall(r"^\| `([A-Z][A-Z0-9_<>a-z]*)` \| ([^|]*) \|", PAGE.read_text(), re.M)
 

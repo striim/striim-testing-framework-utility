@@ -199,15 +199,13 @@ def _bigtable_stub_modules():
 
 # --- pure helpers -------------------------------------------------------------------
 
-def test_check_ident_accepts_valid_rejects_injection():
-    assert _check_ident("emp", "table") == "emp"
-    assert _check_ident("a_b", "family") == "a_b"
-    with pytest.raises(ValueError):
-        _check_ident("emp; DROP TABLE x", "table")     # statement injection
-    with pytest.raises(ValueError):
-        _check_ident("emp.x", "table")                 # a dot is not a single identifier
-    with pytest.raises(ValueError):
-        _check_ident(123, "table")                     # non-string
+def test_check_ident_accepts_bigtable_names_and_rejects_others():
+    # Bigtable table IDs and family names: [_a-zA-Z0-9][-_.a-zA-Z0-9]*.
+    for name in ("emp", "a_b", "t1-rows", "emp.v2", "0emp", "_x"):
+        assert _check_ident(name, "table") == name
+    for bad in ("emp; DROP TABLE x", "-emp", ".emp", "a:b", "a/b", "", 123):
+        with pytest.raises(ValueError):
+            _check_ident(bad, "table")
 
 def test_gc_to_rule_num_versions_and_none_and_unknown_key():
     # The num_versions shape only, on the recording stubs; the age forms are checked on the
@@ -352,3 +350,58 @@ def test_change_streams_refuse_rather_than_fake():
         admin.enable_change_stream()
     with pytest.raises(RuntimeError, match="change streams are not supported"):
         admin.disable_change_stream()
+
+
+# --- readiness gate (ensure) ----------------------------------------------------------
+
+class _ScriptedTableAdmin(_FakeTableAdminClient):
+    """create_table/delete_table raise the next scripted exception, or succeed when it is None."""
+
+    def __init__(self, create=(), delete=()):
+        super().__init__()
+        self._create, self._delete = list(create), list(delete)
+
+    def create_table(self, req, **deadline):
+        super().create_table(req, **deadline)
+        if self._create and (exc := self._create.pop(0)) is not None:
+            raise exc
+
+    def delete_table(self, name, **deadline):
+        super().delete_table(name, **deadline)
+        if self._delete and (exc := self._delete.pop(0)) is not None:
+            raise exc
+
+
+def _health_name():
+    from livetest.bigtableadmin import HEALTH_TABLE
+    return f"projects/test-project/instances/test-instance/tables/{HEALTH_TABLE}"
+
+
+def test_ensure_creates_then_deletes_the_health_table():
+    tac = _ScriptedTableAdmin()
+    _admin(tac).ensure(attempts=1, delay=0)
+    assert len(tac.created) == 1 and tac.deleted == [_health_name()]
+
+
+def test_ensure_accepts_a_health_table_left_by_another_gate():
+    # AlreadyExists and NotFound mean another gate's create or delete got there first: the
+    # emulator answered admin RPCs, which is all the gate asks.
+    from google.api_core import exceptions as gexc
+    tac = _ScriptedTableAdmin(create=[gexc.AlreadyExists("x")], delete=[gexc.NotFound("x")])
+    _admin(tac).ensure(attempts=1, delay=0)
+    assert tac.deleted == [_health_name()]
+
+
+def test_ensure_retries_a_half_booted_emulator_until_it_answers():
+    from google.api_core import exceptions as gexc
+    tac = _ScriptedTableAdmin(create=[gexc.ServiceUnavailable("booting"), None])
+    _admin(tac).ensure(attempts=3, delay=0)
+    assert len(tac.created) == 2 and tac.deleted == [_health_name()]
+
+
+def test_ensure_gives_up_after_its_attempts_naming_the_last_error():
+    from google.api_core import exceptions as gexc
+    tac = _ScriptedTableAdmin(create=[gexc.ServiceUnavailable("down")] * 2)
+    with pytest.raises(RuntimeError, match="not ready"):
+        _admin(tac).ensure(attempts=2, delay=0)
+    assert tac.deleted == []

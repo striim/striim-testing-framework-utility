@@ -183,6 +183,39 @@ def test_assert_bigtable_lets_a_non_timeout_read_error_through():
         assert_bigtable(Broken({}), [{"table": "emp", "expected": EMP}], timeout=1, poll=0)
 
 
+@pytest.mark.parametrize("error", ["NotFound", "ServiceUnavailable"])
+def test_assert_bigtable_polls_through_a_missing_table_or_an_unavailable_emulator(error):
+    # Before the writer creates the table, or while the emulator is briefly down, a read fails;
+    # the assertion keeps polling and passes once the rows are there.
+    from google.api_core import exceptions as gexc
+
+    class Late(FakeTableAdmin):
+        reads = 0
+
+        def read_all(self, table, cells_per_column_limit=1, timeout=None):
+            Late.reads += 1
+            if Late.reads < 3:
+                raise getattr(gexc, error)("not yet")
+            return super().read_all(table)
+
+    (record,) = assert_bigtable(Late({"emp": EMP}), [{"table": "emp", "expected": EMP}],
+                                timeout=5, poll=0)
+    assert record["status"] == "passed" and Late.reads == 3
+
+
+def test_assert_bigtable_fails_at_its_deadline_when_the_table_never_appears():
+    from google.api_core.exceptions import NotFound
+
+    class Missing(FakeTableAdmin):
+        def read_all(self, table, cells_per_column_limit=1, timeout=None):
+            raise NotFound("table emp not found")
+
+    with pytest.raises(AssertionFailed, match="table emp not found") as e:
+        assert_bigtable(Missing({}), [{"table": "emp", "expected": EMP}], timeout=0.2, poll=0.05)
+    (record,) = e.value.records
+    assert record["status"] == "failed" and "deadline" in record["detail"]
+
+
 def test_bigtable_is_not_a_manifest_assertion_tier_yet():
     # The service README and this module call the comparison groundwork; adding the tier means
     # updating them too.

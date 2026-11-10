@@ -1,25 +1,7 @@
-"""Hermetic, no-Docker self-test for the LIVE bigtable service definition.
-
-The bigtable service parses and provides the expected BIGTABLE_* tokens on the live tier
-(scripts/integration/tests/test_services_bigtable.py covers the integration tier). Mirrors
-scripts/live/tests/test_spanner_service.py for the CBTEMULATOR service: it parses
-services/bigtable/service.yaml off disk through the real loader the harness uses
-(livetest.registry.load_service) and renders its `provides:` the way the tier resolves it
-(livetest.services.resolve + livetest.plugin.build_service_tokens). No Docker, no running
-CBTEMULATOR, and no auth key -- the emulator is reached via BIGTABLE_EMULATOR_HOST only.
-
-The guard is the same shape spanner's carries: the service must (1) PARSE under the real
-registry, (2) publish EXACTLY the BIGTABLE_* tokens the rest of the tier consumes, and (3)
-render those templates to the expected concrete values -- including the gRPC-port override
-the emulator and the admin client that dials it must follow together (the "the container
-moves, the client does not" hazard service.yaml's docker_env is written to close).
-
-The compose-rendering half, in the same hermetic style: the bigtable compose.yaml
-renders its name:, container_name: and published port correctly with and without
-SLT_STACK_PREFIX, and the Striim `compose.bigtable-emulator.yaml` overlay injects
-BIGTABLE_EMULATOR_HOST on slt-striim/slt-node/slt-agent at the published port -- while
-staying out of the base compose so a plain `docker compose up` still targets real Bigtable.
-"""
+"""Hermetic, no-Docker self-test for the LIVE bigtable service definition (mirrors
+test_spanner_service.py): it parses services/bigtable/service.yaml through the real loader
+(livetest.registry.load_service), renders its `provides:` as the tier resolves them, and checks the
+compose file and the Striim overlay that sets BIGTABLE_EMULATOR_HOST on the cluster."""
 from pathlib import Path
 
 import yaml
@@ -27,16 +9,13 @@ from livetest.registry import load_service
 from livetest.services import declared_containers, resolve
 from livetest.plugin import build_service_tokens
 
-# The exact `provides:` block service.yaml advertises for the framework's own admin and for
-# the Striim app. BIGTABLE_URL is the static JDBC URL: the emulator HOST is not in the URL,
-# it comes from BIGTABLE_EMULATOR_HOST (no fake GCP key -- contrast Spanner's autoConfig).
+# The tokens for the Striim app, as live Spanner provides SPANNER_PROJECT/INSTANCE and its URLs.
+# BIGTABLE_URL carries no host: Striim reaches the emulator through the overlay's
+# BIGTABLE_EMULATOR_HOST.
 EXPECTED_PROVIDES = {
     "BIGTABLE_PROJECT": "{project}",
     "BIGTABLE_INSTANCE": "{instance}",
     "BIGTABLE_URL": "jdbc:bigtable:/projects/{project}/instances/{instance}?app_profile_id=default",
-    "BIGTABLE_HOST": "{host}",
-    "BIGTABLE_GRPC_PORT": "{port}",
-    "BIGTABLE_EMULATOR_HOST": "{view_host}:{port}",
 }
 
 
@@ -46,7 +25,7 @@ def test_bigtable_service_def_loads():
     assert defn.isolation == "none"
     assert defn.container == "slt-bigtable"
     assert defn.live_override_env == "SLT_BIGTABLE_HOST"
-    assert defn.opt_in_env == "SLT_BIGTABLE_SERVICE"
+    assert defn.opt_in_env is None                       # always available, as Spanner is
     assert defn.docker_defaults == {"host": "localhost", "port": 9470,
                                     "project": "test-project", "instance": "test-instance"}
     assert defn.docker_env == {"port": "SLT_BIGTABLE_GRPC_HOST_PORT"}
@@ -62,37 +41,23 @@ def test_bigtable_provide_tokens_render_docker_defaults():
     tokens = build_service_tokens(defn, r, schema="")
     assert tokens["BIGTABLE_PROJECT"] == "test-project"
     assert tokens["BIGTABLE_INSTANCE"] == "test-instance"
-    assert tokens["BIGTABLE_HOST"] == "localhost"
-    assert tokens["BIGTABLE_GRPC_PORT"] == "9470"
-    assert tokens["BIGTABLE_EMULATOR_HOST"] == "localhost:9470"
     assert tokens["BIGTABLE_URL"] == (
         "jdbc:bigtable:/projects/test-project/instances/test-instance?app_profile_id=default")
 
 
-def test_bigtable_grpc_host_port_override_moves_the_emulator_and_client():
-    # SLT_BIGTABLE_GRPC_HOST_PORT remaps a busy published host port AND must move the admin
-    # client that dials it (service.yaml's docker_env) -- the very hazard test_spanner_service.py
-    # guards; a remap that leaves the client on the old port is the silent-driver failure.
-    env = {"SLT_BIGTABLE_GRPC_HOST_PORT": "9110"}
-    defn = load_service("bigtable")
-    r = resolve("bigtable", env=env, started=set(), compose_up=lambda defn: None)
-    assert r.base["port"] == "9110"
-    tokens = build_service_tokens(defn, r, schema="")
-    assert tokens["BIGTABLE_GRPC_PORT"] == "9110"
-    assert tokens["BIGTABLE_EMULATOR_HOST"] == "localhost:9110"
+def test_bigtable_grpc_host_port_override_moves_the_admin_endpoint():
+    # SLT_BIGTABLE_GRPC_HOST_PORT remaps the published host port; docker_env moves the base port
+    # the framework's admin dials (plugin._bigtable_admins) the same way.
+    r = resolve("bigtable", env={"SLT_BIGTABLE_GRPC_HOST_PORT": "9110"}, started=set(),
+                compose_up=lambda defn: None)
+    assert (r.base["host"], r.base["port"]) == ("localhost", "9110")
 
 
-def test_bigtable_emulator_host_carries_the_containerised_view_host():
-    # A containerised Striim reaches the emulator through the published host port on the host
-    # gateway (host.docker.internal -- the SLT_STRIIM_VIEW_HOST path in resolve); the
-    # BIGTABLE_EMULATOR_HOST token the cluster overlay sets must carry that view_host.
-    defn = load_service("bigtable")
-    r = resolve("bigtable", env={"SLT_STRIIM_VIEW_HOST": "host.docker.internal"},
+def test_bigtable_resolve_live_override():
+    r = resolve("bigtable", env={"SLT_BIGTABLE_HOST": "emu.example", "SLT_BIGTABLE_PORT": "8086"},
                 started=set(), compose_up=lambda defn: None)
-    tokens = build_service_tokens(defn, r, schema="")
-    assert tokens["BIGTABLE_EMULATOR_HOST"] == "host.docker.internal:9470"
-    assert tokens["BIGTABLE_URL"].startswith(
-        "jdbc:bigtable:/projects/test-project/instances/test-instance")
+    assert r.mode == "live"
+    assert (r.base["host"], str(r.base["port"])) == ("emu.example", "8086")
 
 
 # --- compose rendering: name / container_name / published port + the Striim overlay ------
@@ -127,13 +92,14 @@ def test_live_compose_project_and_container_names_carry_the_stack_prefix():
     assert data["services"]["slt-bigtable"]["container_name"] == f"{_LIVE_PREFIX_TPL}slt-bigtable"
 
 
-def test_live_compose_published_port_is_the_overridable_host_port():
-    # The published host port IS the container port, both bound to the same overridable
-    # SLT_BIGTABLE_GRPC_HOST_PORT with the 9470 default -- so remapping a busy port moves where
-    # the emulator publishes (the host BIGTABLE_EMULATOR_HOST then points at), not just source.
-    data = yaml.safe_load(_LIVE_COMPOSE.read_text())
-    ports = data["services"]["slt-bigtable"]["ports"]
-    assert ports == ["${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}"]
+def test_live_compose_remaps_only_the_host_port():
+    # Spanner's shape: the emulator listens on a fixed 9470 inside the container, and
+    # SLT_BIGTABLE_GRPC_HOST_PORT moves only the published host side.
+    svc = yaml.safe_load(_LIVE_COMPOSE.read_text())["services"]["slt-bigtable"]
+    assert svc["ports"] == ["${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"]
+    assert svc["command"][-1].endswith("--host-port=0.0.0.0:9470")
+    assert "SLT_BIGTABLE_GRPC_HOST_PORT" not in str(svc["command"]) + str(svc["healthcheck"])
+    assert "$" not in svc["image"]                       # hard-coded, as Spanner's is
 
 
 def test_live_striim_overlay_injects_emulator_host_on_all_three_containers():
@@ -162,18 +128,17 @@ def test_bigtable_service_names_its_python_module(monkeypatch):
         f"Python module google.cloud.bigtable is not installed: {defn.python_module_hint}")
 
 
-def _healthcheck_argv(env):
-    # What Docker runs for the healthcheck, after compose interpolation: CMD-SHELL hands its one
-    # string to /bin/sh -c; CMD runs its arguments directly.
-    import re
+def _healthcheck_argv(port=9470):
+    # What Docker runs for the healthcheck: CMD-SHELL hands its one string to /bin/sh -c; CMD runs
+    # its arguments directly. `port` stands in for the container's fixed 9470 on this host.
     kind, *args = yaml.safe_load(_LIVE_COMPOSE.read_text())["services"]["slt-bigtable"]["healthcheck"]["test"]
-    expand = lambda s: re.sub(r"\$\{(\w+):-([^}]*)\}", lambda m: env.get(m[1], m[2]), s)
-    return ["/bin/sh", "-c", expand(args[0])] if kind == "CMD-SHELL" else [expand(a) for a in args]
+    args = [a.replace("/9470", f"/{port}") for a in args]
+    return ["/bin/sh", "-c", args[0]] if kind == "CMD-SHELL" else args
 
 
 def test_live_healthcheck_runs_its_tcp_probe_under_bash():
     # The emulator image is Debian-based, so its sh is dash, which has no /dev/tcp.
-    argv = _healthcheck_argv({})
+    argv = _healthcheck_argv()
     assert Path(argv[0]).name == "bash"
     assert "sh -c" not in " ".join(argv[1:])
 
@@ -194,7 +159,42 @@ def test_live_healthcheck_passes_on_a_listener_and_fails_without_one_when_sh_is_
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
-        argv = _healthcheck_argv({"SLT_BIGTABLE_GRPC_HOST_PORT": str(listener.getsockname()[1])})
+        argv = _healthcheck_argv(listener.getsockname()[1])
         argv[0] = str(shells / "sh") if argv[0] == "/bin/sh" else argv[0]
         assert subprocess.run(argv, env=env, timeout=10).returncode == 0
     assert subprocess.run(argv, env=env, timeout=10).returncode != 0
+
+
+# --- the admins a test that requires bigtable gets (plugin._bigtable_admins) ----------------
+
+class _RecordingAdmin:
+    def __init__(self, dsn):
+        self.dsn, self.ensured = dsn, 0
+
+    def ensure(self):
+        self.ensured += 1
+
+
+def test_the_plugin_gives_one_admin_on_the_base_endpoint_under_both_routes(monkeypatch):
+    from livetest import plugin
+    monkeypatch.setattr(plugin, "BigtableAdmin", _RecordingAdmin)
+    monkeypatch.setattr(plugin, "_parallel", lambda env: False)     # a serial run
+    base = resolve("bigtable", env={"SLT_BIGTABLE_GRPC_HOST_PORT": "9110"}, started=set(),
+                   compose_up=lambda defn: None).base
+    pairs = plugin._bigtable_admins(base)
+    assert [key for _, key in pairs] == ["bigtable-target", "bigtable-source"]
+    admin = pairs[0][0]
+    assert pairs[1][0] is admin and admin.ensured == 1
+    assert admin.dsn == {"project": "test-project", "instance": "test-instance",
+                         "emulator_host": "localhost:9110"}
+
+
+def test_the_plugin_runs_the_readiness_gate_once_across_xdist_workers(monkeypatch):
+    from livetest import plugin
+    monkeypatch.setattr(plugin, "BigtableAdmin", _RecordingAdmin)
+    monkeypatch.setattr(plugin, "_parallel", lambda env: True)
+    once = []
+    monkeypatch.setattr(plugin, "ensure_provisioned_once", lambda key, fn: once.append(key))
+    base = {"host": "localhost", "port": 9470, "project": "test-project", "instance": "test-instance"}
+    (admin, _), _ = plugin._bigtable_admins(base)
+    assert once == ["bigtable-setup"] and admin.ensured == 0

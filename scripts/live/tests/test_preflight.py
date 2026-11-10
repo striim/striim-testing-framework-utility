@@ -65,14 +65,6 @@ def test_services_ungated_by_default():
     assert preflight._gated_out("postgres", {}) is False
 
 
-def test_bigtable_is_gated_out_unless_an_opt_in_is_on():
-    assert preflight._gated_out("bigtable", {}) is True
-    assert preflight._gated_out("bigtable", {"SLT_EMULATORS": "0"}) is True
-    assert preflight._gated_out("bigtable", {"SLT_BIGTABLE_SERVICE": "false"}) is True
-    assert preflight._gated_out("bigtable", {"SLT_EMULATORS": "1"}) is False
-    assert preflight._gated_out("bigtable", {"SLT_BIGTABLE_SERVICE": "1"}) is False
-
-
 def test_main_routes_to_provision(monkeypatch):
     calls = {}
     def _prov(ids):

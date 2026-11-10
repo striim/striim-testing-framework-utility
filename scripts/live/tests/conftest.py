@@ -62,18 +62,6 @@ def _no_tryout_docker(monkeypatch):
                                                                      .get(tryout.TRYOUT_ENV) or "").strip())
 
 
-@pytest.fixture(autouse=True)
-def _no_bigtable_redirect_docker(monkeypatch):
-    """The cluster-reuse check inspects each member's BIGTABLE_EMULATOR_HOST. A test that does not inject
-    its own members sees a cluster without the redirect -- what an opted-out run expects -- and never
-    reaches the daemon."""
-    import json
-    import subprocess
-    from livetest import striim_provision
-    monkeypatch.setattr(striim_provision, "_inspect", lambda argv: subprocess.CompletedProcess(
-        argv, 0, stdout=json.dumps(["PATH=/usr/bin"]), stderr=""))
-
-
 @pytest.fixture
 def real_prestart_run():
     """The unstubbed livetest.prestart.run_hook."""

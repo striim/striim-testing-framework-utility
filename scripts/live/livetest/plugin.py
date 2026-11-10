@@ -467,8 +467,7 @@ def _resolve_release(config) -> dict:
             pass
     return config._slt_release
 
-def _redeploy_reason(running_version, want_version, striim_dir, ownership: str = "",
-                     env=None) -> str | None:
+def _redeploy_reason(running_version, want_version, striim_dir, ownership: str = "") -> str | None:
     """Why a reachable Docker cluster must be torn down and redeployed, or None to reuse it.
 
     A separate function so the decision is testable: it was inline, and the tests for it
@@ -480,18 +479,10 @@ def _redeploy_reason(running_version, want_version, striim_dir, ownership: str =
     `<prefix>-slt-striim:<version>` and does not change when entrypoint.sh does), and the reuse
     path is the one flow that never
     reaches ensure_image -- so without this an edit stays invisible exactly where a developer
-    is most likely to have just made one.
-
-    The Bigtable emulator redirect is held to this run's choice the same way, in every ownership
-    mode: reuse never runs compose, so a cluster started with (or without) the opt-in keeps it.
-    ``env`` is the run's effective environment (the process environment by default, as the live run
-    has merged .env into it); the doctor, which has not, passes its own."""
+    is most likely to have just made one."""
     if running_version and want_version and _tryout.strip_tag(running_version) != want_version:
         return f"running version {_tryout.strip_tag(running_version)} != required {want_version}"
     why = _tryout_redeploy_reason(running_version, want_version)
-    if why:
-        return why
-    why = _sp.bigtable_redirect_reason(striim_dir or _STRIIM_DIR, env=env)   # doctor: no directory
     if why:
         return why
     if ownership != "shared" and want_version and not _sp.image_inputs_match(want_version, striim_dir):
@@ -794,12 +785,11 @@ def _resolve_striim(config):
                     if reason and _slt_infra.forbid_redeploy(config, reason):
                         return None
                 else:
-                    # An undeclared caller reuses a booted cluster as before, except that its tryout jars and
-                    # its Bigtable emulator redirect must match the settings: a booting cluster that does not
-                    # is redeployed, as on the warm path.
+                    # An undeclared caller reuses a booted cluster as before, except that its tryout jars must
+                    # match the setting: a booting tryout cluster with the setting unset (or the reverse) is
+                    # redeployed, as on the warm path.
                     rel = _resolve_release(config)
-                    reason = (_tryout_redeploy_reason(_running_striim_version(), rel.get("STRIIM_VERSION"))
-                              or _sp.bigtable_redirect_reason(_STRIIM_DIR))
+                    reason = _tryout_redeploy_reason(_running_striim_version(), rel.get("STRIIM_VERSION"))
                     if reason:
                         report, _clear_progress = _make_progress(config)
                         report("cluster", f"{reason} — redeploying")
@@ -1177,6 +1167,20 @@ def _spanner_admins(base) -> list:
     _spanner_ensure(google)   # creates the instance + the GoogleSQL database
     _spanner_ensure(pg)       # instance already exists; creates the PostgreSQL database
     return [(google, "spanner-google"), (pg, "spanner-postgres")]
+
+def _bigtable_admins(base) -> list:
+    # One admin for the single emulator instance, under both roles: Bigtable has no source/target
+    # split. The framework reaches the emulator at the base host:port (localhost:9470); the Striim
+    # app reaches it through BIGTABLE_EMULATOR_HOST, which compose.bigtable-emulator.yaml sets.
+    # ensure() creates and deletes one fixed health table, so under xdist it runs once across
+    # workers rather than racing itself.
+    admin = BigtableAdmin({"project": base["project"], "instance": base["instance"],
+                           "emulator_host": f"{base['host']}:{base['port']}"})
+    if _parallel(os.environ):
+        ensure_provisioned_once("bigtable-setup", admin.ensure)
+    else:
+        admin.ensure()
+    return [(admin, "bigtable-target"), (admin, "bigtable-source")]
 
 _FAKE_KEY_NAME = "fake-gcp-key.json"
 
@@ -2559,24 +2563,8 @@ class LiveItem(pytest.Item):
                     admins["vertica-admin"] = {"admin": VerticaAdmin(resolved.base, role="admin"),
                                                "schema": None}
                 elif svc == "bigtable":
-                    # CBTEMULATOR: one instance, no source/target split, no schema, no SQL. The
-                    # admin reaches the emulator via {host}:{port} on this side; the Striim app
-                    # reaches it via the overlay-set JVM-global BIGTABLE_EMULATOR_HOST. There is
-                    # no DDL / seed SQL, so no ensure_setup -- the readiness gate (create + delete
-                    # the throwaway table) proves the emulator is accepting admin RPCs.
-                    _bt = BigtableAdmin({
-                        "project": resolved.base["project"],
-                        "instance": resolved.base["instance"],
-                        "emulator_host": resolved.base.get("emulator_host")
-                                         or f'{resolved.base["host"]}:{resolved.base["port"]}',
-                    })
-                    _bt_ensure = lambda ad=_bt: ad.ensure()
-                    if _parallel(os.environ):
-                        ensure_provisioned_once("bigtable-setup", _bt_ensure)
-                    else:
-                        _bt_ensure()
-                    admins["bigtable-target"] = {"admin": _bt, "schema": None}
-                    admins["bigtable-source"] = {"admin": _bt, "schema": None}
+                    for admin, key in _bigtable_admins(resolved.base):
+                        admins[key] = {"admin": admin, "schema": None}
                 elif _drivers.hook(defn, "admins") or _drivers.hook(defn, "provision"):
                     # A service whose driver (livetest.drivers) supplies its connections, the
                     # setup compose cannot do, or both: provision runs once across xdist workers,
