@@ -1,0 +1,36 @@
+# Integration-tier MariaDB, modeled on services/mysql. mariadb:10.11 (LTS) with its defaults.
+# init.sql (mounted below) provisions the qasource/qatarget accounts + schemas at first
+# startup. The entrypoint loads the time-zone tables (MARIADB_INITDB_SKIP_TZINFO is left
+# unset on purpose): a case sets a named session time_zone. Parallel stacks:
+# INT_STACK_PREFIX namespaces the compose project and the container_name, as for mysql.
+name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mariadb
+services:
+  int-mariadb:
+    image: mariadb:10.11
+    container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-mariadb
+    cpus: ${INT_MARIADB_CPUS:-1}
+    mem_limit: ${INT_MARIADB_MEM_LIMIT:-1g}
+    environment:
+      # Superuser (root). init.sql (below) creates the qasource/qatarget users + schemas.
+      MARIADB_ROOT_PASSWORD: striim
+      MARIADB_DATABASE: intdb
+    ports:
+      # Host port is overridable when :13307 is taken (13306 is the integration mysql).
+      # When overriding, point the framework at it too: INT_MARIADB_HOST=localhost
+      # INT_MARIADB_PORT=<port>.
+      - "${INT_MARIADB_HOST_PORT:-13307}:3306"
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/10-qausers.sql:ro
+    networks:
+      - int-mariadb-net
+    healthcheck:
+      # TCP, not the socket, for the same reason as mysql: first boot runs a temporary
+      # networking-off server to load initdb.d, and a socket ping would answer from it.
+      test: ["CMD", "mariadb-admin", "ping", "-h", "127.0.0.1", "--protocol=TCP", "-u", "root", "-pstriim"]
+      interval: 2s
+      timeout: 10s
+      retries: 30
+
+networks:
+  int-mariadb-net:
+    driver: bridge

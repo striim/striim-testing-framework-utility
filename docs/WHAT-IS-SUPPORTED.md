@@ -135,6 +135,7 @@ This repo ships no integration cases (`SLT_INT_CASES` points at yours).
 |---|---|---|---|---|
 | `postgres` | stock: `postgres:16` | 15432 | `INT_PG_HOST` and `INT_PG_*` | **supported, not exercised here** |
 | `mysql` | stock: `mysql:8.0` | 13306 | `INT_MYSQL_HOST` and `INT_MYSQL_*` | **supported, not exercised here** |
+| `mariadb` | stock: `mariadb:10.11` | 13307 | `INT_MARIADB_HOST` and `INT_MARIADB_*` | **supported, not exercised here** |
 | `oracle` | stock: `gvenzl/oracle-free:23.26.2-slim-faststart` (amd64) | 11521 | `INT_ORA_HOST` and `INT_ORA_*` | **supported, not exercised here** |
 | `sqlserver` | recipe: SQL Server 2022 (amd64) | 11433 | `INT_MSSQL_HOST` and `INT_MSSQL_*` | **supported, not exercised here** |
 | **`spanner`** | **Google's official Cloud Spanner emulator** `1.5.55` (amd64), on by default | 19010, 19020 | `INT_SPANNER_HOST` and `INT_SPANNER_*` | **supported, not exercised here** |

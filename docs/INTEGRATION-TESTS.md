@@ -132,7 +132,7 @@ assert:                                     # required
 ```
 
 Remaining optional keys: `password_properties:` (names `properties:` keys to wrap in `Password`),
-`requires:` (services: `postgres`, `mysql`, `oracle`, `sqlserver`, `spanner`, `gcs`, `vertica`, or a
+`requires:` (services: `postgres`, `mysql`, `mariadb`, `oracle`, `sqlserver`, `spanner`, `gcs`, `vertica`, or a
 connection-only `teradata`/`servicenow`; see [SERVICES.md](SERVICES.md)), `ddl:`/`seed:`
 (a filename, or a `{file, db}` list — `db` defaults to `postgres-source`; other routes are
 `oracle-source`/`spanner-google`/`spanner-postgres`, …), `types:` (source schemas by `TableName`, for

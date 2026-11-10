@@ -207,6 +207,18 @@ def test_connection_params_mysql_target():
     }
 
 
+def test_connection_params_mariadb_target():
+    # MariaDB rides the mysql driver (PyMySQL) with its own MARIADB_* tokens.
+    tokens = dict(_TOKENS, MARIADB_HOST="localhost", MARIADB_PORT="13307", MARIADB_DB="intdb",
+                  MARIADB_TARGET_USER="qatarget", MARIADB_TARGET_PASSWORD="striim",
+                  MARIADB_TARGET_SCHEMA="qatarget")
+    params = connection_params("mariadb-target", tokens)
+    assert params == {
+        "driver": "mysql", "host": "localhost", "port": 13307, "dbname": "intdb",
+        "user": "qatarget", "password": "striim", "schema": "qatarget",
+    }
+
+
 def test_connection_params_vertica_target():
     tokens = dict(_TOKENS, VERTICA_HOST="localhost", VERTICA_PORT="15433", VERTICA_DB="intdb",
                   VERTICA_TARGET_USER="qatarget", VERTICA_TARGET_PASSWORD="striim",

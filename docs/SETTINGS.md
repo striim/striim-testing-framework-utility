@@ -375,6 +375,25 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_GCS_EXTERNAL_URL` | shell, `.env`, machine | `http://0.0.0.0:${INT_GCS_HOST_PORT:-14443}` | The URL the emulator gives out for its own objects. |
 | `INT_GCS_MEM_LIMIT` | shell, `.env`, machine | `512m` | Memory limit of the container. |
 
+### MariaDB, integration (`mariadb`)
+
+| Setting | Where | Docker default | What it does |
+|---|---|---|---|
+| `INT_MARIADB_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
+| `INT_MARIADB_PORT` | shell, `.env`, machine | `13307` | Your own instance: its port. |
+| `INT_MARIADB_DB` | shell, `.env`, machine | `intdb` | Your own instance: the database. |
+| `INT_MARIADB_ADMIN_USER` | shell, `.env`, machine | `root` | Your own instance: the admin account, which makes the test accounts and schemas and cleans up. |
+| `INT_MARIADB_ADMIN_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: the admin account's password. |
+| `INT_MARIADB_SOURCE_USER` | shell, `.env`, machine | `qasource` | Your own instance: the account a test's source side uses. |
+| `INT_MARIADB_SOURCE_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |
+| `INT_MARIADB_SOURCE_SCHEMA` | shell, `.env`, machine | `qasource` | Your own instance: the schema source tables are made in. |
+| `INT_MARIADB_TARGET_USER` | shell, `.env`, machine | `qatarget` | Your own instance: the account a test's target side uses. |
+| `INT_MARIADB_TARGET_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |
+| `INT_MARIADB_TARGET_SCHEMA` | shell, `.env`, machine | `qatarget` | Your own instance: the schema target tables are made in. |
+| `INT_MARIADB_HOST_PORT` | shell, `.env` | `13307` | Host port the container publishes; change it when the port is in use. |
+| `INT_MARIADB_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
+| `INT_MARIADB_MEM_LIMIT` | shell, `.env`, machine | `1g` | Memory limit of the container. |
+
 ### MySQL, integration (`mysql`)
 
 | Setting | Where | Docker default | What it does |

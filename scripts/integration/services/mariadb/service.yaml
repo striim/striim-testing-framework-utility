@@ -1,0 +1,56 @@
+name: mariadb
+compose: compose.yaml            # relative to this file
+container: int-mariadb
+isolation: none                 # fixed qasource/qatarget schemas; per-test isolation is by
+                                 # ${TID} table prefix, and teardown is each case's own
+                                 # `DROP TABLE IF EXISTS`, as for mysql
+# Later phase: broker support -- if INT_MARIADB_HOST is set, reuse a live MariaDB (from
+# INT_MARIADB_* env) and skip Docker. Same shape as services/mysql/service.yaml.
+live_override_env: INT_MARIADB_HOST
+# Docker defaults (used when not live). Base mariadb:10.11 image, time-zone tables loaded.
+# Same account shape as mysql: the superuser plus qasource/qatarget accounts + same-named
+# schemas (databases).
+docker_defaults:
+  host: localhost
+  port: 13307
+  dbname: intdb
+  admin_user: root              # superuser; creates the users + schemas via init.sql
+  admin_password: striim
+  source_user: qasource
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them.
+docker_env:
+  port: INT_MARIADB_HOST_PORT
+# Live env var names (used when live_override_env is set):
+live_env:
+  host: INT_MARIADB_HOST
+  port: INT_MARIADB_PORT
+  dbname: INT_MARIADB_DB
+  admin_user: INT_MARIADB_ADMIN_USER
+  admin_password: INT_MARIADB_ADMIN_PASSWORD
+  source_user: INT_MARIADB_SOURCE_USER
+  source_password: INT_MARIADB_SOURCE_PASSWORD
+  source_schema: INT_MARIADB_SOURCE_SCHEMA
+  target_user: INT_MARIADB_TARGET_USER
+  target_password: INT_MARIADB_TARGET_PASSWORD
+  target_schema: INT_MARIADB_TARGET_SCHEMA
+# Token templates emitted after resolution. {view_host} is the host the STRIIM APP uses to
+# reach MariaDB; the harness's own connection uses {host}:{port}. As MYSQL_URL, keep
+# MARIADB_URL query-string-free.
+provides:
+  MARIADB_HOST: "{view_host}"
+  MARIADB_PORT: "{port}"
+  MARIADB_DB: "{dbname}"
+  MARIADB_ADMIN_USER: "{admin_user}"
+  MARIADB_ADMIN_PASSWORD: "{admin_password}"
+  MARIADB_SOURCE_USER: "{source_user}"
+  MARIADB_SOURCE_PASSWORD: "{source_password}"
+  MARIADB_SOURCE_SCHEMA: "{source_schema}"
+  MARIADB_TARGET_USER: "{target_user}"
+  MARIADB_TARGET_PASSWORD: "{target_password}"
+  MARIADB_TARGET_SCHEMA: "{target_schema}"
+  MARIADB_URL: "jdbc:mariadb://{view_host}:{port}/{dbname}"
