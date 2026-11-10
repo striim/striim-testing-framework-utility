@@ -1,4 +1,4 @@
-"""INT_VARIANT_WORKERS: a case's variants drive concurrently, one worker per database.
+"""INT_VARIANT_WORKERS (with INT_VARIANT_ITEMS=0): a case's variants drive concurrently, one worker per database.
 
 Each fake drive sleeps and logs its start and end, so overlap and order are measured, not assumed.
 """
@@ -100,6 +100,8 @@ def run_case(pytester, monkeypatch, tmp_path, yaml_text: str, workers, scenario=
     monkeypatch.setenv("XINT_LOG", str(log))
     (tmp_path / "state").mkdir()
     monkeypatch.setenv("SLT_STATE_DIR", str(tmp_path / "state"))
+    # These tests drive one item per case; per-group items have their own tests.
+    monkeypatch.setenv("INT_VARIANT_ITEMS", "0")
     if workers is None:
         monkeypatch.delenv("INT_VARIANT_WORKERS", raising=False)
     else:
