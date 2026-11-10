@@ -1119,6 +1119,57 @@ def _variant_workers(env) -> int:
     return int(raw)
 
 
+def _variant_services(m, variant) -> set:
+    """Every service one variant reaches (see `_variant_groups`), plus `ConfigFile` when the case
+    has one."""
+    out = {dbroutes_mod.parse_route(variant.db)[0]}
+    out |= {dbroutes_mod.parse_route(spec.db)[0] for spec in variant.ddl}
+    # Case-level properties too: one every variant shares reaches that service from each.
+    named = " ".join(str(v) for v in (*variant.tokens.values(), *m.properties.values()))
+    out |= {svc for svc in (*dbroutes_mod._PARAM_SPECS, *m.requires)
+            if "${" + svc.upper() + "_" in named}
+    if "ConfigFile" in m.properties:
+        out.add("ConfigFile")  # its contents are not scanned: every variant shares a group
+    if m.target is not None:
+        out |= {dbroutes_mod.parse_route(step.db)[0]
+                for step in m.target.mid_run if step.db_explicit}
+    return out
+
+
+def _group_requires(m, group_services: set) -> list:
+    """The case's `requires:` an item of one variant group needs: the services the group
+    reaches, and any no variant reaches (a service the case uses outside its variants)."""
+    every = set().union(*(_variant_services(m, v) for v in m.variants))
+    return [svc for svc in m.requires if svc in group_services or svc not in every]
+
+
+def _variant_items(env) -> bool:
+    """`INT_VARIANT_ITEMS`: unset or `1`, a variants case is one item per variant group; `0`, one
+    item for the whole case, its groups driven in turn or by `INT_VARIANT_WORKERS`."""
+    raw = (env.get("INT_VARIANT_ITEMS") or "1").strip()
+    if raw not in ("0", "1"):
+        raise ValueError(f"INT_VARIANT_ITEMS must be 0 or 1, got {raw!r}")
+    return raw == "1"
+
+
+def _group_items(m) -> list:
+    """`[(id suffix, runs, requires)]`, one per item of a regression case. A case without
+    variants is one item with no suffix, as before. A variants case is one item per
+    `_variant_groups` group, named by its variants (`[postgres]`, `[mysql+mysql-wide]`), so
+    each engine is its own item: selected by its own service marker, provisioned alone, and
+    run by its own xdist worker. `INT_VARIANT` narrows `runs()` first, so it can leave no item.
+    """
+    runs = m.runs()
+    if not m.variants or not _variant_items(os.environ):
+        return [("", runs, list(m.requires))]
+    out = []
+    for services, group in _variant_groups(m, runs):
+        names = list(dict.fromkeys(v.name for v, _ in group))
+        out.append(("[" + "+".join(_id_safe(n) for n in names) + "]", group,
+                    _group_requires(m, services)))
+    return out
+
+
 def _variant_groups(m, runs: list) -> list:
     """`runs` split into groups that can never touch the same database, in declaration order.
 
@@ -1131,18 +1182,7 @@ def _variant_groups(m, runs: list) -> list:
     `[(services, [(variant, overrides), ...]), ...]`.
     """
     def services(variant) -> set:
-        out = {dbroutes_mod.parse_route(variant.db)[0]}
-        out |= {dbroutes_mod.parse_route(spec.db)[0] for spec in variant.ddl}
-        # Case-level properties too: one every variant shares reaches that service from each.
-        named = " ".join(str(v) for v in (*variant.tokens.values(), *m.properties.values()))
-        out |= {svc for svc in (*dbroutes_mod._PARAM_SPECS, *m.requires)
-                if "${" + svc.upper() + "_" in named}
-        if "ConfigFile" in m.properties:
-            out.add("ConfigFile")  # its contents are not scanned: every variant shares a group
-        if m.target is not None:
-            out |= {dbroutes_mod.parse_route(step.db)[0]
-                    for step in m.target.mid_run if step.db_explicit}
-        return out
+        return _variant_services(m, variant)
 
     names = list(dict.fromkeys(variant.name for variant, _ in runs))
     reach = {variant.name: services(variant) for variant, _ in runs}
@@ -1342,6 +1382,9 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "oracle: requires the Oracle integration service")
     config.addinivalue_line("markers", "spanner: requires the Spanner integration service")
     config.addinivalue_line("markers", "gcs: requires the GCS integration service")
+    if _docker_mod is not None:
+        for svc in sorted(_docker_mod.SUPPORTED_SERVICES - {"postgres", "oracle", "spanner", "gcs"}):
+            config.addinivalue_line("markers", f"{svc}: requires the {svc} integration service")
     config.addinivalue_line("markers", "perf: performance test (PERF_SPEC.md, run under --perf)")
 
     nprocs = getattr(config.option, "numprocesses", None)
@@ -1651,12 +1694,15 @@ class IntYamlFile(pytest.File):
             test_manifest = manifest_mod.load_manifest(self.path)
         except manifest_mod.ManifestError as e:
             pytest.fail(str(e))
-        yield IntYamlItem.from_parent(
-            self,
-            name=test_manifest.name,
-            manifest_path=self.path,
-            test_manifest=test_manifest,
-        )
+        for suffix, runs, requires in _group_items(test_manifest):
+            yield IntYamlItem.from_parent(
+                self,
+                name=test_manifest.name + suffix,
+                manifest_path=self.path,
+                test_manifest=test_manifest,
+                runs=runs,
+                requires=requires,
+            )
 
 
 class IntYamlItem(pytest.Item):
@@ -1675,10 +1721,13 @@ class IntYamlItem(pytest.Item):
     `pytest.skip()` directly from `runtest()` (same as the STRIIM_HOME/service gates
     below) sidesteps that entirely and matches SPEC §5 step 1's own wording."""
 
-    def __init__(self, *, manifest_path, test_manifest, **kw):
+    def __init__(self, *, manifest_path, test_manifest, runs=None, requires=None, **kw):
         super().__init__(**kw)
         self.manifest_path = manifest_path
         self.manifest = test_manifest
+        # This item's runs and services: the whole case, or one variant group (_group_items).
+        self.runs = test_manifest.runs() if runs is None else runs
+        self.requires = list(test_manifest.requires) if requires is None else list(requires)
 
         # Per-test DB isolation state (section 9b) -- set during runtest() step 4b,
         # read back by runtest()'s own finally/_teardown_db_isolation. None means
@@ -1688,15 +1737,10 @@ class IntYamlItem(pytest.Item):
         self._spanner_prefix = None
 
         self.add_marker(pytest.mark.integration)
-        for svc in test_manifest.requires:
-            if svc == "postgres":
-                self.add_marker(pytest.mark.postgres)
-            elif svc == "oracle":
-                self.add_marker(pytest.mark.oracle)
-            elif svc == "spanner":
-                self.add_marker(pytest.mark.spanner)
-            elif svc == "gcs":
-                self.add_marker(pytest.mark.gcs)
+        # One marker per service this item needs, so `-m sqlserver` selects exactly the items
+        # that reach SQL Server and `-m spanner` exactly the Spanner ones.
+        for svc in self.requires:
+            self.add_marker(getattr(pytest.mark, svc))
 
     def repr_failure(self, excinfo):
         return _redacted_failure(self, excinfo)
@@ -1719,7 +1763,7 @@ class IntYamlItem(pytest.Item):
         # call is what SPEC §5 step 2 itself asks for and is a harmless idempotent
         # no-op if that already happened.
         lock = FileLock(str(_compose_lock_path()))
-        _provision_requires(m.name, m.requires, lock)
+        _provision_requires(m.name, self.requires, lock)
 
         # --- 3. Build/reuse the operator jar for the detected Striim release. ---
         # Stashed on the item for Phase 3 (IntegrationProcessor invocation needs the
@@ -1754,7 +1798,7 @@ class IntYamlItem(pytest.Item):
         try:
             # --- 4b. Per-test DB isolation (SPEC §13/§17 #4). A smoke/no-ddl test
             # whose requires: never names postgres/oracle does nothing here. ---
-            if "postgres" in m.requires:
+            if "postgres" in self.requires:
                 # Fixed qasource/qatarget schemas, per-test isolation by ${TID}
                 # table prefix -- same model as Oracle/Spanner in this tier and as
                 # scripts/live's own Postgres. Serial: ensure_setup + whole-schema
@@ -1777,7 +1821,7 @@ class IntYamlItem(pytest.Item):
                     pg.ensure_setup()
                     pg.reset_schemas()
                 self._pg_admin = pg  # only recorded once setup succeeded
-            if "oracle" in m.requires:
+            if "oracle" in self.requires:
                 # ${TID_ORACLE}, NOT a separate always-non-empty token: matches
                 # services/oracle/sql/templates.sql's and scripts/live's own
                 # convention (${ORACLE_SOURCE_SCHEMA}.${TID_ORACLE}<name>), and its
@@ -1785,7 +1829,7 @@ class IntYamlItem(pytest.Item):
                 # prefix-drop is `None`/no-op below, same as Spanner, relying on
                 # ddl:'s own DROP TABLE IF EXISTS for serial-mode self-healing.
                 self._oracle_prefix = tok["TID_ORACLE"] or None
-            if "spanner" in m.requires:
+            if "spanner" in self.requires:
                 # Unlike Postgres/Oracle (a real admin connection, so a whole-
                 # database/schema reset is available), Spanner is isolation: none --
                 # one fixed instance + two fixed-dialect databases, provisioned
@@ -1795,7 +1839,7 @@ class IntYamlItem(pytest.Item):
                 # dbroutes never runs for such a test.
                 _ensure_spanner_databases(tok)
                 self._spanner_prefix = tok["TID"] or None
-            if "gcs" in m.requires:
+            if "gcs" in self.requires:
                 # `isolation: none` like Spanner -- one fixed bucket, no per-test
                 # reset (services/gcs/README.md's "Bucket lifecycle" section). Must
                 # run even for a test with no ddl:/seed: (gcs never has either --
@@ -2088,7 +2132,7 @@ class IntYamlItem(pytest.Item):
             f"outcome it exists to prevent.")
 
     def _drive_runs(self, m, tok, drive) -> None:
-        """Every run of `m.runs()`: reset its fixtures, then `drive(m, overrides, variant)`.
+        """Every run of this item (`self.runs`): reset its fixtures, then `drive(m, overrides, variant)`.
 
         Serial unless `INT_VARIANT_WORKERS` > 1 and the variants split into groups on disjoint
         services (`_variant_groups`): then up to that many groups drive at once, each serial
@@ -2108,7 +2152,7 @@ class IntYamlItem(pytest.Item):
                     self._reset_fixtures(m, tok, overrides, variant)
                 drive(m, overrides, variant)
 
-        runs = m.runs()
+        runs = self.runs
         workers = _variant_workers(os.environ)
         groups = _variant_groups(m, runs) if workers > 1 and m.variants else []
         if len(groups) < 2:

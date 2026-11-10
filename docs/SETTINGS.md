@@ -328,7 +328,8 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 | `INT_KEEP_RESOURCES` | shell | unset | `1`: keep each case's resources after it runs. |
 | `INT_EMULATORS` | shell | unset | `1`: opt in to every integration service that declares `opt_in_env`. |
 | `INT_VARIANT` | shell | unset: every variant | Run only this variant of each case, to iterate on one engine without starting every database. A name no case defines runs nothing. |
-| `INT_VARIANT_WORKERS` | shell | unset: `1`, serial | How many of a case's variants drive at once. Variants on one service share a worker; Spanner variants run alone, after the others. |
+| `INT_VARIANT_ITEMS` | shell | unset: `1` | `1`: each variant group of a case is its own item (`case[variant]`), marked and provisioned for its services only. `0`: the whole case is one item. |
+| `INT_VARIANT_WORKERS` | shell | unset: `1`, serial | With `INT_VARIANT_ITEMS=0`: how many of a case's variants drive at once. Variants on one service share a worker; Spanner variants run alone, after the others. |
 | `INT_EXTRA_CLASSPATH` | shell | unset | Jars added to the harness classpath, such as a JDBC driver kept elsewhere. |
 | `INT_PG_ALLOW_DESTRUCTIVE_RESET` | shell | unset | `1`: allow the Postgres reset, a cascading drop of the test schemas, on a database other than the sandbox `intdb`. |
 | `INT_ALLOW_CONCURRENT_SESSIONS` | shell | unset | `1`: allow a second integration session on the same stack at the same time. |

@@ -707,8 +707,14 @@ assert:
 - **It composes with `matrix:`.** Four variants × eight permutations is **32 executions of one
   authored case**.
 - **Every failure names the run**: `[postgres, UseUpsert=true]`.
-- **Runs are serial by default.** `INT_VARIANT_WORKERS=N` drives up to N variants at once, each
-  in its own worker. Variants that reach the same service (route, DDL route, explicit `mid_run`
+- **Each variant group is its own pytest item**, `<case>[<variant>]` (`fan[postgres]`,
+  `fan[mysql+mysql-wide]`). An item carries only its group's service markers and starts only those
+  services, so `-m sqlserver` runs a case's SQL Server variants alone, and under xdist each group
+  takes its own worker. A case without variants keeps its plain id. `INT_VARIANT_ITEMS=0` makes the
+  whole case one item again.
+- **Inside one item, runs are serial by default.** With `INT_VARIANT_ITEMS=0`,
+  `INT_VARIANT_WORKERS=N` drives up to N variants at once, each in its own worker. Variants that
+  reach the same service (route, DDL route, explicit `mid_run`
   route, or a `${<SERVICE>_...}` token, for a database or a `requires:` service, in a variant's
   tokens or in `properties:`) share a worker and run in order, as do a variant's matrix
   permutations. A case with a `ConfigFile` property runs serially. Spanner variants run alone, after the
