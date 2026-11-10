@@ -173,9 +173,15 @@ SECTIONS = (
         ("INT_VARIANT", "unset: every variant",
          "Run only this variant of each case, to iterate on one engine without starting every "
          "database. A name no case defines runs nothing."),
+        ("INT_EMPTY_SELECTION_OK", "unset",
+         "`1`: a run whose `-m` deselects every item exits 0, not 5 (for a runner's marker-split "
+         "passes)."),
+        ("INT_VARIANT_ITEMS", "unset: `1`",
+         "`1`: each variant group of a case is its own item (`case[variant]`), marked and "
+         "provisioned for its services only. `0`: the whole case is one item."),
         ("INT_VARIANT_WORKERS", "unset: `1`, serial",
-         "How many of a case's variants drive at once. Variants on one service share a worker; "
-         "Spanner variants run alone, after the others."),
+         "With `INT_VARIANT_ITEMS=0`: how many of a case's variants drive at once. Variants on one "
+         "service share a worker; Spanner variants run alone, after the others."),
         ("INT_EXTRA_CLASSPATH", "unset", "Jars added to the harness classpath, such as a JDBC driver kept "
                                          "elsewhere."),
         ("INT_PG_ALLOW_DESTRUCTIVE_RESET", "unset",
