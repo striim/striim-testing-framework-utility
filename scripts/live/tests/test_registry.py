@@ -163,6 +163,74 @@ def test_a_green_run_shows_the_override_in_its_report_header(tmp_path):
     assert shown.count("[services] postgres:") == 1
 
 
+# ---- family: what a service is, for the engine's per-system handling ---------------------
+# A consumer may ship its own BigQuery emulator under another name; `family: bigquery` gives it
+# the engine's BigQuery handling. Without the key a service is its own family, as before.
+
+def test_family_defaults_to_the_service_name(tmp_path, overlay):
+    from livetest import registry
+    _svc(tmp_path, "extdb", "slt-extdb")
+    overlay.set_roots(services=[tmp_path])
+    assert load_service("extdb").family == "extdb"
+    assert load_service("postgres").family == "postgres"
+    assert load_service("bigquery").family == "bigquery"
+    assert registry.family("extdb") == "extdb"
+
+
+def test_family_is_read_from_service_yaml(tmp_path, overlay):
+    from livetest import registry
+    d = _svc(tmp_path, "bigquery-stock", "slt-bigquery-stock")
+    (d / "service.yaml").write_text((d / "service.yaml").read_text() + "family: bigquery\n")
+    overlay.set_roots(services=[tmp_path])
+    assert load_service("bigquery-stock").family == "bigquery"
+    assert registry.family("bigquery-stock") == "bigquery"
+
+
+def test_an_unknown_service_is_its_own_family(overlay):
+    # The requires check reports an unknown name; a family lookup does not raise first.
+    from livetest import registry
+    assert registry.family("nosuchdb") == "nosuchdb"
+
+
+@pytest.mark.parametrize("value", ['""', "[bigquery]", "7"])
+def test_family_must_be_a_non_empty_string(tmp_path, overlay, value):
+    d = _svc(tmp_path, "extdb", "slt-extdb")
+    (d / "service.yaml").write_text((d / "service.yaml").read_text() + f"family: {value}\n")
+    overlay.set_roots(services=[tmp_path])
+    with pytest.raises(RegistryError, match="'family' must be a non-empty string"):
+        load_service("extdb")
+
+
+def test_a_route_belongs_to_its_service_or_the_services_family(tmp_path, overlay):
+    from livetest import registry
+    d = _svc(tmp_path, "bigquery-stock", "slt-bigquery-stock")
+    (d / "service.yaml").write_text((d / "service.yaml").read_text() + "family: bigquery\n")
+    _svc(tmp_path, "extdb", "slt-extdb")
+    overlay.set_roots(services=[tmp_path])
+    assert registry.owns_route("bigquery-stock", "bigquery-target")
+    assert registry.owns_route("bigquery-stock", "bigquery-stock-target")
+    assert registry.owns_route("postgres", "postgres-source")
+    assert registry.owns_route("postgres", "postgres")
+    assert not registry.owns_route("extdb", "bigquery-target")
+
+
+@pytest.mark.parametrize("body", ["name: extdb\nisolation: none\ndocker_defaults: nope\n", "- extdb\n"])
+def test_a_family_probe_reads_a_malformed_definition_as_its_own_name(tmp_path, overlay, body):
+    # The BigQuery writer check, doctor and route ownership look at a service's family ahead of
+    # load_service. A definition with the wrong shape must not turn an infrastructure skip into an
+    # error there: it counts as its own name, and load_service reports it where the case uses it.
+    from types import SimpleNamespace
+    from livetest import bigquerycase, registry
+    d = tmp_path / "extdb"
+    d.mkdir()
+    (d / "service.yaml").write_text(body)
+    overlay.set_roots(services=[tmp_path])
+    assert registry.probe_family("extdb") == "extdb"
+    assert bigquerycase.service(SimpleNamespace(requires=["extdb"])) is None
+    # Route ownership is a manifest check, not a probe: it names the unreadable definition.
+    with pytest.raises(RegistryError, match="service extdb: its service.yaml cannot be read"):
+        registry.owns_route("extdb", "bigquery-target")
+
 @pytest.mark.parametrize("env", [{}, {"SLT_EMULATORS": ""}, {"SLT_EMULATORS": "0"}, {"SLT_EMULATORS": "false"},
                                  {"SLT_EMULATORS": " Off "}, {"SLT_BIGTABLE_SERVICE": "0"},
                                  {"SLT_BIGTABLE_SERVICE": "no", "SLT_EMULATORS": "FALSE"}])

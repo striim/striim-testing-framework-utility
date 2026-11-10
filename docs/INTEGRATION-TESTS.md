@@ -707,6 +707,20 @@ assert:
 - **It composes with `matrix:`.** Four variants × eight permutations is **32 executions of one
   authored case**.
 - **Every failure names the run**: `[postgres, UseUpsert=true]`.
+- **Each variant group is its own pytest item**, `<case>[<variant>]` (`fan[postgres]`,
+  `fan[pg+pg2]` when variants share a service; a `-` in a variant name is written `~2d`). An item carries only its group's service markers and starts only those
+  services, so `-m sqlserver` runs a case's SQL Server variants alone, and under xdist each group
+  takes its own worker. A case without variants keeps its plain id. A Spanner group item is marked `spanner`, so a runner keeps Spanner serial with
+  `-m "not spanner" -n N`, then `-m spanner` (gold-cli does); a bare `-n N` runs it beside the others. `INT_VARIANT_ITEMS=0` makes the
+  whole case one item again.
+- **Inside one item, runs are serial by default.** With `INT_VARIANT_ITEMS=0`,
+  `INT_VARIANT_WORKERS=N` drives up to N variants at once, each in its own worker. Variants that
+  reach the same service (route, DDL route, explicit `mid_run`
+  route, or a `${<SERVICE>_...}` token, for a database or a `requires:` service, in a variant's
+  tokens or in `properties:`) share a worker and run in order, as do a variant's matrix
+  permutations. A case with a `ConfigFile` property runs serially. Spanner variants run alone, after the
+  others. Each worker runs until its runs end or one fails; the case then fails naming each
+  failed variant. Perf cases ignore it.
 
 **What this tier does NOT prove.** The harness stubs `RetriableWriter` and the recovery family,
 so a target case tests the writer against *our model* of the platform lifecycle — the same thing

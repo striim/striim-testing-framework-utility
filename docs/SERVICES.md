@@ -498,9 +498,11 @@ REST on port 9080), a second node (`slt-node`) and an agent (`slt-agent`). The l
 
 ## Not shipped
 
-- **BigQuery** has no official emulator. Test against a real GCP project: a dataset for tests, the
-  service-account key placed on the Striim server with `server_files:`, the project and dataset
-  passed to the TQL with `tokens:`, and assertions on what the app writes elsewhere.
+- **A real BigQuery project.** BigQuery tests run against a local emulator only: the shipped
+  `bigquery` service ("BigQuery emulator" below), or your own emulator service that declares
+  `family: bigquery` ([YOUR-OWN-SERVICES.md](YOUR-OWN-SERVICES.md)). A case cannot assert on a
+  real GCP project: the writer endpoint must be a local HTTP address and the key is a generated
+  fake.
 - **ADLS Gen2** cannot be emulated; test it against a real account.
 - Anything else: add it yourself ([YOUR-OWN-SERVICES.md](YOUR-OWN-SERVICES.md)), or use a real
   instance through the service's settings.

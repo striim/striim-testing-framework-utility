@@ -714,6 +714,13 @@ def check_build(env: dict, files: list, tier_of=None, java_home=None, which=None
     return checks
 
 
+def _family(name: str) -> str:
+    """A live service's family (livetest.registry.family); a definition that cannot be read is
+    its own name here, since check_services reports it."""
+    from livetest import registry
+    return registry.probe_family(name)
+
+
 def check_case_gates(files: list, env: dict, dotenv: dict, tier_of=None, which=None, outage=None) -> list:
     """What skips or fails a live case before it runs, read from its test.yaml
     (livetest.plugin LiveItem._runtest): node faults not enabled, the cluster topology on a native
@@ -747,7 +754,7 @@ def check_case_gates(files: list, env: dict, dotenv: dict, tier_of=None, which=N
                 container, why = outage(spec["service"], env)
                 if container is None:
                     checks.append(_skip(subject, why))
-        if {"spanner", "gcs", "bigquery"} & set(m.requires):
+        if {"spanner", "gcs", "bigquery"} & ({*m.requires} | {_family(s) for s in m.requires}):
             signs.append(f.parent.name)
     if signs and not which("openssl"):
         checks.append(_fail("openssl", f"not on PATH; {', '.join(signs)} need it to sign the emulator "

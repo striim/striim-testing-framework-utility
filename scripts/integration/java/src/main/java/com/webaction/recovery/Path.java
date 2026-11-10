@@ -20,6 +20,13 @@ public class Path implements Serializable, Comparable<Path> {
     private final String distributionID;
     private final SourcePosition low;
     private final SourcePosition high;
+    /**
+     * {@link #getPathHash}, computed on first use: the real class interns its item list and caches
+     * the list's string, so a repeated call costs nothing there and must cost nothing here, or the
+     * perf tier prices a call count the platform does not pay. 0 until computed.
+     */
+    private transient int pathHash;
+    private transient boolean pathHashed;
 
     /** A path at {@code low}, with no separate high water mark. */
     public Path(UUID componentID, String distributionID, SourcePosition low) {
@@ -66,9 +73,29 @@ public class Path implements Serializable, Comparable<Path> {
      * always) do not.</p>
      */
     public int getPathHash() {
-        String component = componentID != null ? componentID.toString() : "*";
+        if (!pathHashed) {
+            pathHash = internedHash(componentID, distributionID);
+            pathHashed = true;
+        }
+        return pathHash;
+    }
+
+    /**
+     * The path hash per (component, distribution), worked out once per pair: the platform interns
+     * the item list ({@code ItemList.get}) and caches its string, so a new {@code Path} through a
+     * known pair costs a lookup there, not a string build. Without this every event's fresh path
+     * paid the build here.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<UUID,
+            java.util.concurrent.ConcurrentHashMap<String, Integer>> HASHES =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static int internedHash(UUID componentID, String distributionID) {
         String distribution = distributionID != null && !distributionID.isEmpty() ? distributionID : "*";
-        return (component + "+" + distribution).hashCode();
+        if (componentID == null) {
+            return ("*+" + distribution).hashCode();   // no component: not a path the platform keys
+        }
+        return HASHES.computeIfAbsent(componentID, c -> new java.util.concurrent.ConcurrentHashMap<>())
+                .computeIfAbsent(distribution, d -> (componentID + "+" + d).hashCode());
     }
 
     /**
