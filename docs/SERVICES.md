@@ -536,6 +536,7 @@ other ports, so both tiers can run at once. Same accounts and passwords.
 |---|---|---|
 | `postgres` (`postgres:16`) | 15432 | `INT_PG_HOST` and `INT_PG_*` |
 | `mysql` (`mysql:8.0`) | 13306 | `INT_MYSQL_HOST` and `INT_MYSQL_*` |
+| `mariadb` (`mariadb:10.11`, routes `mariadb-source`/`mariadb-target`) | 13307 | `INT_MARIADB_HOST` and `INT_MARIADB_*` |
 | `oracle` (Oracle Free 23ai, amd64) | 11521 | `INT_ORA_HOST` and `INT_ORA_*` |
 | `sqlserver` (SQL Server 2022) | 11433 | `INT_MSSQL_HOST` and `INT_MSSQL_*` |
 | `spanner` (emulator 1.5.55) | 19010, 19020 | `INT_SPANNER_HOST` and `INT_SPANNER_*` |

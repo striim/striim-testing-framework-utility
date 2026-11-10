@@ -243,7 +243,7 @@ NOT_SETTINGS = {"SLT_BIGQUERY_GOMEMLIMIT", "STRIIM_RELEASE", "STRIIM_VERSION", "
                 "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
-         "mysql": "MySQL", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
+         "mysql": "MySQL", "mariadb": "MariaDB", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
          "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "bigtable": "Bigtable emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
 FIELDS = {
     "writer_endpoint": "the writer's local IPv4 HTTP PSC endpoint",
@@ -374,7 +374,7 @@ def build() -> str:
     listed |= {n for _, rows in live + integration for n, _, _ in rows}
     # Service settings no service file names (view hosts, extras): file them under their service.
     prefixes = {"PG": "postgres", "POSTGRES": "postgres", "ORA": "oracle", "ORACLE": "oracle",
-                "MSSQL": "mssql", "MYSQL": "mysql", "VERTICA": "vertica", "KAFKA": "kafka",
+                "MSSQL": "mssql", "MYSQL": "mysql", "MARIADB": "mariadb", "VERTICA": "vertica", "KAFKA": "kafka",
                 "SCHEMA": "kafka", "ZOOKEEPER": "kafka", "SPANNER": "spanner", "GCS": "gcs",
                 "TOKEN": "gcs", "BIGQUERY": "bigquery", "BIGTABLE": "bigtable", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
     for name in sorted((allowed | set(SERVICE_EXTRAS)) - listed - set(paths.LICENCE_KEYS)):

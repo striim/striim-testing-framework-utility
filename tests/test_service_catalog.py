@@ -28,7 +28,7 @@ COMPOSE_FILES = sorted(p for p in (REPO / "scripts").glob("*/services/**/compose
 
 # Pulled from public registries as they are; also the only bases a shipped Dockerfile may use.
 PUBLIC_IMAGES = {
-    "postgres:16", "mysql:8.0", "python:3.12-slim",
+    "postgres:16", "mysql:8.0", "mariadb:10.11", "python:3.12-slim",
     "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1",
     "fsouza/fake-gcs-server:1.54.0",
     "gvenzl/oracle-free:23.26.2-slim-faststart",
@@ -126,7 +126,7 @@ def test_the_catalog_ships_only_the_public_services():
     assert not [k for k in keys if k.split("/")[1] == "teradata"], keys
     fault_overlay = "live/striim/compose.node-fault.yaml"
     assert fault_overlay in keys
-    assert len(keys - {fault_overlay}) == 21, sorted(keys)
+    assert len(keys - {fault_overlay}) == 22, sorted(keys)
 
 
 @pytest.mark.parametrize("path", COMPOSE_FILES, ids=_key)

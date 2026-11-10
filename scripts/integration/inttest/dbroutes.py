@@ -163,6 +163,18 @@ _PARAM_SPECS: dict[str, dict] = {
             "schema": "MYSQL_{DIR}_SCHEMA",
         },
     },
+    "mariadb": {
+        # PyMySQL, as mysql: the same "mysql" driver functions, which speak MariaDB's protocol.
+        # Fixed qasource/qatarget schemas, ${TID}-prefixed tables, teardown by each case's own
+        # `DROP TABLE IF EXISTS`.
+        "driver": "mysql",
+        "common": {"host": "MARIADB_HOST", "port": "MARIADB_PORT", "dbname": "MARIADB_DB"},
+        "per_direction": {
+            "user": "MARIADB_{DIR}_USER",
+            "password": "MARIADB_{DIR}_PASSWORD",
+            "schema": "MARIADB_{DIR}_SCHEMA",
+        },
+    },
     "vertica": {
         # vertica-python; fixed qasource/qatarget schemas in one database (intdb), as for
         # postgres, ${TID}-prefixed tables, and -- like SQL Server and MySQL -- teardown by each

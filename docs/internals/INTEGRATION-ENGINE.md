@@ -29,7 +29,7 @@ Each service has its own compose file and network. The stock ones (all images ar
   (`${GCS_BUCKET}`), per-test isolation by `${TID}`-prefixed object paths rather than a per-test
   bucket. See `scripts/integration/services/gcs/README.md`.
 
-MySQL, SQL Server and Vertica run too (see `docs/SERVICES.md`, "Integration tier"), and
+MySQL, MariaDB, SQL Server and Vertica run too (see `docs/SERVICES.md`, "Integration tier"), and
 Teradata and ServiceNow are connection-only. No stock service is opt-in: a case that requires one
 starts it.
 

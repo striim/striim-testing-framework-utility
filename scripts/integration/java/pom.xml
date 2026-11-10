@@ -187,6 +187,15 @@
             <version>${mysql.connector.version}</version>
             <scope>runtime</scope>
         </dependency>
+        <!-- MariaDB Connector/J for the mariadb service's jdbc:mariadb:// URLs. Kept on 3.x:
+             2.x also accepts jdbc:mysql: URLs and could take over the MySQL cases from
+             mysql-connector-java; 3.x accepts jdbc:mysql: only with permitMysqlScheme. -->
+        <dependency>
+            <groupId>org.mariadb.jdbc</groupId>
+            <artifactId>mariadb-java-client</artifactId>
+            <version>3.4.1</version>
+            <scope>runtime</scope>
+        </dependency>
 
         <dependency>
             <groupId>com.oracle.database.jdbc</groupId>
