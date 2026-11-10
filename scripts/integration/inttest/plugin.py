@@ -1161,7 +1161,7 @@ def _variant_items(env) -> bool:
 def _group_items(m) -> list:
     """`[(id suffix, runs, requires)]`, one per item of a regression case. A case without
     variants is one item with no suffix, as before. A variants case is one item per
-    `_variant_groups` group, named by its variants (`[postgres]`, `[mysql+mysql-wide]`), so
+    `_variant_groups` group, named by its variants (`[postgres]`, `[pg+pg2]`; `_id_safe` escapes `-` as `~2d`), so
     each engine is its own item: selected by its own service marker, provisioned alone, and
     run by its own xdist worker. `INT_VARIANT` narrows `runs()` first, so it can leave no item.
     """
@@ -1415,6 +1415,7 @@ def pytest_configure(config):
     if not config.getoption("--perf"):
         try:
             _variant_workers(os.environ)
+            _variant_items(os.environ)
         except ValueError as e:
             raise pytest.UsageError(str(e)) from None
 

@@ -129,3 +129,15 @@ def test_an_empty_marker_selection_is_ok_when_asked(pytester, monkeypatch, tmp_p
 def test_an_empty_marker_selection_fails_by_default(pytester, monkeypatch, tmp_path):
     result, _, _ = run(pytester, monkeypatch, tmp_path, case(THREE), "-m", "spanner")
     assert result.ret == 5
+
+
+def test_a_bad_items_setting_is_a_usage_error(pytester, monkeypatch, tmp_path):
+    result, cases, events = run(pytester, monkeypatch, tmp_path, case(THREE),
+                                env={"INT_VARIANT_ITEMS": "yes"})
+    assert result.ret == 4 and "INT_VARIANT_ITEMS" in result.stderr.str() and not events
+
+
+def test_a_hyphenated_variant_name_is_escaped_in_the_id(pytester, monkeypatch, tmp_path):
+    _, cases, _ = run(pytester, monkeypatch, tmp_path,
+                      case({"pg": "postgres-target", "my-ora": "oracle-target"}))
+    assert set(cases) == {"fan[pg]", "fan[my~2dora]"}
