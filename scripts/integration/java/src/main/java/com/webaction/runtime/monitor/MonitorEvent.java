@@ -58,6 +58,14 @@ public class MonitorEvent<X extends Comparable> {
         public static final Type<String> COMMIT_LAG = new Type<>("COMMIT_LAG");
         /** DatabaseWriter's per-table DDL counts, JSON. */
         public static final Type<String> DDL_METRICS = new Type<>("DDL_METRICS");
+        /**
+         * An adapter's brief figures, JSON (DatabaseJdbcWriter's {@code Tuning} and {@code Debug}).
+         * {@code Type<String>} in the platform (5.4.0.6G). Without it a writer publishing it fails
+         * with {@code NoSuchFieldError: ADAPTER_BASIC}.
+         */
+        public static final Type<String> ADAPTER_BASIC = new Type<>("ADAPTER_BASIC");
+        /** An adapter's detailed figures, JSON. {@code Type<String>} in the platform. */
+        public static final Type<String> ADAPTER_DETAIL = new Type<>("ADAPTER_DETAIL");
         /** SpannerWriter's last batch, JSON. */
         public static final Type<String> LAST_BATCH_INFO = new Type<>("LAST_BATCH_INFO");
         /** SpannerWriter's database and its last commit, JSON. */

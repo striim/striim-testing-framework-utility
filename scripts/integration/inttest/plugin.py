@@ -56,6 +56,7 @@ except ImportError:  # pragma: no cover - pyyaml is a declared dependency (requi
 # bare `from . import tokens`) so none of them shadow this file's own `tokens` fixture
 # or its still-in-use `render`/`SubstitutionError` engine (section 2 below).
 from . import manifest as manifest_mod
+from . import monitorcheck as monitorcheck_mod
 from . import paths as paths_mod
 from . import releases as releases_mod
 from . import opartifacts as opartifacts_mod
@@ -2412,6 +2413,22 @@ class IntYamlItem(pytest.Item):
                         f"  published: {json.dumps(published)}\n"
                         f"  A lag is measured from the events' own source commit time; a table "
                         f"missing here had no source time, or the field was never published.")
+                continue
+            if isinstance(raw_expected, dict):
+                # A SUBSET metric: only the keys the case names are compared (monitorcheck).
+                want = monitorcheck_mod.render_strings(
+                    raw_expected, lambda v: tokens_mod.render(v, self._variant_tokens(variant)))
+                actual_raw = published.get(name)
+                try:
+                    got = json.loads(actual_raw) if actual_raw is not None else None
+                except (TypeError, ValueError):
+                    got = actual_raw
+                problems = monitorcheck_mod.subset_mismatches(want, got)
+                if problems:
+                    pytest.fail(
+                        f"{m.name}{at}: assert.monitor.{name} differs on the keys the case names:\n  "
+                        + "\n  ".join(problems)
+                        + f"\n  published: {actual_raw!r}")
                 continue
             expected = tokens_mod.render(raw_expected, self._variant_tokens(variant))
             actual = published.get(name)

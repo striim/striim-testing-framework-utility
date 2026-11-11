@@ -988,6 +988,48 @@ assert:
     }
 
 
+def test_monitor_accepts_ddl_metrics_exactly(tmp_path):
+    path, _ = _write(tmp_path, BASE + """
+target:
+  input: input/events.json
+assert:
+  monitor:
+    DDL_METRICS: '{"Ignored DDL Count":1}'
+""")
+    assert load_manifest(path).assert_.monitor == {"DDL_METRICS": '{"Ignored DDL Count":1}'}
+
+
+def test_monitor_takes_adapter_basic_as_a_subset_mapping(tmp_path):
+    """ADAPTER_BASIC holds counts beside clocks in one object: the case names only the counts."""
+    path, _ = _write(tmp_path, BASE + """
+target:
+  input: input/events.json
+assert:
+  monitor:
+    ADAPTER_BASIC:
+      Tuning:
+        Windows: 2
+        IgnoredByCode: {UNSUPPORTED_EVENT: 1}
+""")
+    assert load_manifest(path).assert_.monitor == {
+        "ADAPTER_BASIC": {"Tuning": {"Windows": 2, "IgnoredByCode": {"UNSUPPORTED_EVENT": 1}}}}
+
+
+def test_monitor_refuses_adapter_basic_as_a_string(tmp_path):
+    for value in ("'{\"Tuning\":{}}'", "{}"):
+        sub = tmp_path / ("s" if value.startswith("'") else "e")
+        sub.mkdir()
+        path, _ = _write(sub, BASE + f"""
+target:
+  input: input/events.json
+assert:
+  monitor:
+    ADAPTER_BASIC: {value}
+""")
+        with pytest.raises(ManifestError, match="asserted by SUBSET"):
+            load_manifest(path)
+
+
 def test_monitor_refuses_last_write_age_as_a_clock(tmp_path):
     """
     §156. ⚠ LAST_WRITE_AGE is an AGE measured from a clock. Asserting "0.003 seconds since the
