@@ -842,10 +842,20 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
                         f"are clocks and are not compared, only required to be non-negative.")
                 monitor[name] = list(value)
                 continue
+            if name in _SUBSET_METRICS:
+                if not isinstance(value, dict) or not value:
+                    raise ManifestError(
+                        f"{path}: 'assert.monitor.{name}' is asserted by SUBSET: give a non-empty "
+                        f"mapping of the keys to compare (nested mappings allowed), e.g. "
+                        f"{{Tuning: {{Windows: 2}}}}. Keys not named are not compared, so leave the "
+                        f"clocks out.")
+                monitor[name] = value
+                continue
             if name not in _ASSERTABLE_METRICS:
                 raise ManifestError(
                     f"{path}: 'assert.monitor.{name}' is not a metric this writer publishes. "
-                    f"Assertable: {sorted(_ASSERTABLE_METRICS)}; shape only: "
+                    f"Assertable: {sorted(_ASSERTABLE_METRICS)}; by subset: "
+                    f"{sorted(_SUBSET_METRICS)}; shape only: "
                     f"{sorted(_SHAPE_METRICS)}; published but not assertable (clocks): "
                     f"{sorted(_CLOCK_METRICS)}.")
             monitor[name] = "" if value is None else str(value)
@@ -1459,7 +1469,16 @@ _ASSERTABLE_METRICS = {
     # §156. The §132.3 fields that are COUNTS or shapes, not clocks.
     "NUM_OF_EXCEPTIONS_IGNORED", "OPERATION_METRICS", "TABLE_INFO",
     "NO_OP_OPERATIONS",   # §157
+    # DatabaseWriter's per-table DDL counts: a count, no clock.
+    "DDL_METRICS",
 }
+
+#: MON metrics whose value is a JSON object asserted by SUBSET: the case gives a mapping, and only
+#: the keys it names are compared, recursively; every other key is ignored. `ADAPTER_BASIC`
+#: carries counts (window counts, close reasons, ignored rows by code) beside clocks (commit ms,
+#: idle %) in one object, so an exact string could never be asserted and the counts would go
+#: unread. A case names the counts and leaves the clocks out.
+_SUBSET_METRICS = {"ADAPTER_BASIC"}
 
 #: MON metrics a case may NOT assert: they are CLOCKS. A case asserting a latency or a timestamp
 #: is measuring the machine it runs on, which is the same mistake §6.1a refuses for performance --
