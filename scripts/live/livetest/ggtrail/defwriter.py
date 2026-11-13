@@ -5,9 +5,8 @@ from pathlib import Path
 # GG type codes actually seen in TestData/data/sample.def and confirmed against
 # GGTypeMapper.java:45-70 / ColumnType.java:6-17. SINT64 is characterized (Evidence §D:
 # span = [u16 null-ind][8-byte BE signed int], colLen 10, value scaled by 10^-scale) and
-# IS wired into record.py's column encoder. DATETIME is exported for forward use but its
-# ASCII wire format is still unpinned -- record.py raises NotImplementedError for it
-# (see Evidence appendix §F and the spec's D3: declare date columns as ASCII_V for now).
+# IS wired into record.py's column encoder, as is DATETIME (the logical type `datetime`;
+# date/timestamp stay ASCII_V strings, the spec's D3).
 ASCII_F = 0     # fixed-length CHAR
 ASCII_V = 64    # variable-length VARCHAR2/CHAR/CLOB/BLOB/LONG/ROWID/FLOAT
 SINT64 = 134    # NUMBER(p,s)

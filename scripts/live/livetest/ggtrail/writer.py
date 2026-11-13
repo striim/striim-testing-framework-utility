@@ -81,10 +81,11 @@ class TrailFileWriter:
         self._write_one(rec.write_delete(schema, values, self._next_txn_id, self._clock(),
                                          txn_tokens=self._txn_tokens))
 
-    def update(self, table: str, before: dict, after: dict) -> None:
+    def update(self, table: str, before: dict, after: dict, before_image: bool = False) -> None:
+        # before_image=True: GoldenGate's GETUPDATEBEFORES shape (record.write_update).
         schema = self._schema_for(table)
         self._write_one(rec.write_update(schema, before, after, self._next_txn_id, self._clock(),
-                                         txn_tokens=self._txn_tokens))
+                                         txn_tokens=self._txn_tokens, before_image=before_image))
 
     def truncate(self, table: str) -> None:
         schema = self._schema_for(table)
@@ -101,7 +102,8 @@ class TrailFileWriter:
     def transaction(self, ops: list) -> None:
         """Write one transaction whose ops may span tables (spec §12.3).
 
-        Each op is `(table, "insert"|"delete", values)` or `(table, "update", before, after)`.
+        Each op is `(table, "insert"|"delete", values)`, `(table, "update", before, after)`, or
+        `(table, "update", before, after, True)` for an UPDATE with its before-image records.
         All records share one txn_id; txn_part runs BEGIN/MIDDLE.../END, or SOLE when the
         transaction holds a single op -- the same framing record.write_transaction emits
         for the single-table case.
@@ -130,7 +132,8 @@ class TrailFileWriter:
                                         txn_tokens=self._txn_tokens)
             elif kind == "update":
                 body = rec.write_update(schema, op[2], op[3], txn_id, ts, txn_part=part,
-                                        txn_tokens=self._txn_tokens)
+                                        txn_tokens=self._txn_tokens,
+                                        before_image=bool(op[4]) if len(op) > 4 else False)
             else:
                 raise ValueError(f"unknown transaction op kind {kind!r} (insert|update|delete)")
             self._write(body)

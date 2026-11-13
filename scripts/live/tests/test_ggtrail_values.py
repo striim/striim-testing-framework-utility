@@ -23,6 +23,7 @@ _ALL_DTYPES = [
     "uuid",
     "date",
     "timestamp",
+    "datetime",
 ]
 
 
@@ -52,7 +53,7 @@ def _conforms(dtype: str, value) -> None:
         assert uuid.UUID(value).version == 4
     elif dtype == "date":
         datetime.datetime.strptime(value, "%Y-%m-%d")
-    elif dtype == "timestamp":
+    elif dtype in ("timestamp", "datetime"):
         datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
     else:  # pragma: no cover
         raise AssertionError(f"no reference check for {dtype!r}")
