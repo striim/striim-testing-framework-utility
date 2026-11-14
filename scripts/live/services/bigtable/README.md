@@ -2,9 +2,10 @@
 
 Using this service in a test (tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
 
-**Groundwork.** The service and the framework's `BigtableAdmin` (table and row helpers) only. Not
-supported yet: manifest setup or assertions, a BigtableWriter or reader case, real Bigtable,
-change streams, and Apple silicon (the image is linux/amd64 and not qualified under emulation).
+**Assertions.** The service, the framework's `BigtableAdmin`, and `assert: bigtable:` (each spec
+is `{table, expected}`, the table read whole and compared; see docs/TEST-YAML.md). Not supported
+yet: manifest setup, a BigtableWriter or reader case, real Bigtable, change streams, and Apple
+silicon (the image is linux/amd64 and not qualified under emulation).
 
 How it is built:
 

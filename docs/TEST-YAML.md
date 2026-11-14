@@ -24,7 +24,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `ddl` | string \| list | no | none | schema setup, run once before seed/deploy. Plain string (or a bare list item) → the default `postgres-source` route. List form — entries in the same style `upload:`/`server_files:` use: `- file: <name>` plus an optional `db: <route>` (default `postgres-source`), applied in order. Routes are `<svc>-source`/`<svc>-target` (fixed `qasource`/`qatarget` schemas) plus the emulator routes (`spanner-*`, `gcs`, `kafka`) — see `SERVICES.md`. **Deprecated** (still parses, warns naming the file): the route-keyed entry `{source_db\|target_db: <route>, file: <name>}` — the route value already carries the direction; write `db:` |
 | `seed` | string \| list | no | none | data setup, same shape/back-compat as `ddl`, plus two per-entry keys `ddl` does not take: **`when`** (`pre_deploy` (default) \| `post_start` \| `post_recover`) and **`after`** — see below |
 | `action` | list | no | `[]` | app lifecycle operations run in order after every `post_start` seed and before every assertion tier. Five types: **`stop_start_cycle`** (`cycles`, `delay_before_stop`, `stop_duration`, optional `concurrent:` SQL loops on background threads, each `{db, file, loop_interval}`: `db` must be a route of a `requires:` service, and the case fails if a loop never succeeds or any of its statements errors); **`drop_recreate_app`** (`app` — token-rendered so a multi-app manifest names just the piece it rebuilds; `delay_before_stop`, `recreate_wait`, `seed`, and `capture`/`stopped_seed`/`tokens`, see [below](#action-drop_recreate_app--rebuild-the-app-from-its-tql)) which STOPs, `DROP APPLICATION … FORCE`s via `StriimClient._force_drop`, then rebuilds the app from its own `CREATE OR REPLACE APPLICATION … END` block in the rendered TQL and waits for RUNNING; **`service_outage`** (see [below](#action-service_outage--take-a-required-service-down-mid-run)) which stops a required service's container mid-run and starts it again; **`capture`** ([below](#action-capture--read-a-value-into-a-token)), which reads a `DESCRIBE` or `MON` field into a token; and **`alter_recompile`** ([below](#action-alter_recompile--replace-components-in-place)), the in-place `ALTER APPLICATION … RECOMPILE` upgrade. Gallery: `framework-action`, `framework-drop-recreate` |
-| `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
+| `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `bigtable`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
 | `example` | string | no | none | app directory, relative to the project root (`SLT_PROJECT_ROOT`, this clone when unset), with or without an OP/UDF. When set, `tql`/`ddl`/`seed`/`upload` are read from THERE; only `expected/*.csv` and entries marked [`local: true`](#local-true--test-only-files-beside-an-example) stay test-local. Absent → everything is relative to the test dir (self-contained regression style) |
 | `op` | mapping \| list | no | none | build + upload OpenProcessor jar(s), registered via `LOAD OPEN PROCESSOR` — single mapping or a list, see below |
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
@@ -2156,6 +2156,23 @@ a value is `None`, never an absent key, and the marker could not match. `load_go
 it: writing `<absent>` in a `data:` golden raises a `DataSpecError` at load, naming the
 column and pointing here, rather than failing as a value mismatch after the full assertion
 timeout.
+
+### `bigtable` — Bigtable table comparison
+
+```yaml
+assert:
+  bigtable:
+    - table: ${TID}emp               # the table, read whole through the route's admin
+      db: bigtable-target            # optional, default bigtable-target
+      expected:                      # hand-written row list, hex-for-bytes
+        - {row: "3031", cells: {"emp:name": "616c696365"}}
+```
+
+Each spec reads its table whole (`CellsColumnLimitFilter(num_cells=1)`, the newest cell per column)
+and compares the row list to `expected`, polling until it matches or `timeout:` elapses. `expected`
+is `[{"row": "<hex key>", "cells": {"<fam>:<qual>": "<hex value>"}}]`, the same shape as the
+integration tier's `assert.target` on a `bigtable-*` route. Needs the `bigtable` service in
+`requires:`. A missing table or a changed cell fails with the rows actually read.
 
 ### `gcs` — GCS object content assertions
 <!-- snippet: fragment -->

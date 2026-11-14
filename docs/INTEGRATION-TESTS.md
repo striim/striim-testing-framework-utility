@@ -541,6 +541,23 @@ assert:
   `ORDER BY` is asked for: the admin returns rows in row-key order. `match` is the JSON list of
   rows `dbroutes.read_cells` returns: `[{"row": "<hex key>", "cells": {"<fam>:<qual>": "<hex>"}}]`.
   The comparison is `dbroutes.assert_target`'s, so a mismatch names the table and both sides.
+- **`setup: bigtable:` creates a table before the writer starts**, after its `ddl:` and before its
+  `seed:`:
+
+  ```yaml
+  setup:
+    bigtable:
+      - table: ${TID}emp               # letters, digits, _ . - or ${TOKEN}s
+        db: bigtable-target            # optional, default bigtable-target
+        families: {emp: null}          # each family null; its GC rule goes under gc:
+        gc: {emp: {age_days: 7}}       # optional
+        seed:                          # optional rows, as dbroutes.write_cells takes them
+          - {row: "01", cells: {"emp:name": "ann"}}
+  ```
+
+  The table is dropped at teardown, unless the case fails or `--slt-keep-resources` keeps it. A
+  case with `variants:` refuses it for now: a variant's DDL goes through the variant's own route,
+  and a Bigtable table is not yet part of that.
 - **`match` is a list of rows**, each a list of column values, in the shape `dbroutes.query_rows`
   returns. Values are normalised losslessly: `Decimal` → string (never a float — a writer that
   refuses a value not fitting a column's scale is asserting about exact digits), temporals → ISO

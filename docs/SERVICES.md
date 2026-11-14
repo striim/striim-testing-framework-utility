@@ -46,7 +46,7 @@ the setting when the port is busy.
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
 | `bigquery` | user-supplied BigQuery emulator image + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
-| `bigtable` | Bigtable emulator in Google's `google-cloud-cli` image (amd64) | no | 9470 | admin and row helpers only; no manifest setup or assertions | `SLT_BIGTABLE_HOST` |
+| `bigtable` | Bigtable emulator in Google's `google-cloud-cli` image (amd64) | no | 9470 | admin and row helpers; `setup: bigtable:` and `assert.target` (integration); `assert: bigtable:` (live) | `SLT_BIGTABLE_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -430,9 +430,9 @@ Groundwork: the Cloud Bigtable emulator, from Google's `google-cloud-cli` `:emul
   server. The framework sets it on the Docker cluster it starts, as it sets
   `SPANNER_EMULATOR_HOST`; a Striim server you provide needs it set yourself. No key is needed.
 - Integration tier: `assert.target` on a `bigtable-*` route compares a table's rows
-  (`query:` names the table; see INTEGRATION-TESTS.md). Not supported yet: manifest setup (no
-  `test.yaml` key creates a Bigtable table), live-tier assertions (`bigtable` is not an `assert:`
-  tier; `livetest.assertions.bigtable.assert_bigtable` is written for one, but nothing calls it),
+  (`query:` names the table; see INTEGRATION-TESTS.md). Live tier: `assert: bigtable:` (each spec
+  `{table, expected}`; see TEST-YAML.md). Integration setup: `setup: bigtable:` creates a table
+  (families, GC rules, seed) before the writer starts; not for `variants:` yet. Not supported yet:
   a BigtableWriter or reader case, real Bigtable
   (`BigtableAdmin` refuses credentials and Google API endpoints), change streams, and Apple
   silicon (not qualified under emulation).

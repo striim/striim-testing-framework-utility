@@ -23,7 +23,8 @@ XFAIL_TIERS_ALLOWED = frozenset(
 XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED - {"placement"}
 # The `assert:` tiers runtest reads; any other key would check nothing.
 VALID_ASSERT_TIERS = frozenset(
-    {"smoke", "data", "diff", "file", "gcs", "json", "monitor", "checkpoint_history", "jmx", "placement"})
+    {"smoke", "data", "diff", "file", "gcs", "json", "bigtable", "monitor", "checkpoint_history", "jmx",
+     "placement"})
 VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # Every key load_manifest reads. Anything else is a typo or a key dropped in a schema change,
 # and both used to load silently: `timout: 30` simply never applied its timeout, and a manifest

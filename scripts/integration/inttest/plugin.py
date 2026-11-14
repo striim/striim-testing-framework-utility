@@ -1883,7 +1883,8 @@ class IntYamlItem(pytest.Item):
                 # first.
                 _ensure_gcs_bucket(tok)
 
-            # --- 5. DDL then seed, in that order, each against its own db: route. ---
+            # --- 5. setup: bigtable tables, then DDL, then seed, each against its own route. ---
+            self._setup_bigtable(m, tok)
             for spec in m.ddl:
                 try:
                     dbroutes_mod.run_sql_file(spec.db, spec.path, tok)
@@ -2545,6 +2546,31 @@ class IntYamlItem(pytest.Item):
                     # path there is none, and the rows are the whole of the evidence.
                     + (f"\n  writer report: {json.dumps(report)}" if report is not None else ""))
 
+    def _setup_bigtable(self, m, tok) -> None:
+        """`setup: bigtable:` -- create each declared table (families, GC rules, seed rows) through
+        its route's admin before the writer starts. Each is remembered, so teardown drops it, even
+        when creating it failed part way."""
+        self._bigtable_created = []
+        for spec in m.bigtable_setup:
+            table = tokens_mod.render(spec.table, tok)
+            self._bigtable_created.append((spec.db, table, tok))
+            try:
+                dbroutes_mod.setup_bigtable(table, spec.families, gc_rules=spec.gc_rules,
+                                            seed=spec.seed, route=spec.db, tokens=tok)
+            except Exception as e:
+                pytest.fail(f"{m.name}: setup bigtable {table!r} against {spec.db!r} failed: {e}")
+
+    def _teardown_bigtable(self) -> None:
+        """Drop the tables `_setup_bigtable` created. An already-missing table is fine; any other
+        failure is reported and does not mask the case's own outcome."""
+        for route, table, tok in getattr(self, "_bigtable_created", []):
+            try:
+                dbroutes_mod.teardown_bigtable(table, route=route, tokens=tok)
+            except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
+                print(f"[integration] WARNING: failed to drop bigtable table {table!r} on "
+                      f"{route!r}: {e!r}")
+        self._bigtable_created = []
+
     def _teardown_db_isolation(self, failed: bool) -> None:
         """SPEC §5 step 8 / §13: drop whatever per-test DB isolation state
         `runtest()` step 4b created, unless the test failed (kept for debugging) or
@@ -2560,6 +2586,8 @@ class IntYamlItem(pytest.Item):
         )
         if keep:
             return
+        if getattr(self, "_bigtable_created", None):
+            self._teardown_bigtable()
         if self._pg_admin is not None:
             # Wipe this test's own Postgres data NOW rather than deferring to the
             # NEXT test's setup-time reset -- a passing test with no keep-flag

@@ -29,6 +29,7 @@ from livetest.assertions.diff import assert_diff, parse_diff_specs
 from livetest.assertions.file import assert_file, parse_file_specs
 from livetest import exactdata as _slt_exact, inputs as _slt_inputs   # C8
 from livetest.assertions.gcs import assert_gcs, parse_gcs_specs
+from livetest.assertions.bigtable import assert_bigtable, parse_bigtable_specs
 from livetest.assertions.json import assert_json, parse_json_specs
 from livetest.assertions.monitor import assert_monitor, parse_monitor_specs
 from livetest.assertions.checkpoint_history import (
@@ -3882,6 +3883,18 @@ class LiveItem(pytest.Item):
                         self._slt_records += assert_gcs(
                             gcs_entry["admin"], gspecs, timeout=m.timeout, status_probe=_terminal_probe,
                             progress=_hb("asserting gcs"))
+                        ran = True
+                    if m.assert_.get("bigtable"):
+                        # Each spec names its table and route; the table is read whole through that
+                        # route's admin and compared to `expected`, as dbroutes.assert_target does.
+                        _report(m.name, "asserting: bigtable")
+                        bspecs = parse_bigtable_specs(m.assert_["bigtable"])
+                        for _bs in bspecs:
+                            _bs["table"] = render(_bs["table"], tokens)
+                        for admin, group in admin_groups(admins, bspecs, m.name, "bigtable"):
+                            self._slt_records += assert_bigtable(
+                                admin, group, timeout=m.timeout, status_probe=_terminal_probe,
+                                db=_spec_route(group[0]), progress=_hb("asserting bigtable"))
                         ran = True
                     if m.assert_.get("json"):
                         _report(m.name, "asserting: json")

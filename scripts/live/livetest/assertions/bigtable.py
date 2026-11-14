@@ -1,8 +1,7 @@
-"""Bigtable table comparison for the live tier -- groundwork, not a manifest tier yet.
+"""Bigtable table comparison for the live tier: the `assert: bigtable:` tier.
 
-No test.yaml `assert` key dispatches here and `bigtable` is not an assertion tier, so a live
-manifest cannot assert a Bigtable table today; wiring it waits for the BigtableWriter work. The
-comparison: read the WHOLE table back via `BigtableAdmin.read_all` (`CellsColumnLimitFilter(num_cells=1)` -- the newest cell per
+Each spec is `{table, expected}` (plus an optional `db` route, default bigtable-target); the plugin
+reads the table through that route's admin and dispatches here. The comparison: read the WHOLE table back via `BigtableAdmin.read_all` (`CellsColumnLimitFilter(num_cells=1)` -- the newest cell per
 (family, qualifier), values rendered hex-for-bytes -- the same snapshot inttest.dbroutes.read_cells
 records to `expected/*.json`) and compares the row list to a hand-written `expected` list of
 `{"row": <hex>, "cells": {"<family>:<qualifier>": <hex>}}` rows.
@@ -39,6 +38,8 @@ def parse_bigtable_specs(raw: list) -> list[dict]:
             raise BigtableSpecError(
                 f"bigtable spec {spec.get('table')!r} 'expected' must be a row list, got "
                 f"{type(spec['expected']).__name__}")
+        # The route whose admin reads the table; the plugin groups specs by it, as for json/file.
+        spec.setdefault("db", "bigtable-target")
     return raw
 
 

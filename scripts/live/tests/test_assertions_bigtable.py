@@ -237,8 +237,18 @@ def test_assert_bigtable_fails_at_its_deadline_when_the_table_never_appears():
     assert record["status"] == "failed" and "deadline" in record["detail"]
 
 
-def test_bigtable_is_not_a_manifest_assertion_tier_yet():
-    # The service README and this module call the comparison groundwork; adding the tier means
-    # updating them too.
+def test_bigtable_is_a_valid_assert_tier():
     from livetest.manifest import VALID_ASSERT_TIERS
-    assert "bigtable" not in VALID_ASSERT_TIERS
+    assert "bigtable" in VALID_ASSERT_TIERS
+
+
+def test_parse_defaults_each_spec_to_the_bigtable_target_route():
+    from livetest.assertions.bigtable import parse_bigtable_specs
+    specs = parse_bigtable_specs([{"table": "emp", "expected": []}])
+    assert specs[0]["db"] == "bigtable-target"
+
+
+def test_parse_keeps_an_explicit_route():
+    from livetest.assertions.bigtable import parse_bigtable_specs
+    specs = parse_bigtable_specs([{"table": "emp", "expected": [], "db": "bigtable-source"}])
+    assert specs[0]["db"] == "bigtable-source"
