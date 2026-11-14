@@ -544,6 +544,7 @@ assert:
 - **`setup: bigtable:` creates a table before the writer starts**, after its `ddl:` and before its
   `seed:`:
 
+  <!-- snippet: shape integration-tier test.yaml keys -->
   ```yaml
   setup:
     bigtable:

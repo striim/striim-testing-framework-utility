@@ -18,15 +18,15 @@
 name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
 services:
   slt-bigtable:
-    # Pinned by DIGEST to the linux/amd64 manifest of the :emulators tag (index digest
-    # sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935), so an upgrade is
-    # deliberate. Re-pin by hand and re-run this service's tests against the new image.
-    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    # Pinned by DIGEST to the index of the :emulators tag (SDK 591.0.0; its linux/arm64 and linux/amd64
+    # manifests are the same release), so an upgrade is deliberate. Docker picks the architecture of
+    # the host. DOCKER_DEFAULT_PLATFORM=linux/amd64 runs the x86 build on an arm64 host (emulated).
+    # Re-pin by hand and re-run this service's tests against the new image.
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
     container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-bigtable
     # The emulator is an in-memory store; it grows with the data it holds.
     cpus: ${SLT_BIGTABLE_CPUS:-1}
     mem_limit: ${SLT_BIGTABLE_MEM_LIMIT:-2g}
-    platform: linux/amd64
     command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
     ports:
       - "${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"

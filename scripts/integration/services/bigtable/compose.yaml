@@ -5,11 +5,13 @@
 name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-bigtable
 services:
   int-bigtable:
-    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a
+    # The index digest of the :emulators tag (SDK 591.0.0): Docker picks the arm64 or amd64 manifest
+    # of the same release. Set DOCKER_DEFAULT_PLATFORM=linux/amd64 to run the x86 build on an
+    # arm64 host (emulated, so not a qualifying run).
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
     container_name: ${INT_STACK_PREFIX:+${INT_STACK_PREFIX}-}int-bigtable
     cpus: ${INT_BIGTABLE_CPUS:-0.5}
     mem_limit: ${INT_BIGTABLE_MEM_LIMIT:-2g}
-    platform: linux/amd64
     command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
     ports:
       # Do NOT set INT_BIGTABLE_HOST to "point the framework at it": that is live_override_env, which

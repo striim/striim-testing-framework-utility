@@ -2159,6 +2159,7 @@ timeout.
 
 ### `bigtable` — Bigtable table comparison
 
+<!-- snippet: fragment -->
 ```yaml
 assert:
   bigtable:

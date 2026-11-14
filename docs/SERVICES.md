@@ -46,7 +46,7 @@ the setting when the port is busy.
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
 | `bigquery` | user-supplied BigQuery emulator image + a dedicated token server | bounded REST streaming / CSV batch | 9050, 9051 | `bigquery-target`: bounded scalar row assertions | `SLT_BIGQUERY_HOST` |
-| `bigtable` | Bigtable emulator in Google's `google-cloud-cli` image (amd64) | no | 9470 | admin and row helpers; `setup: bigtable:` and `assert.target` (integration); `assert: bigtable:` (live) | `SLT_BIGTABLE_HOST` |
+| `bigtable` | Bigtable emulator in Google's `google-cloud-cli` image (arm64 and amd64) | no | 9470 | admin and row helpers; `setup: bigtable:` and `assert.target` (integration); `assert: bigtable:` (live) | `SLT_BIGTABLE_HOST` |
 | `teradata` | **your instance only** | n/a | 1025 | `teradata-source`, `teradata-target`, `teradata-admin` | `SLT_TERADATA_HOST` (required) |
 | `servicenow` | **your instance only** | n/a | 443 | none | `SLT_SERVICENOW_HOST` (required) |
 
@@ -418,7 +418,8 @@ Google's Cloud Spanner emulator, with an instance and two databases: `gsql` (Goo
 ## Bigtable (`bigtable`)
 
 Groundwork: the Cloud Bigtable emulator, from Google's `google-cloud-cli` `:emulators` image
-(linux/amd64, pinned by digest), and the framework's `BigtableAdmin` table and row helpers.
+(pinned by its index digest: linux/arm64 and linux/amd64 builds of the same release), and the
+framework's `BigtableAdmin` table and row helpers. Development runs natively on arm64.
 
 | | |
 |---|---|
@@ -434,8 +435,8 @@ Groundwork: the Cloud Bigtable emulator, from Google's `google-cloud-cli` `:emul
   `{table, expected}`; see TEST-YAML.md). Integration setup: `setup: bigtable:` creates a table
   (families, GC rules, seed) before the writer starts; not for `variants:` yet. Not supported yet:
   a BigtableWriter or reader case, real Bigtable
-  (`BigtableAdmin` refuses credentials and Google API endpoints), change streams, and Apple
-  silicon (not qualified under emulation).
+  (`BigtableAdmin` refuses credentials and Google API endpoints), and change streams (the emulator
+  crashes on them, on both architectures; see the field's docs/BIGTABLE_EMULATOR.md).
 
 ## GCS (`gcs`)
 

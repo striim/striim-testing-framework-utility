@@ -38,8 +38,8 @@ PUBLIC_IMAGES = {
     "mcr.microsoft.com/mssql/server:2022-latest",
     "opentext/vertica-k8s:25.3.0-8-multiarch",
     "amd64/ubuntu:22.04", "ubuntu:24.04",
-    # Google's Cloud SDK emulators image (Bigtable emulator), its linux/amd64 build by digest.
-    "gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:f6d5061ad65d98f04b2e87fbf882655167efb224244566a6f45e20f24124e19a",
+    # Google's Cloud SDK emulators image (Bigtable emulator), by the index digest: arm64 and amd64.
+    "gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935",
 }
 # Customer inputs have no implicit default: the cluster license and the supplied emulator image.
 CUSTOMER_INPUTS = {"live/striim/compose.yaml": {"CLUSTER_NAME", "COMPANY_NAME", "PRODUCT_KEY",

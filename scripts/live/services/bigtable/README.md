@@ -4,13 +4,14 @@ Using this service in a test (tokens, routes, using your own instance): [docs/SE
 
 **Assertions.** The service, the framework's `BigtableAdmin`, and `assert: bigtable:` (each spec
 is `{table, expected}`, the table read whole and compared; see docs/TEST-YAML.md). Not supported
-yet: manifest setup, a BigtableWriter or reader case, real Bigtable, change streams, and Apple
-silicon (the image is linux/amd64 and not qualified under emulation).
+yet: manifest setup, a BigtableWriter or reader case, real Bigtable, and change streams (the
+emulator crashes on them, on both architectures). Development runs natively on arm64; the x86 build
+runs with `DOCKER_DEFAULT_PLATFORM=linux/amd64` (emulated on arm64).
 
 How it is built:
 
 - Google ships no standalone Bigtable emulator image. The emulator (`cbtemulator`) is a component
-  of the gcloud CLI's `:emulators` image, pinned here by its linux/amd64 manifest digest; the
+  of the gcloud CLI's `:emulators` image, pinned here by its index digest (arm64 and amd64 manifests of one release); the
   service starts it with `gcloud beta emulators bigtable start`. One gRPC port, 9470, serves data
   and admin.
 - Striim's Bigtable clients reach an emulator only through the JVM-wide `BIGTABLE_EMULATOR_HOST`.
