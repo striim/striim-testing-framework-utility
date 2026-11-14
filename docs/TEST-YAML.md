@@ -23,6 +23,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `kafka_cleanup_topics` | list[string] | no | `[]` | extra Kafka topics the test's **app** creates that the framework didn't derive itself — e.g. a persisted stream's derived `<ns>_<streamName>` data topic and its `<topic>_CHECKPOINT` companion. Each entry is `${...}`-token-rendered (embed `${NS}`/`${TID}` for per-test uniqueness) and appended to the same best-effort per-test topic delete that already removes the derived `${KAFKA_SRC_TOPIC}`/`${KAFKA_TGT_TOPIC}` at teardown. Requires `kafka` in `requires` (loader fails loud otherwise). Absent/empty (every test that doesn't set it) is a strict no-op |
 | `ddl` | string \| list | no | none | schema setup, run once before seed/deploy. Plain string (or a bare list item) → the default `postgres-source` route. List form — entries in the same style `upload:`/`server_files:` use: `- file: <name>` plus an optional `db: <route>` (default `postgres-source`), applied in order. Routes are `<svc>-source`/`<svc>-target` (fixed `qasource`/`qatarget` schemas) plus the emulator routes (`spanner-*`, `gcs`, `kafka`) — see `SERVICES.md`. **Deprecated** (still parses, warns naming the file): the route-keyed entry `{source_db\|target_db: <route>, file: <name>}` — the route value already carries the direction; write `db:` |
 | `seed` | string \| list | no | none | data setup, same shape/back-compat as `ddl`, plus two per-entry keys `ddl` does not take: **`when`** (`pre_deploy` (default) \| `post_start` \| `post_recover`) and **`after`** — see below |
+| `setup` | mapping | no | none | tables the case creates before its DDL and deploy: `bigtable:` (a list of `{table, families, gc, seed, db}`), dropped at teardown unless kept — see the `setup` section |
 | `action` | list | no | `[]` | app lifecycle operations run in order after every `post_start` seed and before every assertion tier. Five types: **`stop_start_cycle`** (`cycles`, `delay_before_stop`, `stop_duration`, optional `concurrent:` SQL loops on background threads, each `{db, file, loop_interval}`: `db` must be a route of a `requires:` service, and the case fails if a loop never succeeds or any of its statements errors); **`drop_recreate_app`** (`app` — token-rendered so a multi-app manifest names just the piece it rebuilds; `delay_before_stop`, `recreate_wait`, `seed`, and `capture`/`stopped_seed`/`tokens`, see [below](#action-drop_recreate_app--rebuild-the-app-from-its-tql)) which STOPs, `DROP APPLICATION … FORCE`s via `StriimClient._force_drop`, then rebuilds the app from its own `CREATE OR REPLACE APPLICATION … END` block in the rendered TQL and waits for RUNNING; **`service_outage`** (see [below](#action-service_outage--take-a-required-service-down-mid-run)) which stops a required service's container mid-run and starts it again; **`capture`** ([below](#action-capture--read-a-value-into-a-token)), which reads a `DESCRIBE` or `MON` field into a token; and **`alter_recompile`** ([below](#action-alter_recompile--replace-components-in-place)), the in-place `ALTER APPLICATION … RECOMPILE` upgrade. Gallery: `framework-action`, `framework-drop-recreate` |
 | `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `bigtable`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
 | `example` | string | no | none | app directory, relative to the project root (`SLT_PROJECT_ROOT`, this clone when unset), with or without an OP/UDF. When set, `tql`/`ddl`/`seed`/`upload` are read from THERE; only `expected/*.csv` and entries marked [`local: true`](#local-true--test-only-files-beside-an-example) stay test-local. Absent → everything is relative to the test dir (self-contained regression style) |
@@ -2156,6 +2157,23 @@ a value is `None`, never an absent key, and the marker could not match. `load_go
 it: writing `<absent>` in a `data:` golden raises a `DataSpecError` at load, naming the
 column and pointing here, rather than failing as a value mismatch after the full assertion
 timeout.
+
+### `setup` — tables the case creates
+
+<!-- snippet: fragment -->
+```yaml
+setup:
+  bigtable:
+    - table: ${TID}emp               # letters, digits, _ . - or ${TOKEN}s
+      db: bigtable-target            # optional, default bigtable-target
+      families: {emp: null}          # each family null; its GC rule goes under gc:
+      gc: {emp: {age_days: 7}}       # optional
+      seed:                          # optional rows: {row, cells: {"fam:qual": value}}
+        - {row: "01", cells: {"emp:name": "ann"}}
+```
+
+Each table is created through its route's admin before the case's `ddl:` and deploy, and dropped at
+teardown. A run kept with `SLT_KEEP_RESOURCES` keeps it. Needs the `bigtable` service in `requires:`.
 
 ### `bigtable` — Bigtable table comparison
 

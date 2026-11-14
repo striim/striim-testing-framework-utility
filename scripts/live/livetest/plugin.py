@@ -2676,6 +2676,21 @@ class LiveItem(pytest.Item):
             if m.modules:
                 _slt_ownership.clear_own_checkpoints(ctx, ident.ns, ledger)   # listed, exact names only
 
+            # `setup: bigtable:` -- each table is created (families, GC rules, seed rows) through its
+            # route's admin before the DDL and the deploy. Remembered on self, so teardown drops it.
+            self._slt_bigtable_created = []
+            for _bs in m.bigtable_setup:
+                _table = render(_bs.table, tokens)
+                _report(m.name, f"creating bigtable table {_table}")
+                _entry = require_service_admin(admins, _bs.db, m.name, "setup.bigtable")
+                self._slt_bigtable_created.append((_bs.db, _table))
+                try:
+                    _entry["admin"].create_table(_table, _bs.families, gc_rules=_bs.gc_rules)
+                    if _bs.seed:
+                        _entry["admin"].write_cells(_table, _bs.seed)
+                except Exception as _e:  # noqa: BLE001 - reported as the case's failure
+                    pytest.fail(f"{m.name}: setup bigtable {_table!r} against {_bs.db!r} failed: {_e}")
+
             # DDL always runs before deploy (reader/writer need the tables to exist).
             _report(m.name, "loading DDL")
             # C7.6: one file at a time -- acquire (catalog pre-existence check),
@@ -4071,6 +4086,18 @@ class LiveItem(pytest.Item):
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")
+
+            # `setup: bigtable:` tables are dropped unless the run is kept (a failed table is dropped too).
+            _bt_created = getattr(self, "_slt_bigtable_created", [])
+            self._slt_bigtable_created = []
+            # locals(): a case that failed before the keep decision was made has no such name, and
+            # that must not raise here (this runs in the finally, over the case's own outcome).
+            if _bt_created and locals().get("_slt_keep_reason") is None:
+                for _route, _table in _bt_created:
+                    try:
+                        admins[_route]["admin"].drop_table(_table)
+                    except Exception as _e:  # noqa: BLE001 - teardown never replaces the case's outcome
+                        print(f"[slt] WARNING: {m.name}: failed to drop bigtable table {_table!r}: {_e!r}")
 
             # Release the shared in-use lock LAST, after teardown has finished.
             #

@@ -28,7 +28,7 @@ FRAMEWORK = pathlib.Path(__file__).resolve().parents[1] / "regression" / "framew
 # Assert tiers a manifest can declare. Kept as a literal rather than imported: this is the
 # checklist the gallery is measured against, so it should change only when someone edits it
 # deliberately, not because a refactor moved a set around.
-ASSERT_TIERS = {"smoke", "data", "diff", "file", "gcs", "json", "monitor", "jmx", "placement"}
+ASSERT_TIERS = {"smoke", "data", "diff", "file", "gcs", "json", "bigtable", "monitor", "jmx", "placement"}
 
 # Features with no framework example YET. Every entry states what would have to be built,
 # because "why is this exempt" is the question a reader arrives with. Shrinking this list to
@@ -57,6 +57,16 @@ EXEMPT = {
     # --- assert tiers ---
     "gcs": "GCS object assertions, needs the emulator",
     "json": "JSON column assertions, needs the Spanner emulator",
+    # --- Bigtable (setup and the bigtable tier) ---
+    "setup": (
+        "a live example needs a Bigtable target app: the BigtableWriter (field, not on main). Until it "
+        "lands, the setup path is covered hermetically by tests/test_bigtable_setup_live.py and the "
+        "integration tier by tests/test_bigtable_setup.py. Build the framework example with the writer"
+    ),
+    "bigtable": (
+        "the bigtable tier reads a table a live app wrote; it needs the same Bigtable target app as "
+        "setup. Covered hermetically by tests/test_assertions_bigtable.py"
+    ),
 }
 
 
