@@ -429,9 +429,11 @@ Groundwork: the Cloud Bigtable emulator, from Google's `google-cloud-cli` `:emul
 - Striim's Bigtable clients reach an emulator only through `BIGTABLE_EMULATOR_HOST` on the Striim
   server. The framework sets it on the Docker cluster it starts, as it sets
   `SPANNER_EMULATOR_HOST`; a Striim server you provide needs it set yourself. No key is needed.
-- Not supported yet: manifest setup or assertions (no `test.yaml` key creates a Bigtable table,
-  and `bigtable` is not an `assert:` tier; `livetest.assertions.bigtable.assert_bigtable` is
-  written for one, but nothing calls it), a BigtableWriter or reader case, real Bigtable
+- Integration tier: `assert.target` on a `bigtable-*` route compares a table's rows
+  (`query:` names the table; see INTEGRATION-TESTS.md). Not supported yet: manifest setup (no
+  `test.yaml` key creates a Bigtable table), live-tier assertions (`bigtable` is not an `assert:`
+  tier; `livetest.assertions.bigtable.assert_bigtable` is written for one, but nothing calls it),
+  a BigtableWriter or reader case, real Bigtable
   (`BigtableAdmin` refuses credentials and Google API endpoints), change streams, and Apple
   silicon (not qualified under emulation).
 

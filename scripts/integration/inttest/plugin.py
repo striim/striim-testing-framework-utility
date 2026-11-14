@@ -2508,6 +2508,24 @@ class IntYamlItem(pytest.Item):
             # A variant supplies the route its assertions read through, so one authored query
             # reaches whichever engine this run is against.
             route = variant.db if variant is not None else spec.db
+            try:
+                bigtable = dbroutes_mod.is_bigtable_route(route)
+            except dbroutes_mod.RouteError:
+                bigtable = False   # the query path below reports the malformed route as before
+            if bigtable:
+                # No SQL on a bigtable route: `query` names the table and `match` holds its rows as
+                # the admin reads them. The comparison is dbroutes.assert_target's, unchanged.
+                table = tokens_mod.render(spec.query, tok).strip()
+                expected = json.loads(tokens_mod.render(Path(spec.match_path).read_text(), tok))
+                try:
+                    dbroutes_mod.assert_target(route, table, expected, tok)
+                except AssertionError as e:
+                    pytest.fail(f"{m.name}{at}: {e}"
+                                + (f"\n  writer report: {json.dumps(report)}" if report is not None else ""))
+                except Exception as e:
+                    pytest.fail(f"{m.name}{at}: assert.target read of table {table!r} against "
+                                f"{route!r} failed: {e}")
+                continue
             shown = " ".join(tokens_mod.render(spec.query, tok).split())
             try:
                 rows = dbroutes_mod.query_rows(route, spec.query, tok)

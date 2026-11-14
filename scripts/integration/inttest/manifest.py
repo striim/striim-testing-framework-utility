@@ -570,6 +570,8 @@ _TARGET_KEYS = {"input", "restart_after", "positions", "distribution_id", "timez
                 "mid_run"}
 
 _TARGET_ASSERTION_KEYS = {"query", "db", "match"}
+# A bigtable assert.target's `query` is a table name: word characters, '.', '-' and ${TOKEN}s.
+_BIGTABLE_TABLE_RE = re.compile(r"^(?:[A-Za-z0-9_.\-]|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$")
 
 
 def _normalize_field_paths(item: dict, key: str, idx: int, path) -> tuple:
@@ -754,9 +756,22 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
             # part of it is wrong. (`ddl:`/`seed:` do not do this yet; they fail later, at
             # the point of use.)
             try:
-                dbroutes.parse_route(db)
+                is_bigtable = dbroutes.is_bigtable_route(db)
             except dbroutes.RouteError as e:
                 raise ManifestError(f"{path}: 'assert.target[{i}].db': {e}") from None
+            if is_bigtable:
+                # A Bigtable route has no SQL: `query` names the table, and `match` is its rows as
+                # the admin reads them (row-key order, so no ORDER BY is asked for).
+                table = query.strip()
+                if not _BIGTABLE_TABLE_RE.match(table):
+                    raise ManifestError(
+                        f"{path}: 'assert.target[{i}].query' on a bigtable route must be a table "
+                        f"name (letters, digits, '_', '.', '-', or a ${{TOKEN}}), got {query!r}")
+                target.append(TargetAssertion(
+                    query=table, db=db, match=match,
+                    match_path=(test_dir / match).resolve(),
+                    db_explicit="db" in item))
+                continue
             # Rows are compared in order, so the query has to impose one. Checked here rather
             # than left to a reviewer: an unordered query is green on the machine that wrote
             # the golden and arbitrary everywhere else, which is the worst kind of assertion.

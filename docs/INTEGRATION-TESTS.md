@@ -536,6 +536,11 @@ assert:
 - **`assert.target[].query` must carry an `ORDER BY`**, checked at load. Rows are compared in
   order, and a database may return them in any order it likes; without one the case is green on
   the machine that recorded the golden and arbitrary everywhere else.
+- **A `bigtable-*` route has no SQL**, so its entry is not a query. `query:` names the table
+  (letters, digits, `_`, `.`, `-`, or `${TOKEN}`s; anything else is refused at load), and no
+  `ORDER BY` is asked for: the admin returns rows in row-key order. `match` is the JSON list of
+  rows `dbroutes.read_cells` returns: `[{"row": "<hex key>", "cells": {"<fam>:<qual>": "<hex>"}}]`.
+  The comparison is `dbroutes.assert_target`'s, so a mismatch names the table and both sides.
 - **`match` is a list of rows**, each a list of column values, in the shape `dbroutes.query_rows`
   returns. Values are normalised losslessly: `Decimal` → string (never a float — a writer that
   refuses a value not fitting a column's scale is asserting about exact digits), temporals → ISO

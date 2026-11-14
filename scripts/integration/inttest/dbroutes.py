@@ -701,6 +701,13 @@ _QUERIERS = {"postgres": _query_postgres, "oracle": _query_oracle,
 _NON_SQL_DRIVERS = frozenset({"bigtable"})
 
 
+def is_bigtable_route(route: str) -> bool:
+    """True for a `bigtable-*` route: its rows are read whole by the admin, never queried.
+    Raises RouteError for a malformed route, as parse_route does."""
+    service, _direction = parse_route(route)
+    return service in _NON_SQL_DRIVERS
+
+
 # --- Bigtable (no SQL; the admin reads a whole table) -----------------------------------------
 # Bigtable is not a query engine -- the admin reads back a WHOLE table as
 # {row: <hex key>, cells: {<fam>:<qual>: <hex value>}}. These helpers bypass the query-rows
