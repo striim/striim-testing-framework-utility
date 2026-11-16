@@ -104,3 +104,24 @@ def test_plugin_fails_with_the_mismatch_and_the_writer_report(tmp_path, monkeypa
     with pytest.raises(pytest.fail.Exception, match="assert.target.*mismatch") as exc:
         IntYamlItem._assert_target_rows(_stub_item(), m, "", None, {"acknowledgeable": True})
     assert "writer report" in str(exc.value)
+
+
+def test_plugin_refuses_a_golden_that_is_not_a_row_list(tmp_path, monkeypatch):
+    # read_cells returns {table, rows}; a golden saved in that shape must not compare as its keys.
+    path, test_dir = _write(tmp_path, _target("emp", db="bigtable-target"))
+    (test_dir / "expected" / "rows.json").write_text(json.dumps({"table": "emp", "rows": []}))
+    monkeypatch.setattr(dbroutes, "assert_target", lambda *a, **k: None)
+    with pytest.raises(pytest.fail.Exception, match="must be a JSON list of rows"):
+        IntYamlItem._assert_target_rows(_stub_item(), load_manifest(path), "", None)
+
+
+def test_bigtable_entry_needs_bigtable_in_requires(tmp_path):
+    path, _ = _write(tmp_path, _target("emp", db="bigtable-target").replace("[bigtable]", "[postgres]"))
+    with pytest.raises(ManifestError, match=r"requires: \[bigtable\]"):
+        load_manifest(path)
+
+
+def test_bigtable_entry_refuses_a_name_starting_with_a_dash(tmp_path):
+    path, _ = _write(tmp_path, _target("-emp", db="bigtable-target"))
+    with pytest.raises(ManifestError, match="must be a table name"):
+        load_manifest(path)

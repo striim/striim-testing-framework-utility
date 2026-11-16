@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from livetest import paths
+from livetest.bigtablespec import BigtableSetup, BigtableSpecError, normalize_setup  # noqa: F401
 from livetest.service_cache import cached_tokens
 from livetest.enforcement import WALKER_EXEMPT_DIR_PARTS
 from livetest.releases import ReleaseError, check_release_entry, release_matches
@@ -19,7 +20,8 @@ VALID_TOPOLOGIES = {"single", "agent", "cluster"}
 # Assertion tiers an `xfail.tiers` may name. The record `type` each assert_* function writes
 # (resultschema.build_assertion_result) is the vocabulary; `smoke` is deliberately absent.
 XFAIL_TIERS_ALLOWED = frozenset(
-    {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx", "placement"})
+    {"data", "diff", "file", "gcs", "json", "bigtable", "monitor", "halt", "checkpoint_history", "jmx",
+     "placement"})
 XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED - {"placement"}
 # The `assert:` tiers runtest reads; any other key would check nothing.
 VALID_ASSERT_TIERS = frozenset(
@@ -1094,79 +1096,6 @@ def _fixture_timeout(raw, path):
     return value
 
 
-@dataclass(frozen=True)
-class BigtableSetup:
-    """One `setup: bigtable:` entry: a table created (families, GC rules, seed rows) before the
-    DDL, dropped at teardown unless the run is kept. `table` may carry ${TOKEN}s, rendered at run time."""
-    table: str
-    db: str
-    families: dict
-    gc_rules: dict = field(default_factory=dict)
-    seed: list = field(default_factory=list)
-
-
-# A bigtable table name: word characters, '.', '-' and ${TOKEN}s (the same rule as the integration tier).
-_BIGTABLE_TABLE_RE = re.compile(r"^(?:[A-Za-z0-9_.\-]|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$")
-_SETUP_KEYS = frozenset({"bigtable"})
-_BIGTABLE_SETUP_KEYS = frozenset({"table", "db", "families", "gc", "seed"})
-
-
-def _normalize_setup(raw, path: Path) -> list:
-    """The top-level `setup:` block: `bigtable:` is the only kind, a list of BigtableSetup entries.
-    Routes must be bigtable-* (the admin the live tier creates them through)."""
-    if raw is None:
-        return []
-    if not isinstance(raw, dict):
-        raise ManifestError(f"{path}: 'setup' must be a mapping with a 'bigtable' list, got {raw!r}")
-    unknown = sorted(set(raw) - _SETUP_KEYS)
-    if unknown:
-        raise ManifestError(f"{path}: 'setup' has unknown key(s) {unknown} -- allowed: {sorted(_SETUP_KEYS)}")
-    items = raw.get("bigtable")
-    if items is None:
-        return []
-    if not isinstance(items, list) or not items:
-        raise ManifestError(f"{path}: 'setup.bigtable' must be a non-empty list of table specs")
-    out = []
-    for i, item in enumerate(items):
-        where = f"{path}: 'setup.bigtable[{i}]'"
-        if not isinstance(item, dict):
-            raise ManifestError(f"{where} must be a mapping, got {item!r}")
-        unknown = sorted(set(item) - _BIGTABLE_SETUP_KEYS)
-        if unknown:
-            raise ManifestError(f"{where} has unknown key(s) {unknown} -- allowed: {sorted(_BIGTABLE_SETUP_KEYS)}")
-        table = item.get("table")
-        if not isinstance(table, str) or not _BIGTABLE_TABLE_RE.match(table.strip()):
-            raise ManifestError(
-                f"{where} needs 'table' (letters, digits, '_', '.', '-', or a ${{TOKEN}}), got {table!r}")
-        db = item.get("db", "bigtable-target")
-        if not isinstance(db, str) or not db.startswith("bigtable-"):
-            raise ManifestError(f"{where}.db must be a bigtable-* route, got {db!r}")
-        families = item.get("families")
-        if not isinstance(families, dict) or not families:
-            raise ManifestError(
-                f"{where} needs 'families': a mapping of family name to null (GC rules go under 'gc')")
-        for fam, rule in families.items():
-            if not isinstance(fam, str) or not fam:
-                raise ManifestError(f"{where}.families: a family name must be a non-empty string")
-            if rule is not None:
-                raise ManifestError(f"{where}.families.{fam} must be null; put its GC rule under 'gc'")
-        gc = item.get("gc") or {}
-        if not isinstance(gc, dict):
-            raise ManifestError(f"{where}.gc must be a mapping of family to rule")
-        stray = sorted(set(gc) - set(families))
-        if stray:
-            raise ManifestError(f"{where}.gc names family(ies) {stray} that 'families' does not declare")
-        seed = item.get("seed") or []
-        if not isinstance(seed, list):
-            raise ManifestError(f"{where}.seed must be a list of rows")
-        for j, row in enumerate(seed):
-            if not isinstance(row, dict) or "row" not in row or not isinstance(row.get("cells"), dict):
-                raise ManifestError(f"{where}.seed[{j}] needs 'row' and a 'cells' mapping")
-        out.append(BigtableSetup(table=table.strip(), db=db, families=dict(families),
-                                 gc_rules=dict(gc), seed=list(seed)))
-    return out
-
-
 def load_manifest(path: Path) -> TestManifest:
     path = Path(path)
     try:
@@ -1318,6 +1247,12 @@ def load_manifest(path: Path) -> TestManifest:
             parse_jmx_specs(assert_["jmx"])
         except JmxSpecError as e:
             raise ManifestError(f"{path}: {e}") from None
+    if assert_ and assert_.get("bigtable") is not None:
+        from livetest.assertions.bigtable import parse_bigtable_specs
+        try:
+            parse_bigtable_specs(assert_["bigtable"])
+        except BigtableSpecError as e:
+            raise ManifestError(f"{path}: {e}") from None
     if (assert_ or {}).get("placement") is not None:
         from livetest.node_fault import normalize_placement
         try:
@@ -1376,6 +1311,15 @@ def load_manifest(path: Path) -> TestManifest:
             isinstance(t, str) and t.strip() for t in kafka_cleanup_topics):
         raise ManifestError(
             f"{path}: 'kafka_cleanup_topics' must be a list of non-empty topic-name strings")
+    try:
+        bigtable_setup = normalize_setup(raw.get("setup"), path)
+    except BigtableSpecError as e:
+        raise ManifestError(str(e)) from None
+    _asserts_bigtable = isinstance(raw.get("assert"), dict) and raw["assert"].get("bigtable")
+    if (bigtable_setup or _asserts_bigtable) and "bigtable" not in requires:
+        raise ManifestError(
+            f"{path}: '{'setup.bigtable' if bigtable_setup else 'assert.bigtable'}' needs 'requires: [bigtable]' "
+            f"-- the emulator and its admin exist only for a test that requires the bigtable service")
     if kafka_cleanup_topics and "kafka" not in requires:
         raise ManifestError(
             f"{path}: 'kafka_cleanup_topics' needs service 'kafka' in 'requires' — the "
@@ -1710,7 +1654,7 @@ def load_manifest(path: Path) -> TestManifest:
         seed=raw.get("seed"),
         ddl_files=ddl_files,
         seed_files=seed_files,
-        bigtable_setup=_normalize_setup(raw.get("setup"), path),
+        bigtable_setup=bigtable_setup,
         action_specs=action_specs,
         assert_=dict(raw.get("assert", {})),
         timeout=int(raw.get("timeout", 120)),

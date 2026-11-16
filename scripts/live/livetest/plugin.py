@@ -1389,6 +1389,30 @@ def require_service_admin(admins: dict, db: str, test_name: str, what: str) -> d
         raise AssertionError(f"{test_name}: {what} needs service {db!r} in 'requires'")
     return admins[db]
 
+def setup_bigtable_tables(specs, admins: dict, tokens: dict, ledger, test_name: str, report=None) -> list:
+    """`setup: bigtable:` -- create each table (families, GC rules, seed rows) through its route's
+    admin, acquired through the ownership ledger: a table that already exists is refused, and the
+    ledger's cleanup drops the table or keeps it, with the case's other resources. Returns the
+    rendered table names."""
+    made = []
+    for spec in specs:
+        table = render(spec.table, tokens)
+        if report is not None:
+            report(test_name, f"creating bigtable table {table}")
+        admin = require_service_admin(admins, spec.db, test_name, "setup.bigtable")["admin"]
+
+        def create(admin=admin, table=table, spec=spec):
+            admin.create_table(table, spec.families, gc_rules=spec.gc_rules)
+            if spec.seed:
+                admin.write_cells(table, spec.seed)
+        try:
+            ledger.acquire_bigtable_table(admin, spec.db, table, create)
+        except Exception as e:  # noqa: BLE001 - reported as the case's failure
+            pytest.fail(f"{test_name}: setup bigtable {table!r} against {spec.db!r} failed: {e}")
+        made.append(table)
+    return made
+
+
 def admin_groups(admins: dict, specs: list, test_name: str, kind: str) -> list:
     """Group data/file specs by db and pair each with its admin; fail fast on an unrequired db."""
     out = []
@@ -2676,20 +2700,8 @@ class LiveItem(pytest.Item):
             if m.modules:
                 _slt_ownership.clear_own_checkpoints(ctx, ident.ns, ledger)   # listed, exact names only
 
-            # `setup: bigtable:` -- each table is created (families, GC rules, seed rows) through its
-            # route's admin before the DDL and the deploy. Remembered on self, so teardown drops it.
-            self._slt_bigtable_created = []
-            for _bs in m.bigtable_setup:
-                _table = render(_bs.table, tokens)
-                _report(m.name, f"creating bigtable table {_table}")
-                _entry = require_service_admin(admins, _bs.db, m.name, "setup.bigtable")
-                self._slt_bigtable_created.append((_bs.db, _table))
-                try:
-                    _entry["admin"].create_table(_table, _bs.families, gc_rules=_bs.gc_rules)
-                    if _bs.seed:
-                        _entry["admin"].write_cells(_table, _bs.seed)
-                except Exception as _e:  # noqa: BLE001 - reported as the case's failure
-                    pytest.fail(f"{m.name}: setup bigtable {_table!r} against {_bs.db!r} failed: {_e}")
+            # `setup: bigtable:` tables, before the DDL and the deploy; the ledger's cleanup drops them.
+            setup_bigtable_tables(m.bigtable_setup, admins, tokens, ledger, m.name, _report)
 
             # DDL always runs before deploy (reader/writer need the tables to exist).
             _report(m.name, "loading DDL")
@@ -3903,9 +3915,8 @@ class LiveItem(pytest.Item):
                         # Each spec names its table and route; the table is read whole through that
                         # route's admin and compared to `expected`, as dbroutes.assert_target does.
                         _report(m.name, "asserting: bigtable")
-                        bspecs = parse_bigtable_specs(m.assert_["bigtable"])
-                        for _bs in bspecs:
-                            _bs["table"] = render(_bs["table"], tokens)
+                        bspecs = [{**_bs, "table": render(_bs["table"], tokens)}
+                                  for _bs in parse_bigtable_specs(m.assert_["bigtable"])]
                         for admin, group in admin_groups(admins, bspecs, m.name, "bigtable"):
                             self._slt_records += assert_bigtable(
                                 admin, group, timeout=m.timeout, status_probe=_terminal_probe,
@@ -3965,7 +3976,7 @@ class LiveItem(pytest.Item):
                     self._slt_records.extend(e.records)
                     raise
             if not ran:
-                pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, monitor, checkpoint_history, jmx)")
+                pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, bigtable, monitor, checkpoint_history, jmx)")
             succeeded = True
         finally:
             _tx_cleanup_error = None
@@ -4086,18 +4097,6 @@ class LiveItem(pytest.Item):
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")
-
-            # `setup: bigtable:` tables are dropped unless the run is kept (a failed table is dropped too).
-            _bt_created = getattr(self, "_slt_bigtable_created", [])
-            self._slt_bigtable_created = []
-            # locals(): a case that failed before the keep decision was made has no such name, and
-            # that must not raise here (this runs in the finally, over the case's own outcome).
-            if _bt_created and locals().get("_slt_keep_reason") is None:
-                for _route, _table in _bt_created:
-                    try:
-                        admins[_route]["admin"].drop_table(_table)
-                    except Exception as _e:  # noqa: BLE001 - teardown never replaces the case's outcome
-                        print(f"[slt] WARNING: {m.name}: failed to drop bigtable table {_table!r}: {_e!r}")
 
             # Release the shared in-use lock LAST, after teardown has finished.
             #

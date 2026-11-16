@@ -8,7 +8,7 @@ Spanner/GCS).
 Unlike every other admin, Bigtable has NO SQL. So instead of run_sql/run_statements this
 admin builds the table + its column families + GC rules from a spec, writes reads rows via
 cells, and drops a row range. Reads render each cell as its raw value's hex string, a
-JSON-comparable form (no manifest assertion reads Bigtable yet: this is groundwork), and
+JSON-comparable form (what `assert: bigtable:` compares), and
 apply `CellsColumnLimitFilter(num_cells=1)` so one row yields its newest cell per
 (family, qualifier) column, i.e. Bigtable's own "latest version" semantics.
 
