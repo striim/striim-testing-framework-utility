@@ -58,12 +58,18 @@ class DockerTimeout(subprocess.CalledProcessError):
 def run(argv, *, timeout: float = QUERY_TIMEOUT_S, check: bool = False, capture: bool = True, **kw):
     """``subprocess.run`` with a bound. On expiry the command is killed and a CompletedProcess with exit
     status ``TIMED_OUT`` is returned (``check=True``: ``DockerTimeout`` is raised). ``capture=False``
-    leaves stdout and stderr on the terminal. Missing binaries raise FileNotFoundError, as before."""
+    leaves stdout and stderr on the terminal. Missing binaries raise FileNotFoundError, as before.
+
+    The command runs in its own process group, killed whole on expiry and on any exception (Ctrl-C
+    included), as ``stream`` does: `docker compose` runs as a child of `docker`, and a post-up script or a
+    build starts children of its own, so killing only the direct child left them running -- a `down -v`
+    that went on after its caller had given up, or a bring-up that kept creating what cleanup had
+    removed."""
     if capture:
         kw.setdefault("capture_output", True)
         kw.setdefault("text", True)
     try:
-        r = subprocess.run(argv, timeout=timeout, **kw)
+        r = _run_group(argv, timeout, kw)
     except subprocess.TimeoutExpired as e:
         if check:
             raise DockerTimeout(argv, timeout, e.stdout) from None
@@ -72,6 +78,55 @@ def run(argv, *, timeout: float = QUERY_TIMEOUT_S, check: bool = False, capture:
     if check and r.returncode:
         raise subprocess.CalledProcessError(r.returncode, argv, r.stdout, r.stderr)
     return r
+
+
+_SUBPROCESS_RUN = subprocess.run
+
+
+def _run_group(argv, timeout: float, kw):
+    """``subprocess.run(argv, timeout=timeout, **kw)``, with the command in a process group of its own that is
+    killed whole when the bound expires (``TimeoutExpired`` is then raised, as ``subprocess.run`` raises it)
+    or when anything else interrupts the wait. A ``subprocess.run`` replaced in this process (a hermetic
+    test's stand-in for the command) is called as before: there is no process here to kill."""
+    if subprocess.run is not _SUBPROCESS_RUN:
+        return subprocess.run(argv, timeout=timeout, **kw)
+    kw = dict(kw)
+    if kw.pop("capture_output", False):
+        kw["stdout"] = kw["stderr"] = subprocess.PIPE
+    stdin_data = kw.pop("input", None)
+    if stdin_data is not None:
+        kw["stdin"] = subprocess.PIPE
+    proc = subprocess.Popen(argv, start_new_session=True, **kw)
+    try:
+        out, err = proc.communicate(stdin_data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        raise subprocess.TimeoutExpired(argv, timeout, output=_drain(proc)) from None
+    except BaseException:
+        _kill_group(proc)
+        try:
+            _drain(proc)
+        except Exception:               # noqa: BLE001 - the interrupt is what the caller must see
+            proc.wait()
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+
+def _drain(proc):
+    """Reap a killed command and return what it wrote to a captured stdout. Bounded: a descendant that left
+    the process group (its own `setsid`) could still hold the pipe; its output is then not waited for."""
+    try:
+        out, _err = proc.communicate(timeout=5)
+        return out
+    except subprocess.TimeoutExpired:
+        for f in (proc.stdin, proc.stdout, proc.stderr):
+            if f is not None:
+                try:
+                    f.close()
+                except OSError:
+                    pass
+        proc.wait()
+        return None
 
 
 def _kill_group(proc) -> None:

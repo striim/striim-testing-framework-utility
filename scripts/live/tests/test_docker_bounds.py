@@ -79,6 +79,76 @@ def test_a_command_that_outlives_its_bound_is_stopped_and_answers_like_a_failure
     assert "did not finish within 0s and was stopped" in r.stderr and "Docker daemon" not in r.stderr
 
 
+# A command that starts a child of its own (as `docker` starts the Compose plugin, or a post-up script a
+# client), which records its pid and, after a delay, acts: a survivor of the timeout would still act.
+_FORKS = """
+import subprocess, sys
+pids, acted = sys.argv[1], sys.argv[2]
+child = subprocess.Popen([sys.executable, "-c",
+    "import os, sys, time; open(sys.argv[1], 'a').write(str(os.getpid()) + chr(10)); time.sleep(2); "
+    "open(sys.argv[2], 'w').write('acted')", pids, acted])
+open(pids, "a").write(str(child.pid) + chr(10))
+child.wait()
+"""
+
+
+def _forks(tmp_path):
+    pids, acted = tmp_path / "pids", tmp_path / "acted"
+    return [sys.executable, "-c", _FORKS, str(pids), str(acted)], pids, acted
+
+
+def _wait_for_pids(pids, n=2):
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if pids.exists() and len(pids.read_text().split()) >= n:
+            return [int(p) for p in pids.read_text().split()]
+        time.sleep(0.05)
+    pytest.fail("the command never started its child")
+
+
+def _gone(pid) -> bool:
+    import psutil
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _assert_nothing_survives(pids, acted):
+    started = _wait_for_pids(pids)
+    time.sleep(3)                                 # past the child's delayed action
+    assert not acted.exists(), "a child of the timed-out command survived and acted"
+    assert all(_gone(pid) for pid in started), started
+
+
+@pytest.mark.parametrize("kw", [{}, {"capture": False}, {"check": True}], ids=["captured", "terminal", "checked"])
+def test_a_command_that_outlives_its_bound_is_stopped_with_every_child(tmp_path, kw):
+    argv, pids, acted = _forks(tmp_path)
+    started = time.monotonic()
+    try:
+        r = dockercmd.run(argv, timeout=1.0, **kw)
+    except dockercmd.DockerTimeout:
+        assert kw.get("check")
+    else:
+        assert not kw.get("check") and r.returncode == dockercmd.TIMED_OUT
+    assert time.monotonic() - started < 10
+    _assert_nothing_survives(pids, acted)
+
+
+def test_an_interrupted_command_is_stopped_with_every_child(tmp_path):
+    import signal
+    import threading
+    argv, pids, acted = _forks(tmp_path)
+    timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT))
+    timer.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            dockercmd.run(argv, timeout=60)
+    finally:
+        timer.cancel()
+    _assert_nothing_survives(pids, acted)
+
+
 def test_a_docker_command_that_times_out_says_so():
     msg = dockercmd.timed_out_message(["docker", "ps", "-a", "--filter", "x"], 60)
     assert msg == "`docker ps -a ...` did not finish within 60s and was stopped (is the Docker daemon responding?)"
