@@ -91,7 +91,8 @@ the last release; the release makes it that version's entry.
 - **Interrupted and failed bring-ups clean up.** Ctrl-C during a service or cluster bring-up no
   longer leaves containers behind. An exclusive run that is interrupted or fails, serial included,
   removes every container of its prefix. An exclusive declaration warns about containers of
-  earlier exclusive runs that nothing owns, with the command to stop them.
+  earlier exclusive runs that nothing owns, with the command to stop them. It is refused when its
+  check for leftover containers of its own prefix fails or times out, instead of going ahead.
 - **Every Docker command has a bound:** 60 s for queries, 10 min for `compose down`, 3 h for
   `compose up`, 1 h for captured builds. A hung Docker daemon fails the step and says so instead of
   hanging. Waits for another process's bring-up lock are bounded too, and name the lock. A command
@@ -150,8 +151,9 @@ the last release; the release makes it that version's entry.
   of reporting that nothing executed. A build-cause skip still fails the run. Halt-log records are
   split per app node, so a record never runs from one node's log into another's.
 - **`INT_STACK_PREFIX` is checked as `SLT_STACK_PREFIX` is**: lowercase letters, digits and
-  dashes, starting with a letter or digit (`../x` or `Alt` was used as given). `SLT_STACK_PREFIX`
-  with a trailing newline is refused.
+  dashes, starting with a letter or digit (`../x` or `Alt` was used as given). An invalid value
+  stops an integration run before collection, as a usage error naming the setting, and
+  `inttest.cli` exits 2. `SLT_STACK_PREFIX` with a trailing newline is refused.
 - **A case without a `lifecycle:` block bounds its best-effort teardown**: 60 s for each step and
   600 s for the whole teardown, the ownership ledger's bounds. A hung delete is reported as a
   failure, which fails the case, instead of hanging the run.
@@ -225,7 +227,8 @@ the last release; the release makes it that version's entry.
   other live session the stop runs as before. `livetest.preflight --restart-app-nodes` under
   `shared` refuses the same way. The check and the stop are one step: from the check until the
   stop or restart has finished (or failed), a live run declaring on that endpoint is refused,
-  naming the stopping pid, so no session starts on a stack that is being removed.
+  naming the stopping pid, so no session starts on a stack that is being removed. The endpoint is
+  the one a run uses: `STRIIM_URL` from the environment, else from `.env`.
 - **A failed integration teardown fails the session.** At session end a `compose down` that fails,
   or leaves a same-named container behind, sets exit status 1 (case results stand), and the
   service stays in `.int-services-up.json` so the next session tears it down. Before, it was a
@@ -235,7 +238,8 @@ the last release; the release makes it that version's entry.
   values, on one integration stack are now one stack: a second session is refused instead of
   taking down the first one's containers. Like the live tier's locks they are made writable by
   every user on the machine, whatever the umask, so another user's session on the same stack waits
-  for them instead of failing on a permission error.
+  for them instead of failing on a permission error. `inttest.cli start` and `stop` read `.env` as a
+  session does, so an `INT_STACK_PREFIX` set only there scopes their compose lock too.
 
 **New**
 

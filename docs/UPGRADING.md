@@ -124,7 +124,8 @@ they saw `skipped` and `passed`.
 ### `INT_STACK_PREFIX` values
 
 `INT_STACK_PREFIX` must now be lowercase letters, digits and dashes, starting with a letter or
-digit, as `SLT_STACK_PREFIX` already had to be. Rename a prefix that is refused.
+digit, as `SLT_STACK_PREFIX` already had to be. A refused value stops the run with a usage error
+naming it, before anything starts. Rename a prefix that is refused.
 
 ### Integration item ids (breaking)
 
