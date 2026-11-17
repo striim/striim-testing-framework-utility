@@ -18,6 +18,7 @@ from livetest.preflight import (
     teardown_services as preflight_teardown_services,
 )
 from livetest.registry import all_services
+from livetest.stack import adopt_prefix
 
 # The Striim cluster is a startable target but NOT a registry service: it has compose files
 # and no service.yaml, and striim_provision owns its lifecycle. Named here so `start live`
@@ -151,21 +152,9 @@ def cmd_ggtrail(args) -> int:
     return 0
 
 
-def _adopt_stack_prefix(env=None) -> None:
-    """Put the effective SLT_STACK_PREFIX into this process's environment.
-
-    The service compose calls resolve settings through the .env layers, but the Striim cluster's
-    compose calls (`ps`, `down -v`) read only os.environ. A prefix set only in .env would then scope
-    the database containers to the reader's stack and the Striim cluster to the unprefixed one, and
-    `stop striim` could remove another stack's cluster and its MDR volume. A prefix exported in the
-    shell already wins in both, and is left alone."""
-    from livetest import paths
-    env = os.environ if env is None else env
-    if (env.get("SLT_STACK_PREFIX") or "").strip():
-        return
-    value = (paths.effective_env(env).get("SLT_STACK_PREFIX") or "").strip()
-    if value:
-        env["SLT_STACK_PREFIX"] = value
+# The effective SLT_STACK_PREFIX into this process's environment (stack.adopt_prefix): shared with
+# `python -m livetest.preflight`, which reaches the same cluster compose calls.
+_adopt_stack_prefix = adopt_prefix
 
 
 def main() -> int:

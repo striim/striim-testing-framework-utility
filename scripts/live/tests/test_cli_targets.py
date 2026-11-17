@@ -332,6 +332,28 @@ def test_stop_runs_with_the_dotenv_prefix_in_its_environment(tmp_path, monkeypat
     assert seen == [(["striim", "postgres"], "review-a")]
 
 
+@pytest.mark.parametrize("argv, entry", [(["--teardown"], "teardown"), ([], "provision"),
+                                         (["--restart-app-nodes"], "restart_app_nodes")])
+def test_the_preflight_entry_point_runs_with_the_dotenv_prefix_in_its_environment(tmp_path, monkeypatch,
+                                                                                 real_dotenv, argv, entry):
+    """`python -m livetest.preflight` reaches the same Striim cluster compose calls as `livetest.cli`, which
+    read os.environ only: it adopts .env's SLT_STACK_PREFIX the same way, or `--teardown` would run
+    `down -v` on the unprefixed cluster."""
+    from livetest import preflight
+    (tmp_path / ".env").write_text("SLT_STACK_PREFIX=review-a\n")
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SLT_STACK_PREFIX", "")              # recorded, so the adopted value is undone
+    monkeypatch.delenv("SLT_STACK_PREFIX")
+    monkeypatch.delenv("GOLD_TARGETS", raising=False)
+    seen = []
+    record = lambda *a, **k: seen.append(os.environ.get("SLT_STACK_PREFIX")) or 0
+    for name in ("teardown", "provision", "restart_app_nodes"):
+        monkeypatch.setattr(preflight, name, record if name == entry else
+                            (lambda *a, **k: pytest.fail(f"{entry} expected")))
+    assert preflight.main(argv) == 0
+    assert seen == ["review-a"]
+
+
 def _ggtrail(monkeypatch, *argv):
     """Run `python -m livetest.cli ggtrail ...` with the runner's two entry points recorded."""
     from livetest import project

@@ -86,6 +86,24 @@ def state_name(base: str, env=None) -> str:
     return f"{p}-{base}"
 
 
+def adopt_prefix(env=None) -> None:
+    """Put the effective SLT_STACK_PREFIX into this process's environment (``livetest.cli`` and
+    ``python -m livetest.preflight``, which a pytest session's own .env merge does not cover).
+
+    The service compose calls resolve settings through the .env layers, but the Striim cluster's
+    compose calls (`ps`, `down -v`) read only os.environ. A prefix set only in .env would then scope
+    the database containers to the reader's stack and the Striim cluster to the unprefixed one, and
+    `stop striim` could remove another stack's cluster and its MDR volume. A prefix exported in the
+    shell already wins in both, and is left alone."""
+    from livetest import paths
+    env = os.environ if env is None else env
+    if (env.get("SLT_STACK_PREFIX") or "").strip():
+        return
+    value = (paths.effective_env(env).get("SLT_STACK_PREFIX") or "").strip()
+    if value:
+        env["SLT_STACK_PREFIX"] = value
+
+
 # ---------------------------------------------------------------------------
 # Coordination locks live OUTSIDE the checkout, machine-wide.
 #

@@ -1001,6 +1001,9 @@ def main(argv=None) -> int:
     if problems:                               # a switch set to neither 1 nor 0 (paths.flag)
         _log("ERROR: " + "\n".join(problems))
         return 2
+    # As livetest.cli does: the cluster's compose calls read SLT_STACK_PREFIX from os.environ only, so a
+    # prefix set only in .env would leave `--teardown` running `down -v` on the unprefixed cluster.
+    stack.adopt_prefix()
     if args.restart_app_nodes:
         return restart_app_nodes()
     if args.teardown:
