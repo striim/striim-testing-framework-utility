@@ -591,3 +591,54 @@ def test_a_cold_oracle_start_does_not_hold_up_a_missing_postgres(monkeypatch, tm
     assert oracle.returncode == 0 and out.strip().endswith("provisioned-and-kept"), out
     registry = json.loads(services._provision_state_paths()[0].read_text())
     assert {services.load_service("oracle").container, services.load_service("postgres").container} <= set(registry)
+
+
+def test_a_service_whose_container_is_named_registry_is_provisioned(monkeypatch, tmp_path):
+    """A valid consumer container name that equals a name the provisioning code uses for its own files:
+    its provisioning lock must not be the registry's lock, which the same bring-up takes inside it. Through
+    the real resolver and the real provision registry; only Docker (`compose up`) and post-up are stubbed,
+    and the registry lock's wait is cut to 2 s so a collision fails quickly."""
+    import threading
+    from livetest import layout
+    svc = tmp_path / "services" / "regsvc"
+    svc.mkdir(parents=True)
+    (svc / "service.yaml").write_text("name: regsvc\ncompose: compose.yaml\ncontainer: registry\nisolation: none\n")
+    (svc / "compose.yaml").write_text("services: {}\n")
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("SLT_STATE_DIR", str(state))
+    monkeypatch.setenv("SLT_PARALLEL", "1")
+    monkeypatch.setattr(services, "_REGISTRY_WAIT_S", 2.0)
+    layout.set_roots(services=[tmp_path / "services"])
+    ups, box = [], {}
+
+    def bring_up():
+        inf = infra.Infra("shared", PORT, infra._lock_dir())
+        try:
+            infra.resolve_service(inf, "regsvc", dict(os.environ), set(),
+                                  lambda n, e, s, progress=None: services.resolve(
+                                      n, e, s, compose_up=lambda d: ups.append(d.container), post_up=lambda d: None),
+                                  container_running=lambda c: False)
+            box["status"] = inf.services[0]["status"]
+        except BaseException as e:      # noqa: BLE001 - handed back to the test
+            box["error"] = e
+
+    try:
+        worker = threading.Thread(target=bring_up, daemon=True)
+        worker.start()
+        worker.join(30)
+        assert not worker.is_alive(), "the bring-up never finished"
+        assert "error" not in box, box["error"]
+        assert ups == ["registry"] and box["status"] == "provisioned-and-kept"
+        assert "registry" in json.loads(services._provision_state_paths()[0].read_text())
+    finally:
+        layout._reset()
+
+
+@pytest.mark.parametrize("prefix", ["", "alt"])
+@pytest.mark.parametrize("key", ["registry", "slt-registry", "key-registry", ".slt-provision-registry"])
+def test_no_container_name_makes_a_provisioning_lock_another_lock_file(monkeypatch, prefix, key):
+    monkeypatch.setenv("SLT_STACK_PREFIX", prefix)
+    lock = services._provision_key_lock(key)
+    assert lock != services._provision_state_paths()[1]                     # the registry's lock
+    assert lock.name.startswith(f".{prefix}-slt-provision-key-" if prefix else ".slt-provision-key-")

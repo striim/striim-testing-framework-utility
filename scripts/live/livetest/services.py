@@ -168,9 +168,12 @@ _REGISTRY_WAIT_S = 60.0
 
 
 def _provision_key_lock(key: str, env=None) -> Path:
-    """The machine-wide lock that one key's provisioning holds (prefix-scoped like the registry lock)."""
+    """The machine-wide lock that one key's provisioning holds (prefix-scoped like the registry lock).
+    Its names have a space of their own, ``.slt-provision-key-*``, which no other lock file uses: a key is a
+    consumer's container name, and ``registry`` would otherwise name the registry's own lock, which the
+    same bring-up takes while it holds this one."""
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
-    return stack.lock_path(f".slt-provision-{safe}.lock", env)
+    return stack.lock_path(f".slt-provision-key-{safe}.lock", env)
 
 
 def _registry_lock(lock: Path, context=None) -> FileLock:
