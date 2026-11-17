@@ -242,7 +242,7 @@ def test_a_missing_docker_binary_still_surfaces_as_docker_unavailable(monkeypatc
 
     def run(argv, **kw):
         raise FileNotFoundError("docker")
-    monkeypatch.setattr(services_mod.subprocess, "run", run)
+    monkeypatch.setattr(services_mod.dockercmd, "run", run)
     with pytest.raises(services_mod.DockerUnavailable):
         services_mod._default_compose_up(load_service("mysql"))
 
@@ -261,7 +261,7 @@ def test_detection_never_runs_when_the_bind_address_is_set(monkeypatch, tmp_path
     def fake_run(argv, **kw):
         seen.append(list(argv))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(services_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(services_mod.dockercmd, "run", fake_run)
     services_mod._default_compose_up(load_service("mysql"))
     sp.cluster_up(tmp_path, {"STRIIM_VERSION": "5.4.2"}, run=lambda argv, cwd=None: seen.append(list(argv)),
                   query_run=lambda argv, **kw: pytest.fail(f"queried Docker: {argv}"))
@@ -281,7 +281,7 @@ def test_a_service_bring_up_runs_compose_with_the_bind_env(monkeypatch):
     def fake_run(argv, **kw):
         seen.append((argv, kw.get("env")))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(services_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(services_mod.dockercmd, "run", fake_run)
     services_mod._default_compose_up(load_service("mysql"))
     ups = [env for argv, env in seen if "up" in argv]
     assert ups and ups[0]["SLT_BIND_ADDRESS"] == "127.0.0.1"

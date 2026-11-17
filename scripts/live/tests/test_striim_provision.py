@@ -389,9 +389,12 @@ def test_ensure_image_touches_no_real_docker_when_runners_are_injected(tmp_path,
     # un-forwarded seam and could untag a developer's actual 21 GB image.
     d = _checkout(tmp_path)
     escaped = []
-    monkeypatch.setattr(sp.subprocess, "run",
-                        lambda argv, **k: escaped.append(argv) or types.SimpleNamespace(
-                            stdout="", returncode=0, stderr=""))
+
+    def escape(argv, **k):
+        escaped.append(argv)
+        return types.SimpleNamespace(stdout="", returncode=0, stderr="")
+    monkeypatch.setattr(sp.subprocess, "run", escape)
+    monkeypatch.setattr(sp.dockercmd, "run", escape)
     sp.ensure_image(d, {"STRIIM_VERSION": "5.4.0.6", "JAVA_RELEASE": "17"},
                     run=lambda argv, cwd=None: None,
                     query_run=lambda argv: types.SimpleNamespace(stdout="", returncode=1))

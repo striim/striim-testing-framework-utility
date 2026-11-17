@@ -101,7 +101,7 @@ def test_compose_never_builds_the_supplied_image(monkeypatch, override):
         monkeypatch.setenv("SLT_BIGQUERY_IMAGE", "example:qualified")
     else:
         monkeypatch.delenv("SLT_BIGQUERY_IMAGE", raising=False)
-    monkeypatch.setattr(services.subprocess, "run", lambda args, **kwargs:
+    monkeypatch.setattr(services.dockercmd, "run", lambda args, **kwargs:
                         seen.append(args) or SimpleNamespace(returncode=0, stdout="", stderr=""))
     services._default_compose_up(registry.load_service("bigquery"))
     command = next(args for args in seen if "up" in args)

@@ -82,7 +82,7 @@ def test_running_container_without_healthcheck_is_reused(lane):
 
 def test_compose_up_runs_no_compose_command_for_a_reused_service(lane, monkeypatch):
     run, calls = _docker({"int-teradata": _info()})
-    monkeypatch.setattr(services.subprocess, "run", run)
+    monkeypatch.setattr(services.dockercmd, "run", run)
     services.compose_up("teradata", MagicMock())
     assert [c for c in calls if c[:2] == ["docker", "compose"]] == []
     assert calls == [["docker", "container", "inspect", "int-teradata"]]
@@ -151,7 +151,7 @@ def test_the_wait_counts_wall_clock_time_not_sleeps(lane):
 
 def test_unhealthy_container_is_refused_naming_the_owner_and_the_fix(lane, monkeypatch):
     run, calls = _docker({"int-teradata": _info(health="unhealthy")})
-    monkeypatch.setattr(services.subprocess, "run", run)
+    monkeypatch.setattr(services.dockercmd, "run", run)
     with pytest.raises(services.SharedServiceError, match="unhealthy") as e:
         services.compose_up("teradata", MagicMock())
     assert f"Owned by {MAIN}" in str(e.value)

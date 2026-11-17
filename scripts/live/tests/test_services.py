@@ -49,7 +49,7 @@ def test_default_compose_up_raises_docker_unavailable_when_docker_missing(monkey
     def fake_run(*args, **kwargs):
         raise FileNotFoundError("docker: command not found")
 
-    monkeypatch.setattr(services_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(services_mod.dockercmd, "run", fake_run)
     defn = load_service("postgres")
     with pytest.raises(DockerUnavailable):
         _default_compose_up(defn)
@@ -140,7 +140,7 @@ def test_derive_per_test_base_is_idempotent():
 
 
 def _failing_run_recorder(calls):
-    """A subprocess.run stand-in that records every argv and always reports failure
+    """A dockercmd.run stand-in that records every argv and always reports failure
     (returncode 1) — for exercising _default_compose_up's up-failure cleanup path."""
     def fake_run(argv, **kw):
         calls.append(argv)
@@ -158,7 +158,7 @@ def test_compose_up_failure_skips_down_v_when_keep_services(monkeypatch):
     # volumes that sibling workers depend on.
     monkeypatch.setenv("SLT_KEEP_SERVICES", "1")
     calls = []
-    monkeypatch.setattr("livetest.services.subprocess.run", _failing_run_recorder(calls))
+    monkeypatch.setattr("livetest.services.dockercmd.run", _failing_run_recorder(calls))
     defn = load_service("postgres")
     with pytest.raises(ServiceError):
         _default_compose_up(defn)
@@ -169,7 +169,7 @@ def test_compose_up_failure_runs_down_v_without_keep_services(monkeypatch):
     # No SLT_KEEP_SERVICES: preserve today's behavior — a failed up cleans up with `down -v`.
     monkeypatch.delenv("SLT_KEEP_SERVICES", raising=False)
     calls = []
-    monkeypatch.setattr("livetest.services.subprocess.run", _failing_run_recorder(calls))
+    monkeypatch.setattr("livetest.services.dockercmd.run", _failing_run_recorder(calls))
     defn = load_service("postgres")
     with pytest.raises(ServiceError):
         _default_compose_up(defn)
@@ -177,7 +177,7 @@ def test_compose_up_failure_runs_down_v_without_keep_services(monkeypatch):
 
 
 def _compose_recorder(calls, stopped: str):
-    """A subprocess.run stand-in: `ps` answers `stopped` (container ids, or nothing), every other
+    """A dockercmd.run stand-in: `ps` answers `stopped` (container ids, or nothing), every other
     command succeeds."""
     def fake_run(argv, **kw):
         calls.append(argv)
@@ -194,7 +194,7 @@ def test_kept_kafka_that_is_stopped_starts_from_clean_state(monkeypatch):
     # ZooKeeper data exits NodeExists: it is reset (down -v) before the up.
     monkeypatch.setenv("SLT_KEEP_SERVICES", "1")
     calls = []
-    monkeypatch.setattr("livetest.services.subprocess.run", _compose_recorder(calls, "3f2a9c\n"))
+    monkeypatch.setattr("livetest.services.dockercmd.run", _compose_recorder(calls, "3f2a9c\n"))
     _default_compose_up(load_service("kafka"))
     verbs = [next(v for v in ("ps", "down", "up") if v in argv) for argv in calls]
     assert verbs == ["ps", "down", "up"]
@@ -206,7 +206,7 @@ def test_kept_kafka_that_is_stopped_starts_from_clean_state(monkeypatch):
 def test_kept_kafka_that_is_running_is_reused(monkeypatch):
     monkeypatch.setenv("SLT_KEEP_SERVICES", "1")
     calls = []
-    monkeypatch.setattr("livetest.services.subprocess.run", _compose_recorder(calls, ""))
+    monkeypatch.setattr("livetest.services.dockercmd.run", _compose_recorder(calls, ""))
     _default_compose_up(load_service("kafka"))
     assert not any("down" in argv for argv in calls)
     assert any("up" in argv for argv in calls)
@@ -216,7 +216,7 @@ def test_kept_postgres_is_not_checked_for_stopped_containers(monkeypatch):
     # Restarting a stopped database keeps its data and is what SLT_KEEP_SERVICES is for.
     monkeypatch.setenv("SLT_KEEP_SERVICES", "1")
     calls = []
-    monkeypatch.setattr("livetest.services.subprocess.run", _compose_recorder(calls, "3f2a9c\n"))
+    monkeypatch.setattr("livetest.services.dockercmd.run", _compose_recorder(calls, "3f2a9c\n"))
     _default_compose_up(load_service("postgres"))
     assert not any("ps" in argv or "down" in argv for argv in calls)
 
@@ -300,7 +300,7 @@ def test_default_compose_up_wipes_volumes_before_bring_up(monkeypatch):
         calls.append(argv)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(services_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(services_mod.dockercmd, "run", fake_run)
     # This asserts the DEFAULT path, which SLT_KEEP_SERVICES deliberately suppresses
     # (services.py skips the pre-up `down -v` under it). Without clearing it the test
     # measures the ambient shell instead of the behavior it names, and fails for anyone
@@ -330,7 +330,7 @@ def test_default_compose_up_passes_build(monkeypatch):
         stdout = stderr = ""
 
     monkeypatch.setenv("SLT_KEEP_SERVICES", "1")      # skip the _compose_reset down -v
-    monkeypatch.setattr(services_mod.subprocess, "run",
+    monkeypatch.setattr(services_mod.dockercmd, "run",
                         lambda argv, **k: seen.append(argv) or _Done())
     _default_compose_up(load_service("postgres"))
 

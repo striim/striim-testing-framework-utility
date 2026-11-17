@@ -56,7 +56,7 @@ def test_controller_tears_down_what_its_workers_brought_up(monkeypatch, calls):
     out = _worker(monkeypatch, calls)
     assert out["slt_teardown"]["services"] == ["postgres"]
     controller = _controller()
-    monkeypatch.setattr(P.subprocess, "run", lambda *a, **k: pytest.fail("every worker reported; no prefix scan"))
+    monkeypatch.setattr(P.dockercmd, "run", lambda *a, **k: pytest.fail("every worker reported; no prefix scan"))
     P.pytest_testnodeready(_node(controller, "gw0"))
     P.pytest_testnodedown(_node(controller, "gw0", workeroutput=out), None)
     P.pytest_sessionfinish(_session(controller), 0)
@@ -83,7 +83,7 @@ def test_crashed_worker_tears_down_by_stack_identity(monkeypatch, calls):
     import livetest.registry as registry
     monkeypatch.setattr(registry, "all_services", lambda: ["kafka", "postgres"])
     names = "xabc-slt-striim\nxabc-slt-kafka\n"
-    monkeypatch.setattr(P.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=0, stdout=names, stderr=""))
+    monkeypatch.setattr(P.dockercmd, "run", lambda argv, **k: SimpleNamespace(returncode=0, stdout=names, stderr=""))
     controller = _controller()
     P.pytest_testnodedown(SimpleNamespace(config=controller), RuntimeError("worker crashed"))
     P.pytest_sessionfinish(_session(controller), 0)
@@ -91,7 +91,7 @@ def test_crashed_worker_tears_down_by_stack_identity(monkeypatch, calls):
 
 
 def test_crashed_worker_with_docker_unanswering_is_a_failed_teardown(monkeypatch, calls):
-    monkeypatch.setattr(P.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=1, stdout="", stderr="no daemon"))
+    monkeypatch.setattr(P.dockercmd, "run", lambda argv, **k: SimpleNamespace(returncode=1, stdout="", stderr="no daemon"))
     controller = _controller()
     P.pytest_testnodedown(SimpleNamespace(config=controller), RuntimeError("worker crashed"))
     P.pytest_sessionfinish(_session(controller), 0)
@@ -104,7 +104,7 @@ def stack_on_docker(monkeypatch):
     import livetest.registry as registry
     monkeypatch.setattr(registry, "all_services", lambda: ["kafka", "postgres"])
     names = "xabc-slt-striim\nxabc-slt-kafka\n"
-    monkeypatch.setattr(P.subprocess, "run", lambda argv, **k: SimpleNamespace(returncode=0, stdout=names, stderr=""))
+    monkeypatch.setattr(P.dockercmd, "run", lambda argv, **k: SimpleNamespace(returncode=0, stdout=names, stderr=""))
 
 
 def test_interrupted_controller_tears_down_by_stack_identity(calls, stack_on_docker):
@@ -172,7 +172,7 @@ def test_a_serial_exclusive_run_that_did_not_finish_cleanly_tears_down_by_stack_
 
 @pytest.mark.parametrize("exitstatus", [pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED])
 def test_a_serial_exclusive_run_that_finished_cleanly_needs_no_prefix_scan(monkeypatch, calls, exitstatus):
-    monkeypatch.setattr(P.subprocess, "run", lambda *a, **k: pytest.fail("no prefix scan"))
+    monkeypatch.setattr(P.dockercmd, "run", lambda *a, **k: pytest.fail("no prefix scan"))
     P.pytest_sessionfinish(_session(_controller()), exitstatus)
     assert calls == []
 

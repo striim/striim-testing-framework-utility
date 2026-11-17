@@ -245,6 +245,26 @@ def test_a_helper_a_completed_command_left_running_is_stopped_when_it_returns(tm
         _kill_all(pids)
 
 
+@pytest.mark.parametrize("how", ["captured", "terminal"])
+def test_a_wrapped_subprocess_run_does_not_turn_the_group_kill_off(tmp_path, monkeypatch, how):
+    # A plugin or shim that wraps `subprocess.run` (pytest-subprocess, gevent, a timing shim) made
+    # `_run_group` call the wrapper as if it were a test's stand-in, skipping the process group, the
+    # bounded kill and the cleanup on return. `dockercmd.run` no longer calls `subprocess.run` at all.
+    real, seen = subprocess.run, []
+
+    def shim(*a, **k):
+        seen.append(a[:1])
+        return real(*a, **k)
+    monkeypatch.setattr(subprocess, "run", shim)
+    argv, pids, acted = _orphaning(tmp_path, _LEAVES_A_HELPER)
+    try:
+        assert dockercmd.run(argv, timeout=30, check=True, capture=how == "captured").returncode == 0
+        _assert_nothing_survives(pids, acted)
+        assert seen == []
+    finally:
+        _kill_all(pids)
+
+
 # The caller of a command, in a session of its own (a stand-in for a tier). The command starts a child
 # that ignores SIGINT and SIGTERM, records its pid, acts after 3 s and keeps running; the command itself
 # dies of SIGINT (as `docker` does), so a group interrupt ends it before the child it leaves behind.
@@ -527,7 +547,7 @@ def test_the_streamed_compose_up_is_bounded(monkeypatch, tmp_path):
     monkeypatch.setattr(services, "_preflight_profile", lambda defn: None)
     monkeypatch.setattr(services, "_compose_reset", lambda compose: None)
     monkeypatch.setattr(services, "_compose_env", lambda: {})
-    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(services.dockercmd, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="", stderr=""))
     defn = SimpleNamespace(name="mysql", dir=tmp_path, compose="compose.yaml", container="slt-mysql")
     monkeypatch.setattr(services.drivers, "hook", lambda d, name: None)
     phases = []

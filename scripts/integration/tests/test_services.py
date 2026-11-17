@@ -139,7 +139,7 @@ def test_the_check_does_not_run_inside_compose_down(monkeypatch, tmp_path):
     _compose_repo(tmp_path, "postgres",
                   "services:\n  int-postgres:\n    container_name: int-postgres\n")
     _use_root(monkeypatch, tmp_path)
-    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    monkeypatch.setattr(services.dockercmd, "run", lambda *a, **k: SimpleNamespace(returncode=0))
     monkeypatch.setattr(services, "container_exists", lambda c: True)
 
     services.compose_down("postgres", FileLock(str(tmp_path / "l.lock")))   # must not raise
@@ -414,7 +414,7 @@ def test_outer_start_uses_same_cache_for_hook_guard_and_compose(tmp_path, monkey
     monkeypatch.setattr(cli, '_lock_file', lambda: tmp_path / 'compose.lock')
     monkeypatch.setattr(prestart, 'lock_path', lambda name: tmp_path / 'pre-up.lock')
     monkeypatch.setattr(prestart, '_execute', execute)
-    monkeypatch.setattr(services.subprocess, 'run', compose)
+    monkeypatch.setattr(services.dockercmd, 'run', compose)
     assert cli.cmd_up(['teradata'] if named else ['all']) == 0
     assert len(compose_envs) == 1
     assert len(hook_envs) == int(named)

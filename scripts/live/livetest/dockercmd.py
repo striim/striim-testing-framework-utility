@@ -95,8 +95,6 @@ def transfer(argv, **kw):
     return run(argv, timeout=TRANSFER_TIMEOUT_S, **kw)
 
 
-_SUBPROCESS_RUN = subprocess.run
-
 # Holds the command's process group (``_spawn``). It waits for end-of-file on its stdin, a pipe that only
 # the process that started the command holds open, and then kills its own group: the command and every
 # process it started. Signals that would end it without doing that are ignored.
@@ -163,10 +161,7 @@ def _stop(anchor, proc) -> None:
 def _run_group(argv, timeout: float, kw):
     """``subprocess.run(argv, timeout=timeout, **kw)``, ending the command's process group (``_stop``) once
     it has finished, when the bound expires (``TimeoutExpired`` is then raised, as ``subprocess.run``
-    raises it) and when anything else interrupts the wait. A ``subprocess.run`` replaced in this process (a
-    hermetic test's stand-in for the command) is called as before: there is no process here to stop."""
-    if subprocess.run is not _SUBPROCESS_RUN:
-        return subprocess.run(argv, timeout=timeout, **kw)
+    raises it) and when anything else interrupts the wait."""
     kw = dict(kw)
     if kw.pop("capture_output", False):
         kw["stdout"] = kw["stderr"] = subprocess.PIPE

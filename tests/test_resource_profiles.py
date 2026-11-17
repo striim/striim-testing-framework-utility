@@ -549,7 +549,7 @@ def test_unavailable_docker_still_skips_a_complete_profile(tmp_path, monkeypatch
     def no_docker(*args, **kwargs):
         raise FileNotFoundError("docker")
 
-    monkeypatch.setattr(int_services.subprocess, "run", no_docker)
+    monkeypatch.setattr(int_services.dockercmd, "run", no_docker)
     with pytest.raises(pytest.skip.Exception, match="cannot bring up service 'postgres'"):
         int_plugin._provision_requires("case", ["postgres"], FileLock(str(tmp_path / "compose.lock")))
 

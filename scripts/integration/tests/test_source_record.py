@@ -96,7 +96,8 @@ def harness_dir(tmp_path, monkeypatch):
         _mk(jar, 2000)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(harness.subprocess, "run", fake_mvn)
+    from livetest import dockercmd
+    monkeypatch.setattr(dockercmd, "run", fake_mvn)            # the harness builds through it
     return java, jar, fake_mvn
 
 

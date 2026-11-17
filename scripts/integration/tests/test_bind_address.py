@@ -26,7 +26,7 @@ def _capture(monkeypatch):
     def run(argv, **kw):
         seen.append((list(argv), kw.get("env")))
         return SimpleNamespace(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(services.subprocess, "run", run)
+    monkeypatch.setattr(services.dockercmd, "run", run)
     return seen
 
 
@@ -73,7 +73,7 @@ def test_compose_up_with_docker_unreachable_binds_loopback_and_runs_up(tmp_path,
         seen.append((list(argv), kw.get("env")))
         return SimpleNamespace(returncode=1 if argv[1] == "info" else 0, stdout="",
                                stderr="Cannot connect to the Docker daemon")
-    monkeypatch.setattr(services.subprocess, "run", run)
+    monkeypatch.setattr(services.dockercmd, "run", run)
     services.compose_up("mysql", MagicMock())
     assert [argv[1] for argv, _ in seen] == ["info", "compose"]
     up_env = seen[-1][1]
