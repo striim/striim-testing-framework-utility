@@ -322,3 +322,22 @@ def test_a_source_saved_during_the_build_leaves_the_jar_stale(project, monkeypat
     built, ran, reasons = _hermetic_build_jar(engine, project, monkeypatch, package)
     assert built.origin == 'built' and len(ran) == 1
     assert _same(engine._stale_trigger(project.jar, project.mod), project.own)
+
+
+@pytest.mark.parametrize('name', ENGINES)
+@pytest.mark.parametrize('change', ['edited', 'deleted', 'unchanged'])
+def test_a_build_walks_the_input_tree_once(project, monkeypatch, name, change):
+    # Each walk is an rglob over src/main, every add-sourced root and the parent poms; the staleness
+    # check, the rebuild's reason and the record all use the one list.
+    engine = _engine(name)
+    _built(engine, project)
+    if change == 'edited':
+        _edit(project.own)
+    elif change == 'deleted':
+        project.field2.unlink()
+    walks = []
+    real = engine.jarinputs.inputs
+    monkeypatch.setattr(engine.jarinputs, 'inputs', lambda d: walks.append(d) or real(d))
+    built, ran, reasons = _hermetic_build_jar(engine, project, monkeypatch)
+    assert built.origin == ('reused' if change == 'unchanged' else 'built')
+    assert len(walks) == 1

@@ -359,14 +359,16 @@ def _write_source_record(jar: Path, module_dir: Path) -> None:
     jarinputs.write_record(jar, jarinputs.digests(module_dir, jarinputs.inputs(module_dir)))
 
 
-def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
+def _stale_trigger(jar: Path, module_dir: Path, srcs: list[Path] | None = None) -> Path | None:
     # Return the input that makes the jar stale (so a rebuild note can name what changed), or None
     # when it is up to date. Rebuild on any change -- otherwise an edit (without `mvn clean`) is
     # silently ignored and the live suite uploads the OLD jar, reporting green over a real
     # regression. The inputs are what Maven builds the jar from (jarinputs); a deleted input, or one
     # whose bytes changed behind an old mtime, is seen through the jar's source record (each input
-    # with its content digest), which mtimes cannot do.
-    return jarinputs.stale_trigger(jar, module_dir, jarinputs.inputs(module_dir))
+    # with its content digest), which mtimes cannot do. `srcs` is the build's one walk of them.
+    if srcs is None:
+        srcs = jarinputs.inputs(module_dir)
+    return jarinputs.stale_trigger(jar, module_dir, srcs)
 
 def _running_java_major(run=None) -> str | None:
     # Best-effort major version of whatever `java` the ambient JAVA_HOME/PATH resolves
@@ -707,6 +709,8 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # died with `ZipException: zip END header not found` at deploy: a test FAILURE where
     # a rebuild (or, if unbuildable, a skip) is the right outcome.
     corrupt = _jar_unreadable(jar) if jar is not None else None
+    # One walk of the inputs serves the staleness check, the rebuild's reason and the record.
+    srcs = jarinputs.inputs(module_dir)
 
     if jar is not None and corrupt is None:
         recorded = _read_manifest_fingerprint(jar)
@@ -721,7 +725,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             # agnostic bytecode guard must hold: it catches a wrong Java LEVEL no matter who built the
             # jar (the 5.4/Java17 <-> 5.0/Java11 switch) and a stale-repackage whose manifest lies.
             _assert_jar_java_version(jar, java_release, module_dir)
-            trigger = _stale_trigger(jar, module_dir)
+            trigger = _stale_trigger(jar, module_dir, srcs)
             if trigger is None:
                 return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="reused")
             # Any source change forces `mvn clean` -- this harness never does an
@@ -738,7 +742,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             reason = f"source changed ({changed} is newer than {jar.name}) -> clean rebuild"
             if trigger == _source_record(jar):
                 reason = f"no source record for {jar.name} -> clean rebuild"
-            elif jarinputs.is_removed(trigger, module_dir, jarinputs.inputs(module_dir)):
+            elif jarinputs.is_removed(trigger, module_dir, srcs):
                 reason = f"source removed ({changed} was built into {jar.name}) -> clean rebuild"
             elif jarinputs.mtime_hides(trigger, jar):
                 reason = (f"source changed ({changed} differs from what {jar.name} was built from, "
@@ -788,7 +792,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     notify(reason)
     # The record vouches for what the build read, so it is digested before Maven starts: an input
     # saved during the build may not be in the jar, and must still read as changed next run.
-    started_from = jarinputs.digests(module_dir, jarinputs.inputs(module_dir))
+    started_from = jarinputs.digests(module_dir, srcs)
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
     try:
         r = run(goals, str(module_dir), build_env)
