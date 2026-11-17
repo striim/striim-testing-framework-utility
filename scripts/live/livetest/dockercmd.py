@@ -11,8 +11,6 @@ own `compose up`/`down` stream too, but through ``stream`` below, under the comp
 """
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 import threading
 
@@ -162,25 +160,20 @@ def _drain(proc):
         return None
 
 
-def _kill_group(proc) -> None:
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
 def stream(argv, on_line, *, timeout: float, env=None, cwd=None) -> int:
     """Run ``argv`` with stdout and stderr merged, handing each line to ``on_line``; return its exit status,
-    or ``TIMED_OUT`` when it outlived ``timeout``. The command runs in its own process group, killed whole on
+    or ``TIMED_OUT`` when it outlived ``timeout``. The command and every process it started are killed on
     expiry and on any exception (Ctrl-C included): `docker compose` runs as a child of `docker`, and either
-    can hold the output pipe open. ``cwd`` is the directory it runs in (None: this process's)."""
+    can hold the output pipe open. As with ``run``, the command stays in the caller's process group, so a
+    signal striim-test sends to the tier's group reaches the cluster's `compose up`/`down` too. ``cwd`` is
+    the directory it runs in (None: this process's)."""
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            env=env, cwd=cwd, start_new_session=True)
+                            env=env, cwd=cwd)
     fired = threading.Event()
 
     def expire():
         fired.set()
-        _kill_group(proc)
+        _kill_tree(proc)
 
     timer = threading.Timer(timeout, expire)
     timer.daemon = True
@@ -190,12 +183,12 @@ def stream(argv, on_line, *, timeout: float, env=None, cwd=None) -> int:
             on_line(line)
         proc.wait()
     except BaseException:
-        _kill_group(proc)
+        _kill_tree(proc)
         raise
     finally:
         timer.cancel()
         if proc.poll() is None:
-            _kill_group(proc)
+            _kill_tree(proc)
         proc.wait()
         proc.stdout.close()
     return TIMED_OUT if fired.is_set() else proc.returncode

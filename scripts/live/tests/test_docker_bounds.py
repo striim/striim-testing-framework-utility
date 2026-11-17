@@ -210,6 +210,21 @@ def test_an_interrupted_stream_kills_the_command():
     assert time.monotonic() - started < 20
 
 
+def test_a_streamed_command_stays_in_the_callers_process_group():
+    # The cluster's `compose up`/`down` stream: striim-test's signal to the tier's process group must reach them.
+    lines = []
+    code = dockercmd.stream([sys.executable, "-c", "import os; print(os.getpgid(0))"], lines.append, timeout=30)
+    assert code == 0 and int(lines[0]) == os.getpgid(0)
+
+
+def test_a_streamed_command_that_outlives_its_bound_is_stopped_with_every_child(tmp_path):
+    argv, pids, acted = _forks(tmp_path)
+    started = time.monotonic()
+    assert dockercmd.stream(argv, lambda line: None, timeout=1.0) == dockercmd.TIMED_OUT
+    assert time.monotonic() - started < 10
+    _assert_nothing_survives(pids, acted)
+
+
 def test_a_streamed_command_returns_its_exit_status():
     lines = []
     code = dockercmd.stream([sys.executable, "-c", "print('a'); print('b'); raise SystemExit(2)"], lines.append,
