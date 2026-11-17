@@ -2135,8 +2135,10 @@ case. Each edge is one mapping containing both selectors; two separate list item
   the same projection as `match` (`project` plus `metadata`), not `keys`. File order is the
   writer's append order, which is causal evidence only for one writer on one node.
 - `stable_seconds` holds the spec for N more seconds after it first passes. A read that no
-  longer passes (a late extra or error event after a matching prefix) fails the run. Use it with
-  a terminal fixture row for whole-run completion.
+  longer passes (a late extra or error event after a matching prefix) fails the run. A read that
+  catches the last event mid-write counts neither way: it is read again until the window closes,
+  even past `timeout`, and a file still ending in a partial event then fails as unreadable. Use it
+  with a terminal fixture row for whole-run completion.
 
 `project` selects which section(s) of each JSON event to flatten before comparing:
 - `data` (default) — the row's current-image columns. An event from a typed stream has no

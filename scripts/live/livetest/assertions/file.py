@@ -508,20 +508,26 @@ def assert_file(read_fn, specs: list[dict], basedir, timeout: int, poll: float =
             status_probe()
         results = [_evaluate(read_fn, s, rows, want) for s, (rows, want) in zip(specs, goldens)]
         detail = next((d for ok, d, _, _ in results if not ok), None)
-        if (detail is not None and passed_at is not None and time.monotonic() < deadline
-                and all(ok or isinstance(d, _TailPending) for ok, d, _, _ in results)):
-            # Inside the window a read caught the writer mid-event: read again, bounded by the
-            # timeout, rather than judge an event that is not there yet.
-            time.sleep(poll or 0.05)
-            continue
+        torn = detail is not None and all(ok or isinstance(d, _TailPending) for ok, d, _, _ in results)
         if detail is not None and passed_at is not None:
-            # It passed, then stopped passing: something arrived after the matching prefix.
+            if torn and time.monotonic() < max(deadline, passed_at + stable_for):
+                # Inside the window a read caught the writer mid-event: read again until the
+                # window closes, even past the timeout (as assert_data and assert_diff do), rather
+                # than judge an event that is not there yet.
+                time.sleep(poll or 0.05)
+                continue
             records = [
                 build_assertion_result(type="file", status="passed" if ok else "failed", spec=s,
                                         target=s["path"], db=db, detail="ok" if ok else d,
                                         expected=exp, actual=act)
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
+            if torn:
+                raise AssertionFailed(
+                    "file assertion passed, but its file could not be read whole again before its"
+                    " stable_seconds window closed (a last event was still being written):"
+                    f"{_format_failure_detail(results)}", records)
+            # It passed, then stopped passing: something arrived after the matching prefix.
             raise AssertionFailed(
                 "file assertion passed, then failed within its stable_seconds window (a late"
                 f" event changed the result):{_format_failure_detail(results)}", records)

@@ -838,7 +838,7 @@ def test_a_tail_that_never_completes_inside_the_stable_window_fails(tmp_path):
     def read(_p):
         return reads.pop(0) if len(reads) > 1 else reads[0]
     with pytest.raises(AssertionFailed, match="do not decode as a JSON event"):
-        assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 5}], tmp_path, timeout=0.3, poll=0.01)
+        assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 0.6}], tmp_path, timeout=0.3, poll=0.01)
 
 
 def test_before_projection_skips_an_event_with_no_before_image(tmp_path):
@@ -852,3 +852,53 @@ def test_before_projection_skips_an_event_with_no_before_image(tmp_path):
     assert_file(lambda p: json.dumps([insert, update]), [spec], tmp_path, timeout=0)
     with pytest.raises(AssertionFailed, match="event set"):
         assert_file(lambda p: json.dumps([insert]), [spec], tmp_path, timeout=0)
+
+
+class _Clock:
+    """A monotonic clock that only moves when the code under test sleeps."""
+    def __init__(self):
+        self.now = 0.0
+    def monotonic(self):
+        return self.now
+    def sleep(self, s):
+        self.now += max(s, 0.001)
+
+
+def _timed_reads(clock, schedule):
+    """read(path) returning, at each clock time, the text of the last schedule entry started."""
+    def read(_p):
+        return [text for start, text in schedule if clock.now >= start][-1]
+    return read
+
+
+_ONE = '[{"data":{"ID":"1"}}]'
+_TORN = '[{"data":{"ID":"1"}}, {"data":{"I'
+_DUPLICATE = '[{"data":{"ID":"1"}}, {"data":{"ID":"1"}}]'
+
+
+def test_a_mid_write_read_after_the_timeout_inside_the_stable_window_is_read_again(tmp_path, monkeypatch):
+    # timeout 120, stable_seconds 30: the spec first passes at 115 s, so its window runs to 145 s.
+    # A read at 125 s catches the writer mid-event (a duplicate that does not change a distinct-set
+    # match); as on the data and diff tiers, it is read again until the window closes.
+    from livetest.assertions import file as file_mod
+    clock = _Clock()
+    monkeypatch.setattr(file_mod, "time", clock)
+    _golden_rows(tmp_path, "g.csv", "ID", "1")
+    read = _timed_reads(clock, [(0, "["), (115, _ONE), (125, _TORN), (126, _DUPLICATE)])
+    recs = assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 30}], tmp_path,
+                       timeout=120, poll=0.5)
+    assert recs[0]["status"] == "passed" and clock.now >= 145
+
+
+def test_a_tail_still_torn_when_the_stable_window_closes_is_not_reported_as_a_change(tmp_path, monkeypatch):
+    from livetest.assertions import file as file_mod
+    clock = _Clock()
+    monkeypatch.setattr(file_mod, "time", clock)
+    _golden_rows(tmp_path, "g.csv", "ID", "1")
+    read = _timed_reads(clock, [(0, "["), (115, _ONE), (125, _TORN)])
+    with pytest.raises(AssertionFailed, match="could not be read whole again") as e:
+        assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 30}], tmp_path,
+                    timeout=120, poll=0.5)
+    assert "late event changed the result" not in str(e.value)
+    assert "do not decode as a JSON event" in str(e.value)
+    assert 145 <= clock.now < 146
