@@ -138,6 +138,7 @@ def test_a_command_that_outlives_its_bound_is_stopped_with_every_child(tmp_path,
 def test_an_interrupted_command_is_stopped_with_every_child(tmp_path):
     import signal
     import threading
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)   # whatever an earlier test left
     argv, pids, acted = _forks(tmp_path)
     timer = threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGINT))
     timer.start()
@@ -146,7 +147,15 @@ def test_an_interrupted_command_is_stopped_with_every_child(tmp_path):
             dockercmd.run(argv, timeout=60)
     finally:
         timer.cancel()
+        signal.signal(signal.SIGINT, previous)
     _assert_nothing_survives(pids, acted)
+
+
+def test_a_command_stays_in_the_callers_process_group():
+    # striim-test cancels and stops a tier by signalling its process group, which must include every
+    # docker CLI the tier runs; a command moved to a group of its own would outlive a stopped tier.
+    r = dockercmd.run([sys.executable, "-c", "import os; print(os.getpgid(0))"], timeout=30)
+    assert r.returncode == 0 and int(r.stdout) == os.getpgid(0)
 
 
 def test_a_docker_command_that_times_out_says_so():

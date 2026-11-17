@@ -60,11 +60,12 @@ def run(argv, *, timeout: float = QUERY_TIMEOUT_S, check: bool = False, capture:
     status ``TIMED_OUT`` is returned (``check=True``: ``DockerTimeout`` is raised). ``capture=False``
     leaves stdout and stderr on the terminal. Missing binaries raise FileNotFoundError, as before.
 
-    The command runs in its own process group, killed whole on expiry and on any exception (Ctrl-C
-    included), as ``stream`` does: `docker compose` runs as a child of `docker`, and a post-up script or a
-    build starts children of its own, so killing only the direct child left them running -- a `down -v`
-    that went on after its caller had given up, or a bring-up that kept creating what cleanup had
-    removed."""
+    On expiry and on any exception (Ctrl-C included) the command is killed with every process it started:
+    `docker compose` runs as a child of `docker`, and a post-up script or a build starts children of its
+    own, so killing only the direct child left them running -- a `down -v` that went on after its caller
+    had given up, or a bring-up that kept creating what cleanup had removed. The command stays in the
+    caller's process group, so a signal striim-test sends to the tier's group (cancel, stop) still
+    reaches it."""
     if capture:
         kw.setdefault("capture_output", True)
         kw.setdefault("text", True)
@@ -84,10 +85,10 @@ _SUBPROCESS_RUN = subprocess.run
 
 
 def _run_group(argv, timeout: float, kw):
-    """``subprocess.run(argv, timeout=timeout, **kw)``, with the command in a process group of its own that is
-    killed whole when the bound expires (``TimeoutExpired`` is then raised, as ``subprocess.run`` raises it)
-    or when anything else interrupts the wait. A ``subprocess.run`` replaced in this process (a hermetic
-    test's stand-in for the command) is called as before: there is no process here to kill."""
+    """``subprocess.run(argv, timeout=timeout, **kw)``, except that the command's whole process tree is killed
+    when the bound expires (``TimeoutExpired`` is then raised, as ``subprocess.run`` raises it) or when
+    anything else interrupts the wait. A ``subprocess.run`` replaced in this process (a hermetic test's
+    stand-in for the command) is called as before: there is no process here to kill."""
     if subprocess.run is not _SUBPROCESS_RUN:
         return subprocess.run(argv, timeout=timeout, **kw)
     kw = dict(kw)
@@ -96,14 +97,14 @@ def _run_group(argv, timeout: float, kw):
     stdin_data = kw.pop("input", None)
     if stdin_data is not None:
         kw["stdin"] = subprocess.PIPE
-    proc = subprocess.Popen(argv, start_new_session=True, **kw)
+    proc = subprocess.Popen(argv, **kw)
     try:
         out, err = proc.communicate(stdin_data, timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_group(proc)
+        _kill_tree(proc)
         raise subprocess.TimeoutExpired(argv, timeout, output=_drain(proc)) from None
     except BaseException:
-        _kill_group(proc)
+        _kill_tree(proc)
         try:
             _drain(proc)
         except Exception:               # noqa: BLE001 - the interrupt is what the caller must see
@@ -112,9 +113,41 @@ def _run_group(argv, timeout: float, kw):
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
+def _kill_tree(proc) -> None:
+    """SIGKILL the command and every process it started. Each process found is stopped (SIGSTOP) before the
+    tree is listed again, so none can start another one unseen; then all are killed. Not by process group:
+    the command shares the caller's, which striim-test signals as a whole."""
+    import psutil
+    frozen: dict = {}
+    try:
+        root = psutil.Process(proc.pid)
+        for _ in range(10):
+            new = [p for p in [root, *root.children(recursive=True)] if p.pid not in frozen]
+            if not new:
+                break
+            for p in new:
+                frozen[p.pid] = p
+                try:
+                    p.suspend()
+                except psutil.Error:
+                    pass
+    except psutil.Error:                # the command itself is gone: its tree was listed as far as it went
+        pass
+    for p in frozen.values():
+        try:
+            p.kill()
+        except psutil.Error:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def _drain(proc):
-    """Reap a killed command and return what it wrote to a captured stdout. Bounded: a descendant that left
-    the process group (its own `setsid`) could still hold the pipe; its output is then not waited for."""
+    """Reap a killed command and return what it wrote to a captured stdout. Bounded: a descendant that the
+    tree walk could not see (one that detached itself) could still hold the pipe; its output is then not
+    waited for."""
     try:
         out, _err = proc.communicate(timeout=5)
         return out
