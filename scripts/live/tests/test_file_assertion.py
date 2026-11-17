@@ -44,8 +44,12 @@ def test_parse_raises_on_mid_stream_corruption():
     '{"data":{"id":2},"rows":[{"x":1},{"x":2}],"metadata":{"Op',
     '{"data":{"s":"}}"},"m":{"id":9}',
     '{"data":{"s":"a\\"}}"},"m":{"id":9}',
+    '{"data":{"id":2},"note":"a {} and {\\"x\\":1} b',
+    '{"data":{"id":2},"ok":tru',
+    '{"data":{"id":2},"n":-',
+    '{"data":{"id":2},"n":1.',
 ], ids=["nested-then-partial", "torn-after-nested", "array-of-objects", "braces-in-string",
-        "escaped-quote"])
+        "escaped-quote", "objects-in-a-torn-string", "torn-literal", "torn-sign", "torn-number"])
 def test_parse_tolerates_a_partial_last_event_with_complete_nested_objects(tail):
     for text in ('{"data":{"id":1}}\n' + tail, '[\n {"data":{"id":1}},\n ' + tail):
         assert parse_json_events(text) == [{"data": {"id": 1}}]
@@ -54,6 +58,30 @@ def test_parse_still_raises_on_corruption_with_nested_objects_before_a_later_eve
     text = '{"data":{"id":1}}\n{"data":{"id":oops},"m":{"a":{}}}\n{"data":{"id":3}}'
     with pytest.raises(FileSpecError, match="corrupt"):
         parse_json_events(text)
+
+# An event missing its closing brace never brings the object depth back to the top level, so the
+# events after it are nested inside it by depth alone. They still start where the broken event
+# stops being valid JSON, which is what shows the stream goes on past the failure.
+_UNCLOSED = [
+    '{"data":{"id":1}, {"data":{"id":2}}, {"data":{"id":3}}',
+    '{"data":{"id":1},"metadata":{"Op":"I"}, {"data":{"id":2}}',
+    '{"data":{"id":1},"s":"{}" {"data":{"id":2}}',
+]
+
+@pytest.mark.parametrize("text", _UNCLOSED + ['[' + t + ']' for t in _UNCLOSED])
+def test_parse_raises_on_an_unclosed_event_mid_stream(text):
+    with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
+        parse_json_events(text)
+
+def test_an_unclosed_event_mid_stream_fails_on_the_first_read(tmp_path):
+    reads = []
+    def read(path):
+        reads.append(path)
+        return '[{"data":{"id":1}, {"data":{"id":2}}, {"data":{"id":3}}]'
+    with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
+        assert_file(read, parse_file_specs([{"path": "/o", "min_events": 3}]), tmp_path,
+                    timeout=2, poll=0.01)
+    assert len(reads) == 1
 
 def test_partial_last_event_with_a_nested_object_is_polled_again(tmp_path):
     # Caught mid-write on the first poll, complete on the second: the poll goes on and passes.

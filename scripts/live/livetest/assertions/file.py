@@ -138,16 +138,23 @@ def _check_order(rows: list[dict], edges: list[dict]):
 
 
 def _has_later_value(text: str, start: int, n: int) -> bool:
-    # Scan forward from `start`, the value that failed to decode, for a later *event object*.
-    # Used to distinguish "the file is still being written" (no event ever follows the
-    # failure) from real mid-stream corruption (a later object still decodes fine, so what we
-    # choked on wasn't just a trailing partial). Only an object at the top level counts: a
-    # last event caught mid-write, {"data":{"id":2},"metadata":{"Op, holds complete nested
-    # objects, and none of them is a later event. Object depth is counted from `start`,
-    # outside strings; array brackets are the wrapper's, as in parse_json_events. Only a
-    # dict counts -- a bare string or number is not an event.
+    # Whether an *event object* follows the value at `start` that failed to decode: real
+    # mid-stream corruption (a later event still decodes, so what we choked on wasn't just a
+    # trailing partial) rather than a file still being written (no event follows the failure).
+    # A later event starts at or after the point where the failed value stops being valid JSON
+    # (the decoder's error position). A last event caught mid-write,
+    # {"data":{"id":2},"metadata":{"Op, is valid up to its end, so its complete nested objects
+    # all lie before that point and none of them is a later event. An event missing its closing
+    # brace, {"data":{"id":1}, {"data":{"id":2}}, stops being valid exactly where the next event
+    # starts. Only `{` outside strings, counted from `start`, is tried, and only a dict counts --
+    # a bare string or number is not an event.
     dec = json.JSONDecoder()
-    depth, in_string, escaped = 0, False, False
+    try:
+        dec.raw_decode(text, start)
+        return False
+    except json.JSONDecodeError as e:
+        invalid_from = e.pos
+    in_string, escaped = False, False
     for j in range(start, n):
         c = text[j]
         if in_string:
@@ -159,16 +166,12 @@ def _has_later_value(text: str, start: int, n: int) -> bool:
                 in_string = False
         elif c == '"':
             in_string = True
-        elif c == "{":
-            if depth == 0 and j > start:
-                try:
-                    if isinstance(dec.raw_decode(text, j)[0], dict):
-                        return True
-                except json.JSONDecodeError:
-                    pass
-            depth += 1
-        elif c == "}":
-            depth = max(depth - 1, 0)
+        elif c == "{" and j >= invalid_from:
+            try:
+                if isinstance(dec.raw_decode(text, j)[0], dict):
+                    return True
+            except json.JSONDecodeError:
+                pass
     return False
 
 

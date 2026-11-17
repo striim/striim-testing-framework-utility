@@ -91,6 +91,11 @@ def test_parse_events_refuses_a_corrupt_stream_but_tolerates_a_torn_tail():
     assert exactdata.parse_events('{"id": 1}\n{"id": 2, "na', "out.json") == [{"id": 1}]
 
 
+def test_parse_events_refuses_an_unclosed_event_mid_stream():
+    with pytest.raises(canon.CanonError, match="invalid-value:actual:out.json"):
+        exactdata.parse_events('[{"data": {"id": 1}, {"data": {"id": 2}}, {"data": {"id": 3}}]', "out.json")
+
+
 def test_parse_events_tolerates_a_torn_tail_with_complete_nested_objects():
     text = '{"data": {"id": 1}}\n{"data": {"id": 2}, "metadata": {"Op'
     assert exactdata.parse_events(text, "out.json") == [{"data": {"id": 1}}]
