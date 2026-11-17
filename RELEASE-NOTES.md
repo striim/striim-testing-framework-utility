@@ -155,12 +155,16 @@ the last release; the release makes it that version's entry.
 - **The Striim primary's Java debugger (JDWP) is off by default.** It listened on every interface,
   port 8787, with no authentication, and the port was published on every host interface.
   `SLT_STRIIM_DEBUG=1` turns it on, published on `127.0.0.1` only (`SLT_STRIIM_DEBUG_HOST_PORT`,
-  default 8787). The image rebuilds once, because its entrypoint changed.
+  default 8787). The image rebuilds once, because its entrypoint changed, for a run that deploys
+  the cluster; a running cluster that a shared run reuses keeps the debugger until it is stopped
+  and started again (docs/UPGRADING.md).
 - **A framework run publishes service ports for this machine and its containers only**:
   `127.0.0.1`, plus the Docker bridge gateway on a Linux engine (where `host.docker.internal`
   leads). They were published on every interface, with fixed, public credentials.
   `SLT_BIND_ADDRESS` publishes on one address you choose (`0.0.0.0` is every interface). A compose
-  file run by hand with `SLT_BIND_ADDRESS` unset still publishes on every interface.
+  file run by hand with `SLT_BIND_ADDRESS` unset still publishes on every interface. A kept
+  stack that shared runs reuse keeps its old, all-interface ports until it is stopped and started
+  again; docs/UPGRADING.md has the steps.
 - **Third-party Striim image downloads are checked against shipped SHA-256 digests**
   (`scripts/live/services/striim/deps.sha256`): the JDBC drivers, the JMX agent and Oracle Instant
   Client. A download or a file already present that does not match stops the run, naming it. Each

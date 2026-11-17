@@ -180,15 +180,37 @@ on every interface. If another machine connects to these services (a remote cons
 reaching a cloud host's databases, a Striim on a second host), either forward the ports over SSH
 or set `SLT_BIND_ADDRESS` on the host that runs them (`0.0.0.0` for every interface, as before).
 Compose files you run with plain `docker compose` and `SLT_BIND_ADDRESS` unset still publish on
-every interface. The first framework bring-up after the upgrade recreates each running service
-container, because its port bindings changed; do it when no other run uses the stack. On Linux, a
-daemon configured with its own `host-gateway-ip` needs `SLT_BIND_ADDRESS` set to that address.
+every interface. On Linux, a daemon configured with its own `host-gateway-ip` needs
+`SLT_BIND_ADDRESS` set to that address.
+
+The new bindings apply only to containers the framework creates. An `exclusive` run starts a stack
+of its own, and an integration run without `SLT_INFRA_OWNERSHIP=shared` runs `compose up`, which
+recreates a running service whose bindings changed. A kept stack used through
+`SLT_INFRA_OWNERSHIP=shared` (live or integration) is reused as it is: neither a run nor
+`livetest.cli start` recreates a running container, so its services stay published on every
+interface, and its Striim primary keeps the debugger described below, until you recreate them. Upgrading does not
+narrow that stack's exposure by itself. Once no run uses it (`livetest.cli stop` refuses while one
+does), stop it and start it again on the new version:
+
+```bash
+python -m livetest.cli stop all && python -m livetest.cli start all
+python -m inttest.cli stop all && python -m inttest.cli start all   # an integration stack, if you keep one
+```
+
+Run them with the settings the stack's runs use: `livetest.cli start` declares ownership as a run
+does (`SLT_INFRA_OWNERSHIP=shared` with `SLT_KEEP_SERVICES=1` for a kept stack), and a prefixed
+stack needs its `SLT_STACK_PREFIX` (live) or `INT_STACK_PREFIX` (integration).
+`docker ps --format '{{.Names}} {{.Ports}}'` shows `0.0.0.0:` on a container still published on
+every interface.
 
 ### JDWP debugger off by default
 
 The Striim primary no longer runs a Java debugger on port 8787. To debug it, set
 `SLT_STRIIM_DEBUG=1`; the port is then published on `127.0.0.1` only, so from another machine
 forward it over SSH. A second stack no longer needs `SLT_STRIIM_DEBUG_HOST_PORT` unless both debug.
+A running cluster that a shared run reuses keeps the old debugger, on every interface: a shared run
+never redeploys the cluster, and the reuse check does not compare its image with the new one.
+Recreate it as above (`livetest.cli stop striim`, then `start striim`) once no run uses it.
 
 ### Striim dependency digests
 
