@@ -10,6 +10,7 @@ service. Without it `start postgres` hands you an empty database.
 """
 
 import argparse
+import os
 
 from filelock import FileLock
 
@@ -47,8 +48,9 @@ def _services() -> list:
 
 def _lock_file():
     # The compose lock is machine-wide (SLT_LOCK_DIR), resolved per call, and scoped by
-    # INT_STACK_PREFIX exactly as a session's is (plugin._compose_lock_path), so `start`/`stop`
-    # serialise with a run on the same stack from any checkout.
+    # INT_STACK_PREFIX exactly as a session's is (plugin._compose_lock_path; main() takes the .env
+    # layers into the environment as a session does), so `start`/`stop` serialise with a run on the
+    # same stack from any checkout.
     from livetest import stack
     from inttest import services as _services
     return stack.host_lock_path(_services.state_name(".int-compose.lock"))
@@ -158,6 +160,12 @@ def cmd_down(targets: list) -> int:
 
 
 def main() -> int:
+    # The settings a session runs with: plugin.pytest_configure puts the .env layers into its environment
+    # before anything reads them. Without the same here, an INT_STACK_PREFIX set only in .env named the
+    # compose containers (compose_up resolves .env) but not the compose lock (services.state_name reads
+    # the environment), so `start` and a session on that stack ran `compose up` on one project at once.
+    from inttest import paths
+    os.environ.update(paths.effective_env(os.environ))
     p = argparse.ArgumentParser(prog="python -m inttest.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
 
