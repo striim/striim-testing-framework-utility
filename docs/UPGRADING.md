@@ -57,7 +57,9 @@ on the spec.
 
 A case whose app is in CRASH, HALT, TERMINATED or DEPLOY_FAILED after its last assertion now
 fails, smoke-only cases included. A case without `lifecycle:` fails when its teardown cannot
-delete what it created. Read the failure; it names the app status or the object.
+delete what it created. Read the failure; it names the app status or the object. A delete that is
+still running when that teardown's 600 s deadline ends also stops the run after the case; fix the
+database or client it names before rerunning.
 
 ### Stop cycles and recovery
 
@@ -235,6 +237,12 @@ turning something on, set `1` instead. `striim-test doctor` lists each bad value
 The setting is no longer read. A session that set it now takes the integration session lock and
 tears down the services it started, like any other. Remove it from your `.env` and scripts; give
 a second stack its own `INT_STACK_PREFIX`.
+
+### Faking the framework's Docker commands in your own tests
+
+The framework's Docker commands no longer call `subprocess.run` when something has replaced it.
+A hermetic test of your own that faked them by patching `subprocess.run` now reaches the real
+`docker`: patch `livetest.dockercmd.run` instead, or pass `run=` where the function takes it.
 
 ## v0.3.2
 

@@ -243,6 +243,10 @@ the last release; the release makes it that version's entry.
   every user on the machine, whatever the umask, so another user's session on the same stack waits
   for them instead of failing on a permission error. `inttest.cli start` and `stop` read `.env` as a
   session does, so an `INT_STACK_PREFIX` set only there scopes their compose lock too.
+- **A replaced `subprocess.run` no longer turns off the Docker commands' process-group kill.** A
+  plugin or shim that wraps `subprocess.run` used to make every bounded Docker command call it
+  directly, without its process group or its kill at the bound. A test that fakes the framework's
+  Docker commands patches `livetest.dockercmd.run` (or passes `run=`), not `subprocess.run`.
 
 **New**
 
