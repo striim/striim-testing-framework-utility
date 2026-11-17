@@ -439,7 +439,7 @@ def _defn(container="slt-postgres"):
 def test_shared_provision_0_refuses_a_missing_service_and_names_the_start_command():
     inf = infra.Infra("shared", PORT, infra._lock_dir())
     with pytest.raises(infra.InfraOwnershipError,
-                       match=r"SLT_SHARED_PROVISION=0.*start it with: SLT_STACK_PREFIX=alt "
+                       match=r"SLT_SHARED_PROVISION=0.*start it with: SLT_SHARED_PROVISION=1 SLT_STACK_PREFIX=alt "
                              r"python -m livetest\.cli start postgres$"):
         infra.resolve_service(inf, "postgres", {"SLT_SHARED_PROVISION": "0", "SLT_STACK_PREFIX": "alt"}, set(),
                               lambda *a, **k: pytest.fail("a missing service was started"),
@@ -450,6 +450,38 @@ def test_shared_provision_0_refuses_a_missing_service_and_names_the_start_comman
     assert infra.resolve_service(inf, "postgres", {"SLT_SHARED_PROVISION": "0"}, started, lambda *a, **k: "r",
                                  load=lambda n: _defn(), container_running=lambda c: True) == "r"
     assert inf.services == [{"name": "postgres", "container": "slt-postgres", "status": "reused"}]
+
+
+def test_the_start_command_a_shared_provision_0_refusal_names_starts_the_service(monkeypatch, tmp_path):
+    """Follow the printed recovery from the lane's own environment, as an operator pasting it into the same
+    shell would: it must start the service, not meet the same refusal. Only the service start is stubbed."""
+    import shlex
+    from livetest import project
+    (tmp_path / "state").mkdir()
+    lane = dict(SHARED, SLT_SHARED_PROVISION="0", SLT_STACK_PREFIX="alt", SLT_STATE_DIR=str(tmp_path / "state"))
+    for k, v in lane.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(services, "container_running", lambda c, run=None: False)     # kafka is not running
+    monkeypatch.setattr(preflight, "container_running", lambda c, run=None: False)
+    with pytest.raises(infra.InfraOwnershipError) as ei:            # the run's refusal
+        infra.resolve_service(infra.Infra("shared", PORT, infra._lock_dir()), "kafka", dict(os.environ), set(),
+                              lambda *a, **k: pytest.fail("a missing service was started"))
+    words = shlex.split(str(ei.value).split("start it with: ", 1)[1])
+    assignments = {}
+    while words and "=" in words[0] and not words[0].startswith("-"):
+        k, v = words.pop(0).split("=", 1)
+        assignments[k] = v
+    assert words[:3] == ["python", "-m", "livetest.cli"], words
+    for k, v in assignments.items():                                # `VAR=value command` in that shell
+        monkeypatch.setenv(k, v)
+    started = []
+    monkeypatch.setattr(preflight, "resolve", lambda n, e, s, progress=None: started.append(n) or n)
+    monkeypatch.setattr(project, "load_and_activate", lambda: None)
+    monkeypatch.setattr(cli, "known_test_ids", set)
+    monkeypatch.setattr(sys, "argv", ["livetest.cli", *words[3:]])
+    assert cli.main() == 0
+    assert started == ["kafka"]
+    assert os.environ["SLT_STACK_PREFIX"] == "alt"                  # the same stack
 
 
 @pytest.mark.parametrize("env", [{"SLT_PARALLEL": "1"}, {"SLT_PARALLEL": "1", "SLT_SHARED_PROVISION": "1"}])

@@ -60,8 +60,9 @@ Declaration points:
   registry's lock, held only to read the record and to update it afterwards. A bring-up therefore
   holds up only another bring-up of the same container.
 - `SLT_SHARED_PROVISION=0` (unset or `1` is the default) refuses to start a missing service and
-  names its `python -m livetest.cli start <service>` command instead; a lane that must never start
-  a shared service sets it.
+  names its `SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>` command instead (the
+  start command resolves through the same adapter, so it sets `1` for itself); a lane that must
+  never start a shared service sets it.
 - `livetest.cli stop` (and `livetest.preflight --teardown`) is refused, exit 2, while another live
   session uses the stack: a live shared marker other than its own, or a live exclusive run other
   than its own run. The refusal names the pids and the same command with `--force`, which stops

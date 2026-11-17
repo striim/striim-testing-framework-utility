@@ -1800,7 +1800,7 @@ or the shell, and a run without it is refused.
   run uses the stack, naming its pids; add `--force` to stop anyway. While a stop runs, a live
   run starting on the same stack is refused. With
   `SLT_SHARED_PROVISION=0` a missing service is not started: the case fails, naming the
-  `livetest.cli start` command.
+  `SLT_SHARED_PROVISION=1 python -m livetest.cli start` command that starts it.
 - **`exclusive`**: the run starts a stack of its own, refuses to start when anything already answers
   on its Striim endpoint, and tears the stack down at the end unless `SLT_KEEP_SERVICES=1`. With
   `--parallel` the controller tears down what its workers started.

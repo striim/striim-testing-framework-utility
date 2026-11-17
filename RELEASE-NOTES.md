@@ -288,7 +288,8 @@ the last release; the release makes it that version's entry.
   links a ParallelLoader quick start (#55).
 
 - `SLT_SHARED_PROVISION=0`: under `shared`, a missing service is not started; the case fails and
-  names `python -m livetest.cli start <service>`. Unset or `1` keeps today's behaviour. Meant for
+  names `SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>`, which starts it from the
+  same shell or lane. Unset or `1` keeps today's behaviour. Meant for
   lanes that must never start a shared service. `livetest.cli stop --force` overrides the new stop
   refusal.
 

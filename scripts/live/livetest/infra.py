@@ -975,9 +975,10 @@ def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, loa
         else:
             if not allowed:
                 prefix = stack.prefix(env)
+                # The start command opts in for itself: it runs in the same shell or lane `.env`, which sets 0.
                 raise InfraOwnershipError(
                     f"shared service {name} ({container}) is not running, and {SHARED_PROVISION_ENV}=0 forbids "
-                    f"starting it here; start it with: "
+                    f"starting it here; start it with: {SHARED_PROVISION_ENV}=1 "
                     f"{f'SLT_STACK_PREFIX={prefix} ' if prefix else ''}python -m livetest.cli start {name}")
             if forget is None:
                 from livetest.services import forget_provisioned as forget

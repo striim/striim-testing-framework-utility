@@ -170,7 +170,9 @@ if they must.
 ### `SLT_SHARED_PROVISION`
 
 New. `0` makes a shared run fail a case whose service is not running instead of starting it, and
-names the start command. Leave it unset (or `1`) to keep today's behaviour.
+names the start command, `SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>`: the
+command sets `1` for itself, because `livetest.cli start` reads the same setting. Leave it unset
+(or `1`) to keep today's behaviour.
 
 ### Service ports bind locally (breaking for remote clients)
 

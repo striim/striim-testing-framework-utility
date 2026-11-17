@@ -44,7 +44,7 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 |---|---|---|---|
 | `SLT_INFRA_OWNERSHIP` | shell, `.env`, machine | unset: a run refuses to start | `shared`: reuse what is running, start what is missing, never tear it down (needs `SLT_KEEP_SERVICES=1`). `exclusive`: take a fresh stack, refuse if a Striim already answers, and tear everything down at the end, `--parallel` included. |
 | `SLT_KEEP_SERVICES` | shell, `.env`, machine | unset | `1`: keep the cluster and service containers after the run. Required with `shared`. |
-| `SLT_SHARED_PROVISION` | shell, `.env`, machine | unset (`1`) | Under `shared`, `0`: never start a missing service; the case fails and names `python -m livetest.cli start <service>`. For a lane that must not start shared services. Any value other than `1` or `0` is refused. |
+| `SLT_SHARED_PROVISION` | shell, `.env`, machine | unset (`1`) | Under `shared`, `0`: never start a missing service; the case fails and names `SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>` (`livetest.cli start` reads this setting too). For a lane that must not start shared services. Any value other than `1` or `0` is refused. |
 | `SLT_KEEP_RESOURCES` | shell | unset | `1`: keep each test's app, tables and slots whatever the result (`--keep-resources`). |
 | `SLT_KEEP_RESOURCES_ON_ERROR` | shell | unset | `1`: the same, for failed tests only. Replication slots are dropped; the teardown prints the SQL that recreates them. |
 | `SLT_ALLOW_NO_CLUSTER` | shell | unset | `1`: do not fail a run in which every case skipped for missing infrastructure. |
