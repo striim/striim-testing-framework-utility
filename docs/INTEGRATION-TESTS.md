@@ -270,7 +270,8 @@ assert:
 not built from its current sources: its `src/main`, its `pom.xml`, the parent poms it inherits from and every source
 root its pom add-sources, such as `OpenProcessorCommon` or `FieldCommon` (a newer source counts, and so do a
 deleted one and one whose content changed behind an old mtime: the jar's `.sources` record beside it
-lists each input it was built from with a content digest; every such rebuild is a clean one,
+lists each input it was built from with a content digest taken as the build starts, so a source
+saved during the build still counts as changed; every such rebuild is a clean one,
 as in the live tier, which decides from the same inputs and record),
 provisions/resets any `requires:` services, then runs the shared Java harness
 (`java/`, `com.striim.testing.inttest.IntegrationProcessor`) as a subprocess. The harness loads the jar

@@ -268,7 +268,7 @@ MIXED_EDITS = {
 def test_a_newer_input_does_not_mask_a_change_behind_an_old_mtime(project, monkeypatch, name, mixed):
     # Maven recompiles and recopies only what is newer than its previous output, so a build
     # without `clean` keeps the old output of the input whose bytes changed behind an old mtime,
-    # even though the other, newer input makes the jar stale. The record written after the
+    # even though the other, newer input makes the jar stale. The record of that
     # build would then vouch for a jar holding the old bytes.
     engine = _engine(name)
     hidden, newer = (project.mod / rel for rel in MIXED_EDITS[mixed])
@@ -304,3 +304,21 @@ def test_a_record_of_names_only_is_a_rebuild_trigger(project, name):
         ''.join(n + '\n' for n in sorted({os.path.relpath(p, project.mod) for p in srcs})))
     os.utime(project.jar, (JAR_TIME, JAR_TIME))
     assert engine._stale_trigger(project.jar, project.mod) == engine._source_record(project.jar)
+
+
+@pytest.mark.parametrize('name', ENGINES)
+def test_a_source_saved_during_the_build_leaves_the_jar_stale(project, monkeypatch, name):
+    # Maven has already compiled MyOp.java when the edit is saved, so the jar holds the bytes from
+    # before the edit. The record must carry the digests the build started from: one taken after
+    # the build would vouch for the edit, and the next run would reuse the jar over it.
+    engine = _engine(name)
+    _built(engine, project)
+    _edit(project.own)
+
+    def package(argv):
+        project.own.write_text('// v3: saved while Maven was packaging\n')
+        os.utime(project.own, (EDIT_TIME, EDIT_TIME))     # older than the jar the build writes
+
+    built, ran, reasons = _hermetic_build_jar(engine, project, monkeypatch, package)
+    assert built.origin == 'built' and len(ran) == 1
+    assert _same(engine._stale_trigger(project.jar, project.mod), project.own)

@@ -356,7 +356,7 @@ def _source_record(jar: Path) -> Path:
 
 
 def _write_source_record(jar: Path, module_dir: Path) -> None:
-    jarinputs.write_record(jar, module_dir, jarinputs.inputs(module_dir))
+    jarinputs.write_record(jar, jarinputs.digests(module_dir, jarinputs.inputs(module_dir)))
 
 
 def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
@@ -786,6 +786,9 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # Announce the automatic (re)build and the trigger that caused it, so a long silent
     # `mvn` step in the live console is explained (and a surprise rebuild is visible).
     notify(reason)
+    # The record vouches for what the build read, so it is digested before Maven starts: an input
+    # saved during the build may not be in the jar, and must still read as changed next run.
+    started_from = jarinputs.digests(module_dir, jarinputs.inputs(module_dir))
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
     try:
         r = run(goals, str(module_dir), build_env)
@@ -842,7 +845,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             f"clean rebuild, but this run resolves to {fingerprint}. The build is not "
             f"producing the release it was asked for -- check that STRIIM_RELEASE reaches "
             f"the pom in {module_dir}.")
-    _write_source_record(jar, module_dir)
+    jarinputs.write_record(jar, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")
 
 def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = False) -> None:

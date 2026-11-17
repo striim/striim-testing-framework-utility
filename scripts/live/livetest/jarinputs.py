@@ -17,7 +17,7 @@ test-only edit; it fires on the next rebuild from any main/pom change, and in CI
 
 Mtimes cannot see a DELETED file, nor bytes restored with an old mtime (a checkout, an archive
 extract, a copy that preserves timestamps), so each build writes a record of its inputs beside the
-jar (`<jar>.sources`): a header line, then one `<sha256>  <path>` line per input, the path relative
+jar (`<jar>.sources`), digested before the build starts: a header line, then one `<sha256>  <path>` line per input, the path relative
 to the module dir. A jar with no record or a record without that header, a recorded input that is
 gone, and an input whose content no longer matches its digest are all stale.
 """
@@ -121,9 +121,15 @@ def _digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def write_record(jar: Path, module_dir: Path, srcs: list[Path]) -> None:
-    names = {os.path.relpath(p, module_dir): p for p in srcs}
-    lines = [_RECORD_HEADER] + [f"{_digest(names[n])}  {n}" for n in sorted(names)]
+def digests(module_dir: Path, srcs: list[Path]) -> dict[str, str]:
+    """Each input's content digest, as {path relative to the module dir: sha256}. A build takes
+    these BEFORE it starts: an input saved while Maven runs may not be in the jar, and digests
+    taken afterwards would vouch for it."""
+    return {os.path.relpath(p, module_dir): _digest(p) for p in srcs}
+
+
+def write_record(jar: Path, recorded: dict[str, str]) -> None:
+    lines = [_RECORD_HEADER] + [f"{recorded[n]}  {n}" for n in sorted(recorded)]
     record_path(jar).write_text("".join(line + "\n" for line in lines))
 
 

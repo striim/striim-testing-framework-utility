@@ -167,7 +167,7 @@ def _source_record(jar: Path) -> Path:
 
 
 def _write_source_record(jar: Path, module_dir: Path) -> None:
-    jarinputs.write_record(jar, module_dir, _sources(module_dir))
+    jarinputs.write_record(jar, jarinputs.digests(module_dir, _sources(module_dir)))
 
 
 def _running_java_major(run=None) -> str | None:
@@ -519,7 +519,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         # FIRST reason found: another input may have changed behind an old mtime (a checkout,
         # an archive extract, a timestamp-preserving copy), and Maven, recompiling and
         # recopying by mtime, would keep its old output in an incremental `package` -- which
-        # the source record written after the build would then vouch for. A removed source's
+        # the build's source record would then vouch for. A removed source's
         # class or resource likewise stays in target/classes until a clean.
         clean = True
         try:
@@ -572,6 +572,9 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # Announce the automatic (re)build and the trigger that caused it, so a long silent `mvn`
     # step isn't a silent surprise.
     notify(reason)
+    # The record vouches for what the build read, so it is digested before Maven starts: an input
+    # saved during the build may not be in the jar, and must still read as changed next run.
+    started_from = jarinputs.digests(module_dir, _sources(module_dir))
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
     r = run(goals, str(module_dir), build_env)
     if getattr(r, "returncode", 1) != 0:
@@ -590,5 +593,5 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         _assert_jar_java_version(jar, java_release, module_dir)
     except OpArtifactError as e:
         raise OpBuildFailed(str(e)) from None
-    _write_source_record(jar, module_dir)
+    jarinputs.write_record(jar, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")
