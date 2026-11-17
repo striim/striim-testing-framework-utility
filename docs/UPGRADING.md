@@ -223,7 +223,10 @@ Third-party files under `scripts/live/services/striim/images/striim/deps/` must 
 digests in `scripts/live/services/striim/deps.sha256`. A copy that does not match (an old or
 partial download) stops the run, naming it; delete it and run again. Each `striim-*.deb` already
 there is pinned on the first run after the upgrade, in `deps/.slt-sha256-pins.json`. If Striim
-republishes a package under the same name, delete the file and its entry in that record.
+republishes a package under the same name, delete the file and its entry in that record. The first
+check reads every file (the Striim packages are several GB); later checks read a file again only
+when its size, mtime or ctime changed, recorded in `scripts/live/services/striim/.slt-sha256-verified.json`
+(ignored by git; delete it to force a full check).
 
 ### Switches take `1` or `0` (breaking)
 

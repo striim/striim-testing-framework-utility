@@ -28,7 +28,8 @@ the last release; the release makes it that version's entry.
   `<jar>.sources` record, so a jar built by one is reused by the other. **The first live run
   after upgrading rebuilds each jar once**, because no live jar has a record yet. The integration
   tier rebuilds each `FieldCommon` module once. The integration and perf tiers no longer rebuild
-  a module whose pom does not add `OpenProcessorCommon` when that changes.
+  a module whose pom does not add `OpenProcessorCommon` when that changes. The record holds the
+  digests the build started from, so a source saved while Maven runs still counts as changed.
 - **A data or file `match:` without a count warns at load, and is refused in a `recover:`
   case.** A `match:` without `rows:`, `ordered: true`, `events:`, `multiset: true` or `exact:`
   compares sets of rows, so a duplicated row passes. `striim-test doctor` shows the warning. Add
@@ -351,7 +352,11 @@ the last release; the release makes it that version's entry.
   `uibrowser` have hermetic tests. Tests only; no behaviour change.
 - A file read that catches the last event mid-write is polled again. A torn event with complete
   nested objects (`data`, `metadata`) was raised as a corrupt JSON stream on the first poll,
-  ending the poll with no record; the exact-file route had the same check.
+  ending the poll with no record; the exact-file route had the same check. An event missing its
+  closing brace with more events after it is still a corrupt stream, raised at once. Inside a
+  `stable_seconds` window a mid-write read is read again until the window closes, even past
+  `timeout`; a file that still ends in a partial event then fails as unreadable, not as a changed
+  result.
 - The `vertica-admin` route keeps the server's search path. (#57)
 - Spanner `ARRAY<JSON>` and `jsonb[]` elements are read as JSON, not `{}`. (#63)
 - gRPC's fork log line no longer fails a Spanner or BigQuery case's inventory listing. (#61)
