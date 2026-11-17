@@ -497,3 +497,65 @@ def test_one_services_provisioning_lock_does_not_block_another():
         assert time.monotonic() - t0 < 10
     finally:
         held.release()
+
+
+_COLD_ORACLE = """
+import os, sys, time
+from pathlib import Path
+from livetest import infra, services
+began, release = Path(sys.argv[1]), Path(sys.argv[2])
+
+def up(defn):                                   # `docker compose up --wait` of a cold Oracle
+    began.write_text(defn.container)
+    deadline = time.monotonic() + 60
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+inf = infra.Infra("shared", 9080, infra._lock_dir())
+infra.resolve_service(inf, "oracle", dict(os.environ), set(),
+                      lambda n, e, s, progress=None: services.resolve(n, e, s, compose_up=up,
+                                                                      post_up=lambda d: None),
+                      container_running=lambda c: False)
+print(inf.services[0]["status"])
+"""
+
+
+def test_a_cold_oracle_start_does_not_hold_up_a_missing_postgres(monkeypatch, tmp_path):
+    """Two shared parallel workers, both services missing, through the real resolver and the real provision
+    registry; only Docker (`compose up`) and post-up are stubbed. Postgres is provisioned while another
+    process is still inside Oracle's bring-up."""
+    import threading
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("SLT_STATE_DIR", str(state))
+    monkeypatch.setenv("SLT_PARALLEL", "1")
+    began, release = tmp_path / "oracle-began", tmp_path / "oracle-release"
+    oracle = subprocess.Popen([sys.executable, "-c", _COLD_ORACLE, str(began), str(release)],
+                              env=dict(os.environ, PYTHONPATH=_LIVE_DIR), stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+    ups, done = [], threading.Event()
+
+    def postgres_worker():
+        inf = infra.Infra("shared", PORT, infra._lock_dir())
+        infra.resolve_service(inf, "postgres", dict(os.environ), set(),
+                              lambda n, e, s, progress=None: services.resolve(
+                                  n, e, s, compose_up=lambda d: ups.append(d.name), post_up=lambda d: None),
+                              container_running=lambda c: False)
+        done.set()
+
+    worker = threading.Thread(target=postgres_worker, daemon=True)
+    try:
+        deadline = time.monotonic() + 60
+        while not began.exists() and oracle.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert began.exists(), oracle.communicate()[0]          # Oracle's bring-up is under way
+        worker.start()
+        assert done.wait(15), "postgres waited behind the oracle bring-up"
+        assert ups == ["postgres"] and oracle.poll() is None    # while oracle is still coming up
+    finally:
+        release.touch()
+        out = oracle.communicate(timeout=60)[0]
+        worker.join(60)
+    assert oracle.returncode == 0 and out.strip().endswith("provisioned-and-kept"), out
+    registry = json.loads(services._provision_state_paths()[0].read_text())
+    assert {services.load_service("oracle").container, services.load_service("postgres").container} <= set(registry)

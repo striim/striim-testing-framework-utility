@@ -162,6 +162,37 @@ def forget_provisioned(keys, state_dir=None, timeout: float = -1) -> None:
             state.pop(key, None)
         reg.write_text(json.dumps(state))
 
+# How long a short read or update of the provision registry waits for its lock. Nothing holds that lock
+# across a bring-up (ensure_provisioned_once), so a holder is done within moments.
+_REGISTRY_WAIT_S = 60.0
+
+
+def _provision_key_lock(key: str, env=None) -> Path:
+    """The machine-wide lock that one key's provisioning holds (prefix-scoped like the registry lock)."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
+    return stack.lock_path(f".slt-provision-{safe}.lock", env)
+
+
+def _registry_lock(lock: Path, context=None) -> FileLock:
+    held = FileLock(str(lock), mode=lockdir.file_mode())
+    if context:
+        context.acquire(held, f"provision registry lock {lock}")
+        return held
+    try:
+        held.acquire(timeout=_REGISTRY_WAIT_S)
+    except Timeout:
+        raise ServiceError(f"provision registry lock {lock} not acquired within {_REGISTRY_WAIT_S:.0f}s") from None
+    return held
+
+
+def _recorded(reg: Path) -> dict:
+    try:
+        state = json.loads(reg.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
 def ensure_provisioned_once(container: str, do_provision, state_dir=None) -> bool:
     """Bring a shared service container up exactly once across xdist workers (spec §C.4).
 
@@ -171,30 +202,41 @@ def ensure_provisioned_once(container: str, do_provision, state_dir=None) -> boo
     post_up (e.g. Oracle's archivelog restart) under a sibling's already-running tests. A
     filelock + JSON registry makes the first worker provision while the rest block, then find
     the record and skip. Workers never de-provision (spec §C.4 asymmetry). Returns True if
-    THIS call performed the provisioning."""
+    THIS call performed the provisioning.
+
+    The lock held across ``do_provision`` is the key's own (``_provision_key_lock``), so a cold
+    Oracle start does not hold up a Postgres bring-up. The registry lock guards only the record's
+    read and its read-modify-write afterwards, so two keys recorded at once never lose an update
+    and ``forget_provisioned`` never waits behind a bring-up."""
     reg, lock = _provision_state_paths(state_dir)
+    key_lock = _provision_key_lock(container)
     context = service_healing.current_context()
-    held = FileLock(str(lock), mode=lockdir.file_mode())
+    held = FileLock(str(key_lock), mode=lockdir.file_mode())
     if context:
-        context.acquire(held, f"provisioning lock {lock}")
+        context.acquire(held, f"provisioning lock {key_lock}")
     else:
         try:
             held.acquire(timeout=dockercmd.LOCK_WAIT_S)
         except Timeout:
-            raise ServiceError(f"provisioning lock {lock} not acquired within {dockercmd.LOCK_WAIT_S:.0f}s: "
+            raise ServiceError(f"provisioning lock {key_lock} not acquired within {dockercmd.LOCK_WAIT_S:.0f}s: "
                                f"another process is still provisioning {container}") from None
     try:
         if context:
             context.check()
+        registry = _registry_lock(lock, context)
         try:
-            state = json.loads(reg.read_text())
-        except (FileNotFoundError, ValueError):
-            state = {}
-        if container in state:
-            return False
+            if container in _recorded(reg):
+                return False
+        finally:
+            registry.release()
         do_provision()
-        state[container] = "1"
-        reg.write_text(json.dumps(state))
+        registry = _registry_lock(lock, context)
+        try:
+            state = _recorded(reg)
+            state[container] = "1"
+            reg.write_text(json.dumps(state))
+        finally:
+            registry.release()
         return True
     finally:
         held.release()

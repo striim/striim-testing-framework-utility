@@ -237,7 +237,7 @@ def test_a_waiter_for_the_provisioning_lock_gives_up_naming_it(monkeypatch, tmp_
     from livetest import services, stack
     monkeypatch.setattr(stack, "_LOCK_DIR", tmp_path / "locks")         # never the machine-wide lock dir
     monkeypatch.setattr(dockercmd, "LOCK_WAIT_S", 0.3)
-    _, lock = services._provision_state_paths(tmp_path)
+    lock = services._provision_key_lock("slt-oracle")     # held across another process's bring-up
     assert str(lock).startswith(str(tmp_path))
     stop = _held_elsewhere(lock)
     try:

@@ -353,7 +353,9 @@ the last release; the release makes it that version's entry.
 - Shared service adapter: a provision record whose container is no longer running no longer turns
   the bring-up into a no-op reported as `provisioned-and-kept`; the record is dropped and the
   container started. One provisioning lock per container, so a fast service no longer waits
-  behind a slow one's cold start.
+  behind a slow one's cold start. That holds in a parallel run too: the provision registry's lock
+  is now taken only to read and update a record, and the lock held across a bring-up is that
+  container's own.
 
 ## v0.3.2 (2026-10-27)
 

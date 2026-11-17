@@ -55,7 +55,10 @@ Declaration points:
   `lock-timeout: …`), so one service's slow start never holds up another's. Inside the lock a
   running container is recorded `reused`; otherwise its provision records are dropped (a record
   that outlived its container made the bring-up a no-op) and it is provisioned and recorded
-  `provisioned-and-kept`. The parallel provisioning registry uses a different lock file.
+  `provisioned-and-kept`. The parallel provisioning registry uses different lock files: each key's
+  own `.slt-provision-<key>.lock`, held across its bring-up and post-up so it runs once, and the
+  registry's lock, held only to read the record and to update it afterwards. A bring-up therefore
+  holds up only another bring-up of the same container.
 - `SLT_SHARED_PROVISION=0` (unset or `1` is the default) refuses to start a missing service and
   names its `python -m livetest.cli start <service>` command instead; a lane that must never start
   a shared service sets it.
