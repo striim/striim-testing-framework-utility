@@ -287,50 +287,10 @@ def _path(key, default: Path, env=None, dotenv=None) -> Path:
     return p
 
 
-# Switches: settings that turn something on or off. `1` is on and `0` is off; unset or empty is
-# off, except the _DEFAULT_ON ones; any other value is refused, in both engines and the CLI.
-SWITCHES = (
-    "SLT_STRIIM_NATIVE_ONLY", "SLT_KEEP_SERVICES", "SLT_KEEP_RESOURCES", "SLT_KEEP_RESOURCES_ON_ERROR",
-    "SLT_ALLOW_NO_CLUSTER", "SLT_PARALLEL", "SLT_RUN_DISABLED", "SLT_SKIP_VERIFY", "SLT_EMULATORS",
-    "SLT_PRE_UP", "SLT_OP_RETRY_FAILED", "SLT_OPS_PRELOADED", "SLT_TERADATA_JDBC", "SLT_ENABLE_NODE_FAULTS",
-    "INT_KEEP_SERVICES", "INT_KEEP_RESOURCES", "INT_EMULATORS", "INT_EMPTY_SELECTION_OK",
-    "INT_VARIANT_ITEMS", "INT_PG_ALLOW_DESTRUCTIVE_RESET", "INT_ALLOW_CONCURRENT_SESSIONS",
-    "INT_ALLOW_ALL_SKIPPED", "SLT_STRIIM_DEBUG", "SLT_SHARED_PROVISION",
-)
-_DEFAULT_ON = ("SLT_PRE_UP", "INT_VARIANT_ITEMS", "SLT_SHARED_PROVISION")
-
-
-class FlagError(ValueError):
-    """A switch holds something other than 1 or 0. The message names the setting and its value."""
-
-
-def parse_flag(name, raw) -> bool:
-    """The switch `name` set to `raw`: True for `1`, False for `0`, its default when unset or blank.
-    Anything else, `true`, `yes` and ` 1` included, raises FlagError rather than guess."""
-    value = raw or ""
-    if value in ("0", "1"):
-        return value == "1"
-    if not value.strip():
-        return name in _DEFAULT_ON
-    raise FlagError(f"{name}={raw!r}: a switch is 1 (on) or 0 (off), and unset is "
-                    f"{'on' if name in _DEFAULT_ON else 'off'}. Set it to 1 or 0, or unset it.")
-
-
-def flag(name, env=None) -> bool:
-    """The switch `name` in `env` (default: the process environment); see parse_flag."""
-    return parse_flag(name, (os.environ if env is None else env).get(name))
-
-
-def flag_problems(env=None, names=SWITCHES) -> list:
-    """One message per switch in `names` that `env` sets to something other than 1 or 0."""
-    problems = []
-    for name in names:
-        try:
-            flag(name, env)
-        except FlagError as e:
-            problems.append(str(e))
-    return problems
 # --- end core ------------------------------------------------------------------------------
+
+# Switches: one rule and one copy, in livetest.paths (the integration engine imports livetest).
+from livetest.paths import SWITCHES, FlagError, flag, flag_problems, parse_flag  # noqa: E402,F401
 
 _HERE = Path(__file__).resolve()          # <scripts>/integration/inttest/paths.py
 

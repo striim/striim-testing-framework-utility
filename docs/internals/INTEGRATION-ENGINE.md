@@ -204,7 +204,7 @@ means it.
 stale jar would report green over a real regression (`opartifacts.py` rebuilds whenever anything
 under the module's `src/main`, its `pom.xml`, a parent pom it inherits from, or any source root its pom
 add-sources (`OpenProcessorCommon`, `FieldCommon`, ...) is newer than the jar, was deleted since the
-build, or no longer matches the content digest recorded beside the jar; `jarinputs.py`, shared with the live engine, lists those inputs). So a tier in flight and a packaging build in another shell are two Maven builds in one
+build, or no longer matches the content digest recorded beside the jar; `livetest/jarinputs.py`, which both engines import, lists those inputs). So a tier in flight and a packaging build in another shell are two Maven builds in one
 module directory, and one of them deletes `target/` while the other is compiling.
 
 **It breaks in BOTH directions, and neither failure names the cause.**

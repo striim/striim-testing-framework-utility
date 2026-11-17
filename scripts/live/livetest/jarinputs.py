@@ -1,7 +1,6 @@
 """The files an OP or UDF module's jar is built from, and the record of them kept beside the jar.
 
-Kept byte-identical in both engine packages so either engine can be imported alone;
-the root regression suite checks parity.
+The integration engine imports this module from livetest, so both engines read one copy.
 
 Both engines reuse a target/ jar only while nothing it was built from has changed. That is what
 Maven reads to build it: every file under the module's src/main (java and resources), its

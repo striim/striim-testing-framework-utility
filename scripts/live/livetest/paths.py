@@ -6,7 +6,8 @@ then the machine settings file, then today's relative default. Nothing is export
 to the process by this module. Machine settings cannot set checkout paths or lane keys.
 A key that is set but names a missing path raises PathConfigError naming the key -- a set key
 is never ignored. Empty values count as unset. The integration engine carries a twin,
-``inttest/paths.py``, whose core block is byte-identical (test_int_paths.py checks it).
+``inttest/paths.py``, whose core block is byte-identical (test_int_paths.py checks it); the
+switch helpers (SWITCHES, flag, ...) are only here, and inttest.paths imports them.
 """
 from __future__ import annotations
 
@@ -289,6 +290,9 @@ def _path(key, default: Path, env=None, dotenv=None) -> Path:
     return p
 
 
+# --- end core ------------------------------------------------------------------------------
+
+
 # Switches: settings that turn something on or off. `1` is on and `0` is off; unset or empty is
 # off, except the _DEFAULT_ON ones; any other value is refused, in both engines and the CLI.
 SWITCHES = (
@@ -332,7 +336,7 @@ def flag_problems(env=None, names=SWITCHES) -> list:
         except FlagError as e:
             problems.append(str(e))
     return problems
-# --- end core ------------------------------------------------------------------------------
+
 
 _HERE = Path(__file__).resolve()          # <scripts>/live/livetest/paths.py
 

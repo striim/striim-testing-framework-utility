@@ -32,8 +32,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from inttest import jarinputs, opjarrelease
-from livetest import dockercmd
+from inttest import opjarrelease
+from livetest import dockercmd, jarinputs
 
 from inttest import paths
 

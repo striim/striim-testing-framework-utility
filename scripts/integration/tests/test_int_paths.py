@@ -29,6 +29,14 @@ def test_core_block_identical_to_livetest():
     assert _core(Path(paths.__file__).read_text()) == _core(LIVE_PATHS.read_text())
 
 
+def test_the_switch_helpers_are_livetests_own():
+    """One rule, one copy: inttest.paths imports the switch helpers rather than carrying a twin."""
+    from livetest import paths as live
+    for name in ("SWITCHES", "FlagError", "parse_flag", "flag", "flag_problems"):
+        assert getattr(paths, name) is getattr(live, name), name
+    assert "def parse_flag" not in Path(paths.__file__).read_text()
+
+
 def test_defaults_equal_todays_derivation():
     assert paths.project_root({}, {}) == REPO                               # opartifacts.py:35
     assert paths.int_dir({}, {}) == INT                                     # plugin.py:74 _ROOT

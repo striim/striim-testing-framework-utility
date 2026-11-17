@@ -132,14 +132,14 @@ def test_a_jar_without_a_source_record_is_a_rebuild_trigger(project, name):
 def test_parent_poms_follow_maven_relative_path(project, pom, expected):
     (project.mod / 'pom.xml').write_text(pom)
     for name in ENGINES:
-        jarinputs = importlib.import_module(name + '.jarinputs')
+        jarinputs = _engine(name).jarinputs
         assert jarinputs.parent_poms(project.mod) == [(project.root / e).resolve() for e in expected]
 
 
 def test_parent_poms_follow_the_chain_and_stop_on_a_cycle(project):
     project.parent.write_text('<project><parent><relativePath>../pom.xml</relativePath></parent></project>')
     project.aggregator.write_text('<project><parent><relativePath>OpenProcessors</relativePath></parent></project>')
-    from inttest import jarinputs
+    from livetest import jarinputs
     assert jarinputs.parent_poms(project.mod) == [project.parent.resolve(), project.aggregator.resolve()]
 
 
@@ -210,9 +210,10 @@ def test_live_build_jar_clean_rebuilds_after_a_source_is_deleted(project, monkey
     assert engine._stale_trigger(project.jar, project.mod) is None     # the new record holds
 
 
-def test_input_set_helper_is_identical_between_engines():
-    assert (SCRIPTS / 'live/livetest/jarinputs.py').read_bytes() == (
-        SCRIPTS / 'integration/inttest/jarinputs.py').read_bytes()
+def test_both_engines_use_the_one_input_set_helper():
+    from livetest import jarinputs
+    assert _engine('inttest').jarinputs is jarinputs and _engine('livetest').jarinputs is jarinputs
+    assert not (SCRIPTS / 'integration/inttest/jarinputs.py').exists()
 
 
 def _hermetic_build_jar(engine, project, monkeypatch, package=None):
@@ -298,7 +299,7 @@ def test_a_newer_input_does_not_mask_a_change_behind_an_old_mtime(project, monke
 def test_a_record_of_names_only_is_a_rebuild_trigger(project, name):
     # A record written before it carried content digests cannot vouch for the jar's bytes.
     engine = _engine(name)
-    jarinputs = importlib.import_module(name + '.jarinputs')
+    jarinputs = _engine(name).jarinputs
     srcs = jarinputs.inputs(project.mod)
     engine._source_record(project.jar).write_text(
         ''.join(n + '\n' for n in sorted({os.path.relpath(p, project.mod) for p in srcs})))
