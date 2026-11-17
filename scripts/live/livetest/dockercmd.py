@@ -11,8 +11,12 @@ own `compose up`/`down` stream too, but through ``stream`` below, under the comp
 """
 from __future__ import annotations
 
+import os
+import queue
+import signal
 import subprocess
 import threading
+import time
 
 # `docker ps`, `inspect`, `images`, `cp` of a small file, `exec` of a read, a listing, a checksum or a
 # removal, and local probes (`java -version`, `openssl`). The bound the ownership ledger has used for
@@ -58,12 +62,13 @@ def run(argv, *, timeout: float = QUERY_TIMEOUT_S, check: bool = False, capture:
     status ``TIMED_OUT`` is returned (``check=True``: ``DockerTimeout`` is raised). ``capture=False``
     leaves stdout and stderr on the terminal. Missing binaries raise FileNotFoundError, as before.
 
-    On expiry and on any exception (Ctrl-C included) the command is killed with every process it started:
-    `docker compose` runs as a child of `docker`, and a post-up script or a build starts children of its
-    own, so killing only the direct child left them running -- a `down -v` that went on after its caller
-    had given up, or a bring-up that kept creating what cleanup had removed. The command stays in the
-    caller's process group, so a signal striim-test sends to the tier's group (cancel, stop) still
-    reaches it."""
+    On expiry and on any exception (Ctrl-C included) the command is killed with every process it started,
+    those whose parent has already exited included: `docker compose` runs as a child of `docker`, and a
+    post-up script or a build starts children of its own, so killing only the direct child left them
+    running -- a `down -v` that went on after its caller had given up, or a bring-up that kept creating
+    what cleanup had removed. The command runs in a process group of its own (``_spawn``), which is also
+    killed when the process that started it dies, however it dies: a tier that striim-test stops or kills
+    takes its commands with it."""
     if capture:
         kw.setdefault("capture_output", True)
         kw.setdefault("text", True)
@@ -81,9 +86,84 @@ def run(argv, *, timeout: float = QUERY_TIMEOUT_S, check: bool = False, capture:
 
 _SUBPROCESS_RUN = subprocess.run
 
+# Holds the command's process group (``_spawn``). It waits for end-of-file on its stdin, a pipe that only
+# the process that started the command holds open, and then kills its own group: the command and every
+# process it started. Signals that would end it without doing that are ignored.
+_ANCHOR = ["/bin/sh", "-c", "trap '' HUP INT QUIT TERM; read -r line; kill -s KILL 0"]
+
+
+def _spawn(argv, **kw):
+    """Start ``argv`` in a new process group; return ``(proc, anchor)``.
+
+    The group belongs to ``anchor``, a process started first in a group of its own, which the command
+    joins. A process keeps its group when its parent exits, so killing the group reaches every process the
+    command started however much of its ancestry is gone (one that leaves the group itself, with
+    ``setsid`` or ``setpgid``, is out of reach, as it is of a terminal's job control).
+
+    The group id is the anchor's pid, and only ``_kill_group`` or ``_release`` reaps the anchor, in the
+    thread that started the command, after the group has been signalled. Until then the kernel gives that
+    pid, and so that group id, to nothing else: the group the cleanup signals is always this command's. The
+    command's own pid is never signalled once the command may have been reaped.
+
+    The command is not in the caller's process group, so a signal to that group (striim-test cancelling a
+    tier, a Ctrl-C at the terminal) reaches the caller, not the command. The caller's interrupt stops it
+    (``run`` and ``stream`` kill the group on any exception); if the caller dies instead, the anchor's stdin
+    reaches end-of-file and the anchor kills the group."""
+    anchor = subprocess.Popen(_ANCHOR, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, process_group=0)
+    try:
+        proc = subprocess.Popen(argv, process_group=anchor.pid, **kw)
+    except BaseException:
+        _kill_group(anchor, None)
+        raise
+    return proc, anchor
+
+
+def _kill_group(anchor, proc) -> None:
+    """SIGKILL the command's process group, then reap the anchor. Sent twice more, a moment apart, for a
+    process that was being forked as the first one landed."""
+    if anchor.returncode is None:
+        for _ in range(3):
+            try:
+                os.killpg(anchor.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                break
+            except PermissionError:     # macOS, while a killed group's members are being reaped
+                pass
+            time.sleep(0.05)
+        try:
+            anchor.kill()               # in case no group signal could be delivered
+        except OSError:
+            pass
+    _reap_anchor(anchor)
+    if proc is not None:
+        try:
+            proc.kill()                 # a command that left the group; a no-op once it has been reaped
+        except OSError:
+            pass
+
+
+def _release(anchor) -> None:
+    """The command has finished: end the anchor alone (SIGKILL, so it never reads the end-of-file that would
+    kill the group). What the command left running is left as it is, as before."""
+    try:
+        anchor.kill()
+    except OSError:
+        pass
+    _reap_anchor(anchor)
+
+
+def _reap_anchor(anchor) -> None:
+    anchor.wait()
+    if anchor.stdin is not None:
+        try:
+            anchor.stdin.close()
+        except OSError:
+            pass
+
 
 def _run_group(argv, timeout: float, kw):
-    """``subprocess.run(argv, timeout=timeout, **kw)``, except that the command's whole process tree is killed
+    """``subprocess.run(argv, timeout=timeout, **kw)``, except that the command's whole process group is killed
     when the bound expires (``TimeoutExpired`` is then raised, as ``subprocess.run`` raises it) or when
     anything else interrupts the wait. A ``subprocess.run`` replaced in this process (a hermetic test's
     stand-in for the command) is called as before: there is no process here to kill."""
@@ -95,57 +175,26 @@ def _run_group(argv, timeout: float, kw):
     stdin_data = kw.pop("input", None)
     if stdin_data is not None:
         kw["stdin"] = subprocess.PIPE
-    proc = subprocess.Popen(argv, **kw)
+    proc, anchor = _spawn(argv, **kw)
     try:
         out, err = proc.communicate(stdin_data, timeout=timeout)
     except subprocess.TimeoutExpired:
-        _kill_tree(proc)
+        _kill_group(anchor, proc)
         raise subprocess.TimeoutExpired(argv, timeout, output=_drain(proc)) from None
     except BaseException:
-        _kill_tree(proc)
+        _kill_group(anchor, proc)
         try:
             _drain(proc)
         except Exception:               # noqa: BLE001 - the interrupt is what the caller must see
             proc.wait()
         raise
+    _release(anchor)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
-def _kill_tree(proc) -> None:
-    """SIGKILL the command and every process it started. Each process found is stopped (SIGSTOP) before the
-    tree is listed again, so none can start another one unseen; then all are killed. Not by process group:
-    the command shares the caller's, which striim-test signals as a whole."""
-    import psutil
-    frozen: dict = {}
-    try:
-        root = psutil.Process(proc.pid)
-        for _ in range(10):
-            new = [p for p in [root, *root.children(recursive=True)] if p.pid not in frozen]
-            if not new:
-                break
-            for p in new:
-                frozen[p.pid] = p
-                try:
-                    p.suspend()
-                except psutil.Error:
-                    pass
-    except psutil.Error:                # the command itself is gone: its tree was listed as far as it went
-        pass
-    for p in frozen.values():
-        try:
-            p.kill()
-        except psutil.Error:
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
-
-
 def _drain(proc):
-    """Reap a killed command and return what it wrote to a captured stdout. Bounded: a descendant that the
-    tree walk could not see (one that detached itself) could still hold the pipe; its output is then not
-    waited for."""
+    """Reap a killed command and return what it wrote to a captured stdout. Bounded: a process outside the
+    group (one that detached itself) could still hold the pipe; its output is then not waited for."""
     try:
         out, _err = proc.communicate(timeout=5)
         return out
@@ -160,35 +209,70 @@ def _drain(proc):
         return None
 
 
+# How long a stream waits for the rest of the output once its command has finished or its group has been
+# killed: only a process outside the group (one that detached itself) can hold the pipe open past that.
+_STREAM_DRAIN_S = 5.0
+
+
 def stream(argv, on_line, *, timeout: float, env=None, cwd=None) -> int:
     """Run ``argv`` with stdout and stderr merged, handing each line to ``on_line``; return its exit status,
-    or ``TIMED_OUT`` when it outlived ``timeout``. The command and every process it started are killed on
-    expiry and on any exception (Ctrl-C included): `docker compose` runs as a child of `docker`, and either
-    can hold the output pipe open. As with ``run``, the command stays in the caller's process group, so a
-    signal striim-test sends to the tier's group reaches the cluster's `compose up`/`down` too. ``cwd`` is
-    the directory it runs in (None: this process's)."""
-    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            env=env, cwd=cwd)
-    fired = threading.Event()
+    or ``TIMED_OUT`` when it outlived ``timeout``. As with ``run``, the command runs in a process group of
+    its own, killed with every process it started on expiry, on any exception (Ctrl-C included) and when
+    the caller dies. The bound holds whoever keeps the pipe open: a thread of its own reads the output, and
+    this one waits for its lines against the deadline. ``cwd`` is the directory it runs in (None: this
+    process's)."""
+    deadline = time.monotonic() + timeout
+    proc, anchor = _spawn(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+                          env=env, cwd=cwd)
+    lines = queue.SimpleQueue()
 
-    def expire():
-        fired.set()
-        _kill_tree(proc)
+    def read():
+        try:
+            for line in proc.stdout:
+                lines.put(line)
+        except (OSError, ValueError):
+            pass
+        finally:
+            lines.put(None)
 
-    timer = threading.Timer(timeout, expire)
-    timer.daemon = True
-    timer.start()
+    reader = threading.Thread(target=read, daemon=True, name="slt-dockercmd-stream")
+    reader.start()
+    timed_out, eof = False, False
     try:
-        for line in proc.stdout:
-            on_line(line)
-        proc.wait()
+        while not eof:
+            try:
+                line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                timed_out = True
+                break
+            if line is None:
+                eof = True
+            else:
+                on_line(line)
+        if not timed_out:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                timed_out = True
     except BaseException:
-        _kill_tree(proc)
-        raise
-    finally:
-        timer.cancel()
-        if proc.poll() is None:
-            _kill_tree(proc)
+        _kill_group(anchor, proc)
         proc.wait()
+        raise
+    if timed_out:
+        _kill_group(anchor, proc)
+    else:
+        _release(anchor)
+    proc.wait()
+    reader.join(_STREAM_DRAIN_S)
+    while not eof:                      # what the command wrote before it was stopped
+        try:
+            line = lines.get_nowait()
+        except queue.Empty:
+            break
+        if line is None:
+            eof = True
+        else:
+            on_line(line)
+    if eof:
         proc.stdout.close()
-    return TIMED_OUT if fired.is_set() else proc.returncode
+    return TIMED_OUT if timed_out else proc.returncode

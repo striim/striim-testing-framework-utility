@@ -196,3 +196,91 @@ def test_an_interrupt_during_the_launch_leaves_no_signal_blocked_or_handler_repl
     assert dispatch.run_tier_process(["true"], "live") is None
     assert not signal.pthread_sigmask(signal.SIG_BLOCK, set()) & {signal.SIGINT, *before}
     assert {s: signal.getsignal(s) for s in before} == before
+
+
+# A tier that runs a bounded Docker command (livetest.dockercmd), which runs in a process group of its own.
+# The command starts a child that ignores SIGINT and SIGTERM, records its pid, acts after 3 s and keeps
+# running. However striim-test ends the tier, the command and that child must not outlive it.
+STUBBORN = textwrap.dedent("""
+    import os, signal, sys, time
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    open(sys.argv[1], "a").write(str(os.getpid()) + chr(10))
+    time.sleep(3)
+    open(sys.argv[2], "w").write("acted")
+    time.sleep(30)
+""")
+
+TIER_WITH_A_COMMAND = textwrap.dedent("""
+    import signal, sys, threading, time
+    from livetest import dockercmd
+    how, rest = sys.argv[1], sys.argv[2:]
+    argv = [sys.executable, "-c", "import os, subprocess, sys, time; subprocess.Popen([sys.executable] + sys.argv[1:]); "
+            "open(sys.argv[2], 'a').write(str(os.getpid()) + chr(10)); time.sleep(60)"] + rest
+    if how == "ignores-signals":         # only the cancel bound's SIGKILL ends this tier
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    if how == "thread":                  # the interrupt lands in the main thread, not in the command's wait
+        threading.Thread(target=dockercmd.run, args=(argv,), kwargs={"timeout": 60}, daemon=True).start()
+        time.sleep(60)
+    else:
+        dockercmd.run(argv, timeout=60)
+""")
+
+TIER_DRIVER = textwrap.dedent("""
+    import json, sys
+    from striim_test import dispatch
+    dispatch.TIER_STOP_WAIT_S = 0.5
+    cancel_wait, tier = float(sys.argv[1]), sys.argv[2:]
+    print(json.dumps({"rc": dispatch.run_tier_process([sys.executable, *tier], "live", cancel_wait=cancel_wait)}))
+""")
+
+
+def _gone(pid) -> bool:
+    import psutil
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+@pytest.mark.parametrize("how,cancel_wait", [("main", 10.0), ("thread", 10.0), ("ignores-signals", 0.5)])
+def test_a_cancelled_tier_leaves_no_part_of_a_docker_command_running(tmp_path, how, cancel_wait):
+    # main: the tier's own interrupt handling stops the command; thread: the tier exits with the command
+    # still running in another thread; ignores-signals: striim-test SIGKILLs the tier at the cancel bound.
+    live = CLI.parent / "live"
+    (tmp_path / "tier.py").write_text(TIER_WITH_A_COMMAND)
+    (tmp_path / "driver.py").write_text(TIER_DRIVER)
+    (tmp_path / "stubborn.py").write_text(STUBBORN)
+    pids, acted = tmp_path / "pids", tmp_path / "acted"
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([str(CLI), str(live), os.environ.get("PYTHONPATH", "")]))
+    proc = subprocess.Popen([sys.executable, str(tmp_path / "driver.py"), str(cancel_wait), str(tmp_path / "tier.py"),
+                             how, str(tmp_path / "stubborn.py"), str(pids), str(acted)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True,
+                            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+    started = []
+    try:
+        deadline = time.monotonic() + 20
+        while not (pids.exists() and len(pids.read_text().split()) >= 2):
+            assert time.monotonic() < deadline and proc.poll() is None, proc.communicate()
+            time.sleep(0.05)
+        started = [int(p) for p in pids.read_text().split()]
+        os.killpg(proc.pid, signal.SIGINT)                 # Ctrl-C
+        so, se = proc.communicate(timeout=30)
+        assert json.loads(so.strip().splitlines()[-1]) == {"rc": None}, se
+        deadline = time.monotonic() + 3
+        while not all(_gone(p) for p in started) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert all(_gone(p) for p in started), started
+        time.sleep(3)
+        assert not acted.exists(), "a child of the tier's docker command survived the tier and acted"
+    finally:
+        for pid in started:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()

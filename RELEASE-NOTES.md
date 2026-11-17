@@ -96,8 +96,12 @@ the last release; the release makes it that version's entry.
   `compose up`, 1 h for captured builds. A hung Docker daemon fails the step and says so instead of
   hanging. Waits for another process's bring-up lock are bounded too, and name the lock. A command
   that outlives its bound, or is interrupted, is stopped with every process it started (the Compose
-  plugin under `docker`, a post-up script's or a build's own children), so no part of a timed-out
-  `compose down` or bring-up goes on after the step has failed.
+  plugin under `docker`, a post-up script's or a build's own children, those whose parent has
+  already exited included), so no part of a timed-out `compose down` or bring-up goes on after the
+  step has failed. Each command runs in a process group of its own, which is also killed when the
+  process that ran it dies (a tier that `striim-test` cancels, stops or kills takes its commands with
+  it); a signal sent to the caller's process group reaches the caller, whose interrupt stops the
+  command.
 - **recover: `expect_running: false` is checked.** The app must settle CREATED, DEPLOYED, STOPPED
   or QUIESCED after the restore; RUNNING or a terminal status fails the case, and a `recovery`
   record holds the status.
