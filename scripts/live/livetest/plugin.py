@@ -1585,30 +1585,54 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
     GCS buckets and Kafka topics (incl. `kafka_cleanup_topics:`), the per-test op.upload files and
     the rolled FileWriter parts (<path>*). Never raises; returns what it attempted and what failed,
     as {"attempted": ["<kind> <name>", ...], "failed": {"<kind> <name>": "<error>"}}, the subjects
-    the ledger's verification gaps use (kind: engine-tables, bucket, topic, upload, file-output).
+    the ledger's verification gaps use (kind: engine-tables, bucket, topic, upload, file-output), and
+    "running": the subjects whose call was still running when the teardown returned.
 
     It runs after the ledger's cleanup and outside its deadline, so it carries the ledger's bounds itself:
     each call gets ``op_s`` (``CLEANUP_OP_S``) and the whole teardown ``deadline_s``
-    (``CLEANUP_DEADLINE_S``). A call that outlives its bound is abandoned in a daemon thread and recorded
-    as failed; once the deadline has passed, the calls left are recorded as not attempted."""
-    out = {"attempted": [], "failed": {}}
+    (``CLEANUP_DEADLINE_S``). A call that outlives its bound is recorded as failed, and the calls on other
+    admins go on. It is not left running past the case: a later call on the same admin is deferred until
+    the other calls are done and then waits for it (one admin's client is never used from two threads),
+    and the teardown waits for it before returning, both while the deadline lasts. In a serial run a drop targets fixed table names, so a drop
+    that ran on would drop what the next case's `ddl` had just created. Once the deadline has passed, the
+    calls left are recorded as not attempted, and a call still running is listed under "running": the
+    caller stops the run (``stop_if_teardown_running``)."""
+    out = {"attempted": [], "failed": {}, "running": []}
     deadline = _slt_lifecycle.Deadline(deadline_s)
+    abandoned = []                      # (subjects, owner, thread) of each call left running at its bound
 
-    def call(subjects, fn, *args):
+    def wait_for(threads) -> bool:
+        for t in threads:
+            t.join(max(0.0, deadline.remaining()))
+        return not any(t.is_alive() for t in threads)
+
+    deferred = []                       # calls on an admin whose earlier call was still running
+
+    def busy(owner):
+        return [t for _s, o, t in abandoned if owner is not None and o is owner and t.is_alive()]
+
+    def call(subjects, fn, *args, owner=None):
         out["attempted"] += subjects
+        if busy(owner):
+            deferred.append((subjects, fn, args, owner))
+        else:
+            run_call(subjects, fn, args, owner)
+
+    def run_call(subjects, fn, args, owner):
         if deadline.expired():
             out["failed"].update({s: "cleanup-deadline: not attempted" for s in subjects})
             return
         bound = max(0.05, min(op_s, deadline.remaining()))
         try:
             _slt_lifecycle.bounded(lambda: fn(*args), bound)
-        except _slt_lifecycle.ProbeHung:
-            out["failed"].update({s: f"did not finish within {bound:.1f}s and was abandoned" for s in subjects})
+        except _slt_lifecycle.ProbeHung as hung:
+            out["failed"].update({s: f"did not finish within {bound:.1f}s" for s in subjects})
+            abandoned.append((subjects, owner, hung.thread))
         except Exception as e:          # noqa: BLE001 - best-effort; recorded, never raised
             out["failed"].update({s: repr(e) for s in subjects})
 
-    def attempt(subject, fn, *args):
-        call([subject], fn, *args)
+    def attempt(subject, fn, *args, owner=None):
+        call([subject], fn, *args, owner=owner)
 
     seen = set()
     for db, _f in ddl_files:
@@ -1625,11 +1649,11 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
             out["failed"][subject] = "tables preserved because Oracle observer teardown failed"
             continue
         token = _DDL_TEARDOWN_PREFIX_TOKENS.get(db.split("-", 1)[0], "TID")
-        attempt(f"engine-tables {db}", drop, tokens.get(token, ""))
+        attempt(f"engine-tables {db}", drop, tokens.get(token, ""), owner=entry["admin"])
     for admin, bucket in gcs_cleanup:
-        attempt(f"bucket {bucket}", admin.delete_bucket, bucket)
+        attempt(f"bucket {bucket}", admin.delete_bucket, bucket, owner=admin)
     for admin, topic in kafka_cleanup:
-        attempt(f"topic {topic}", admin.delete_topic, topic)
+        attempt(f"topic {topic}", admin.delete_topic, topic, owner=admin)
     if upload_names:                    # one call deletes them all; each is recorded
         call([f"upload {n}" for n in upload_names], delete_uploads, upload_names)
     if file_spec:
@@ -1642,10 +1666,32 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
                 path = render(fs["path"], tokens)
             except Exception:
                 continue
-            attempt(f"file-output {path}*", clear_files, path)
+            attempt(f"file-output {path}*", clear_files, path, owner=clear_files)
+    for subjects, fn, args, owner in deferred:
+        if wait_for(busy(owner)):
+            run_call(subjects, fn, args, owner)
+        else:
+            out["failed"].update({s: "not attempted: an earlier delete on the same admin was still running "
+                                     "at the teardown deadline" for s in subjects})
+    wait_for([t for _s, _o, t in abandoned])
+    for subjects, _o, t in abandoned:
+        if t.is_alive():
+            out["running"] += subjects
+            for s in subjects:
+                out["failed"][s] += "; still running at the teardown deadline"
     for subject, err in out["failed"].items():
         print(f"[slt] WARNING: post-test cleanup failed for {subject}: {err}")
     return out
+
+
+def stop_if_teardown_running(session, name: str, outcome: dict) -> None:
+    """Stop the run after this case when a delete of its teardown is still running (`teardown_unowned`'s
+    "running"): a drop left running could drop what the next case creates. The case itself has already
+    failed on it; this keeps the next one from starting."""
+    if outcome.get("running"):
+        session.shouldfail = (f"{name}: a teardown delete is still running at the teardown deadline "
+                              f"({', '.join(outcome['running'])}); the run stops so that it cannot drop "
+                              f"what the next case creates")
 
 
 def note_unowned_teardown(resources: dict, outcome: dict) -> dict:
@@ -4242,6 +4288,7 @@ class LiveItem(pytest.Item):
                                                 lambda _n: opartifacts.delete_artifacts(ctx, _n),
                                                 oracle_observer_failed=bool(_observers["failed"]))
                     _unowned_failed = dict(_unowned["failed"])
+                    stop_if_teardown_running(self.session, m.name, _unowned)
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")

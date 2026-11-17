@@ -83,6 +83,7 @@ class LifecycleError(AssertionFailed):
 
 class ProbeHung(Exception):
     reason = "probe-hung"
+    thread = None           # from ``bounded``: the abandoned call's thread, still running
 
 
 class ProbeCancelled(Exception):
@@ -457,7 +458,8 @@ class State:
 
 def bounded(fn, remaining: float):
     """Run ``fn`` in a daemon thread joined for ``remaining`` seconds; ``ProbeHung`` if it has not
-    returned (the thread is abandoned, never joined again)."""
+    returned. The thread is then abandoned here; the error's ``thread`` is it, for a caller that must
+    not let the call run on past a point of its own."""
     box = {}
 
     def run():
@@ -470,7 +472,9 @@ def bounded(fn, remaining: float):
     t.start()
     t.join(max(0.0, float(remaining)))
     if t.is_alive():
-        raise ProbeHung(f"probe did not return within {remaining:.1f}s")
+        hung = ProbeHung(f"probe did not return within {remaining:.1f}s")
+        hung.thread = t
+        raise hung
     if "error" in box:
         raise box["error"]
     return box.get("value")

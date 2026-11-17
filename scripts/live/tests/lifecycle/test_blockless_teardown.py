@@ -297,6 +297,20 @@ P.teardown_unowned = _slt_raising
     assert cleanup["status"] == "failed" and "teardown exploded" in cleanup["detail"]
 
 
+def test_exec_a_delete_still_running_at_the_teardown_deadline_stops_the_run(run_case):
+    run = run_case("legacy", prepare=lambda root, name: _append(root, '''
+def _slt_still_running(*a, **k):
+    log("teardown_unowned")
+    return {"attempted": ["engine-tables mysql-source"], "running": ["engine-tables mysql-source"],
+            "failed": {"engine-tables mysql-source": "did not finish within 60.0s; still running at the "
+                                                     "teardown deadline"}}
+P.teardown_unowned = _slt_still_running
+'''))
+    assert "teardown_unowned" in run.names(), run.text
+    assert run.ret == 1 and "cleanup failed: " in run.text, run.text
+    assert "the run stops" in run.text and "engine-tables mysql-source" in run.text, run.text
+
+
 def test_exec_a_failing_drop_test_tables_ends_in_cleanup_error(run_case):
     def prepare(root, name):
         (root / "cases" / "legacy" / "m.sql").write_text("CREATE TABLE ${TID}m (id int);\n")
