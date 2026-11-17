@@ -1456,6 +1456,13 @@ def pytest_configure(config):
     # A switch set to anything but 1 or 0 is a settings mistake: refuse the run before anything
     # reads it (paths.flag).
     problems = paths_mod.flag_problems(os.environ)
+    # INT_STACK_PREFIX names the session lock, every state file and every container: an invalid one is a
+    # settings mistake too, reported here rather than as a traceback from the first file it names.
+    if _docker_mod is not None:
+        try:
+            _docker_mod.stack_prefix(os.environ)
+        except _docker_mod.StackPrefixError as e:
+            problems = [*problems, str(e)]
     if problems:
         raise pytest.UsageError("integration: " + "\n".join(problems))
     config.addinivalue_line("markers", "integration: integration test (requires Docker services)")

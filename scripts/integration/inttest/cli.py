@@ -11,11 +11,12 @@ service. Without it `start postgres` hands you an empty database.
 
 import argparse
 import os
+import sys
 
 from filelock import FileLock
 
-from inttest.services import (compose_up, compose_down, is_connection_only, run_pre_up,
-                              surviving_containers, unavailable)
+from inttest.services import (StackPrefixError, compose_up, compose_down, is_connection_only, run_pre_up,
+                              stack_prefix, surviving_containers, unavailable)
 
 # Bring-up order for the services we have an opinion about (postgres first, then oracle,
 # then spanner, then gcs -- gcs has no dependency on the others, so it goes last).
@@ -166,6 +167,11 @@ def main() -> int:
     # the environment), so `start` and a session on that stack ran `compose up` on one project at once.
     from inttest import paths
     os.environ.update(paths.effective_env(os.environ))
+    try:
+        stack_prefix(os.environ)               # it names every lock, state file and container
+    except StackPrefixError as e:
+        print(f"inttest.cli: {e}", file=sys.stderr)
+        return 2
     p = argparse.ArgumentParser(prog="python -m inttest.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
 

@@ -83,3 +83,27 @@ def test_the_cli_compose_lock_is_the_sessions_when_the_prefix_is_set_only_in_dot
     compose.write_text(COMPOSE)
     assert services.declared_containers([compose]) == ["ec-int-postgres"]     # what compose up names
     assert seen["lock"].name == ".ec-int-compose.lock"
+
+
+@pytest.mark.parametrize("bad", ["EC", "ec "])
+def test_an_invalid_int_stack_prefix_stops_the_cli_naming_the_setting(monkeypatch, capsys, bad, _restore_environ):
+    monkeypatch.setenv("INT_STACK_PREFIX", bad)
+    monkeypatch.setattr(cli, "cmd_up", lambda targets: pytest.fail("nothing runs with an invalid prefix"))
+    assert _main(monkeypatch, "start", "postgres") == 2
+    assert f"invalid INT_STACK_PREFIX {bad!r}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad", ["EC", "ec "])
+def test_an_invalid_int_stack_prefix_stops_the_run_at_configure_with_one_usage_error(pytester, monkeypatch,
+                                                                                     tmp_path, bad):
+    """Not an INTERNALERROR traceback from the session lock, the provision registry or teardown."""
+    (tmp_path / "state").mkdir()
+    monkeypatch.setenv("SLT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.delenv("INT_ALLOW_CONCURRENT_SESSIONS", raising=False)
+    monkeypatch.setenv("INT_STACK_PREFIX", bad)
+    pytester.makepyfile(test_unit="def test_unit():\n    pass\n")
+    result = pytester.runpytest_subprocess("-p", "inttest.plugin", "-p", "no:cacheprovider")
+    out = result.stdout.str() + "\n" + result.stderr.str()
+    assert result.ret == pytest.ExitCode.USAGE_ERROR, out
+    assert f"invalid INT_STACK_PREFIX {bad!r}" in out
+    assert "INTERNALERROR" not in out and "Traceback" not in out
