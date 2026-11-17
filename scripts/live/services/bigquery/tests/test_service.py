@@ -109,15 +109,14 @@ def test_compose_never_builds_the_supplied_image(monkeypatch, override):
 
 
 def test_fake_key_upload_is_independent_of_gcs(monkeypatch):
-    import subprocess
     config = SimpleNamespace(_slt_gcp_key_done=True)
     calls = []
     monkeypatch.setattr(plugin, "_make_fake_gcp_key", lambda uri, project: json.dumps({"token_uri": uri, "project_id": project}))
     monkeypatch.setattr(plugin.stack, "app_nodes", lambda: ("primary", "node"))
-    def copy(args, **kwargs):
-        calls.append((args[-1], json.loads(Path(args[2]).read_text()), kwargs["check"]))
+    def copy(args, **kwargs):           # the bounded runner the upload goes through; a checked copy
+        calls.append((args[-1], json.loads(Path(args[2]).read_text()), kwargs.get("check")))
         return SimpleNamespace(returncode=0)
-    monkeypatch.setattr(subprocess, "run", copy)
+    monkeypatch.setattr(plugin.dockercmd, "run", copy)
     plugin.ensure_fake_gcp_key(config, SimpleNamespace(mode="docker"), key_name="fake-bigquery-key.json",
                                token_uri="http://127.0.0.1:19051/token", project_id="test-project")
     assert [c[0] for c in calls] == ["primary:/opt/striim/UploadedFiles/fake-bigquery-key.json",
@@ -195,9 +194,9 @@ def test_failed_fake_key_copy_aborts_and_remains_retryable(monkeypatch, key_name
     monkeypatch.setattr(plugin, '_make_fake_gcp_key', lambda *a: '{}')
     monkeypatch.setattr(plugin.stack, 'app_nodes', lambda: ('primary',))
     def failed(*args, **kwargs):
-        assert kwargs['check'] is True
+        assert kwargs.get('check') is True
         raise subprocess.CalledProcessError(1, args[0], stderr='copy denied')
-    monkeypatch.setattr(subprocess, 'run', failed)
+    monkeypatch.setattr(plugin.dockercmd, 'run', failed)
     with pytest.raises(RuntimeError, match=f'primary.*{key_name}.*copy denied'):
         plugin.ensure_fake_gcp_key(config, SimpleNamespace(mode='docker'), key_name=key_name)
     assert not getattr(config, flag, False)
