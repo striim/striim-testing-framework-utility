@@ -10,7 +10,8 @@ How it is built:
 - `download-dependencies.sh` fetches the Striim packages and JDBC drivers (about 6.3 GB) into
   `images/striim/deps/` (not in git), or the framework copies them from `SLT_STRIIM_DEPS_MANIFEST`.
   Third-party files must match `deps.sha256`; the harness pins each Striim `.deb` on first use
-  (`deps/.slt-sha256-pins.json`) and checks it before every later build.
+  (`deps/.slt-sha256-pins.json`) and checks it before every later build, re-reading a file only when
+  its size, mtime or ctime changed since it last matched (`.slt-sha256-verified.json` here).
 - `compose.debug.yaml` (added by `SLT_STRIIM_DEBUG=1`) turns on the primary's JDWP debugger and
   publishes it on `127.0.0.1` only. Without it there is no debugger.
 - `images/striim/Dockerfile` builds an amd64 image from them. The release comes from `STRIIM_HOME`

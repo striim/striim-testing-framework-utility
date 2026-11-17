@@ -51,6 +51,12 @@ INSTALLER_IDENTITY_FILE = "slt-installer-identity.json"
 # sees it, in DEPS_PINS_FILE beside it in deps/, and must match that pin on every later build.
 SHIPPED_DEP_DIGESTS = Path(__file__).resolve().parents[1] / "services" / "striim" / "deps.sha256"
 DEPS_PINS_FILE = ".slt-sha256-pins.json"
+# Each checked file's size, mtime and ctime when it last matched its digest: a file whose stat is
+# unchanged is not read again (the striim-node .deb alone is ~3.3 GB). Only a cache -- an unreadable
+# or unwritable one means hashing again -- while the pins stay the record that is refused, not
+# replaced. Kept in the recipe folder, outside the image's build context: the Dockerfile bind-mounts
+# deps/, so a file that changed there would invalidate the cached install layers.
+DEPS_VERIFIED_FILE = ".slt-sha256-verified.json"
 
 # Teradata's JDBC driver is under Teradata's licence (use only with a licensed Teradata platform),
 # so it is never a required input: download-dependencies.sh fetches it only on this opt-in, and the
@@ -201,8 +207,35 @@ def _read_dep_pins(path: Path) -> dict:
     return {k: v.lower() for k, v in pins.items()}
 
 
+def _read_dep_verified(path: Path) -> dict:
+    """{filename: {"stat": [size, mtime_ns, ctime_ns], "sha256": digest}} from DEPS_VERIFIED_FILE,
+    or {} when it is missing, a symlink or not a record this code wrote."""
+    try:
+        if path.is_symlink():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    files = data.get("files") if isinstance(data, dict) and data.get("schemaVersion") == 1 else None
+    if not isinstance(files, dict):
+        return {}
+    return {name: entry for name, entry in files.items()
+            if isinstance(entry, dict) and _is_hex64(entry.get("sha256"))
+            and isinstance(entry.get("stat"), list) and len(entry["stat"]) == 3
+            and all(type(v) is int for v in entry["stat"])}
+
+
+def _dep_stat(path: Path) -> list:
+    st = path.stat()
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+
+
 def _write_dep_pins(path: Path, pins: dict) -> None:
-    data = json.dumps({"schemaVersion": 1, "sha256": dict(sorted(pins.items()))}, indent=1) + "\n"
+    _write_dep_record(path, {"schemaVersion": 1, "sha256": dict(sorted(pins.items()))})
+
+
+def _write_dep_record(path: Path, record: dict) -> None:
+    data = json.dumps(record, indent=1) + "\n"
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
     try:
@@ -218,22 +251,34 @@ def _write_dep_pins(path: Path, pins: dict) -> None:
 def verify_checkout_deps(striim_dir: Path, version: str = _DEFAULT_STRIIM_VERSION) -> None:
     """Checkout mode, after any download: every required file, and the Teradata driver when deps/
     holds it, must match its shipped SHA-256 or, for a file the list does not name (the Striim
-    .debs), the digest recorded the first time this machine saw it. Every file is hashed on every
-    call, so a file that is merely present and non-empty is never trusted. Raises StriimDepsError
-    naming the first file that does not match; first-sight pins are recorded only when all match."""
+    .debs), the digest recorded the first time this machine saw it. A file that is merely present
+    and non-empty is never trusted: it is hashed unless its size, mtime and ctime are what they were
+    when it last matched the digest it must match now (DEPS_VERIFIED_FILE). Raises StriimDepsError
+    naming the first file that does not match; first-sight pins and the verified stats are recorded
+    only when all match."""
     d = _deps_dir(striim_dir)
     shipped = shipped_dep_digests()
     pins_path = d / DEPS_PINS_FILE
     pins = _read_dep_pins(pins_path)
+    verified_path = Path(striim_dir) / DEPS_VERIFIED_FILE
+    verified = _read_dep_verified(verified_path)
     names = list(_required_deps(version))
     if (d / TERADATA_JDBC_JAR).is_file():
         names.append(TERADATA_JDBC_JAR)
-    new = {}
+    new, seen = {}, {}
     for name in names:
         path = d / name
         if not path.is_file():
             raise StriimDepsError(f"missing Striim build dependency: {name}")
+        # Stat before hashing: a file that changes while it is read gets a stat that no longer
+        # matches, so it is hashed again next time.
+        stat = _dep_stat(path)
+        expected = shipped.get(name) or pins.get(name)
+        if expected and verified.get(name) == {"stat": stat, "sha256": expected}:
+            seen[name] = verified[name]
+            continue
         got = _sha256_of(path)
+        seen[name] = {"stat": stat, "sha256": got}
         if name in shipped:
             if got != shipped[name]:
                 raise StriimDepsError(
@@ -250,6 +295,11 @@ def verify_checkout_deps(striim_dir: Path, version: str = _DEFAULT_STRIIM_VERSIO
             new[name] = got
     if new:
         _write_dep_pins(pins_path, {**pins, **new})
+    if seen != verified:
+        try:
+            _write_dep_record(verified_path, {"schemaVersion": 1, "files": dict(sorted(seen.items()))})
+        except OSError:
+            pass      # a cache: every file is simply hashed again next time
 
 
 def _staged_ok(final: Path, digest: str) -> bool:

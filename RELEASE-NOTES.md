@@ -180,7 +180,8 @@ the last release; the release makes it that version's entry.
   (`scripts/live/services/striim/deps.sha256`): the JDBC drivers, the JMX agent and Oracle Instant
   Client. A download or a file already present that does not match stops the run, naming it. Each
   Striim `.deb`, for which Striim publishes no checksum, is pinned the first time a machine sees it
-  and checked before every later build. Before, any non-empty file was trusted.
+  and checked before every later build. A file is hashed again only when its size, mtime or ctime
+  changed since it last matched. Before, any non-empty file was trusted.
 - **Integration: one test item per variant group.** A case with variants becomes several items,
   named `case[variant]` (`case[a+b]` when variants share a service). `-m <service>` now runs only
   that service's variants. Scripts or reports that name items by id see the new ids.

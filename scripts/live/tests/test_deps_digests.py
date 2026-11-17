@@ -116,17 +116,96 @@ def test_a_striim_deb_that_changed_since_it_was_pinned_is_refused(tmp_path, monk
     assert sp.DEPS_PINS_FILE in str(e.value)
 
 
-def test_an_unchanged_striim_deb_is_verified_again_and_passes(tmp_path, monkeypatch):
-    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
-    d = _fill(tmp_path)
-    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
-    before = (d / sp.DEPS_PINS_FILE).read_bytes()
+def _count_hashes(monkeypatch):
     hashed = []
     real = sp._sha256_of
     monkeypatch.setattr(sp, "_sha256_of", lambda p: hashed.append(Path(p).name) or real(p))
+    return hashed
+
+
+def test_unchanged_files_pass_again_without_being_hashed_again(tmp_path, monkeypatch):
+    # The striim-node .deb alone is ~3.3 GB: a file whose size, mtime and ctime are what they were
+    # when it last matched its digest is not read again.
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    d = _fill(tmp_path)
+    hashed = _count_hashes(monkeypatch)
     sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    assert sorted(hashed) == sorted(sp._required_deps(VERSION))       # first sight: every file
+    before = (d / sp.DEPS_PINS_FILE).read_bytes()
+    hashed.clear()
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    assert hashed == []
     assert (d / sp.DEPS_PINS_FILE).read_bytes() == before
-    assert sorted(hashed) == sorted(sp._required_deps(VERSION))       # every file, every reuse
+
+
+def test_a_same_size_replacement_with_its_mtime_restored_is_hashed_and_refused(tmp_path, monkeypatch):
+    # A copy that preserves timestamps (cp -p, touch -r, an archive extract) can keep size and
+    # mtime; the replacement still changes the file's ctime.
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    d = _fill(tmp_path)
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    node = d / f"striim-node-{VERSION}-Linux.deb"
+    st = node.stat()
+    node.write_bytes(b"X" * st.st_size)
+    os.utime(node, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert (node.stat().st_size, node.stat().st_mtime_ns) == (st.st_size, st.st_mtime_ns)
+    with pytest.raises(sp.StriimDepsError, match=f"{node.name}.*first"):
+        sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+
+
+def test_a_new_shipped_digest_is_checked_although_the_file_is_unchanged(tmp_path, monkeypatch):
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    d = _fill(tmp_path)
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    jar = "vertica-jdbc-25.3.0-0.jar"
+    listed = sp.SHIPPED_DEP_DIGESTS.read_text().replace(_sha(_content(jar)), _sha(b"the new release"))
+    sp.SHIPPED_DEP_DIGESTS.write_text(listed)
+    with pytest.raises(sp.StriimDepsError, match=f"digest mismatch.*{jar}"):
+        sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+
+
+@pytest.mark.parametrize("text", ["not json", "[]", '{"schemaVersion": 2, "files": {}}',
+                                  '{"schemaVersion": 1, "files": {"x": 1}}'])
+def test_an_unreadable_verified_record_means_hashing_again(tmp_path, monkeypatch, text):
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    d = _fill(tmp_path)
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    (tmp_path / sp.DEPS_VERIFIED_FILE).write_text(text)
+    hashed = _count_hashes(monkeypatch)
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    assert sorted(hashed) == sorted(sp._required_deps(VERSION))
+    hashed.clear()
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    assert hashed == []                                                 # rewritten, usable again
+
+
+def test_an_unwritable_verified_record_does_not_fail_the_check(tmp_path, monkeypatch):
+    # Once every file is pinned, a check used to write nothing; a deps cache it cannot write must
+    # not turn that into a failure.
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    _fill(tmp_path)
+    (tmp_path / sp.DEPS_VERIFIED_FILE).mkdir()
+    for _ in range(2):
+        sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+
+
+def test_the_verified_record_is_outside_the_image_build_context(tmp_path, monkeypatch):
+    # The Dockerfile bind-mounts deps/ into its install steps, so a file that changes there
+    # invalidates their cached layers.
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    d = _fill(tmp_path)
+    sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    assert (tmp_path / sp.DEPS_VERIFIED_FILE).is_file()
+    assert not list((tmp_path / "images").rglob(sp.DEPS_VERIFIED_FILE))
+    assert sp.DEPS_VERIFIED_FILE in (STRIIM / ".gitignore").read_text()
+
+
+def test_a_failed_check_records_nothing_as_verified(tmp_path, monkeypatch):
+    _shipped(tmp_path, monkeypatch, THIRD_PARTY)
+    d = _fill(tmp_path, {"vertica-jdbc-25.3.0-0.jar": b"tampered"})
+    with pytest.raises(sp.StriimDepsError):
+        sp.ensure_deps(tmp_path, {"STRIIM_VERSION": VERSION}, run=lambda *a, **k: None)
+    assert not (tmp_path / sp.DEPS_VERIFIED_FILE).exists()
 
 
 @pytest.mark.parametrize("text", ["not json", "[]", '{"schemaVersion": 2, "sha256": {}}',

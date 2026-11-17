@@ -119,8 +119,10 @@ their vendors' licenses, which apply to your use of them.
 (`scripts/live/services/striim/deps.sha256`). A download that does not match is deleted, and a file
 already present that does not match stops the run, naming it. Striim publishes no checksums for
 its packages, so the first time this machine sees each `striim-*.deb` the run records its digest
-(`images/striim/deps/.slt-sha256-pins.json`) and checks it before every later build. If Striim
-republishes a package under the same name, delete the file and its entry there.
+(`images/striim/deps/.slt-sha256-pins.json`) and checks it before every later build. A file is
+read again only when its size, mtime or ctime changed since it last matched; the stats are kept in
+`scripts/live/services/striim/.slt-sha256-verified.json`. If Striim republishes a package under the
+same name, delete the file and its entry in the pin record.
 
 **If you already have the installers,** skip the download: list them in a manifest and export its
 path from your shell.
