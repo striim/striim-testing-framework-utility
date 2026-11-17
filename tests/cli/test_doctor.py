@@ -1188,6 +1188,19 @@ def test_a_switch_set_to_anything_else_is_a_settings_mistake(tmp_path):
     assert "SLT_RUN_DISABLED='true'" in text and "SLT_KEEP_SERVICES='yes'" in text
 
 
+def test_a_declared_opt_in_gate_is_checked_with_the_switches(tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "svc" / "myemu").mkdir(parents=True)
+    (proj / "svc" / "myemu" / "service.yaml").write_text("name: myemu\nopt_in_env: SLT_MY_EMULATOR\n")
+    (proj / ".env").write_text("SLT_MY_EMULATOR=true\n")
+    env = {"SLT_PROJECT_ROOT": str(proj), "SLT_SERVICES_DIR": str(proj / "svc")}
+    checks = doctor.check_switches(env)
+    assert [c.code for c in checks] == [CONFIG]
+    assert "SLT_MY_EMULATOR='true'" in checks[0].line()
+    (proj / ".env").write_text("SLT_MY_EMULATOR=1\n")
+    assert doctor.check_switches(env) == []
+
+
 def test_a_bad_switch_reads_as_off_in_the_checks_that_depend_on_it():
     assert doctor._switch("SLT_ENABLE_NODE_FAULTS", {"SLT_ENABLE_NODE_FAULTS": "true"}) is False
     assert doctor._switch("SLT_ENABLE_NODE_FAULTS", {"SLT_ENABLE_NODE_FAULTS": "1"}) is True

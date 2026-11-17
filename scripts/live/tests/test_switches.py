@@ -238,3 +238,49 @@ def test_preflight_refuses_a_bad_switch_before_any_step(monkeypatch):
     assert preflight.main(["--teardown"]) == 2 and ran == []
     monkeypatch.setenv("SLT_KEEP_RESOURCES_ON_ERROR", "0")
     assert preflight.main(["--teardown"]) == 0 and ran == [[]]
+
+
+# --- a service's declared opt-in gate is a switch, checked with the others ----------------------
+
+def _consumer_gate(tmp_path, value="true"):
+    """A consumer service declaring `opt_in_env: SLT_MY_EMULATOR`, with `value` set for it in the
+    project's .env. Returns the environment that makes both visible."""
+    svc = tmp_path / "svc" / "myemu"
+    svc.mkdir(parents=True)
+    (svc / "service.yaml").write_text("name: myemu\nopt_in_env: SLT_MY_EMULATOR\n")
+    (tmp_path / ".env").write_text(f"SLT_MY_EMULATOR={value}\n")
+    return {"SLT_PROJECT_ROOT": str(tmp_path), "SLT_SERVICES_DIR": str(tmp_path / "svc")}
+
+
+def test_a_bad_declared_opt_in_gate_stops_the_run_before_anything_runs(tmp_path):
+    env = _consumer_gate(tmp_path)          # _run's SLT_PROJECT_ROOT is tmp_path too
+    rc, out = _run(tmp_path, 'disabled: "PLAT-1 known bug"', SLT_SERVICES_DIR=env["SLT_SERVICES_DIR"])
+    assert rc == pytest.ExitCode.USAGE_ERROR, out[-1500:]
+    assert "SLT_MY_EMULATOR='true'" in out and "skipped" not in out
+
+
+def test_livetest_cli_and_preflight_refuse_a_bad_declared_opt_in_gate(tmp_path, monkeypatch, capsys):
+    # In-process, the hermetic fixture reads no .env: the gate comes from the process environment.
+    from livetest import cli, preflight, project
+    for key, value in _consumer_gate(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SLT_MY_EMULATOR", "true")
+    monkeypatch.delenv("GOLD_TARGETS", raising=False)
+    ran = []
+    monkeypatch.setattr(project, "load_and_activate", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "cmd_down", lambda targets, **k: ran.append(targets) or 0)
+    monkeypatch.setattr(preflight, "teardown", lambda tests: ran.append(tests) or 0)
+    monkeypatch.setattr(sys, "argv", ["livetest.cli", "stop", "all"])
+    assert cli.main() == 2
+    assert "SLT_MY_EMULATOR='true'" in capsys.readouterr().err
+    assert preflight.main(["--teardown"]) == 2
+    assert ran == []
+    monkeypatch.setenv("SLT_MY_EMULATOR", "1")
+    assert cli.main() == 0 and preflight.main(["--teardown"]) == 0 and ran == [["all"], []]
+
+
+def test_a_declared_opt_in_gate_set_to_1_or_0_passes(tmp_path):
+    from livetest import service_env
+    for n, value in enumerate(("1", "0", "")):
+        env = _consumer_gate(tmp_path / str(n), value)
+        assert service_env.switch_problems(paths.effective_env(env)) == []

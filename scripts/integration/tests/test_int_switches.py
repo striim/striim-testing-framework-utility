@@ -122,6 +122,20 @@ def test_an_opt_in_gate_is_a_switch(monkeypatch):
         P._require_service_opt_in("demo")
 
 
+def test_a_bad_declared_opt_in_gate_is_one_usage_error_at_configure(pytester, monkeypatch, tmp_path):
+    # Before, the run started and each case requiring the service raised its own FlagError.
+    svc = tmp_path / "svc" / "demo"
+    svc.mkdir(parents=True)
+    (svc / "service.yaml").write_text("name: demo\nopt_in_env: INT_DEMO\n")
+    (tmp_path / ".env").write_text("INT_DEMO=yes\n")
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SLT_INT_SERVICES_DIR", str(tmp_path / "svc"))
+    monkeypatch.delenv("INT_DEMO", raising=False)
+    result = pytester.runpytest_subprocess("-p", "inttest.plugin", "-p", "no:cacheprovider")
+    assert result.ret == pytest.ExitCode.USAGE_ERROR, result.stdout.str() + result.stderr.str()
+    assert "INT_DEMO='yes'" in result.stderr.str()
+
+
 # --- the disabled: gate, through the real plugin ---------------------------------------------
 
 EVENT = json.dumps([X.EVENT])

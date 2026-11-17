@@ -997,8 +997,9 @@ def main(argv=None) -> int:
         except Exception as e:
             _log(f"ERROR: cannot activate the project manifest: {e}")
             return 2
-    problems = paths.flag_problems(paths.effective_env(os.environ))
-    if problems:                               # a switch set to neither 1 nor 0 (paths.flag)
+    from livetest import service_env
+    problems = service_env.switch_problems(paths.effective_env(os.environ))
+    if problems:                               # a switch or opt-in gate set to neither 1 nor 0
         _log("ERROR: " + "\n".join(problems))
         return 2
     # As livetest.cli does: the cluster's compose calls read SLT_STACK_PREFIX from os.environ only, so a

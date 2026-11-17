@@ -1454,8 +1454,9 @@ def pytest_configure(config):
     supported, but stay opt-in."""
     os.environ.update(paths_mod.effective_env(os.environ))
     # A switch set to anything but 1 or 0 is a settings mistake: refuse the run before anything
-    # reads it (paths.flag).
-    problems = paths_mod.flag_problems(os.environ)
+    # reads it (paths.flag). A service's declared opt-in gate is a switch too.
+    from livetest import service_env
+    problems = service_env.switch_problems(os.environ)
     # INT_STACK_PREFIX names the session lock, every state file and every container: an invalid one is a
     # settings mistake too, reported here rather than as a traceback from the first file it names.
     if _docker_mod is not None:

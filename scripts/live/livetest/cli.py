@@ -167,8 +167,9 @@ def main() -> int:
         print(f"livetest.cli: cannot activate the project manifest: {e}", file=sys.stderr)
         return 2
     from livetest import paths
-    problems = paths.flag_problems(paths.effective_env(os.environ))
-    if problems:                               # a switch set to neither 1 nor 0 (paths.flag)
+    from livetest import service_env
+    problems = service_env.switch_problems(paths.effective_env(os.environ))
+    if problems:                               # a switch or opt-in gate set to neither 1 nor 0
         print("livetest.cli: " + "\n".join(problems), file=sys.stderr)
         return 2
     _adopt_stack_prefix()

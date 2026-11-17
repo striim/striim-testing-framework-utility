@@ -250,13 +250,14 @@ def check_env(env: dict, clone: Path) -> tuple[list, dict]:
 
 
 def check_switches(env: dict) -> list:
-    """A switch set to anything but 1 or 0 refuses the run in both engines (paths.flag)."""
-    from livetest import paths
+    """A switch, or a service's declared opt-in gate, set to anything but 1 or 0 refuses the run in
+    both engines (paths.flag)."""
+    from livetest import paths, service_env
     try:
         merged = paths.effective_env(env)
     except paths.PathConfigError:
         return []                       # reported by check_env
-    return [_fail("switch", problem) for problem in paths.flag_problems(merged)]
+    return [_fail("switch", problem) for problem in service_env.switch_problems(merged)]
 
 
 def _switch(name: str, env: dict) -> bool:
