@@ -210,7 +210,9 @@ the last release; the release makes it that version's entry.
   on the stack's Striim endpoint (a live shared marker, or a live exclusive run other than the
   caller's), naming their pids and the same command with `--force`, which stops anyway. With no
   other live session the stop runs as before. `livetest.preflight --restart-app-nodes` under
-  `shared` refuses the same way.
+  `shared` refuses the same way. The check and the stop are one step: from the check until the
+  stop or restart has finished (or failed), a live run declaring on that endpoint is refused,
+  naming the stopping pid, so no session starts on a stack that is being removed.
 - **A failed integration teardown fails the session.** At session end a `compose down` that fails,
   or leaves a same-named container behind, sets exit status 1 (case results stand), and the
   service stays in `.int-services-up.json` so the next session tears it down. Before, it was a

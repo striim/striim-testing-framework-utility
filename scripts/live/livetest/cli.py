@@ -12,7 +12,7 @@ from livetest.preflight import (
     provision_cluster as preflight_provision_cluster,
     provision_services as preflight_provision_services,
     stop_command as preflight_stop_command,
-    stop_refused as preflight_stop_refused,
+    stop_reserved as preflight_stop_reserved,
     teardown as preflight_teardown,
     teardown_cluster as preflight_teardown_cluster,
     teardown_services as preflight_teardown_services,
@@ -104,9 +104,19 @@ def cmd_down(targets: list, force: bool = False) -> int:
     _as_coordinator()
     services, test_ids, cluster = _resolve_targets(targets)
     # Checked once for the whole command, so a refusal names the one command that stops it all
-    # anyway; each half checks again (a session may have joined meanwhile). --force skips both.
-    if not force and preflight_stop_refused(os.environ, retry=preflight_stop_command(targets)):
+    # anyway, and reserved in the same step: no session is admitted on the endpoint until every half
+    # has run. Each half checks again inside this reservation. --force skips the checks, not the
+    # reservation.
+    reservation = preflight_stop_reserved(os.environ, force, retry=preflight_stop_command(targets))
+    if reservation is None:
         return 2
+    try:
+        return _down_reserved(services, test_ids, cluster, force)
+    finally:
+        reservation.release()
+
+
+def _down_reserved(services, test_ids, cluster, force: bool) -> int:
     kw = {"force": True} if force else {}
     # Every half runs, whatever the others returned, and the worst rc wins: a teardown that
     # gives up at the first failure strands exactly the containers it was asked to remove

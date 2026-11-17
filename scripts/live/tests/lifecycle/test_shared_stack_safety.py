@@ -169,6 +169,107 @@ def test_cli_stop_accepts_force(monkeypatch):
     assert seen == {"t": ["postgres", "striim"], "f": True}
 
 
+# ------------------------------------------------------------------ no session joins while a stop runs
+
+_LIVE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_DECLARE = """
+import sys
+from livetest import infra
+try:
+    decl = infra.declare({"SLT_INFRA_OWNERSHIP": sys.argv[1], "SLT_KEEP_SERVICES": "1"},
+                         run=lambda argv: type("R", (), {"stdout": "", "returncode": 0})())
+except infra.InfraOwnershipError as e:
+    print("refused:", e)
+else:
+    decl.release()
+    print("admitted")
+"""
+
+
+def _declare_elsewhere(mode="shared") -> str:
+    """Another process declares on the endpoint now (a session starting while this one stops the stack)."""
+    env = dict(os.environ, PYTHONPATH=_LIVE_DIR)
+    out = subprocess.run([sys.executable, "-c", _DECLARE, mode], env=env, capture_output=True, text=True,
+                         timeout=120)
+    return (out.stdout + out.stderr).strip()
+
+
+@pytest.mark.parametrize("mode", ["shared", "exclusive"])
+def test_no_session_is_admitted_while_a_stop_removes_the_stack(monkeypatch, mode):
+    seen = []
+    monkeypatch.setattr(preflight, "compose_down", lambda defn: seen.append(_declare_elsewhere(mode)))
+    monkeypatch.setattr(preflight, "_surviving_containers", lambda defn: [])
+    monkeypatch.setattr(preflight, "forget_provisioned", lambda *a, **k: None)
+    assert preflight.teardown_services(["postgres"], dict(SHARED)) == 0
+    assert len(seen) == 1 and seen[0].startswith("refused:"), seen
+    assert "stop or restart" in seen[0] and str(os.getpid()) in seen[0]
+    assert _declare_elsewhere(mode) == "admitted"             # the stop finished: sessions start again
+
+
+def test_no_session_is_admitted_while_the_cluster_is_stopped(monkeypatch):
+    for k, v in SHARED.items():
+        monkeypatch.setenv(k, v)
+    seen = []
+    monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: {"STRIIM_VERSION": "5.4.2"})
+    monkeypatch.setattr(preflight._sp, "cluster_has_containers", lambda d, r=None: True)
+    monkeypatch.setattr(preflight._sp, "cluster_down", lambda d, r=None: seen.append(_declare_elsewhere()))
+    assert preflight.teardown_cluster() == 0
+    assert seen[0].startswith("refused:"), seen
+
+
+def test_a_forced_stop_also_keeps_new_sessions_out(monkeypatch, other):
+    _marker(other)
+    seen = []
+    monkeypatch.setattr(preflight, "compose_down", lambda defn: seen.append(_declare_elsewhere()))
+    monkeypatch.setattr(preflight, "_surviving_containers", lambda defn: [])
+    monkeypatch.setattr(preflight, "forget_provisioned", lambda *a, **k: None)
+    assert preflight.teardown_services(["postgres"], dict(SHARED), force=True) == 0
+    assert seen[0].startswith("refused:"), seen
+
+
+def test_cli_stop_keeps_new_sessions_out_between_its_halves(monkeypatch):
+    monkeypatch.setattr(cli, "all_services", lambda: ["postgres"])
+    monkeypatch.setattr(cli, "known_test_ids", set)
+    seen = []
+    monkeypatch.setattr(preflight, "compose_down", lambda defn: None)
+    monkeypatch.setattr(preflight, "_surviving_containers", lambda defn: [])
+    monkeypatch.setattr(preflight, "forget_provisioned", lambda *a, **k: None)
+    real = cli.preflight_teardown_services
+
+    def services_half(names, **kw):
+        rc = real(names, **kw)
+        seen.append(_declare_elsewhere())                      # after the services, before the cluster
+        return rc
+    monkeypatch.setattr(cli, "preflight_teardown_services", services_half)
+    monkeypatch.setattr(cli, "preflight_teardown_cluster", lambda **kw: 0)
+    assert cli.cmd_down(["postgres", "striim"]) == 0
+    assert seen[0].startswith("refused:"), seen
+    assert _declare_elsewhere() == "admitted"
+
+
+@pytest.mark.parametrize("error", [RuntimeError("compose hung"), KeyboardInterrupt()])
+def test_a_stop_that_fails_or_is_interrupted_lets_sessions_start_again(monkeypatch, error):
+    def down(defn):
+        raise error
+    monkeypatch.setattr(preflight, "compose_down", down)
+    monkeypatch.setattr(preflight, "_surviving_containers", lambda defn: [])
+    monkeypatch.setattr(preflight, "forget_provisioned", lambda *a, **k: None)
+    try:
+        preflight.teardown_services(["postgres"], dict(SHARED))
+    except KeyboardInterrupt:
+        pass
+    assert _declare_elsewhere() == "admitted"
+
+
+def test_the_record_of_a_stop_whose_process_died_does_not_keep_sessions_out():
+    d = infra._stopping_dir(infra._lock_dir(), PORT)
+    d.mkdir(parents=True, exist_ok=True)
+    dead = d / str(_dead_pid())
+    dead.write_text("{}")
+    assert _declare_elsewhere() == "admitted"
+    assert not dead.exists()
+
+
 # ------------------------------------------------------------------ restart on a shared cluster
 
 def _fake_restart(monkeypatch) -> list:
@@ -197,6 +298,20 @@ def test_restart_app_nodes_runs_on_a_shared_cluster_no_other_session_uses(monkey
     restarted = _fake_restart(monkeypatch)
     assert preflight.restart_app_nodes() == 0
     assert restarted == ["restart"]
+
+
+def test_no_session_is_admitted_while_the_app_nodes_restart(monkeypatch):
+    for k, v in SHARED.items():
+        monkeypatch.setenv(k, v)
+    seen = []
+    monkeypatch.setattr(preflight, "_resolve_striim",
+                        lambda cfg: NS(url="http://localhost:9080", user="admin", password="x", mode="docker"))
+    monkeypatch.setattr(preflight.StriimClient, "from_url", classmethod(lambda cls, *a, **k: object()))
+    monkeypatch.setattr(preflight._sp, "restart_app_nodes", lambda client: seen.append(_declare_elsewhere()))
+    assert preflight.restart_app_nodes() == 0
+    assert seen[0].startswith("refused:") and "stop or restart" in seen[0], seen
+    assert _declare_elsewhere() == "admitted"
+    assert not (_shared_dir() / str(os.getpid())).exists()
 
 
 # ------------------------------------------------------------------ markers released and pruned

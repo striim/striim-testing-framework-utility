@@ -264,7 +264,30 @@ def _live_shared_markers(lock_dir: Path, port: int, pid_alive) -> list[int]:
     """Live shared sessions on the port. Callers hold the port's registry lock: a marker that names no live
     session (a dead or reused pid) is removed here, so a marker never outlives its process for long and a
     later process given the same pid cannot pass for the session that wrote it."""
-    d = _shared_dir(lock_dir, port)
+    return _live_markers(_shared_dir(lock_dir, port), pid_alive)
+
+
+def _stopping_dir(lock_dir: Path, port: int) -> Path:
+    return lock_dir / f".slt-endpoint-{port}.stopping"
+
+
+def _live_stoppers(lock_dir: Path, port: int, pid_alive) -> list[int]:
+    """Other live processes stopping or restarting the stack on the port (``reserve_stop``). Callers hold the
+    port's registry lock; the records of dead and reused pids are removed as shared markers are."""
+    return [pid for pid in _live_markers(_stopping_dir(lock_dir, port), pid_alive) if pid != os.getpid()]
+
+
+def _refuse_while_stopping(lock_dir: Path, port: int, pid_alive, who: str) -> None:
+    """A declaration is never admitted while another process stops or restarts the stack: it would start
+    using what that stop is removing. Called under the registry lock, as one step with the marker write."""
+    stopping = _live_stoppers(lock_dir, port, pid_alive)
+    if stopping:
+        raise InfraOwnershipError(
+            f"{who} refused: a stop or restart of the stack on Striim port {port} is in progress (pids "
+            f"{stopping}, {_stopping_dir(lock_dir, port)}); start again once it has finished")
+
+
+def _live_markers(d: Path, pid_alive) -> list[int]:
     if not d.is_dir():
         return []
     alive = []
@@ -337,33 +360,23 @@ def _read_owner(path: Path):
         return None
 
 
-def stop_refusal(env) -> str | None:
-    """Why a stop of the stack on this endpoint must not run now, or None.
+def _stop_users(env, lock_dir: Path, port: int) -> str | None:
+    """Why a stop of the stack on this endpoint must not run now, or None. Callers hold the port's registry lock.
 
-    Read under the port's registry lock, after the markers of dead and reused pids are pruned: a live shared
-    session other than this process, or a live exclusive run other than this process's own run (its lease is
-    held, or its owner or a member is alive). An exclusive run's leftover (no live holder or member) does not
-    refuse. A registry lock that cannot be taken refuses too: nothing was checked."""
-    _url, _host, port = striim_endpoint(env)
-    lock_dir = _lock_dir()
-    try:
-        registry = _registry(lock_dir, port)
-    except InfraOwnershipError as e:
-        return f"the ownership registry for Striim port {port} could not be read ({e})"
-    try:
-        shared = [pid for pid in _live_shared_markers(lock_dir, port, _pid_alive) if pid != os.getpid()]
-        lease_path = _exclusive_lease_path(lock_dir, port)
-        owner = _read_owner(Path(str(lease_path) + ".owner")) or {}
-        run_id = owner.get("runId") or ""
-        exclusive, held = [], False
-        if not run_id or run_id != (env.get("SLT_RUN_EPOCH") or ""):
-            exclusive = _live_members(lease_path, run_id, _pid_alive)
-            pid = owner.get("pid")
-            if isinstance(pid, int) and pid != os.getpid() and pid not in exclusive and _pid_alive(pid):
-                exclusive.append(pid)
-            held = _exclusive_lease_held(lock_dir, port)
-    finally:
-        registry.release()
+    Read after the markers of dead and reused pids are pruned: a live shared session other than this process,
+    or a live exclusive run other than this process's own run (its lease is held, or its owner or a member is
+    alive). An exclusive run's leftover (no live holder or member) does not refuse."""
+    shared = [pid for pid in _live_shared_markers(lock_dir, port, _pid_alive) if pid != os.getpid()]
+    lease_path = _exclusive_lease_path(lock_dir, port)
+    owner = _read_owner(Path(str(lease_path) + ".owner")) or {}
+    run_id = owner.get("runId") or ""
+    exclusive, held = [], False
+    if not run_id or run_id != (env.get("SLT_RUN_EPOCH") or ""):
+        exclusive = _live_members(lease_path, run_id, _pid_alive)
+        pid = owner.get("pid")
+        if isinstance(pid, int) and pid != os.getpid() and pid not in exclusive and _pid_alive(pid):
+            exclusive.append(pid)
+        held = _exclusive_lease_held(lock_dir, port)
     users = []
     if shared:
         users.append(f"shared session pids {shared}")
@@ -372,6 +385,101 @@ def stop_refusal(env) -> str | None:
     if not users:
         return None
     return f"other live sessions use the stack on Striim port {port}: {'; '.join(users)}"
+
+
+# (lock dir, port) -> how many reservations this process holds there: the halves of one `livetest.cli stop`
+# reserve again inside the command's own reservation, and only the outermost release removes the record.
+_stops_held: dict = {}
+
+
+class StopReservation:
+    """This process is stopping or restarting the stack on a port. While its record exists and this process is
+    alive, no declaration on the port is admitted (they refuse, naming this pid). ``release`` it in a
+    ``finally`` once the destructive operation is over; a process that dies holding it leaves a record of a
+    dead pid, which the next check removes. ``path`` None: a forced stop that could not reserve."""
+
+    def __init__(self, lock_dir: Path, port: int, path: Path | None):
+        self.lock_dir, self.port, self.path = lock_dir, port, path
+
+    def release(self) -> None:
+        if self.path is None:
+            return
+        key = (str(self.lock_dir), self.port)
+        depth = _stops_held.get(key, 1) - 1
+        if depth > 0:
+            _stops_held[key] = depth
+        else:
+            _stops_held.pop(key, None)
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+        self.path = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+def _reserve(lock_dir: Path, port: int) -> StopReservation:
+    """Record this process as stopping the stack on ``port``. Callers hold the port's registry lock, and have
+    just found nobody else using the stack in the same hold."""
+    key = (str(lock_dir), port)
+    d = _stopping_dir(lock_dir, port)
+    path = d / str(os.getpid())
+    if key not in _stops_held:
+        lockdir.ensure_dir(d)
+        lockdir.write_text(path, json.dumps({"pid": os.getpid(), "started": _process_start(os.getpid())}))
+    _stops_held[key] = _stops_held.get(key, 0) + 1
+    return StopReservation(lock_dir, port, path)
+
+
+def reserve_stop(env, force: bool = False):
+    """Reserve a stop of the stack on this endpoint: ``(reservation, None)``, or ``(None, why)`` when refused.
+
+    The check that no other live session uses the stack (``_stop_users``) and the record that this process is
+    stopping it are one step under the port's registry lock, and every declaration reads that record under the
+    same lock, so no session can be admitted between the check and the `down -v` that follows: until the
+    reservation is released, a declaration on the port refuses. A registry lock that cannot be taken refuses:
+    nothing was checked. ``force`` skips the check but still reserves, so no new session joins a stack being
+    removed; a forced stop whose reservation cannot be made goes ahead without one."""
+    _url, _host, port = striim_endpoint(env)
+    lock_dir = _lock_dir()
+    try:
+        registry = _registry(lock_dir, port)
+    except InfraOwnershipError as e:
+        if force:
+            return StopReservation(lock_dir, port, None), None
+        return None, f"the ownership registry for Striim port {port} could not be read ({e})"
+    try:
+        why = None if force else _stop_users(env, lock_dir, port)
+        if why is not None:
+            return None, why
+        try:
+            return _reserve(lock_dir, port), None
+        except OSError as e:
+            if force:
+                return StopReservation(lock_dir, port, None), None
+            return None, f"the stop of the stack on Striim port {port} could not be recorded ({e})"
+    finally:
+        registry.release()
+
+
+def reserve_restart(infra: "Infra"):
+    """``reserve_stop`` for the app-node restart of a shared declaration: ``(reservation, [])``, or
+    ``(None, pids)`` when other live shared sessions use the cluster. Any other declaration needs none."""
+    if not isinstance(infra, Infra) or infra.ownership != "shared":
+        return StopReservation(Path(), 0, None), []
+    registry = _registry(infra.lock_dir, infra.port)
+    try:
+        others = [pid for pid in _live_shared_markers(infra.lock_dir, infra.port, _pid_alive) if pid != os.getpid()]
+        if others:
+            return None, others
+        return _reserve(infra.lock_dir, infra.port), []
+    finally:
+        registry.release()
 
 
 def declare(env=None, *, run=None, pid_alive=None) -> Infra:
@@ -411,6 +519,7 @@ def _declare_shared(env, port: int, lock_dir: Path) -> Infra:
             raise InfraOwnershipError(
                 f"{OWNERSHIP_ENV}=shared refused: an exclusive run holds the endpoint lease for port "
                 f"{port} ({_exclusive_lease_path(lock_dir, port)}; run {owner.get('runId', 'unknown')})")
+        _refuse_while_stopping(lock_dir, port, _pid_alive, f"{OWNERSHIP_ENV}=shared")
         _live_shared_markers(lock_dir, port, _pid_alive)    # prunes markers of dead and reused pids
         d = _shared_dir(lock_dir, port)
         lockdir.ensure_dir(d)
@@ -536,6 +645,7 @@ def _hold_exclusive(env, port, lock_dir, run, pid_alive, run_id, allocated, leas
             raise InfraOwnershipError(
                 f"{OWNERSHIP_ENV}=exclusive refused: shared run(s) are registered on port {port} "
                 f"(pids {alive}, {_shared_dir(lock_dir, port)})")
+        _refuse_while_stopping(lock_dir, port, pid_alive, f"{OWNERSHIP_ENV}=exclusive")
         if not still:   # a same-run takeover keeps the run's own stack; anything else must find none
             if leftover is None:
                 lease.release()
@@ -587,6 +697,7 @@ def _join_exclusive(env, port, lock_dir, run_id, allocated, lease_path, owner_pa
                     raise InfraOwnershipError(
                         f"{OWNERSHIP_ENV}=exclusive refused: shared run(s) are registered on port {port} "
                         f"(pids {alive}, {_shared_dir(lock_dir, port)})")
+                _refuse_while_stopping(lock_dir, port, pid_alive, f"{OWNERSHIP_ENV}=exclusive")
                 member = _add_member(lease_path, run_id)
                 break
         finally:

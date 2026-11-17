@@ -65,6 +65,12 @@ Declaration points:
   anyway. With no other live session the stop runs as before.
 - `livetest.preflight --restart-app-nodes` under `shared` is refused, exit 2, while another live
   shared marker exists.
+- The check and the stop or restart are one step: under the registry lock that found no other
+  session, the stopping process writes `.slt-endpoint-<port>.stopping/<pid>` (pid and start time,
+  judged live as a shared marker is), and removes it once the stop or restart is over, failed or
+  interrupted. Every declaration on the port reads it under the same lock and is refused while
+  another process's record is live, so no session joins between the check and the `down -v`.
+  `--force` skips the check, not the record.
 - The cluster is reused when reachable, provisioned and kept when absent, never redeployed: an
   identity mismatch fails `shared cluster identity mismatch: …` and live items skip.
 - All invocations on a host must use the same `SLT_LOCK_DIR`; the value is recorded.

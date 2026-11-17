@@ -199,18 +199,18 @@ def stop_command(targets, env=None) -> str:
             + " ".join(shlex.quote(t) for t in targets) + " --force")
 
 
-def stop_refused(env, force: bool = False, retry: str | None = None) -> bool:
+def stop_reserved(env, force: bool = False, retry: str | None = None):
     """A stop is `down -v` (databases, volumes, the MDR). Refuse it, logged with the pids and the
-    command that stops anyway, while another live session uses the stack (``infra.stop_refusal``);
-    ``force`` skips the check. No other live session: the stop proceeds exactly as before."""
-    if force:
-        return False
-    why = _slt_infra.stop_refusal(env)
+    command that stops anyway, while another live session uses the stack (``infra.reserve_stop``);
+    ``force`` skips the check. Otherwise the stop is reserved in the same step as the check: no session
+    is admitted on the endpoint until the returned reservation is released, which the caller does in a
+    ``finally`` once the stop is over. None: refused."""
+    reservation, why = _slt_infra.reserve_stop(env, force)
     if why is None:
-        return False
+        return reservation
     _log(f"ERROR: refusing to stop: {why}. Stopping now removes what they use. Wait for them to finish, "
          f"or stop anyway with: {retry or 'python -m livetest.cli stop <targets> --force'}")
-    return True
+    return None
 
 
 def _sweep_postgres_slots(admin, infra) -> None:
@@ -664,8 +664,16 @@ def teardown(test_ids, env=None, explicit: bool = False, force: bool = False) ->
     if not explicit and (paths.flag("SLT_KEEP_SERVICES", env) or paths.flag("SLT_KEEP_RESOURCES_ON_ERROR", env)):
         _log("SLT_KEEP_SERVICES set — leaving services + cluster up")
         return 0
-    if stop_refused(env, force, stop_command(test_ids, env)):
+    reservation = stop_reserved(env, force, stop_command(test_ids, env))
+    if reservation is None:
         return 2
+    try:
+        return _teardown_reserved(test_ids, env, explicit)
+    finally:
+        reservation.release()
+
+
+def _teardown_reserved(test_ids, env, explicit: bool) -> int:
     manifests = manifests_for(test_ids)
     services, _ = compute_unions(manifests)
     if not explicit and env.get("SLT_PREFLIGHT_CLEANUP_SERVICES") is not None:
@@ -813,8 +821,16 @@ def teardown_cluster(force: bool = False) -> int:
 
     Refused (exit 2) while another live session uses the stack, unless ``force``.
     """
-    if stop_refused(os.environ, force, stop_command(["striim"], os.environ)):
+    reservation = stop_reserved(os.environ, force, stop_command(["striim"], os.environ))
+    if reservation is None:
         return 2
+    try:
+        return _teardown_cluster_reserved()
+    finally:
+        reservation.release()
+
+
+def _teardown_cluster_reserved() -> int:
     try:
         # Inside the try, and resolved once: _resolve_release raises on a broken STRIIM_HOME
         # (no Platform-*.jar, or two of them), and outside it that became an unhandled
@@ -900,9 +916,13 @@ def teardown_services(names, env=None, force: bool = False) -> int:
     Refused (exit 2) while another live session uses the stack, unless ``force``.
     """
     env = os.environ if env is None else env
-    if stop_refused(env, force, stop_command(names, env)):
+    reservation = stop_reserved(env, force, stop_command(names, env))
+    if reservation is None:
         return 2
-    failed = _take_down_services(names, env, apply_gate=False)
+    try:
+        failed = _take_down_services(names, env, apply_gate=False)
+    finally:
+        reservation.release()
     if failed:
         _log(f"ERROR: could not tear down: {', '.join(failed)}")
         return 1
@@ -915,38 +935,47 @@ def restart_app_nodes(env=None) -> int:
     _slt_decl = _slt_infra.declare_or_log(os.environ, _log)
     if _slt_decl is None:
         return 2
-    others = _restart_refusal(_slt_decl)
+    reservation = _restart_reservation(_slt_decl)
+    if reservation is None:
+        return 2
+    # Reserved in the same step as the check, until the restart is over: no session joins the cluster
+    # between the check and the restart.
+    cfg = _PreflightConfig()
+    cfg._slt_infra = _slt_decl
+    try:
+        ctx = _resolve_striim(cfg)
+        if ctx is None:
+            _log(f"ERROR: cluster not available: {getattr(cfg, '_slt_striim_reason', 'unknown')}")
+            return 1
+        client = StriimClient.from_url(ctx.url, ctx.user, ctx.password)
+        _log("restarting app nodes (OP-loader poison recovery)")
+        _sp.restart_app_nodes(client)
+        _log("app nodes restarted")
+        return 0
+    finally:
+        reservation.release()
+        _slt_decl.release()             # the declaration goes with this entry point
+
+
+def _restart_reservation(infra):
+    """``infra.reserve_restart`` for ``restart_app_nodes``; None when refused (logged, and the declaration
+    released)."""
+    try:
+        reservation, others = _slt_infra.reserve_restart(infra)
+    except BaseException as e:
+        infra.release()
+        if not isinstance(e, _slt_infra.InfraOwnershipError):
+            raise
+        _log(f"ERROR: refusing to restart the app nodes: {e}")
+        return None
     if others:
-        _slt_decl.release()
+        infra.release()
         # As the in-run path (plugin._op_poison_restart_refusal) and the slot sweep refuse: the
         # restart takes the app nodes away from every other session on the shared cluster.
         _log(f"ERROR: refusing to restart the app nodes of a shared cluster: other live sessions use it "
              f"(pids {others}); restart them once they have finished")
-        return 2
-    cfg = _PreflightConfig()
-    cfg._slt_infra = _slt_decl
-    ctx = _resolve_striim(cfg)
-    _slt_decl.release()                 # the declaration goes with this entry point
-    if ctx is None:
-        _log(f"ERROR: cluster not available: {getattr(cfg, '_slt_striim_reason', 'unknown')}")
-        return 1
-    client = StriimClient.from_url(ctx.url, ctx.user, ctx.password)
-    _log("restarting app nodes (OP-loader poison recovery)")
-    _sp.restart_app_nodes(client)
-    _log("app nodes restarted")
-    return 0
-
-
-def _restart_refusal(infra) -> list:
-    """Live shared sessions other than this process on a shared declaration's endpoint ([] otherwise)."""
-    if not isinstance(infra, _slt_infra.Infra) or infra.ownership != "shared":
-        return []
-    registry = _slt_infra._registry(infra.lock_dir, infra.port)
-    try:
-        return [pid for pid in _slt_infra._live_shared_markers(infra.lock_dir, infra.port, _slt_infra._pid_alive)
-                if pid != os.getpid()]
-    finally:
-        registry.release()
+        return None
+    return reservation
 
 
 def main(argv=None) -> int:

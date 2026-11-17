@@ -155,7 +155,9 @@ pids. A script that tears an environment down should treat a non-zero exit as "s
 wait, and retry; add `--force` only when the named sessions are known to be gone or expendable.
 A marker left by an earlier release counts only while its pid still belongs to the process that
 wrote it, so stale markers do not block a stop. `livetest.preflight --restart-app-nodes` under
-`shared` refuses the same way.
+`shared` refuses the same way. While a stop or that restart runs, `--force` included, a live run
+that starts on the same Striim endpoint is refused ("a stop or restart of the stack … is in
+progress"), naming the stopping pid; start it again once the stop has finished.
 
 ### Integration teardown and locks (breaking)
 

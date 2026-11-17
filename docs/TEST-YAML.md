@@ -1797,7 +1797,8 @@ or the shell, and a run without it is refused.
   the case instead of being recreated; the message names the owning checkout. To fix it, run
   `python -m inttest.cli stop <service>` and then `start <service>` from that checkout, once
   nothing else uses the service. `python -m livetest.cli stop` refuses (exit 2) while another live
-  run uses the stack, naming its pids; add `--force` to stop anyway. With
+  run uses the stack, naming its pids; add `--force` to stop anyway. While a stop runs, a live
+  run starting on the same stack is refused. With
   `SLT_SHARED_PROVISION=0` a missing service is not started: the case fails, naming the
   `livetest.cli start` command.
 - **`exclusive`**: the run starts a stack of its own, refuses to start when anything already answers
