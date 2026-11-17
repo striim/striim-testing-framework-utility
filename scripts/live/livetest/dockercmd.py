@@ -22,6 +22,11 @@ import time
 # removal, and local probes (`java -version`, `openssl`). The bound the ownership ledger has used for
 # every one of its docker commands.
 QUERY_TIMEOUT_S = 60.0
+# A copy whose size the case sets: `docker cp` of a `server_files` seed or an OP jar into (or out of) a
+# container, and the `exec` that reads a FileWriter output back. Sized for a multi-gigabyte copy on a slow
+# Docker Desktop, not for a query. The small command each of these follows (a listing, a mkdir, a
+# checksum) keeps the query bound. Use ``transfer``.
+TRANSFER_TIMEOUT_S = 1800.0
 # `docker compose down -v`: stops each container (10 s grace by default, in parallel) and removes its
 # volumes, which run to gigabytes for Oracle and SQL Server.
 COMPOSE_DOWN_TIMEOUT_S = 600.0
@@ -82,6 +87,12 @@ def run(argv, *, timeout: float = QUERY_TIMEOUT_S, check: bool = False, capture:
     if check and r.returncode:
         raise subprocess.CalledProcessError(r.returncode, argv, r.stdout, r.stderr)
     return r
+
+
+def transfer(argv, **kw):
+    """``run`` under ``TRANSFER_TIMEOUT_S``: the default runner for a copy or a read of a file of any size.
+    Callers that take an injected ``run`` use it in place of this, called with the command alone."""
+    return run(argv, timeout=TRANSFER_TIMEOUT_S, **kw)
 
 
 _SUBPROCESS_RUN = subprocess.run

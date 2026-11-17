@@ -869,6 +869,7 @@ def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = Fal
     # Striim loaded; replacing them is what lets an UNLOAD poison its loader (see
     # content_addressed).
     import shutil, stat
+    copy = run or dockercmd.transfer        # a jar of any size; the commands around it are queries
     run = run or dockercmd.run
 
     if ctx.mode == "docker":
@@ -891,12 +892,12 @@ def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = Fal
                     source = fetched / name
             try:
                 if fetched is not None:
-                    got = run(["docker", "cp", f"{present[0]}:{final}", str(source)])
+                    got = copy(["docker", "cp", f"{present[0]}:{final}", str(source)])
                     if getattr(got, "returncode", 0) != 0:
                         raise OpArtifactError(
                             f"upload failed: could not copy {name} from {present[0]}: "
                             f"{(got.stderr or '').strip()}")
-                _publish_docker(run, f, name, final, source, keep, missing)
+                _publish_docker(run, copy, f, name, final, source, keep, missing)
             finally:
                 if fetched is not None:
                     shutil.rmtree(fetched, ignore_errors=True)
@@ -978,11 +979,11 @@ def restore_loaded_copy(ctx, name: str, run=None) -> None:
             raise OpArtifactError(f"could not restore the loaded copy of {name}: {e}") from e
 
 
-def _publish_docker(run, f, name: str, final: str, source, keep: bool, missing) -> None:
+def _publish_docker(run, copy, f, name: str, final: str, source, keep: bool, missing) -> None:
     """Publish `source` as `final` on each app node that needs it, atomically: copy to a temp
     name, then move or link it into place. With `keep`, only the `missing` nodes, and without
     clobbering: the hard link fails if a concurrent uploader published the name first, whose
-    bytes then stay."""
+    bytes then stay. `copy` runs the `docker cp`, `run` every other command."""
     want = None
     for node in stack.app_nodes():
         if keep:
@@ -1006,10 +1007,10 @@ def _publish_docker(run, f, name: str, final: str, source, keep: bool, missing) 
                   'ln "$1" "$2" || test -e "$2" || mv -n "$1" "$2"; rm -f "$1"; test -e "$2"',
                   "sh", tmp, final]
                  if keep else ["docker", "exec", node, "mv", "-f", tmp, final])
-        for command in (["docker", "cp", str(source), f"{node}:{tmp}"],
-                        ["docker", "exec", "-u", "0", node, "chmod", "644", tmp],
-                        place):
-            result = run(command)
+        for step, command in ((copy, ["docker", "cp", str(source), f"{node}:{tmp}"]),
+                              (run, ["docker", "exec", "-u", "0", node, "chmod", "644", tmp]),
+                              (run, place)):
+            result = step(command)
             if getattr(result, "returncode", 0) != 0:
                 raise OpArtifactError(
                     f"upload failed on {node} for {name}: "
@@ -1058,6 +1059,7 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
             progress("agent", "skipping agent jar placement: not a dockerized cluster")
         return
 
+    copy = run or dockercmd.transfer        # a jar of any size; the commands around it are queries
     run = run or dockercmd.run
     agent = stack.agent_container()
 
@@ -1083,11 +1085,11 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
         # be the agent JVM at startup, which is exactly when a truncated jar becomes
         # "ClassNotFoundException" again -- the symptom this function exists to remove.
         tmp = f"{stack.AGENT_LIB_DIR}/.{name}.tmp.{os.getpid()}"
-        for command in (["docker", "cp", str(f), f"{agent}:{tmp}"],
-                        ["docker", "exec", "-u", "0", agent, "chmod", "644", tmp],
-                        ["docker", "exec", "-u", "0", agent, "mv", "-f", tmp, final]):
-            _agent_step(run, command, f"placing {name} on {agent}",
-                        cleanup=["docker", "exec", "-u", "0", agent, "rm", "-f", tmp])
+        for step, command in ((copy, ["docker", "cp", str(f), f"{agent}:{tmp}"]),
+                              (run, ["docker", "exec", "-u", "0", agent, "chmod", "644", tmp]),
+                              (run, ["docker", "exec", "-u", "0", agent, "mv", "-f", tmp, final])):
+            _agent_step(step, command, f"placing {name} on {agent}",
+                        cleanup=["docker", "exec", "-u", "0", agent, "rm", "-f", tmp], cleanup_run=run)
         placed.append(name)
 
     if not placed:
@@ -1109,11 +1111,11 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
             progress("agent", "agent re-registered")
 
 
-def _agent_step(run, command, what, cleanup=None) -> None:
+def _agent_step(run, command, what, cleanup=None, cleanup_run=None) -> None:
     result = run(command)
     if getattr(result, "returncode", 1) != 0:
         if cleanup:
-            run(cleanup)
+            (cleanup_run or run)(cleanup)
         raise OpArtifactError(f"{what} failed: {' '.join(command)}: "
                               f"{(getattr(result, 'stderr', '') or '').strip()}")
 

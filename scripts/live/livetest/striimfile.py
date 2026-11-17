@@ -116,6 +116,7 @@ def read_server_files(ctx, path: str, run=None) -> str:
     # file and node by node (see _join_files); "" when none exists yet. A failed listing or read
     # raises StriimFileError.
     _check(path)
+    read = run or dockercmd.transfer        # the whole output, however large
     run = run or dockercmd.run
     if ctx.mode == "docker":
         parts = []
@@ -125,7 +126,7 @@ def read_server_files(ctx, path: str, run=None) -> str:
                 continue
             # One exec per node; the paths travel as arguments, and a NUL after each file marks
             # where it ends (text FileWriter output contains no NUL).
-            r = run(["docker", "exec", node, "sh", "-c", _CAT_EACH, "sh", *files])
+            r = read(["docker", "exec", node, "sh", "-c", _CAT_EACH, "sh", *files])
             if getattr(r, "returncode", 0) != 0:
                 raise _fail(f"reading {' '.join(files)}", node, r)
             parts.extend((getattr(r, "stdout", "") or "").split("\0")[:-1])
@@ -184,10 +185,10 @@ def place_server_file(ctx, src, dest: str, run=None) -> None:
     # the local fs for native). Creates the parent dir first.
     _check(dest)
     ensure_server_dir(ctx, dest, run=run)
-    run = run or dockercmd.run
+    copy = run or dockercmd.transfer        # a seed of any size
     if ctx.mode == "docker":
         for node in stack.app_nodes():
-            r = run(["docker", "cp", str(src), f"{node}:{dest}"])
+            r = copy(["docker", "cp", str(src), f"{node}:{dest}"])
             if getattr(r, "returncode", 1) != 0:
                 raise StriimFileError(
                     f"docker cp {src} -> {node}:{dest} failed: {getattr(r, 'stderr', '')}")
