@@ -1,6 +1,6 @@
 """Switches: settings that turn something on or off.
 
-One rule in both engines and the CLI (livetest.paths.flag, which inttest.paths imports): `1` is
+One rule in both engines and the CLI (livetest.paths.flag, byte-identical in inttest.paths): `1` is
 on, `0` or unset is off (SLT_PRE_UP and INT_VARIANT_ITEMS are on when unset), and any other value
 stops the run with a usage error naming the setting. Before, most switches were on for any
 non-empty value, so `SLT_SKIP_VERIFY=0` skipped every assertion, and `SLT_RUN_DISABLED=0` ran

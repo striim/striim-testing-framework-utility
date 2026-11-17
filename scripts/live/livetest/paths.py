@@ -6,8 +6,7 @@ then the machine settings file, then today's relative default. Nothing is export
 to the process by this module. Machine settings cannot set checkout paths or lane keys.
 A key that is set but names a missing path raises PathConfigError naming the key -- a set key
 is never ignored. Empty values count as unset. The integration engine carries a twin,
-``inttest/paths.py``, whose core block is byte-identical (test_int_paths.py checks it); the
-switch helpers (SWITCHES, flag, ...) are only here, and inttest.paths imports them.
+``inttest/paths.py``, whose core block is byte-identical (test_int_paths.py checks it).
 """
 from __future__ import annotations
 
@@ -290,11 +289,10 @@ def _path(key, default: Path, env=None, dotenv=None) -> Path:
     return p
 
 
-# --- end core ------------------------------------------------------------------------------
-
-
 # Switches: settings that turn something on or off. `1` is on and `0` is off; unset or empty is
 # off, except the _DEFAULT_ON ones; any other value is refused, in both engines and the CLI.
+# Kept in the shared core rather than imported from livetest: inttest.paths must load where livetest
+# is not importable (tests/test_resource_profiles.py runs it so), and inttest.pgclient reads a switch.
 SWITCHES = (
     "SLT_STRIIM_NATIVE_ONLY", "SLT_KEEP_SERVICES", "SLT_KEEP_RESOURCES", "SLT_KEEP_RESOURCES_ON_ERROR",
     "SLT_ALLOW_NO_CLUSTER", "SLT_PARALLEL", "SLT_RUN_DISABLED", "SLT_SKIP_VERIFY", "SLT_EMULATORS",
@@ -336,7 +334,7 @@ def flag_problems(env=None, names=SWITCHES) -> list:
         except FlagError as e:
             problems.append(str(e))
     return problems
-
+# --- end core ------------------------------------------------------------------------------
 
 _HERE = Path(__file__).resolve()          # <scripts>/live/livetest/paths.py
 
