@@ -1069,19 +1069,15 @@ def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000, errors: lis
     return NODE_LOG_BOUNDARY.join(out)
 
 
-_HALT_LOG_READ_TIMEOUT_S = 60
-
-
 def _halt_log_tail(ctx, marks: dict, run=None) -> str:
     """The node-log slice `expect_halt_contains` is checked against.
 
     `_node_log_since` reads an unreadable node as empty, which suits the OP-poison scan. Here
     an empty result could pass a halt unverified, so when no node's slice has any text and a
     node could not be read, this raises with why; `assert_halt` fails the halt in docker mode.
-    A node that could be read is enough: the case may have stopped the other one.
+    A node that could be read is enough: the case may have stopped the other one. The reads go
+    through `dockercmd.run` under its query bound, as every other node-log read does.
     """
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True,
-                                              timeout=_HALT_LOG_READ_TIMEOUT_S))
     errors: list = []
     text = _node_log_since(ctx, marks, run=run, errors=errors)
     if errors and not text.strip():

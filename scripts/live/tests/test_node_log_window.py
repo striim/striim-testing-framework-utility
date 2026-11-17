@@ -161,6 +161,21 @@ def test_halt_reader_returns_nothing_off_the_docker_cluster():
     assert plugin._halt_log_tail(_Ctx(mode="native"), {}, run=lambda a: None) == ""
 
 
+def test_halt_reader_runs_through_the_bounded_docker_runner(monkeypatch):
+    # The halt read is a node-log read like the others: `dockercmd.run` under the query bound, so
+    # a read that outlives it has its process group ended, not only its `docker` client.
+    from livetest import dockercmd
+    calls = []
+
+    def bounded(argv, *, timeout=dockercmd.QUERY_TIMEOUT_S, **kw):
+        calls.append((argv[:3], timeout))
+        return SimpleNamespace(returncode=0, stdout="ORA-00001 unique constraint", stderr="")
+    monkeypatch.setattr(dockercmd, "run", bounded)
+    marks = {n: 5 for n in stack.app_nodes()}
+    assert "ORA-00001" in plugin._halt_log_tail(_Ctx(), marks)
+    assert calls == [(["docker", "exec", n], dockercmd.QUERY_TIMEOUT_S) for n in stack.app_nodes()]
+
+
 def test_the_poison_scan_still_reads_an_unreadable_node_as_empty():
     def _run(argv):
         raise RuntimeError("docker exec failed")
