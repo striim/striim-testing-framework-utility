@@ -815,6 +815,27 @@ class Ledger:
             else:
                 self._drop_entry(entry)
 
+    def acquire_bigtable_table(self, admin, db, table, create):
+        """A `setup: bigtable:` table: refused if it already exists (another run's, or one a kept run
+        left), recorded as an intent, created, and confirmed from the admin's listing."""
+        if table in admin.list_owned_tables():
+            raise OwnershipError(f"collision:bigtable-table:{table} already exists; left untouched")
+        entry = self.add("bigtable-table", table, db)
+        try:
+            create()
+        finally:
+            try:
+                present = table in admin.list_owned_tables()
+            except Exception as exc:    # noqa: BLE001 - never mask create()'s own exception
+                # Unknown, so treat it as created: cleanup's drop tolerates a missing table, and an
+                # intent left unconfirmed would never be dropped.
+                present = True
+                self.gaps.append(f"bigtable-table {table}: could not confirm it from the listing: {exc}")
+            if present:
+                self._set(entry, "confirmed")
+            else:
+                self._drop_entry(entry)
+
     def allocate_owned_dir(self, ctx) -> dict:
         path = _safe_path(self.ident.owned_dir)
         if getattr(ctx, "mode", None) != "docker":

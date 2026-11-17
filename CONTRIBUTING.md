@@ -29,8 +29,12 @@ bash tools/make-test-venv.sh
 ```
 
 The helper creates `.venv-test` with the pinned dependencies for both engines and an editable
-install of this checkout. It reuses the environment on subsequent runs and refuses an existing
-environment that includes system site-packages. It requires a locally installed Python 3.12;
+install of this checkout. On a later run it syncs the existing environment to the current lock, so
+rerun it after a pull that changes `requirements-test*.txt`; an import error for a pinned package
+(for example `google.cloud.bigtable`) usually means it was not rerun. With `uv` the sync also
+removes packages the lock no longer lists; with `pip` it only installs. The environment has no
+`pip` of its own when `uv` built it, so `pip install` from another interpreter does not reach it.
+It refuses an existing environment that includes system site-packages. It requires a locally installed Python 3.12;
 set `PYTHON=/path/to/python3.12` to select one. It prefers `uv` and falls back to Python's `venv`
 and `pip`, using public PyPI only. It does not download Python. The helper works with Bash 3.2.
 

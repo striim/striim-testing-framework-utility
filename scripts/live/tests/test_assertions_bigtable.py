@@ -275,9 +275,32 @@ def test_prefix_cell_with_non_utf8_bytes_does_not_match():
     assert not _cell_matches({"prefix": "x"}, "ff")
 
 
-def test_prefix_must_be_the_only_key():
+@pytest.mark.parametrize("cell", [{"prefix": "x", "suffix": "y"}, {"prefix": 5}, {"prefix": ""}, {"pre": "x"},
+                                  "ABCD", "abc", 7])
+def test_a_bad_cell_value_is_refused_when_the_specs_are_parsed(cell):
+    # At load, not after deploy: a bad prefix would otherwise escape the poll as a bare error.
     with pytest.raises(BigtableSpecError):
-        _cell_matches({"prefix": "x", "suffix": "y"}, "78")
+        parse_bigtable_specs([{"table": "t", "expected": [{"row": "31", "cells": {"cf:m": cell}}]}])
+
+
+@pytest.mark.parametrize("spec,match", [
+    ({"table": "t", "expected": [], "dbb": "x"}, "unknown key"),
+    ({"table": "t", "expected": {}}, "must be a row list"),
+    ({"table": "SELECT 1", "expected": []}, "table name"),
+    ({"table": "t", "expected": [], "db": "postgres-target"}, "must be one of"),
+    ({"table": "t", "expected": [{"row": "3G", "cells": {}}]}, "lowercase hex"),
+    ({"table": "t", "expected": [{"row": "31"}]}, "row: <lowercase hex>"),
+])
+def test_a_bad_spec_is_refused(spec, match):
+    with pytest.raises(BigtableSpecError, match=match):
+        parse_bigtable_specs([spec])
+
+
+def test_parse_returns_copies_and_leaves_the_manifest_specs_alone():
+    raw = [{"table": "${TID}t", "expected": []}]
+    (spec,) = parse_bigtable_specs(raw)
+    spec["table"] = "rendered"
+    assert raw == [{"table": "${TID}t", "expected": []}]
 
 
 def test_rows_match_with_a_prefix_cell_in_a_row():
@@ -290,3 +313,8 @@ def test_rows_match_refuses_a_missing_cell_even_with_a_prefix():
     want = [{"row": "31", "cells": {"cf:id": "31", "cf:m": {"prefix": "SLT_run1."}}}]
     got = [{"row": "31", "cells": {"cf:id": "31"}}]
     assert not _rows_match(want, got)
+
+
+def test_a_non_string_route_is_a_spec_error():
+    with pytest.raises(BigtableSpecError, match="must be one of"):
+        parse_bigtable_specs([{"table": "t", "expected": [], "db": {"a": 1}}])

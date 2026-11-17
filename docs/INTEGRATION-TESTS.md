@@ -537,12 +537,13 @@ assert:
   order, and a database may return them in any order it likes; without one the case is green on
   the machine that recorded the golden and arbitrary everywhere else.
 - **A `bigtable-*` route has no SQL**, so its entry is not a query. `query:` names the table
-  (letters, digits, `_`, `.`, `-`, or `${TOKEN}`s; anything else is refused at load), and no
-  `ORDER BY` is asked for: the admin returns rows in row-key order. `match` is the JSON list of
-  rows `dbroutes.read_cells` returns: `[{"row": "<hex key>", "cells": {"<fam>:<qual>": "<hex>"}}]`.
-  The comparison is `dbroutes.assert_target`'s, so a mismatch names the table and both sides.
-- **`setup: bigtable:` creates a table before the writer starts**, after its `ddl:` and before its
-  `seed:`:
+  (letters, digits, `_`, `.`, `-`, or `${TOKEN}`s, not starting with `.` or `-`; anything else is
+  refused at load), and no `ORDER BY` is asked for: the admin returns rows in row-key order.
+  `match` is a JSON list of rows, `[{"row": "<hex key>", "cells": {"<fam>:<qual>": "<hex>"}}]`
+  (the `rows` of what `dbroutes.read_cells` returns), lowercase hex. The comparison is
+  `dbroutes.assert_target`'s, so a mismatch names the table and both sides. Needs
+  `requires: [bigtable]`.
+- **`setup: bigtable:` creates a table before the writer starts**, before the case's `ddl:`:
 
   <!-- snippet: shape integration-tier test.yaml keys -->
   ```yaml
@@ -552,13 +553,19 @@ assert:
         db: bigtable-target            # optional, default bigtable-target
         families: {emp: null}          # each family null; its GC rule goes under gc:
         gc: {emp: {age_days: 7}}       # optional
-        seed:                          # optional rows, as dbroutes.write_cells takes them
+        seed:                          # optional rows, as BigtableAdmin.write_cells takes them
           - {row: "01", cells: {"emp:name": "ann"}}
   ```
 
-  The table is dropped at teardown, unless the case fails or `--slt-keep-resources` keeps it. A
-  case with `variants:` refuses it for now: a variant's DDL goes through the variant's own route,
-  and a Bigtable table is not yet part of that.
+  `table` must contain `${TID}`, so parallel runs do not share a table (a serial run's `${TID}` is
+  empty, and the next case re-creates the table, dropping one a failed case kept). `families` maps each
+  family to null; `gc` gives a family one rule (`num_versions`, `age_millis`, `age_seconds` or
+  `age_days`, a whole number above 0). Seed keys and values are UTF-8 text, or `0x<hex>` for bytes
+  (unlike `match`, which is plain hex); only `table` is token-rendered. A `matrix:` case re-creates
+  the table before each run. The table is dropped at teardown, unless the case fails or
+  `--slt-keep-resources`/`INT_KEEP_RESOURCES` keeps it. Needs `requires: [bigtable]`. A case with
+  `variants:` refuses it for now: a variant's DDL goes through the variant's own route, and a
+  Bigtable table is not yet part of that. The perf tier does not accept `setup:`.
 - **`match` is a list of rows**, each a list of column values, in the shape `dbroutes.query_rows`
   returns. Values are normalised losslessly: `Decimal` → string (never a float — a writer that
   refuses a value not fitting a column's scale is asserting about exact digits), temporals → ISO

@@ -24,7 +24,8 @@ import yaml
 
 from zoneinfo import available_timezones
 
-from . import dbroutes, waevent
+from . import bigtablespec, dbroutes, waevent
+from .bigtablespec import BigtableSetup  # noqa: F401 - re-exported for callers of this module
 
 
 def _only_variant() -> str:
@@ -373,17 +374,6 @@ class TargetAssertion:
 
 
 @dataclass(frozen=True)
-class BigtableSetup:
-    """One `setup: bigtable:` entry: a table created (families, GC rules, seed rows) before the
-    writer starts, dropped at teardown. `table` may carry ${TOKEN}s, rendered at run time."""
-    table: str
-    db: str
-    families: dict                              # family -> None | {"age_days": n} | ...
-    gc_rules: dict = field(default_factory=dict)
-    seed: list = field(default_factory=list)    # rows: {"row": key, "cells": {"fam:qual": value}}
-
-
-@dataclass(frozen=True)
 class TestManifest:
     """A fully parsed and normalized test.yaml (docs/INTEGRATION-TESTS.md)."""
     name: str
@@ -582,8 +572,6 @@ _TARGET_KEYS = {"input", "restart_after", "positions", "distribution_id", "timez
                 "mid_run"}
 
 _TARGET_ASSERTION_KEYS = {"query", "db", "match"}
-# A bigtable assert.target's `query` is a table name: word characters, '.', '-' and ${TOKEN}s.
-_BIGTABLE_TABLE_RE = re.compile(r"^(?:[A-Za-z0-9_.\-]|\$\{[A-Za-z_][A-Za-z0-9_]*\})+$")
 
 
 def _normalize_field_paths(item: dict, key: str, idx: int, path) -> tuple:
@@ -775,10 +763,10 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
                 # A Bigtable route has no SQL: `query` names the table, and `match` is its rows as
                 # the admin reads them (row-key order, so no ORDER BY is asked for).
                 table = query.strip()
-                if not _BIGTABLE_TABLE_RE.match(table):
+                if not bigtablespec.is_table_name(table):
                     raise ManifestError(
                         f"{path}: 'assert.target[{i}].query' on a bigtable route must be a table "
-                        f"name (letters, digits, '_', '.', '-', or a ${{TOKEN}}), got {query!r}")
+                        f"name ({bigtablespec.TABLE_RULE}), got {query!r}")
                 target.append(TargetAssertion(
                     query=table, db=db, match=match,
                     match_path=(test_dir / match).resolve(),
@@ -1882,73 +1870,6 @@ def _normalize_purpose(raw, path):
     return raw
 
 
-_SETUP_KEYS = frozenset({"bigtable"})
-_BIGTABLE_SETUP_KEYS = frozenset({"table", "db", "families", "gc", "seed"})
-
-
-def _normalize_setup(raw, path) -> list:
-    """The top-level `setup:` block. Only `bigtable:` exists: tables created before the writer
-    starts (BigtableSetup), with their families, GC rules and seed rows."""
-    if raw is None:
-        return []
-    if not isinstance(raw, dict):
-        raise ManifestError(f"{path}: 'setup' must be a mapping with a 'bigtable' list, got {raw!r}")
-    unknown = sorted(set(raw) - _SETUP_KEYS)
-    if unknown:
-        raise ManifestError(
-            f"{path}: 'setup' has unknown key(s) {unknown} -- allowed: {sorted(_SETUP_KEYS)}")
-    items = raw.get("bigtable")
-    if items is None:
-        return []
-    if not isinstance(items, list) or not items:
-        raise ManifestError(f"{path}: 'setup.bigtable' must be a non-empty list of table specs")
-    out = []
-    for i, item in enumerate(items):
-        where = f"{path}: 'setup.bigtable[{i}]'"
-        if not isinstance(item, dict):
-            raise ManifestError(f"{where} must be a mapping, got {item!r}")
-        unknown = sorted(set(item) - _BIGTABLE_SETUP_KEYS)
-        if unknown:
-            raise ManifestError(
-                f"{where} has unknown key(s) {unknown} -- allowed: {sorted(_BIGTABLE_SETUP_KEYS)}")
-        table = item.get("table")
-        if not isinstance(table, str) or not _BIGTABLE_TABLE_RE.match(table.strip()):
-            raise ManifestError(
-                f"{where} needs 'table' (letters, digits, '_', '.', '-', or a ${{TOKEN}}), got {table!r}")
-        db = item.get("db", "bigtable-target")
-        try:
-            routed = dbroutes.is_bigtable_route(db) if isinstance(db, str) else False
-        except dbroutes.RouteError as e:
-            raise ManifestError(f"{where}.db: {e}") from None
-        if not routed:
-            raise ManifestError(f"{where}.db must be a bigtable-* route, got {db!r}")
-        families = item.get("families")
-        if not isinstance(families, dict) or not families:
-            raise ManifestError(
-                f"{where} needs 'families': a mapping of family name to null (GC rules go under 'gc')")
-        for fam, rule in families.items():
-            if not isinstance(fam, str) or not fam:
-                raise ManifestError(f"{where}.families: a family name must be a non-empty string")
-            if rule is not None:
-                raise ManifestError(
-                    f"{where}.families.{fam} must be null; put its GC rule under 'gc'")
-        gc = item.get("gc") or {}
-        if not isinstance(gc, dict):
-            raise ManifestError(f"{where}.gc must be a mapping of family to rule")
-        stray = sorted(set(gc) - set(families))
-        if stray:
-            raise ManifestError(f"{where}.gc names family(ies) {stray} that 'families' does not declare")
-        seed = item.get("seed") or []
-        if not isinstance(seed, list):
-            raise ManifestError(f"{where}.seed must be a list of rows")
-        for j, row in enumerate(seed):
-            if not isinstance(row, dict) or "row" not in row or not isinstance(row.get("cells"), dict):
-                raise ManifestError(f"{where}.seed[{j}] needs 'row' and a 'cells' mapping")
-        out.append(BigtableSetup(table=table.strip(), db=db, families=dict(families),
-                                 gc_rules=dict(gc), seed=list(seed)))
-    return out
-
-
 def load_manifest(path) -> TestManifest:
     """Load and normalize a test.yaml per docs/INTEGRATION-TESTS.md. Raises ManifestError naming `path`
     and the offending key on any parse/validation failure."""
@@ -2157,7 +2078,15 @@ def load_manifest(path) -> TestManifest:
             f"{path}: 'assert.gcs_objects' needs 'requires: [gcs]' -- the bucket it checks "
             f"is only provisioned for a test that requires the gcs service")
 
-    bigtable_setup = _normalize_setup(raw.get("setup"), path)
+    try:
+        bigtable_setup = bigtablespec.normalize_setup(raw.get("setup"), path)
+    except bigtablespec.BigtableSpecError as e:
+        raise ManifestError(str(e)) from None
+    bigtable_targets = [t for t in (assert_.target or []) if dbroutes.is_bigtable_route(t.db)]
+    if (bigtable_setup or bigtable_targets) and "bigtable" not in requires:
+        raise ManifestError(
+            f"{path}: '{'setup.bigtable' if bigtable_setup else 'assert.target'}' on a bigtable route "
+            f"needs 'requires: [bigtable]' -- the emulator is only started for a test that requires it")
     if bigtable_setup and variants:
         # A variant runs its own DDL through its own route; a Bigtable table is not yet part of that.
         raise ManifestError(

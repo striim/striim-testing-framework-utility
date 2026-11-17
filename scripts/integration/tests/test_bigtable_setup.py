@@ -57,13 +57,27 @@ def test_no_setup_key_is_an_empty_list(tmp_path):
 
 
 @pytest.mark.parametrize("body,match", [
-    ("    - table: emp\n      families: {emp: null}\n      extra: 1\n", "unknown key"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      extra: 1\n", "unknown key"),
     ("    - table: 'SELECT x'\n      families: {emp: null}\n", "needs 'table'"),
-    ("    - table: emp\n      families: {emp: {age_days: 7}}\n", "must be null"),
-    ("    - table: emp\n      families: {emp: null}\n      gc: {other: {age_days: 7}}\n", "does not declare"),
-    ("    - table: emp\n      families: {}\n", "needs 'families'"),
-    ("    - table: emp\n      db: postgres-target\n      families: {emp: null}\n", "must be a bigtable"),
-    ("    - table: emp\n      families: {emp: null}\n      seed: [{cells: {}}]\n", "needs 'row'"),
+    ("    - table: ${TID}emp\n      families: {emp: {age_days: 7}}\n", "must be null"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      gc: {other: {age_days: 7}}\n", "does not declare"),
+    ("    - table: ${TID}emp\n      families: {}\n", "needs 'families'"),
+    ("    - table: ${TID}emp\n      db: postgres-target\n      families: {emp: null}\n", "must be one of"),
+    ("    - table: emp\n      families: {emp: null}\n", "must contain"),
+    ("    - table: -${TID}emp\n      families: {emp: null}\n", "needs 'table'"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n    - table: ${TID}emp\n      families: {emp: null}\n",
+     "a second time"),
+    ("    - table: ${TID}emp\n      families: {'bad fam': null}\n", "not a family name"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      gc: {emp: 5}\n", "must be one of"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      gc: {emp: {age_dayz: 7}}\n", "must be one of"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      gc: {emp: {age_days: 0}}\n", "greater than 0"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      gc: []\n", "gc must be a mapping"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: {}\n", "seed must be a list"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: [{row: '1', cells: {name: x}}]\n",
+     "<family>:<qualifier>"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: [{row: '1', cells: {'cf:a': x}}]\n",
+     "<family>:<qualifier>"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: [{cells: {}}]\n", "needs 'row'"),
 ])
 def test_setup_refuses_a_bad_entry(tmp_path, body, match):
     with pytest.raises(ManifestError, match=match):
@@ -77,7 +91,9 @@ def test_setup_refuses_an_unknown_setup_key(tmp_path):
 
 
 def _item(tokens):
-    return SimpleNamespace(_variant_tokens=lambda variant: tokens)
+    item = SimpleNamespace(_variant_tokens=lambda variant: tokens)
+    item._create_bigtable_tables = lambda m, tok, label="": IntYamlItem._create_bigtable_tables(item, m, tok, label)
+    return item
 
 
 def _manifest(tmp_path):
@@ -112,7 +128,8 @@ def test_setup_failure_is_a_test_failure_and_stays_remembered(tmp_path, monkeypa
     item = _item(tokens)
     with pytest.raises(pytest.fail.Exception, match="setup bigtable 't_emp'.*emulator down"):
         IntYamlItem._setup_bigtable(item, _manifest(tmp_path), tokens)
-    # Remembered before the create, so teardown still tries to drop a partly created table.
+    # Remembered before the create. A failed case keeps its tables, so this matters only to a
+    # later run of the same item, whose teardown drops what the earlier create left.
     assert item._bigtable_created == [("bigtable-target", "t_emp", tokens)]
 
 
@@ -142,7 +159,7 @@ def test_teardown_with_nothing_created_is_a_no_op():
 
 
 def _requires_bigtable(tmp_path):
-    return load_manifest(_write(tmp_path, BASE + "setup:\n  bigtable:\n    - table: emp\n      families: {emp: null}\n"))
+    return load_manifest(_write(tmp_path, BASE + "setup:\n  bigtable:\n    - table: ${TID}emp\n      families: {emp: null}\n"))
 
 
 def test_export_sets_the_emulator_variable_for_a_bigtable_case(tmp_path, monkeypatch):
@@ -155,13 +172,21 @@ def test_export_sets_the_emulator_variable_for_a_bigtable_case(tmp_path, monkeyp
     monkeypatch.delenv("BIGTABLE_EMULATOR_HOST", raising=False)
 
 
-def test_export_keeps_a_value_the_operator_set(tmp_path, monkeypatch):
-    monkeypatch.setenv("BIGTABLE_EMULATOR_HOST", "elsewhere:9999")
+def test_export_keeps_an_operator_value_naming_the_same_emulator(tmp_path, monkeypatch):
+    monkeypatch.setenv("BIGTABLE_EMULATOR_HOST", "localhost:19470")
     item = SimpleNamespace()
     IntYamlItem._export_bigtable_emulator(item, _requires_bigtable(tmp_path),
                                           {"BIGTABLE_HOST": "localhost", "BIGTABLE_GRPC_PORT": "19470"})
-    assert os.environ["BIGTABLE_EMULATOR_HOST"] == "elsewhere:9999"
-    assert not hasattr(item, "_bigtable_env_set")
+    assert os.environ["BIGTABLE_EMULATOR_HOST"] == "localhost:19470"
+    assert not hasattr(item, "_bigtable_env_set")     # not ours, so teardown leaves it
+
+
+def test_export_refuses_an_operator_value_naming_another_emulator(tmp_path, monkeypatch):
+    # The writer would write to one emulator and the assertions read the other.
+    monkeypatch.setenv("BIGTABLE_EMULATOR_HOST", "elsewhere:9999")
+    with pytest.raises(pytest.fail.Exception, match="elsewhere:9999.*localhost:19470"):
+        IntYamlItem._export_bigtable_emulator(SimpleNamespace(), _requires_bigtable(tmp_path),
+                                              {"BIGTABLE_HOST": "localhost", "BIGTABLE_GRPC_PORT": "19470"})
 
 
 def test_export_does_nothing_for_a_case_without_bigtable(tmp_path, monkeypatch):
@@ -175,3 +200,83 @@ def test_export_fails_the_case_when_the_tokens_are_missing(tmp_path, monkeypatch
     monkeypatch.delenv("BIGTABLE_EMULATOR_HOST", raising=False)
     with pytest.raises(pytest.fail.Exception, match="BIGTABLE_HOST"):
         IntYamlItem._export_bigtable_emulator(SimpleNamespace(), _requires_bigtable(tmp_path), {})
+
+
+def _teardown_item(failed_keep_flag=False):
+    config = SimpleNamespace(getoption=lambda name, default=None: failed_keep_flag)
+    return SimpleNamespace(config=config, _bigtable_created=[("bigtable-target", "t_emp", {})],
+                           _bigtable_env_set=True, _pg_admin=None, _oracle_prefix=None,
+                           _spanner_prefix=None, _teardown_bigtable=lambda: dropped.append("t_emp"))
+
+
+dropped: list = []
+
+
+@pytest.mark.parametrize("failed,keep_flag,drops", [(False, False, True), (True, False, False), (False, True, False)])
+def test_teardown_drops_only_a_passing_unkept_case_and_always_unsets_the_variable(
+        monkeypatch, failed, keep_flag, drops):
+    monkeypatch.setenv("BIGTABLE_EMULATOR_HOST", "localhost:19470")
+    monkeypatch.delenv("INT_KEEP_RESOURCES", raising=False)
+    dropped.clear()
+    item = _teardown_item(keep_flag)
+    try:
+        IntYamlItem._teardown_db_isolation(item, failed)
+    except AttributeError:
+        pass   # later isolation steps need attributes this stub lacks; the bigtable steps run first
+    assert (dropped == ["t_emp"]) is drops
+    assert "BIGTABLE_EMULATOR_HOST" not in os.environ
+
+
+def test_a_matrix_run_recreates_its_tables_before_ddl(tmp_path, monkeypatch):
+    # Each permutation starts from the setup state, not the previous permutation's rows.
+    order = []
+    monkeypatch.setattr(dbroutes, "setup_bigtable", lambda table, families, **kw: order.append(("setup", table)))
+    monkeypatch.setattr(dbroutes, "run_sql_file", lambda db, path, tok: order.append(("sql", db)))
+    m = _manifest(tmp_path)
+    tokens = {"TID": "t_"}
+    item = SimpleNamespace(_bigtable_created=[("bigtable-target", "t_emp", tokens)], _variant_tokens=None)
+    item._create_bigtable_tables = lambda m, tok, label="": IntYamlItem._create_bigtable_tables(item, m, tok, label)
+    IntYamlItem._reset_fixtures(item, m, tokens, {"UseUpsert": "false"})
+    assert order[0] == ("setup", "t_emp")
+    assert item._bigtable_created == [("bigtable-target", "t_emp", tokens)]   # not remembered twice
+
+
+def test_setup_with_variants_is_refused(tmp_path):
+    path = _write(tmp_path, _setup("    - table: ${TID}emp\n      families: {emp: null}\n")
+                  + "variants:\n  - name: pg\n    db: postgres-target\n    ddl: [{file: a.sql}]\n")
+    with pytest.raises(ManifestError, match="variants"):
+        load_manifest(path)
+
+
+def test_setup_needs_bigtable_in_requires(tmp_path):
+    test_dir = tmp_path / "bt-noreq"
+    test_dir.mkdir()
+    path = test_dir / "test.yaml"
+    path.write_text(BASE.replace("requires: [bigtable]", "requires: [postgres]")
+                    + _setup("    - table: ${TID}emp\n      families: {emp: null}\n"))
+    with pytest.raises(ManifestError, match=r"requires: \[bigtable\]"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize("body,match", [
+    ("    - table: ${TID}emp\n      db: [bigtable-target]\n      families: {emp: null}\n", "must be one of"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: [{row: '0xZZ', cells: {'emp:a': x}}]\n",
+     "not hex"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: [{row: '1', cells: {'emp:a': '0xQ'}}]\n",
+     "not hex"),
+    ("    - table: ${TID}emp\n      families: {emp: null}\n      seed: [{row: '0x', cells: {'emp:a': x}}]\n",
+     "empty key"),
+])
+def test_setup_refuses_bad_route_types_and_bad_hex_at_load(tmp_path, body, match):
+    with pytest.raises(ManifestError, match=match):
+        load_manifest(_write(tmp_path, _setup(body)))
+
+
+def test_null_seed_gc_and_family_rule_load_as_empty(tmp_path):
+    (spec,) = load_manifest(_write(tmp_path, _setup(
+        "    - table: ${TID}emp\n      families: {emp: null}\n      gc: {emp: null}\n      seed:\n"))).bigtable_setup
+    assert spec.gc_rules == {"emp": None} and spec.seed == []
+
+
+def test_setup_with_a_null_bigtable_list_is_empty(tmp_path):
+    assert load_manifest(_write(tmp_path, "setup:\n  bigtable:\n")).bigtable_setup == []

@@ -2,10 +2,10 @@
 
 Using this service in a test (tokens, routes, using your own instance): [docs/SERVICES.md](../../../../docs/SERVICES.md).
 
-**Assertions.** The service, the framework's `BigtableAdmin`, and `assert: bigtable:` (each spec
-is `{table, expected}`, the table read whole and compared; see docs/TEST-YAML.md). Not supported
-yet: manifest setup, a BigtableWriter or reader case, real Bigtable, and change streams (the
-emulator crashes on them, on both architectures). Development runs natively on arm64; the x86 build
+**Setup and assertions.** The service, the framework's `BigtableAdmin`, `setup: bigtable:` and
+`assert: bigtable:` (each spec is `{table, expected}`, the table read whole and compared; see
+docs/TEST-YAML.md). Not supported yet: a BigtableWriter or reader case, real Bigtable, and change
+streams (the emulator crashes on them, on both architectures). Development runs natively on arm64; the x86 build
 runs with `DOCKER_DEFAULT_PLATFORM=linux/amd64` (emulated on arm64).
 
 How it is built:
