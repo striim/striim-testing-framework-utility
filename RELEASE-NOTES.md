@@ -101,7 +101,9 @@ the last release; the release makes it that version's entry.
   step has failed. Each command runs in a process group of its own, which is also killed when the
   process that ran it dies (a tier that `striim-test` cancels, stops or kills takes its commands with
   it); a signal sent to the caller's process group reaches the caller, whose interrupt stops the
-  command.
+  command. A command that finishes takes with it any helper it left running in its group. The bound
+  of a command whose output streams to the terminal holds however fast its output is read; what is
+  still to be shown when it is stopped is shown for at most 2 s, then a line says the rest was dropped.
 - **recover: `expect_running: false` is checked.** The app must settle CREATED, DEPLOYED, STOPPED
   or QUIESCED after the restore; RUNNING or a terminal status fails the case, and a `recovery`
   record holds the status.

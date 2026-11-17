@@ -216,6 +216,35 @@ def test_a_streamed_process_whose_parent_exited_is_still_stopped_at_the_bound(tm
     _assert_nothing_survives(pids, acted)
 
 
+# A command that starts a helper with its output redirected, so that nothing waits for it, and returns
+# successfully once the helper has recorded its pid. Left running, the helper would act after 3 s.
+_LEAVES_A_HELPER = """
+import os, subprocess, sys, time
+pids, acted, survivor = sys.argv[1], sys.argv[2], sys.argv[3]
+open(pids, "a").write(str(os.getpid()) + chr(10))
+subprocess.Popen([sys.executable, "-c", survivor, pids, acted], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+while len(open(pids).read().split()) < 2:
+    time.sleep(0.02)
+"""
+
+
+@pytest.mark.parametrize("how", ["captured", "terminal", "stream"])
+def test_a_helper_a_completed_command_left_running_is_stopped_when_it_returns(tmp_path, how):
+    # Nothing the command started outlives the call: left in the command's process group, such a helper
+    # would be out of reach of the tier's own cleanup once the call had returned.
+    argv, pids, acted = _orphaning(tmp_path, _LEAVES_A_HELPER)
+    started = time.monotonic()
+    try:
+        if how == "stream":
+            code = dockercmd.stream(argv, lambda line: None, timeout=30)
+        else:
+            code = dockercmd.run(argv, timeout=30, check=True, capture=how == "captured").returncode
+        assert code == 0 and time.monotonic() - started < 10
+        _assert_nothing_survives(pids, acted)
+    finally:
+        _kill_all(pids)
+
+
 # The caller of a command, in a session of its own (a stand-in for a tier). The command starts a child
 # that ignores SIGINT and SIGTERM, records its pid, acts after 3 s and keeps running; the command itself
 # dies of SIGINT (as `docker` does), so a group interrupt ends it before the child it leaves behind.
@@ -339,26 +368,17 @@ def test_cleanup_after_the_command_was_reaped_signals_nothing_that_reused_its_pi
         _end(job, child)
 
 
-def test_a_bound_expiring_as_the_stream_completes_signals_nothing_that_reused_its_pid(monkeypatch):
-    # The race: the bound's expiry begins just as the command finishes, and is only carried out after the
-    # command has been reaped and its pid handed to another job.
-    import threading
+@pytest.mark.parametrize("how", ["run", "stream"])
+def test_ending_a_completed_command_signals_nothing_that_reused_its_pid(monkeypatch, how):
+    # A completed command's group is ended too (what it left running), after the command has been reaped.
     job, child = _unrelated_job()
-
-    class LateTimer:
-        def __init__(self, interval, fn, *a, **k):
-            self.fn, self.daemon = fn, True
-
-        def start(self):
-            pass
-
-        def cancel(self):
-            self.fn()
-
+    argv = [sys.executable, "-c", "print('done')"]
     try:
-        monkeypatch.setattr(threading, "Timer", LateTimer)
         _reused_pid_popen(monkeypatch, job)
-        assert dockercmd.stream([sys.executable, "-c", "print('done')"], lambda line: None, timeout=30) == 0
+        if how == "run":
+            assert dockercmd.run(argv, timeout=30).returncode == 0
+        else:
+            assert dockercmd.stream(argv, lambda line: None, timeout=30) == 0
         _assert_untouched(job, child)
     finally:
         _end(job, child)
@@ -435,6 +455,64 @@ def test_a_streamed_command_returns_its_exit_status():
     code = dockercmd.stream([sys.executable, "-c", "print('a'); print('b'); raise SystemExit(2)"], lines.append,
                             timeout=30)
     assert code == 2 and lines == ["a\n", "b\n"]
+
+
+# A command that writes a backlog at once, acts after 2 s and then exits 0. Its consumer takes 20 ms a line,
+# so handing on the whole backlog would take about 8 s: the output is ready long before the bound expires.
+_BACKLOG = """
+import sys, time
+for i in range(400):
+    print(f"Container slt-{i:03d}  Waiting")
+sys.stdout.flush()
+time.sleep(2)
+open(sys.argv[1], "w").write("acted")
+"""
+
+
+def test_a_slow_consumer_does_not_carry_a_stream_past_its_bound(tmp_path):
+    acted, lines = tmp_path / "acted", []
+
+    def slow(line):
+        lines.append(line)
+        time.sleep(0.02)
+    started = time.monotonic()
+    code = dockercmd.stream([sys.executable, "-c", _BACKLOG, str(acted)], slow, timeout=1.0)
+    elapsed = time.monotonic() - started
+    time.sleep(2.5)                                 # past the command's delayed action
+    assert code == dockercmd.TIMED_OUT and not acted.exists(), "the command ran on past its bound"
+    assert elapsed < 5                              # the bound, then a short delivery of what was written
+    assert lines[0] == "Container slt-000  Waiting\n" and len(lines) < 400 and "not shown" in lines[-1]
+
+
+# A command whose child leaves its process group (as a detached helper would) and keeps writing to the pipe,
+# a line every 5 ms for 30 s: faster than the consumer, which takes 10 ms a line.
+_DETACHED_WRITER = """
+import subprocess, sys, time
+w = subprocess.Popen([sys.executable, "-c",
+                      "import time; [(print('Container x Waiting', flush=True), time.sleep(0.005)) for _ in range(6000)]"],
+                     start_new_session=True)
+open(sys.argv[1], "w").write(str(w.pid))
+time.sleep(60)
+"""
+
+
+def test_output_that_keeps_arriving_cannot_carry_a_stream_past_its_bound(tmp_path):
+    writer, lines = tmp_path / "writer", []
+
+    def slow(line):
+        lines.append(line)
+        time.sleep(0.01)
+    try:
+        box = _waits_at_most(lambda: dockercmd.stream([sys.executable, "-c", _DETACHED_WRITER, str(writer)], slow,
+                                                      timeout=1.0), seconds=8)
+        assert box.get("value") == dockercmd.TIMED_OUT, box
+        assert "not shown" in lines[-1]
+    finally:
+        if writer.exists():
+            try:
+                os.kill(int(writer.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_the_streamed_compose_up_is_bounded(monkeypatch, tmp_path):

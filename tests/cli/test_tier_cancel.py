@@ -217,10 +217,16 @@ TIER_WITH_A_COMMAND = textwrap.dedent("""
     how, rest = sys.argv[1], sys.argv[2:]
     argv = [sys.executable, "-c", "import os, subprocess, sys, time; subprocess.Popen([sys.executable] + sys.argv[1:]); "
             "open(sys.argv[2], 'a').write(str(os.getpid()) + chr(10)); time.sleep(60)"] + rest
+    LEAVES = ("import os, subprocess, sys, time; subprocess.Popen([sys.executable] + sys.argv[1:], "
+              "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); open(sys.argv[2], 'a').write(str(os.getpid()) + chr(10)); "
+              "[time.sleep(0.02) for _ in iter(lambda: len(open(sys.argv[2]).read().split()) < 2, False)]")
     if how == "ignores-signals":         # only the cancel bound's SIGKILL ends this tier
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    if how == "thread":                  # the interrupt lands in the main thread, not in the command's wait
+    if how == "completed":               # the command returns at once, leaving its child running
+        dockercmd.run([sys.executable, "-c", LEAVES] + rest, timeout=60)
+        time.sleep(60)
+    elif how == "thread":                # the interrupt lands in the main thread, not in the command's wait
         threading.Thread(target=dockercmd.run, args=(argv,), kwargs={"timeout": 60}, daemon=True).start()
         time.sleep(60)
     else:
@@ -244,10 +250,12 @@ def _gone(pid) -> bool:
         return True
 
 
-@pytest.mark.parametrize("how,cancel_wait", [("main", 10.0), ("thread", 10.0), ("ignores-signals", 0.5)])
+@pytest.mark.parametrize("how,cancel_wait", [("main", 10.0), ("thread", 10.0), ("ignores-signals", 0.5),
+                                             ("completed", 10.0)])
 def test_a_cancelled_tier_leaves_no_part_of_a_docker_command_running(tmp_path, how, cancel_wait):
     # main: the tier's own interrupt handling stops the command; thread: the tier exits with the command
-    # still running in another thread; ignores-signals: striim-test SIGKILLs the tier at the cancel bound.
+    # still running in another thread; ignores-signals: striim-test SIGKILLs the tier at the cancel bound;
+    # completed: the command has already returned, leaving its child running, when the tier is cancelled.
     live = CLI.parent / "live"
     (tmp_path / "tier.py").write_text(TIER_WITH_A_COMMAND)
     (tmp_path / "driver.py").write_text(TIER_DRIVER)
