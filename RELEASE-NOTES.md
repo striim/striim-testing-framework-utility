@@ -223,7 +223,9 @@ the last release; the release makes it that version's entry.
 - **Integration session and compose locks are machine-wide** (`<SLT_LOCK_DIR>/.int-session.lock`
   and `.int-compose.lock`, prefixed by `INT_STACK_PREFIX`). Two checkouts, or two `SLT_STATE_DIR`
   values, on one integration stack are now one stack: a second session is refused instead of
-  taking down the first one's containers.
+  taking down the first one's containers. Like the live tier's locks they are made writable by
+  every user on the machine, whatever the umask, so another user's session on the same stack waits
+  for them instead of failing on a permission error.
 
 **New**
 

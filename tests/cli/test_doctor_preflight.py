@@ -283,6 +283,20 @@ def test_a_held_integration_session_fails(monkeypatch, tmp_path):
     assert doctor.check_int_session({"INT_ALLOW_CONCURRENT_SESSIONS": "1"}) == []
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens any file")
+def test_an_integration_session_lock_this_user_cannot_open_fails_with_the_fix(monkeypatch, tmp_path):
+    # Another user's lock that an older version made without the shared file mode (0644): the run would
+    # stop on PermissionError, and doctor said nothing about it but a traceback.
+    from inttest import plugin as int_plugin
+    path = tmp_path / ".int-session.lock"
+    path.write_text("")
+    path.chmod(0o444)
+    monkeypatch.setattr(int_plugin, "_session_lock_path", lambda: path)
+    c, = doctor.check_int_session({})
+    assert c.status == doctor.FAIL and c.code == INFRA
+    assert str(path) in c.message and "chmod 666" in c.message
+
+
 # --- lock dir ----------------------------------------------------------------------------------
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root writes anywhere")

@@ -836,14 +836,17 @@ def check_int_session(env: dict) -> list:
     from filelock import FileLock, Timeout
 
     from inttest import plugin as int_plugin
+    from livetest import lockdir
     if _switch("INT_ALLOW_CONCURRENT_SESSIONS", env):
         return []
     path = int_plugin._session_lock_path()
     if not path.exists():
         return [_ok("integration session", "no other integration session")]
-    lock = FileLock(str(path), timeout=0)
+    lock = FileLock(str(path), timeout=0, mode=lockdir.file_mode())
     try:
         lock.acquire()
+    except PermissionError as e:
+        return [_fail("integration session", lockdir.unopenable_lock_message(path, e), INFRA)]
     except Timeout:
         return [_fail("integration session", f"another integration session holds {path}; the run is "
                                              f"refused until it finishes", INFRA)]

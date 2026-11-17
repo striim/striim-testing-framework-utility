@@ -458,9 +458,12 @@ def _acquire_session_lock(config) -> None:
         return                      # a worker shares the controller's session
     if paths_mod.flag("INT_ALLOW_CONCURRENT_SESSIONS"):
         return
-    lock = FileLock(str(_session_lock_path()), timeout=0)
+    from livetest import lockdir
+    lock = FileLock(str(_session_lock_path()), timeout=0, mode=lockdir.file_mode())
     try:
         lock.acquire()
+    except PermissionError as e:
+        raise pytest.UsageError(lockdir.unopenable_lock_message(_session_lock_path(), e)) from None
     except Timeout:
         raise pytest.UsageError(
             f"another integration-test session is already running against this stack's services "
@@ -519,8 +522,8 @@ def _compose_filelock() -> FileLock:
     """The compose lock, waited for at most ``dockercmd.LOCK_WAIT_S``: the holder's `down`, `up` and post-up
     are each bounded, so a waiter outlives any holder still making progress, and a hung holder no longer hangs
     every other worker forever."""
-    from livetest import dockercmd
-    return FileLock(str(_compose_lock_path()), timeout=dockercmd.LOCK_WAIT_S)
+    from livetest import dockercmd, lockdir
+    return FileLock(str(_compose_lock_path()), timeout=dockercmd.LOCK_WAIT_S, mode=lockdir.file_mode())
 
 
 def _ensure_up(name: str, lock: FileLock) -> bool:
