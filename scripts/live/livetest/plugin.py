@@ -1593,9 +1593,9 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
     (``CLEANUP_DEADLINE_S``). A call that outlives its bound is recorded as failed, and the calls on other
     admins go on. It is not left running past the case: a later call on the same admin is deferred until
     the other calls are done and then waits for it (one admin's client is never used from two threads),
-    and the teardown waits for it before returning, both while the deadline lasts. In a serial run a drop targets fixed table names, so a drop
-    that ran on would drop what the next case's `ddl` had just created. Once the deadline has passed, the
-    calls left are recorded as not attempted, and a call still running is listed under "running": the
+    and the teardown waits for it before returning, both while the deadline lasts, so the case keeps its
+    in-use lock, and its database connections, until its deletes have ended. Once the deadline has passed,
+    the calls left are recorded as not attempted, and a call still running is listed under "running": the
     caller stops the run (``stop_if_teardown_running``)."""
     out = {"attempted": [], "failed": {}, "running": []}
     deadline = _slt_lifecycle.Deadline(deadline_s)
@@ -1686,12 +1686,12 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
 
 def stop_if_teardown_running(session, name: str, outcome: dict) -> None:
     """Stop the run after this case when a delete of its teardown is still running (`teardown_unowned`'s
-    "running"): a drop left running could drop what the next case creates. The case itself has already
-    failed on it; this keeps the next one from starting."""
+    "running"): it would otherwise go on beside the next case, on the database or client that case uses.
+    The case itself has already failed on it; this keeps the next one from starting."""
     if outcome.get("running"):
         session.shouldfail = (f"{name}: a teardown delete is still running at the teardown deadline "
-                              f"({', '.join(outcome['running'])}); the run stops so that it cannot drop "
-                              f"what the next case creates")
+                              f"({', '.join(outcome['running'])}); the run stops so that it does not run "
+                              f"on beside the next case")
 
 
 def note_unowned_teardown(resources: dict, outcome: dict) -> dict:

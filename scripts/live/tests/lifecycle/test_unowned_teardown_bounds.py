@@ -104,10 +104,11 @@ def test_the_bounds_are_the_ledgers():
 
 
 # --- an abandoned delete never runs on into the next case (review item [4]) --------------------------
-# A call abandoned at its bound was left running in its daemon thread while the case ended. In a serial
-# run `drop_test_tables('')` targets the schema's fixed table names, so a drop that got its lock later
-# dropped the tables the next case's `ddl` had just created; a second delete on the same admin (a GCS
-# bucket or Kafka topic pair) also ran on that admin's client from two threads at once. The teardown now
+# A call abandoned at its bound was left running in its daemon thread while the case ended and the next
+# one started, and a second delete on the same admin (a GCS bucket or Kafka topic pair) ran on that
+# admin's client from two threads at once. (A live case's drop is by its own ${TID} prefix, a hash of
+# run, worker and case, so it cannot drop another case's tables; it still held its connection and locks
+# into the next case.) The teardown now
 # waits for an abandoned call while its deadline lasts, before the case ends and before the next call on
 # the same admin starts; one still running at the deadline is reported as running, and the run stops.
 
