@@ -822,6 +822,22 @@ def test_exclusive_refuses_leftover_containers_naming_stop_command():
     decl.release()                                        # the refused attempt released its lease
 
 
+@pytest.mark.parametrize("rc, stderr", [(1, "Cannot connect to the Docker daemon"),
+                                        (124, "`docker ps -a ...` did not finish within 60s and was stopped")],
+                         ids=["failed", "timed-out"])
+def test_exclusive_refuses_when_the_leftover_listing_fails(rc, stderr):
+    """A `docker ps` that fails or times out has listed nothing: it is a refusal, never "no leftover stack"."""
+    def docker(argv):
+        return SimpleNamespace(stdout="", stderr=stderr, returncode=rc)
+
+    prefix = "x" + hashlib.sha256(b"r7").hexdigest()[:8]
+    with pytest.raises(infra.InfraOwnershipError) as ei:
+        infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r7"), run=docker)
+    assert prefix in str(ei.value) and f"exit status {rc}" in str(ei.value) and stderr in str(ei.value)
+    decl = infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r7"), run=_no_docker)
+    decl.release()                                        # the refused attempt left nothing held
+
+
 def test_exclusive_refuses_reachable_or_open_endpoint_before_provisioning(tmp_path):
     cfg = SimpleNamespace(_slt_infra=infra.Infra("exclusive", 9080, tmp_path))
     url = "http://localhost:9080"

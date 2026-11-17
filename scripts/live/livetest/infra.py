@@ -570,7 +570,14 @@ _EXCLUSIVE_NAME = re.compile(r"^(x[0-9a-f]{8})-slt-")
 
 
 def _leftover_containers(run, allocated: str) -> str:
+    """The allocated prefix's containers, as `docker ps` lists them. A listing that failed or timed out
+    (``dockercmd.TIMED_OUT``, empty stdout) has listed nothing, so it refuses rather than reading as none."""
     out = run(["docker", "ps", "-a", "--filter", f"name=^{allocated}-slt-", "-q"])
+    if out.returncode:
+        raise InfraOwnershipError(
+            f"{OWNERSHIP_ENV}=exclusive refused: the containers of the allocated prefix {allocated!r} could not "
+            f"be listed, so a leftover stack cannot be ruled out (`docker ps` exit status {out.returncode}: "
+            f"{(getattr(out, 'stderr', '') or '').strip() or 'no output'})")
     return (getattr(out, "stdout", "") or "").strip()
 
 
