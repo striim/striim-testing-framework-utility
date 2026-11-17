@@ -158,6 +158,34 @@ def test_cli_stop_refuses_once_with_the_whole_command_and_force_skips_the_check(
     assert calls == [("svc", {"force": True}), ("cluster", {"force": True})]
 
 
+def test_a_stop_checks_the_port_a_session_on_dotenvs_striim_url_declared(monkeypatch, other, tmp_path):
+    """STRIIM_URL set only in .env. A session declares with .env merged into its environment, so its marker is
+    on .env's port; a `stop` from a shell without STRIIM_URL must check that port too, not the default 9080."""
+    from livetest import paths
+    # The hermetic conftest blanks the .env layer; this test needs a real one, in tmp_path.
+    monkeypatch.setattr(paths, "dotenv_values", lambda env=None: paths.read_dotenv(paths.dotenv_path(env)))
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text("STRIIM_URL=http://localhost:19080\n")
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(root))
+    session = infra.declare({**paths.effective_env(os.environ), **SHARED}, run=lambda argv: NS(stdout="", returncode=0))
+    try:
+        assert session.port == 19080
+        marker = infra._shared_dir(infra._lock_dir(), 19080) / str(other)    # another session on that stack
+        marker.write_text(json.dumps({"pid": other, "runId": "", "started": psutil.Process(other).create_time()}))
+        downs, logs = _fake_service_down(monkeypatch), _logs(monkeypatch)
+        assert preflight.teardown_services(["postgres"], dict(os.environ)) == 2
+        assert downs == []                                     # no `down -v` under the running session
+        assert "19080" in logs[-1] and str(other) in logs[-1]
+        monkeypatch.setattr(cli, "all_services", lambda: ["postgres"])
+        monkeypatch.setattr(cli, "known_test_ids", set)
+        assert cli.cmd_down(["postgres"]) == 2                 # the CLI's own, un-merged os.environ
+        assert downs == [] and "19080" in logs[-1] and "stop postgres --force" in logs[-1]
+        marker.unlink()
+    finally:
+        session.release()
+
+
 def test_cli_stop_accepts_force(monkeypatch):
     from livetest import project
     seen = {}

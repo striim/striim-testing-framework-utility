@@ -73,15 +73,15 @@ def _lock_dir() -> Path:
 
 def striim_endpoint(env) -> tuple[str, str, int]:
     """(url, host, port) of the Striim endpoint, resolved exactly as ``plugin._resolve_striim``
-    resolves it."""
-    url = (env.get("STRIIM_URL") or "").strip()
+    resolves it: ``env`` first, then the .env layers. A session has .env merged into its environment
+    by then; `livetest.cli` and the pre-flight entry point do not, and a stop that read ``env`` alone
+    would check another port's sessions than the one a session on .env's STRIIM_URL declared on."""
+    url = (paths.setting("STRIIM_URL", env) or "").strip()
+    svc_host = (paths.setting("SLT_SERVICES_HOST", env) or "").strip()
     if not url:
-        svc_host = (env.get("SLT_SERVICES_HOST") or "").strip() or "localhost"
-        url = f"http://{svc_host}:9080"
-    else:
-        svc_host = (env.get("SLT_SERVICES_HOST") or "").strip()
-        if svc_host and "localhost" in url:
-            url = url.replace("localhost", svc_host)
+        url = f"http://{svc_host or 'localhost'}:9080"
+    elif svc_host and "localhost" in url:
+        url = url.replace("localhost", svc_host)
     parsed = urlparse(url if "://" in url else "http://" + url)
     return url, parsed.hostname or "localhost", parsed.port or 9080
 
