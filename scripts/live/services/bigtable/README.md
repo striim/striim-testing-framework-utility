@@ -4,7 +4,7 @@ Using this service in a test (tokens, routes, using your own instance): [docs/SE
 
 **Setup and assertions.** The service, the framework's `BigtableAdmin`, `setup: bigtable:` and
 `assert: bigtable:` (each spec is `{table, expected}`, the table read whole and compared; see
-docs/TEST-YAML.md). Not supported yet: a BigtableWriter or reader case, real Bigtable, and change
+docs/TEST-YAML.md). Not supported yet: a BigtableApiWriter or reader case, real Bigtable, and change
 streams (the emulator crashes on them, on both architectures). Development runs natively on arm64; the x86 build
 runs with `DOCKER_DEFAULT_PLATFORM=linux/amd64` (emulated on arm64).
 
