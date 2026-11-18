@@ -17,7 +17,7 @@ from inttest.plugin import IntYamlItem
 BASE = """
 name: bigtable-setup-case
 op:
-  jar: java/OpenProcessors/BigtableWriter
+  jar: java/OpenProcessors/BigtableApiWriter
 requires: [bigtable]
 assert:
   smoke: true

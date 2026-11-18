@@ -1147,7 +1147,7 @@ def test_gcs_prune_prefix_needs_gcs_in_requires(tmp_path):
 
 BIGTABLE_SETUP_YAML = """name: bigtable-perf-setup
 op:
-  jar: java/OpenProcessors/BigtableWriter
+  jar: java/OpenProcessors/BigtableApiWriter
 requires: [bigtable]
 properties:
   ConnectionURL: 'jdbc:bigtable:/projects/p/instances/i'
