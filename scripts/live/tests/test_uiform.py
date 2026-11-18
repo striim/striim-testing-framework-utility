@@ -1,7 +1,7 @@
 import pytest
 
 from livetest import uiform
-from livetest.uiform import PLACEHOLDER, UiFormError, split, ui_object, ui_properties
+from livetest.uiform import PLACEHOLDER, UiFormError, form_diff, split, ui_object, ui_properties
 
 TEMPLATE = {"propertyMap": [
     {"name": "Url", "type": "java.lang.String", "required": True},
@@ -201,3 +201,28 @@ def test_a_template_load_without_a_list_says_so(reply):
     rmi = _rmi({}, reply)
     with pytest.raises(UiFormError, match="getEntitiesByTypes returned no PROPERTYTEMPLATE list"):
         rmi.template("Global.PROPERTYTEMPLATE.X")
+
+
+def test_form_diff_reads_absent_null_and_empty_as_one_empty_value():
+    # 5.4.2 / 5.4.4.0 Flow Designer: null for an empty property that replay leaves out
+    # (TableMappingOp) or models as '' (ReferenceOp MultiQuery, a conditionally required field).
+    assert form_diff({"ConfigFile": "c.json"}, {"ConfigFile": "c.json", "Extra": None}) == []
+    assert form_diff({"MultiQuery": "", "Query": ""}, {"MultiQuery": None}) == []
+
+
+def test_form_diff_names_a_real_difference():
+    assert form_diff({"A": "x", "B": "1", "C": ""}, {"A": "y", "C": "z", "D": None}) == ["A", "B", "C"]
+    assert form_diff({"Flag": False}, {"Flag": None}) == ["Flag"]
+
+
+def test_form_diff_reads_an_encrypted_false_flag_beside_an_empty_secret_as_empty():
+    # 5.4.2 Flow Designer, FileWriter: DataEncryptionKeyPassphrase unset, the save adds its flag.
+    assert form_diff({"FileName": "f"}, {"FileName": "f", "DataEncryptionKeyPassphrase_encrypted": False}) == []
+    assert form_diff({}, {"DataEncryptionKeyPassphrase": None, "DataEncryptionKeyPassphrase_encrypted": False}) == []
+
+
+def test_form_diff_names_an_encrypted_flag_that_carries_meaning():
+    # Beside a secret with a value, or set true, or when replay has a flag of its own: compared as is.
+    assert form_diff({"P": "x"}, {"P": "x", "P_encrypted": False}) == ["P_encrypted"]
+    assert form_diff({}, {"P_encrypted": True}) == ["P_encrypted"]
+    assert form_diff({"P_encrypted": True}, {"P_encrypted": False}) == ["P_encrypted"]
