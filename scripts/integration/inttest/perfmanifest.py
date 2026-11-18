@@ -34,12 +34,13 @@ from pathlib import Path
 
 import yaml
 
+from . import bigtablespec
 from . import manifest as manifest_mod
 
 # Every key inttest.manifest.load_manifest accepts EXCEPT `assert:` (replaced by
 # `performance:`, added separately below).
 _TEST_MANIFEST_KEYS = {
-    "name", "op", "properties", "purpose", "requires", "ddl", "seed", "timeout",
+    "name", "op", "properties", "purpose", "requires", "ddl", "seed", "setup", "timeout",
     "disabled", "types", "password_properties", "udf", "source", "target",
     # §85.1's first axis: the perf tier ran on PostgreSQL alone, so it could not rank a
     # change whose cost is engine-specific -- MERGE against ON CONFLICT, range locks
@@ -488,6 +489,19 @@ def load_perf_manifest(path) -> PerfManifest:
                 f"'properties:', and a UDF is a bare static function with none -- every "
                 f"permutation would be identical.")
 
+        try:
+            bigtable_setup = bigtablespec.normalize_setup(raw.get("setup"), path)
+        except bigtablespec.BigtableSpecError as e:
+            raise PerfManifestError(str(e)) from None
+        if bigtable_setup and "bigtable" not in manifest_mod._normalize_requires(raw.get("requires"), path):
+            raise PerfManifestError(
+                f"{path}: 'setup.bigtable' needs 'requires: [bigtable]' -- the emulator is only started for a test "
+                f"that requires it")
+        if bigtable_setup and variants:
+            raise PerfManifestError(
+                f"{path}: 'setup.bigtable' is not supported with 'variants:' yet -- the table would be created once "
+                f"for the whole case, not per engine")
+
         test_manifest = manifest_mod.TestManifest(
             name=_normalize_name(raw.get("name"), path),
             op=op,
@@ -512,6 +526,7 @@ def load_perf_manifest(path) -> PerfManifest:
             if raw.get("target") is not None else None,
             variants=variants,
             matrix=matrix,
+            bigtable_setup=bigtable_setup,
         )
     except manifest_mod.ManifestError as e:
         raise PerfManifestError(str(e)) from e

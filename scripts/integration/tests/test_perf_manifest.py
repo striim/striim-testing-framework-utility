@@ -1143,3 +1143,35 @@ def test_gcs_prune_prefix_needs_gcs_in_requires(tmp_path):
     manifest_path, _ = _write(tmp_path, _REQUIRED_PREFIX + _PERF_BLOCK + "  gcs_prune_prefix: 'x/'\n")
     with pytest.raises(PerfManifestError, match="needs 'gcs'"):
         load_perf_manifest(manifest_path)
+
+
+BIGTABLE_SETUP_YAML = """name: bigtable-perf-setup
+op:
+  jar: java/OpenProcessors/BigtableWriter
+requires: [bigtable]
+properties:
+  ConnectionURL: 'jdbc:bigtable:/projects/p/instances/i'
+setup:
+  bigtable:
+    - table: ${TID}perf
+      families: {cf: null}
+performance:
+  input: performance/customers.json
+  run_sizes: [1000]
+  correctness:
+    mode: disabled
+"""
+
+
+def test_setup_bigtable_is_parsed(tmp_path):
+    manifest_path, _ = _write(tmp_path, BIGTABLE_SETUP_YAML)
+    m = load_perf_manifest(manifest_path)
+    assert len(m.test_manifest.bigtable_setup) == 1
+    assert m.test_manifest.bigtable_setup[0].table == "${TID}perf"
+
+
+def test_setup_bigtable_needs_requires_bigtable(tmp_path):
+    text = BIGTABLE_SETUP_YAML.replace("requires: [bigtable]\n", "")
+    manifest_path, _ = _write(tmp_path, text)
+    with pytest.raises(PerfManifestError, match="requires: \\[bigtable\\]"):
+        load_perf_manifest(manifest_path)

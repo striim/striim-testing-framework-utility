@@ -282,6 +282,10 @@ def _reset_once(manifest, tokens: dict, gcs_prune_prefix: str | None = None) -> 
         dbroutes_mod.run_sql_file(spec.db, spec.path, tokens)
     for spec in manifest.seed:
         dbroutes_mod.run_sql_file(spec.db, spec.path, tokens)
+    # A Bigtable table is (re)created on each reset: setup_bigtable drops it first, then seeds it.
+    for spec in manifest.bigtable_setup:
+        dbroutes_mod.setup_bigtable(tokens_mod.render(spec.table, tokens), spec.families, gc_rules=spec.gc_rules,
+                                    seed=spec.seed, route=spec.db, tokens=tokens)
 
     return tokens
 
