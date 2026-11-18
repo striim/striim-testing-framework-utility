@@ -772,6 +772,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
         # the FIRST line and frames after it, so a tail slice shows twelve `at ...` lines and hides
         # the one sentence that says what went wrong. Learned by printing the tail first.
         detail = "\n    ".join(lines[:15]) if lines else "(the subprocess wrote nothing to stderr)"
+        # The CAUSE, too: a wrapper such as "X.receive threw" puts the real exception on a `Caused by:` line
+        # after the frames, past the head. Without it the message names the wrapper and not the failure.
+        causes = [ln.strip() for ln in lines if ln.strip().startswith("Caused by:")]
+        if causes:
+            detail += "\n    " + "\n    ".join(causes[:5])
         return CorrectnessOutcome(
             False, f"operator subprocess exited {returncode}:\n    {detail}",
             mode=correctness_mode)
