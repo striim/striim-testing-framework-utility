@@ -105,6 +105,8 @@ def test_no_card_costs_at_most_the_wait():
 NAV_EXPANDED = "[data-testid=striim-navbar-expanded]:visible"
 NAV_TOGGLE = "[data-testid=toggle-navbar]:visible"
 NAV_ROOT = "#striim-navbar:visible"
+LEFT_PANEL = "[data-test-id=left-panel]:visible"
+LEFT_PANEL_CLOSE = "[data-test-id=left-panel] button[title=Close]:visible"
 SUBMIT = "[data-test-id=submit-btn]"
 RIGHT_SIDEBAR = ".right-sidebar:visible"
 SHOW_ADVANCED = "text=/show advanced settings/i >> visible=true"
@@ -158,6 +160,10 @@ class CanvasLocator:
             return 1 if p.has_navbar else 0
         if self.selector == NAV_ROOT:
             return 1 if p.has_navbar else 0
+        if self.selector == LEFT_PANEL:
+            return 1 if p.has_left_panel else 0
+        if self.selector == LEFT_PANEL_CLOSE:
+            return 1 if (p.has_left_panel and p.left_panel_open and p.left_panel_closable) else 0
         if self.selector == RIGHT_SIDEBAR:
             return 1 if p.editor_open else 0
         if self.selector in (SHOW_ADVANCED, VAL_ERROR, REQ_ERROR):
@@ -183,6 +189,10 @@ class CanvasLocator:
         if self.selector == NAV_ROOT and p.has_navbar:
             w = 240.0 if p.navbar_expanded else 64.0
             return {"x": 0.0, "y": 0.0, "width": w, "height": float(p.viewport_size["height"])}
+        if self.selector == LEFT_PANEL and p.has_left_panel:
+            nav_w = (240.0 if p.navbar_expanded else 64.0) if p.has_navbar else 0.0
+            panel_w = 280.0 if p.left_panel_open else 72.0
+            return {"x": nav_w, "y": 48.0, "width": panel_w, "height": float(p.viewport_size["height"]) - 48.0}
         name = self._node_name()
         if name is not None and name in p.nodes:
             n = p.nodes[name]
@@ -215,6 +225,9 @@ class CanvasPage:
         frames,
         navbar_expanded=False,
         has_navbar=True,
+        has_left_panel=False,
+        left_panel_open=False,
+        left_panel_closable=True,
         viewport=(1600, 1000),
         pan_on_wheel=True,
         scrollable_container=False,
@@ -224,6 +237,9 @@ class CanvasPage:
         self.frames = frames
         self.navbar_expanded = navbar_expanded
         self.has_navbar = has_navbar
+        self.has_left_panel = has_left_panel
+        self.left_panel_open = left_panel_open
+        self.left_panel_closable = left_panel_closable
         self.viewport_size = {"width": viewport[0], "height": viewport[1]}
         self.pan_on_wheel = pan_on_wheel
         self.scrollable_container = scrollable_container
@@ -246,8 +262,9 @@ class CanvasPage:
             def wheel(self, dx, dy):
                 page.calls.append(("wheel", dx, dy))
                 nav_w = (240.0 if page.navbar_expanded else 64.0) if page.has_navbar else 0.0
-                # Only wheel events over the open canvas (not over the navbar) pan ReactFlow.
-                if page.pan_on_wheel and page.mouse_pos[0] >= nav_w:
+                left_w = nav_w + ((280.0 if page.left_panel_open else 72.0) if page.has_left_panel else 0.0)
+                # Only wheel events over the open canvas (not over the navbar or left panel) pan ReactFlow.
+                if page.pan_on_wheel and page.mouse_pos[0] >= left_w:
                     page.pan_x -= dx * 0.5
                     page.pan_y -= dy * 0.5
                     if page.tooltip_on_pan:
@@ -274,6 +291,9 @@ class CanvasPage:
         self.calls.append(("click", selector))
         if selector == NAV_TOGGLE:
             self.navbar_expanded = not self.navbar_expanded
+            return
+        if selector == LEFT_PANEL_CLOSE:
+            self.left_panel_open = False
             return
         if selector == CLOSE:
             self.card = 0
@@ -308,8 +328,11 @@ class CanvasPage:
             if x < 0 or x + n["width"] > vw or y < 0 or y + n["height"] > vh:
                 raise TimeoutError(f"Page.click: element is outside of the viewport ({x}, {y})")
             nav_w = (240.0 if self.navbar_expanded else 64.0) if self.has_navbar else 0.0
+            left_w = nav_w + ((280.0 if self.left_panel_open else 72.0) if self.has_left_panel else 0.0)
             if cx < nav_w:
                 raise TimeoutError(f"Page.click: <div id='striim-navbar'> subtree intercepts pointer events at x={cx}")
+            if cx < left_w:
+                raise TimeoutError(f"Page.click: <div data-test-id='left-panel'> subtree intercepts pointer events at x={cx}")
             if self.tooltips:
                 raise TimeoutError("Page.click: tooltip intercepts pointer events")
             self.editor_open = True
@@ -400,3 +423,40 @@ def test_focus_node_stops_when_wheel_cannot_move_and_falls_back_to_scroll():
     assert len(wheel_calls) == 1
     assert ("scroll_into_view", "[data-test-id=node_container_ScrollNode]") in page.calls
     assert ("click", "[data-test-id=node_container_ScrollNode]") in page.calls
+
+
+def test_save_one_closes_left_panel_and_pans_clear_of_it():
+    # TrailSource in a 10-node app sits at x=190 (clear of collapsed 64px navbar, but inside
+    # the 280px open left-panel drawer). Closing the drawer leaves only the 72px category strip
+    # (right edge 136px), and panning clears even a node overlapping that strip.
+    frames = []
+    page = CanvasPage(
+        nodes={"TrailSource": {"x": 190.0, "y": 300.0, "width": 120.0, "height": 48.0}},
+        frames=frames,
+        navbar_expanded=True,
+        has_left_panel=True,
+        left_panel_open=True,
+    )
+    got, touched = uibrowser._save_one(page, frames, "TrailSource")
+    assert not page.navbar_expanded
+    assert not page.left_panel_open
+    assert ("click", LEFT_PANEL_CLOSE) in page.calls
+    assert ("click", "[data-test-id=node_container_TrailSource]") in page.calls
+    assert touched == "ConnectionUrl"
+    assert got["adapter"]["properties"]["ConnectionUrl"] == "jdbc:oracle:thin:@h:1521/db"
+
+
+def test_save_one_pans_clear_of_unclosable_left_panel():
+    # Even if left-panel has no Close button, _canvas_bounds accounts for its width and pans clear.
+    frames = []
+    page = CanvasPage(
+        nodes={"LeftNode": {"x": 110.0, "y": 300.0, "width": 120.0, "height": 48.0}},
+        frames=frames,
+        navbar_expanded=False,
+        has_left_panel=True,
+        left_panel_open=True,
+        left_panel_closable=False,
+    )
+    uibrowser._save_one(page, frames, "LeftNode")
+    assert any(c[0] == "wheel" for c in page.calls)
+    assert ("click", "[data-test-id=node_container_LeftNode]") in page.calls

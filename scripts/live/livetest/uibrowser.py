@@ -60,12 +60,16 @@ def _clear_popups(page) -> None:
 
 
 def _collapse_navbar(page) -> None:
-    """Collapse the fixed left navbar so it cannot intercept clicks on leftmost canvas nodes."""
+    """Collapse the fixed left navbar and component palette drawer so they do not cover canvas nodes."""
     if page.locator("[data-testid=striim-navbar-expanded]:visible").count():
         toggle = page.locator("[data-testid=toggle-navbar]:visible")
         if toggle.count():
             toggle.first.click(timeout=5000)
             page.wait_for_timeout(400)
+    panel_close = page.locator("[data-test-id=left-panel] button[title=Close]:visible")
+    if panel_close.count():
+        panel_close.first.click(timeout=5000)
+        page.wait_for_timeout(400)
 
 
 def _canvas_bounds(page) -> tuple[float, float, float, float] | None:
@@ -75,11 +79,12 @@ def _canvas_bounds(page) -> tuple[float, float, float, float] | None:
         return None
     vw, vh = float(viewport["width"]), float(viewport["height"])
     left = 0.0
-    nav = page.locator("#striim-navbar:visible")
-    if nav.count():
-        nav_box = nav.first.bounding_box(timeout=5000)
-        if nav_box:
-            left = max(left, nav_box["x"] + nav_box["width"])
+    for selector in ("#striim-navbar:visible", "[data-test-id=left-panel]:visible"):
+        panel = page.locator(selector)
+        if panel.count():
+            panel_box = panel.first.bounding_box(timeout=5000)
+            if panel_box:
+                left = max(left, panel_box["x"] + panel_box["width"])
     min_x, max_x = left + 24.0, vw - 24.0
     min_y, max_y = 80.0, vh - 80.0
     if max_x <= min_x:
