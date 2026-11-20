@@ -66,7 +66,9 @@ def _collapse_navbar(page) -> None:
         if toggle.count():
             toggle.first.click(timeout=5000)
             page.wait_for_timeout(400)
-    panel_close = page.locator("[data-test-id=left-panel] button[title=Close]:visible")
+    # The drawer's close button carries data-testid=close-subcategory and no title (5.4.2 and
+    # 5.4.4.0 Flow Designer, leftSidebar CategoryContent); a release without the drawer has none.
+    panel_close = page.locator("[data-test-id=left-panel] [data-testid=close-subcategory]:visible")
     if panel_close.count():
         panel_close.first.click(timeout=5000)
         page.wait_for_timeout(400)
@@ -100,8 +102,16 @@ def _in_bounds(box: dict, bounds: tuple[float, float, float, float]) -> bool:
             and box["y"] >= min_y and box["y"] + box["height"] <= max_y)
 
 
-def _focus_node(page, selector: str) -> bool:
-    """Pan the canvas so `selector` sits inside the unobstructed viewport; return True if panned."""
+def _on_screen(box: dict | None, viewport: dict) -> bool:
+    """True when any part of `box` lies inside the viewport, so a click can reach it."""
+    return bool(box) and (box["x"] + box["width"] > 0 and box["x"] < viewport["width"]
+                          and box["y"] + box["height"] > 0 and box["y"] < viewport["height"])
+
+
+def _focus_node(page, selector: str, name: str | None = None) -> bool:
+    """Pan the canvas so `selector` sits inside the unobstructed viewport; return True if panned.
+    Raises UiFormError naming the node when panning and the scroll fallback both leave it entirely
+    off screen, rather than letting the click time out without saying why."""
     bounds = _canvas_bounds(page)
     if bounds is None:
         return False
@@ -127,11 +137,15 @@ def _focus_node(page, selector: str) -> bool:
                 return True
             if abs(next_box["x"] - box["x"]) < 1.0 and abs(next_box["y"] - box["y"]) < 1.0:
                 node.scroll_into_view_if_needed(timeout=5000)
-                return True
+                box = node.bounding_box(timeout=5000)
+                break
             box = next_box
     finally:
         if panned:
             page.mouse.move(0, 0)
+    if box and not _on_screen(box, page.viewport_size):
+        raise UiFormError(f"{name or selector}: could not be brought into view "
+                          f"(node box {box}, clickable area {bounds})")
     return panned
 
 
@@ -141,7 +155,7 @@ def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
     _collapse_navbar(page)
     _clear_popups(page)
     selector = f"[data-test-id=node_container_{name}]"
-    if _focus_node(page, selector):
+    if _focus_node(page, selector, name):
         _clear_popups(page)
     page.click(selector)
     page.wait_for_selector("[data-test-id=submit-btn]", timeout=TIMEOUT_MS)

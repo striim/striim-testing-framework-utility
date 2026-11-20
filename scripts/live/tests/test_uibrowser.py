@@ -1,4 +1,6 @@
 """uibrowser helpers against a fake Playwright page (no browser)."""
+import pytest
+
 from livetest import uibrowser
 
 CLOSE = "[data-test-id=insights-close-btn]:visible"
@@ -106,7 +108,7 @@ NAV_EXPANDED = "[data-testid=striim-navbar-expanded]:visible"
 NAV_TOGGLE = "[data-testid=toggle-navbar]:visible"
 NAV_ROOT = "#striim-navbar:visible"
 LEFT_PANEL = "[data-test-id=left-panel]:visible"
-LEFT_PANEL_CLOSE = "[data-test-id=left-panel] button[title=Close]:visible"
+LEFT_PANEL_CLOSE = "[data-test-id=left-panel] [data-testid=close-subcategory]:visible"
 SUBMIT = "[data-test-id=submit-btn]"
 RIGHT_SIDEBAR = ".right-sidebar:visible"
 SHOW_ADVANCED = "text=/show advanced settings/i >> visible=true"
@@ -460,3 +462,27 @@ def test_save_one_pans_clear_of_unclosable_left_panel():
     uibrowser._save_one(page, frames, "LeftNode")
     assert any(c[0] == "wheel" for c in page.calls)
     assert ("click", "[data-test-id=node_container_LeftNode]") in page.calls
+
+
+def test_focus_node_names_a_node_it_cannot_bring_into_view():
+    # Twelve wheel steps cannot reach a node 50,000 px away: fail naming it, not a click timeout.
+    frames = []
+    page = CanvasPage(
+        nodes={"FarAway": {"x": 50000.0, "y": 300.0, "width": 120.0, "height": 48.0}},
+        frames=frames,
+    )
+    with pytest.raises(uibrowser.UiFormError, match="FarAway: could not be brought into view"):
+        uibrowser._save_one(page, frames, "FarAway")
+    assert not any(c == ("click", "[data-test-id=node_container_FarAway]") for c in page.calls)
+
+
+def test_focus_node_names_a_node_neither_wheel_nor_scroll_can_move():
+    frames = []
+    page = CanvasPage(
+        nodes={"Stuck": {"x": 2400.0, "y": 300.0, "width": 120.0, "height": 48.0}},
+        frames=frames,
+        pan_on_wheel=False,
+        scrollable_container=False,
+    )
+    with pytest.raises(uibrowser.UiFormError, match="Stuck: could not be brought into view"):
+        uibrowser._save_one(page, frames, "Stuck")
