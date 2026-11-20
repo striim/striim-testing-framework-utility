@@ -12,6 +12,7 @@ tmp_path and calls load_perf_manifest() directly.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1142,4 +1143,68 @@ def test_gcs_prune_prefix_must_be_a_non_empty_prefix(tmp_path, value):
 def test_gcs_prune_prefix_needs_gcs_in_requires(tmp_path):
     manifest_path, _ = _write(tmp_path, _REQUIRED_PREFIX + _PERF_BLOCK + "  gcs_prune_prefix: 'x/'\n")
     with pytest.raises(PerfManifestError, match="needs 'gcs'"):
+        load_perf_manifest(manifest_path)
+
+
+BIGTABLE_SETUP_YAML = """name: bigtable-perf-setup
+op:
+  jar: java/OpenProcessors/BigtableApiWriter
+requires: [bigtable]
+properties:
+  ConnectionURL: 'jdbc:bigtable:/projects/p/instances/i'
+setup:
+  bigtable:
+    - table: ${TID}perf
+      families: {cf: null}
+performance:
+  input: performance/customers.json
+  run_sizes: [1000]
+  correctness:
+    mode: disabled
+"""
+
+
+def test_setup_bigtable_is_parsed(tmp_path):
+    manifest_path, _ = _write(tmp_path, BIGTABLE_SETUP_YAML)
+    m = load_perf_manifest(manifest_path)
+    assert len(m.test_manifest.bigtable_setup) == 1
+    assert m.test_manifest.bigtable_setup[0].table == "${TID}perf"
+
+
+def test_setup_bigtable_needs_requires_bigtable(tmp_path):
+    text = BIGTABLE_SETUP_YAML.replace("requires: [bigtable]\n", "")
+    manifest_path, _ = _write(tmp_path, text)
+    with pytest.raises(PerfManifestError, match="requires: \\[bigtable\\]"):
+        load_perf_manifest(manifest_path)
+
+
+def _perf_teardown_item(manifest, keep_flag=False):
+    config = SimpleNamespace(getoption=lambda name, default=None: keep_flag)
+    return SimpleNamespace(config=config, manifest=manifest, tokens={"TID": "t_"})
+
+
+@pytest.mark.parametrize("failed,keep_flag,drops", [(False, False, True), (True, False, False), (False, True, False)])
+def test_perf_teardown_drops_setup_bigtable_tables_of_a_passing_unkept_run(
+        tmp_path, monkeypatch, failed, keep_flag, drops):
+    # perf._reset_once re-creates the table before every iteration; teardown drops the last one.
+    from inttest import dbroutes
+    from inttest.plugin import PerfYamlItem
+
+    monkeypatch.delenv("INT_KEEP_RESOURCES", raising=False)
+    dropped = []
+    monkeypatch.setattr(dbroutes, "teardown_bigtable",
+                        lambda table, route="bigtable-target", tokens=None: dropped.append((route, table)))
+    manifest_path, _ = _write(tmp_path, BIGTABLE_SETUP_YAML)
+    m = load_perf_manifest(manifest_path).test_manifest
+    PerfYamlItem._teardown_db_isolation(_perf_teardown_item(m, keep_flag), failed)
+    assert (dropped == [("bigtable-target", "t_perf")]) is drops
+
+
+def test_setup_bigtable_is_refused_with_variants(tmp_path):
+    text = BIGTABLE_SETUP_YAML.replace("requires: [bigtable]\n", "requires: [bigtable, postgres, oracle]\n").replace(
+        "properties:\n  ConnectionURL: 'jdbc:bigtable:/projects/p/instances/i'\n",
+        "variants:\n  postgres:\n    db: postgres-target\n    tokens:\n      V_URL: '${POSTGRES_URL}'\n"
+        "  oracle:\n    db: oracle-target\n    tokens:\n      V_URL: '${ORACLE_URL}'\n")
+    manifest_path, _ = _write(tmp_path, text)
+    with pytest.raises(PerfManifestError, match="not supported with 'variants:'"):
         load_perf_manifest(manifest_path)

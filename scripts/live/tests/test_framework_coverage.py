@@ -59,7 +59,7 @@ EXEMPT = {
     "json": "JSON column assertions, needs the Spanner emulator",
     # --- Bigtable (setup and the bigtable tier) ---
     "setup": (
-        "a live example needs a Bigtable target app: the BigtableWriter (field, not on main). Until it "
+        "a live example needs a Bigtable target app: the BigtableApiWriter (field, not on main). Until it "
         "lands, the setup path is covered hermetically by tests/test_bigtable_setup_live.py and the "
         "integration tier by tests/test_bigtable_setup.py. Build the framework example with the writer"
     ),

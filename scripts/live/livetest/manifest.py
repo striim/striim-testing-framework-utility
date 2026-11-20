@@ -1530,9 +1530,9 @@ def load_manifest(path: Path) -> TestManifest:
                     raise ManifestError(
                         f"{path}: action[{i}] 'cycles' must be a positive integer, got {so_cycles!r}")
                 so_signal = action.get("signal", "KILL")
-                if so_signal not in ("KILL", "TERM", "RESTART"):
+                if so_signal not in ("KILL", "TERM", "RESTART", "PAUSE"):
                     raise ManifestError(
-                        f"{path}: action[{i}] 'signal' must be KILL, TERM or RESTART, "
+                        f"{path}: action[{i}] 'signal' must be KILL, TERM, RESTART or PAUSE, "
                         f"got {so_signal!r}")
                 if so_signal == "RESTART":
                     for so_key in ("down_for", "ready_timeout"):

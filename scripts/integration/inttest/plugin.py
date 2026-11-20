@@ -3122,6 +3122,17 @@ class PerfYamlItem(pytest.Item):
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
                 print(f"[integration] WARNING: failed to drop Spanner tables prefixed "
                       f"{self.tokens['TID']!r} for {m.name}: {e!r}")
+        if "bigtable" in m.requires and hasattr(self, "tokens"):
+            # perf._reset_once re-creates each `setup: bigtable:` table before every measured
+            # iteration, and nothing else drops the last iteration's: without this a passing run
+            # leaves it in the shared emulator. Same keep gate as above; a failure only warns.
+            for spec in getattr(m, "bigtable_setup", None) or []:
+                table = tokens_mod.render(spec.table, self.tokens)
+                try:
+                    dbroutes_mod.teardown_bigtable(table, route=spec.db, tokens=self.tokens)
+                except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
+                    print(f"[integration] WARNING: failed to drop bigtable table {table!r} on "
+                          f"{spec.db!r} for {m.name}: {e!r}")
 
 
 def pytest_collection_modifyitems(config, items):

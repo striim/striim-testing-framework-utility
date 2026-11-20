@@ -282,6 +282,10 @@ def _reset_once(manifest, tokens: dict, gcs_prune_prefix: str | None = None) -> 
         dbroutes_mod.run_sql_file(spec.db, spec.path, tokens)
     for spec in manifest.seed:
         dbroutes_mod.run_sql_file(spec.db, spec.path, tokens)
+    # A Bigtable table is (re)created on each reset: setup_bigtable drops it first, then seeds it.
+    for spec in manifest.bigtable_setup:
+        dbroutes_mod.setup_bigtable(tokens_mod.render(spec.table, tokens), spec.families, gc_rules=spec.gc_rules,
+                                    seed=spec.seed, route=spec.db, tokens=tokens)
 
     return tokens
 
@@ -568,7 +572,7 @@ def jvm_args(jvm) -> list[str]:
 
 def launch_and_measure(*, java_bin: str, harness_jar: Path, op_jar: Path, request: dict,
                         request_file: Path, result_file: Path, cwd: Path, jvm, timeout: int,
-                        sample: bool = True) -> dict:
+                        sample: bool = True, env: dict | None = None) -> dict:
     """Launches `java <jvm args> -cp harness_jar:op_jar
     com.striim.testing.inttest.PerformanceProcessor request_file` (PERF_SPEC.md §14
     "Operator subprocess"), `cwd` = `manifest.dir` (the perf `test.yaml`'s own
@@ -599,7 +603,7 @@ def launch_and_measure(*, java_bin: str, harness_jar: Path, op_jar: Path, reques
     classpath = os.pathsep.join([str(harness_jar), str(op_jar), *_extra_jars()])
     argv = [java_bin, *jvm_args(jvm), "-cp", classpath, "com.striim.testing.inttest.PerformanceProcessor", str(request_file)]
 
-    proc = subprocess.Popen(argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 
     samples: list = []
     stop = threading.Event()
@@ -768,6 +772,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
         # the FIRST line and frames after it, so a tail slice shows twelve `at ...` lines and hides
         # the one sentence that says what went wrong. Learned by printing the tail first.
         detail = "\n    ".join(lines[:15]) if lines else "(the subprocess wrote nothing to stderr)"
+        # The CAUSE, too: a wrapper such as "X.receive threw" puts the real exception on a `Caused by:` line
+        # after the frames, past the head. Without it the message names the wrapper and not the failure.
+        causes = [ln.strip() for ln in lines if ln.strip().startswith("Caused by:")]
+        if causes:
+            detail += "\n    " + "\n    ".join(causes[:5])
         return CorrectnessOutcome(
             False, f"operator subprocess exited {returncode}:\n    {detail}",
             mode=correctness_mode)
@@ -957,10 +966,17 @@ def run_measured_iteration(
             target=manifest.target,
         )
 
+        # A case that requires bigtable reaches the emulator only through BIGTABLE_EMULATOR_HOST, which the
+        # regression tier sets for its driver JVM (plugin._export_bigtable_emulator). The perf JVM is a
+        # separate process, so it gets the same variable here, from the run's own tokens.
+        proc_env = None
+        if "bigtable" in (manifest.requires or []):
+            proc_env = dict(os.environ)
+            proc_env["BIGTABLE_EMULATOR_HOST"] = f"{updated_tokens['BIGTABLE_HOST']}:{updated_tokens['BIGTABLE_GRPC_PORT']}"
         launch = launch_and_measure(
             java_bin=java_bin, harness_jar=harness_jar, op_jar=op_jar, request=request,
             request_file=request_file, result_file=result_file, cwd=manifest.dir,
-            jvm=performance.jvm, timeout=performance.timeout, sample=capture_metrics,
+            jvm=performance.jvm, timeout=performance.timeout, sample=capture_metrics, env=proc_env,
         )
     finally:
         # launch_and_measure has already parsed result_file into memory (launch["result"])

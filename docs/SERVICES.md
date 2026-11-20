@@ -434,7 +434,7 @@ framework's `BigtableAdmin` table and row helpers. Development runs natively on 
   (`query:` names the table; see INTEGRATION-TESTS.md). Live tier: `assert: bigtable:` (each spec
   `{table, expected}`; see TEST-YAML.md). Both tiers: `setup: bigtable:` creates a table
   (families, GC rules, seed) before the case's DDL; not for `variants:` yet. Not supported yet:
-  a BigtableWriter or reader case, real Bigtable
+  a BigtableApiWriter or reader case, real Bigtable
   (`BigtableAdmin` refuses credentials and Google API endpoints), and change streams (the emulator
   crashes on them, on both architectures).
 

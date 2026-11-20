@@ -105,6 +105,11 @@ def _running(container: str, run=None) -> bool:
     return (getattr(r, "stdout", "") or "").strip() != "false"
 
 
+def _paused(container: str, run=None) -> bool:
+    r = _sh(["docker", "container", "inspect", "-f", "{{.State.Paused}}", container], run=run)
+    return (getattr(r, "stdout", "") or "").strip() == "true"
+
+
 def _goes_down(container: str, within: float, poll: float, run=None) -> bool:
     deadline = time.monotonic() + within
     while _running(container, run):
@@ -139,6 +144,9 @@ def interrupt(container: str, signal: str, run=None, verify_timeout: float = 30.
         verify_timeout = graceful[1]
     elif signal == "TERM":
         argv = ["docker", "stop", container]
+    elif signal == "PAUSE":
+        # docker pause freezes every process in the container and keeps its state (no shutdown, no loss).
+        argv = ["docker", "pause", container]
     else:
         raise OutageError(f"unknown signal {signal!r}")
     _say(report, f"service_outage: {' '.join(argv[1:])}")
@@ -153,6 +161,11 @@ def interrupt(container: str, signal: str, run=None, verify_timeout: float = 30.
             not exec_ or not _goes_down(container, EXEC_EXIT_GRACE, poll, run)):
         raise OutageError(f"{argv[1]} {container} failed: "
                           f"{(getattr(r, 'stderr', '') or '').strip()!r}")
+    if signal == "PAUSE":
+        # A paused container is still "running": confirm it is paused, not that it stopped.
+        if not _paused(container, run):
+            raise OutageError(f"{container} is not paused after docker pause")
+        return
     t0 = time.monotonic()
     deadline = t0 + verify_timeout
     while True:
@@ -220,12 +233,13 @@ def restart_in_place(container: str, hook: tuple[str, float], run=None, poll: fl
 
 
 def restore(container: str, run=None, ready_timeout: float = 120.0, poll: float = 2.0,
-            report=None, progress=None) -> None:
-    """`docker start`, then wait for healthy (or running + 5 s with no healthcheck)."""
-    _say(report, f"service_outage: start {container}")
-    r = _sh(["docker", "start", container], run=run)
+            report=None, progress=None, paused: bool = False) -> None:
+    """`docker start` (`docker unpause` after a PAUSE), then wait for healthy (or running + 5 s with no healthcheck)."""
+    verb = "unpause" if paused else "start"
+    _say(report, f"service_outage: {verb} {container}")
+    r = _sh(["docker", verb, container], run=run)
     if getattr(r, "returncode", 1) != 0:
-        raise OutageError(f"docker start {container} failed: "
+        raise OutageError(f"docker {verb} {container} failed: "
                           f"{(getattr(r, 'stderr', '') or '').strip()!r}")
     t0 = time.monotonic()
     deadline = t0 + ready_timeout
@@ -246,7 +260,7 @@ def restore(container: str, run=None, ready_timeout: float = 120.0, poll: float 
             time.sleep(5.0)
             return
         if time.monotonic() >= deadline:
-            raise OutageError(f"{container} not ready {ready_timeout:.0f}s after docker start "
+            raise OutageError(f"{container} not ready {ready_timeout:.0f}s after docker {verb} "
                               f"(last status {last})")
         time.sleep(poll)
 
@@ -271,12 +285,17 @@ def cycle(container: str, signal: str, down_for: float, ready_timeout: float, wa
         wait(down_for)
         restoring = True
         restore(container, run=run, ready_timeout=ready_timeout, report=report,
-                progress=progress)
+                progress=progress,
+                paused=signal == "PAUSE")
     except BaseException as e:
         if not restoring:
             try:
-                restore(container, run=run, ready_timeout=ready_timeout, report=report,
-                        progress=progress)
+                # docker start is idempotent; docker unpause is not. After a PAUSE that failed,
+                # unpause only a paused container, start a stopped one, and leave a running one.
+                paused = signal == "PAUSE" and _paused(container, run)
+                if signal != "PAUSE" or paused or not _running(container, run):
+                    restore(container, run=run, ready_timeout=ready_timeout, report=report,
+                            progress=progress, paused=paused)
             except Exception as e2:
                 msg = f"service_outage: restore after the failure also failed: {e2}"
                 _say(report, msg)
