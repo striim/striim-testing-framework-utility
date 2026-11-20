@@ -168,8 +168,12 @@ def _source_record(jar: Path) -> Path:
     return jarinputs.record_path(jar)
 
 
-def _write_source_record(jar: Path, module_dir: Path) -> None:
-    jarinputs.write_record(jar, jarinputs.digests(module_dir, _sources(module_dir)))
+def _write_source_record(jar: Path, module_dir: Path, recorded: dict[str, str] | None = None) -> None:
+    # The record beside a jar built from module_dir: `recorded`, the digests build_jar took before Maven
+    # ran, or (None) the inputs' digests now, for a jar that is current with the tree.
+    if recorded is None:
+        recorded = jarinputs.digests(module_dir, _sources(module_dir))
+    jarinputs.write_record(jar, recorded)
 
 
 def _running_java_major(run=None) -> str | None:
@@ -597,5 +601,5 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         _assert_jar_java_version(jar, java_release, module_dir)
     except OpArtifactError as e:
         raise OpBuildFailed(str(e)) from None
-    jarinputs.write_record(jar, started_from)
+    _write_source_record(jar, module_dir, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")

@@ -355,8 +355,12 @@ def _source_record(jar: Path) -> Path:
     return jarinputs.record_path(jar)
 
 
-def _write_source_record(jar: Path, module_dir: Path) -> None:
-    jarinputs.write_record(jar, jarinputs.digests(module_dir, jarinputs.inputs(module_dir)))
+def _write_source_record(jar: Path, module_dir: Path, recorded: dict[str, str] | None = None) -> None:
+    # The record beside a jar built from module_dir: `recorded`, the digests build_jar took before Maven
+    # ran, or (None) the inputs' digests now, for a jar that is current with the tree.
+    if recorded is None:
+        recorded = jarinputs.digests(module_dir, jarinputs.inputs(module_dir))
+    jarinputs.write_record(jar, recorded)
 
 
 def _stale_trigger(jar: Path, module_dir: Path, srcs: list[Path] | None = None) -> Path | None:
@@ -849,7 +853,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             f"clean rebuild, but this run resolves to {fingerprint}. The build is not "
             f"producing the release it was asked for -- check that STRIIM_RELEASE reaches "
             f"the pom in {module_dir}.")
-    jarinputs.write_record(jar, started_from)
+    _write_source_record(jar, module_dir, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")
 
 def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = False) -> None:

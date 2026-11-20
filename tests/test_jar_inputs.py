@@ -361,3 +361,24 @@ def test_an_input_gone_between_the_walk_and_its_digest_is_a_change_not_a_crash(p
     assert engine._stale_trigger(project.jar, project.mod) is None     # the record holds what was read
     swap.write_text('back\n')
     assert _same(engine._stale_trigger(project.jar, project.mod), swap)  # and one that returns is a change
+
+
+@pytest.mark.parametrize('name', ENGINES)
+def test_build_jar_writes_its_record_through_the_helper_the_tests_use(project, monkeypatch, name):
+    # The record is written once, by _write_source_record, from the digests taken before Maven ran
+    # (review N7): a test that sets up a built jar with the helper sets it up as build_jar does.
+    engine = _engine(name)
+    _built(engine, project)
+    _edit(project.own)
+    before = engine.jarinputs.digests(project.mod, engine.jarinputs.inputs(project.mod))
+    written = []
+    real = engine._write_source_record
+    monkeypatch.setattr(engine, '_write_source_record',
+                        lambda jar, mod, recorded=None: written.append(recorded) or real(jar, mod, recorded))
+
+    def package(argv):
+        project.own.write_text('// v3: saved while Maven was packaging\n')
+
+    built, ran, reasons = _hermetic_build_jar(engine, project, monkeypatch, package)
+    assert built.origin == 'built'
+    assert written == [before]
