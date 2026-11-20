@@ -72,6 +72,27 @@ def ui_properties(stored: dict, template: dict) -> dict:
     return out
 
 
+def form_diff(want: dict, have: dict) -> list[str]:
+    """Keys whose value differs between the form replay expects and the one the UI sent.
+
+    An absent key, None and '' are one empty value. Measured on 5.4.2 and 5.4.4.0: the Flow Designer
+    sends null for an empty property that the 5.4.0.6C save left out or sent as '', and the server
+    stores an empty value as null either way. It also sends `<name>_encrypted: false` beside an empty
+    secret `<name>` (FileWriter DataEncryptionKeyPassphrase, 5.4.2); with `<name>` empty on both
+    sides and the flag absent from replay, that flag is empty too.
+    """
+    empty = (lambda v: "" if v is None else v)
+
+    def same(k: str) -> bool:
+        if empty(want.get(k)) == empty(have.get(k)):
+            return True
+        base = k[:-len("_encrypted")] if k.endswith("_encrypted") else ""
+        return (bool(base) and k not in want and have.get(k) is False
+                and empty(want.get(base)) == "" and empty(have.get(base)) == "")
+
+    return sorted(k for k in set(want) | set(have) if not same(k))
+
+
 def secret_names(template: dict) -> set:
     """Lower-cased names of the template's Password properties, whose values are never printed."""
     return {p["name"].lower() for p in template.get("propertyMap", [])

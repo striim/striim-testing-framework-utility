@@ -38,6 +38,7 @@ _TOKEN_TXNID = 54            # SystemTokenList.SystemTokenItems.TRANID, read as 
 _TOKEN_CSN = 76              # SystemTokenList.SystemTokenItems.CSN
 _ASCII_F = 0
 _ASCII_V = 64
+_DATETIME = 192
 _SINT64 = 134
 
 
@@ -59,10 +60,32 @@ def _encode_column(index: int, col: ColumnSpec, value) -> bytes:
         # the binary integer scaled by 10^-scale. Verified against rt000002's AUTH_AMOUNT
         # (0x0898 = 2200, scale 3 -> 2.200). Accepts int/float/str on the Python side.
         span = b"\x00\x00" + struct.pack(">q", round(float(value) * 10 ** col.scale))
+    elif col.gg_type == _DATETIME:
+        # ColumnDefinition.java DATETIME: [null-ind][ASCII date], decoded from pos+2, len-2 by
+        # ByteUtil.parseAsciiDateToDateS, which reads digits at fixed offsets: YYYY at 0, MM at
+        # 5, DD at 8, HH at 11, MI at 14, SS at 17, fraction from 20. GoldenGate writes Oracle
+        # DATE as "YYYY-MM-DD:HH:MI:SS". With no native type in the .def and the reader's
+        # default ReturnDateTimeAs (Joda) the value arrives as an org.joda.time.LocalDateTime.
+        span = b"\x00\x00" + _gg_datetime(value).encode("ascii")
     else:
-        raise NotImplementedError(f"column wire encoding for gg_type {col.gg_type} not yet supported "
-                                  "(DATETIME deferred -- see Evidence §D / out-of-scope)")
+        raise NotImplementedError(f"column wire encoding for gg_type {col.gg_type} not yet supported")
     return tlv.u16(index) + tlv.u16(len(span)) + span
+
+
+def _gg_datetime(value) -> str:
+    """A date/time as GoldenGate's ASCII DATETIME text: "YYYY-MM-DD:HH:MI:SS[.ffffff]".
+    Takes a datetime, a date, or a string "YYYY-MM-DD[ HH:MI:SS[.ffffff]]" (either separator)."""
+    if isinstance(value, datetime.datetime):
+        text = value.strftime("%Y-%m-%d:%H:%M:%S")
+        return text + (f".{value.microsecond:06d}" if value.microsecond else "")
+    if isinstance(value, datetime.date):
+        return value.strftime("%Y-%m-%d")
+    text = str(value)
+    if len(text) > 10 and text[10] in " T":
+        text = text[:10] + ":" + text[11:]
+    if len(text) not in (10, 19, 26) or text[4] != "-" or text[7] != "-" or (len(text) > 10 and text[10] != ":"):
+        raise ValueError(f"not a DATETIME value: {value!r} (want YYYY-MM-DD[ HH:MI:SS[.ffffff]])")
+    return text
 
 
 def _encode_columns(table: TableSchema, values: dict, keys_only: bool = False) -> bytes:
@@ -160,18 +183,36 @@ def write_delete(table: TableSchema, values: dict, txn_id: int, timestamp: datet
 
 def write_update(table: TableSchema, before: dict, after: dict,
                  txn_id: int, timestamp: datetime.datetime,
-                 txn_part: int = _TXN_PART_SOLE, txn_tokens: str | None = None) -> bytes:
+                 txn_part: int = _TXN_PART_SOLE, txn_tokens: str | None = None,
+                 before_image: bool = False) -> bytes:
     # An UPDATE that keeps the key: plain DBOP_UPDATE, after-image only (the reader fills the
     # key's before-image from the after-image). One that changes it: UPDATEPK, whose data chunk
     # starts with the before-image key, [u16 len counting itself][key columns]
     # (Operation.getColumns, the doBefore path).
+    #
+    # before_image=True writes what GoldenGate writes with GETUPDATEBEFORES: a 'B' record holding
+    # the before values, then the 'A' record. GGResultSet keeps reading after a 'B' UPDATE record
+    # (RecordUtil.isUpdateBeforeImage -> UPDATEBEFOREIMAGE_RECORD is not COMPLETE), so the reader
+    # sees both as one operation, and Operation.checkGetColumns reads the 'B' columns into the
+    # before values. The pair is returned as one body so a file roll cannot split it. Every
+    # column named in `before` is written, a None as a present NULL.
     keys = [c for c in table.columns if c.is_key]
     missing = [c.name for c in keys if c.name not in before]
     if before and missing:
         raise ValueError(f"{table.name}: the UPDATE's before-image lacks key column(s) {missing}: "
                          f"give every key column, or no before-image for an UPDATE that keeps its key")
     before_key = _encode_columns(table, before, keys_only=True)
-    if before and before_key != _encode_columns(table, after, keys_only=True):
+    key_changes = bool(before) and before_key != _encode_columns(table, after, keys_only=True)
+    if before_image:
+        if not before:
+            raise ValueError(f"{table.name}: before_image=True needs a before-image")
+        if key_changes:
+            raise NotImplementedError(f"{table.name}: before_image=True with a key change (UPDATEPK)")
+        return (_build_record(table, _DBOP_UPDATE, _BEFORE, before, txn_id, timestamp,
+                              txn_part=txn_part, txn_tokens=txn_tokens)
+                + _build_record(table, _DBOP_UPDATE, _AFTER, after, txn_id, timestamp,
+                                txn_part=txn_part, txn_tokens=txn_tokens))
+    if key_changes:
         prefix = tlv.u16(2 + len(before_key)) + before_key
         return _build_record(table, _DBOP_UPDATEPK, _AFTER, after, txn_id, timestamp,
                              txn_part=txn_part, prefix=prefix, txn_tokens=txn_tokens)
