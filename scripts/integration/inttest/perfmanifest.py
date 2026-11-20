@@ -33,6 +33,7 @@ from pathlib import Path
 
 import yaml
 
+from . import bigtablespec
 from . import manifest as manifest_mod
 
 # Every key inttest.manifest.load_manifest accepts EXCEPT `assert:` (replaced by
@@ -400,10 +401,6 @@ def load_perf_manifest(path) -> PerfManifest:
         raise PerfManifestError(
             f"{path}: top-level 'timeout' is not read in a perf case -- a measured iteration is "
             f"bounded by 'performance.timeout' (default {DEFAULT_TIMEOUT} s); move it there")
-    if "setup" in raw:
-        raise PerfManifestError(
-            f"{path}: top-level 'setup' is not read in a perf case -- a perf iteration creates no "
-            f"setup tables; set the table up in a regression case")
     _reject_unknown_keys(raw, {"performance"} | _TEST_MANIFEST_KEYS, "top level", path)
 
     perf_dir = path.parent
@@ -494,6 +491,19 @@ def load_perf_manifest(path) -> PerfManifest:
                 f"'properties:', and a UDF is a bare static function with none -- every "
                 f"permutation would be identical.")
 
+        try:
+            bigtable_setup = bigtablespec.normalize_setup(raw.get("setup"), path)
+        except bigtablespec.BigtableSpecError as e:
+            raise PerfManifestError(str(e)) from None
+        if bigtable_setup and "bigtable" not in manifest_mod._normalize_requires(raw.get("requires"), path):
+            raise PerfManifestError(
+                f"{path}: 'setup.bigtable' needs 'requires: [bigtable]' -- the emulator is only started for a test "
+                f"that requires it")
+        if bigtable_setup and variants:
+            raise PerfManifestError(
+                f"{path}: 'setup.bigtable' is not supported with 'variants:' yet -- the table would be created once "
+                f"for the whole case, not per engine")
+
         test_manifest = manifest_mod.TestManifest(
             name=_normalize_name(raw.get("name"), path),
             op=op,
@@ -517,6 +527,7 @@ def load_perf_manifest(path) -> PerfManifest:
             if raw.get("target") is not None else None,
             variants=variants,
             matrix=matrix,
+            bigtable_setup=bigtable_setup,
         )
     except manifest_mod.ManifestError as e:
         raise PerfManifestError(str(e)) from e

@@ -83,8 +83,8 @@ the last release; the release makes it that version's entry.
   `requires:`, `timeout:` or `disabled:`) is refused, naming the key; it used to load and run
   without it. A live `service.yaml` with a key the service loader does not read (a misspelt
   `live_override_env:`) is refused when the service loads. The perf loader already refused
-  unknown top-level keys and now shares the regression loader's key set; it refuses `setup:`,
-  which it does not read.
+  unknown top-level keys and now shares the regression loader's key set, `setup:` included
+  (a perf case reads `setup: bigtable:` since #128).
 - **`SLT_INFRA_OWNERSHIP=shared` keeps the integration services a session started.** The session
   no longer runs `docker compose down -v` on them at its end; it clears the started-services record
   and prints what it left running, as `INT_KEEP_SERVICES=1` does, which is no longer needed beside

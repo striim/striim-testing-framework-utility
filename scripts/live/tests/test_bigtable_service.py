@@ -105,7 +105,7 @@ def test_live_compose_remaps_only_the_host_port():
 
 
 def test_live_striim_overlay_injects_emulator_host_on_all_three_containers():
-    # A BigtableWriter/reader in the cluster reaches the emulator only through the JVM-global
+    # A BigtableApiWriter/reader in the cluster reaches the emulator only through the JVM-global
     # BIGTABLE_EMULATOR_HOST, so the overlay must reach slt-striim, slt-node AND slt-agent at the
     # published host port -- and must stay OUT of the base compose (a plain `up` then still
     # targets real Bigtable, never this empty emulator).

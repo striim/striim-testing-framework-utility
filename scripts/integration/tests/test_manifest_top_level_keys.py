@@ -73,17 +73,18 @@ def test_the_perf_loader_shares_the_set_with_performance_for_assert(tmp_path):
         PM.load_perf_manifest(d / "test.yaml")
 
 
-def test_a_perf_manifest_refuses_setup_it_would_not_read(tmp_path):
-    # `setup:` is a regression key the perf loader shares but never reads: refused, not ignored.
+def test_a_perf_manifest_reads_setup(tmp_path):
+    # `setup:` is a regression key the perf loader shares and reads (#128): `setup: bigtable:`
+    # re-creates its tables at every per-iteration reset.
     d = tmp_path / "p"
     d.mkdir()
     (d / "in.json").write_text("[]")
     (d / "test.yaml").write_text(
         "name: p\nop: {jar: java/OpenProcessors/X}\nrequires: [bigtable]\n"
-        "setup: {bigtable: [{table: 't_${TID}', families: {cf: {}}}]}\n"
+        "setup: {bigtable: [{table: 't_${TID}', families: {cf: null}}]}\n"
         "performance: {input: in.json, run_sizes: [1], correctness: {mode: disabled}}\n")
-    with pytest.raises(PM.PerfManifestError, match="'setup' is not read in a perf case"):
-        PM.load_perf_manifest(d / "test.yaml")
+    m = PM.load_perf_manifest(d / "test.yaml")
+    assert [s.table for s in m.test_manifest.bigtable_setup] == ["t_${TID}"]
 
 
 def test_a_perf_manifest_is_refused_by_the_regression_loader_naming_performance(tmp_path):

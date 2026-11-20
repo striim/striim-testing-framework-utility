@@ -29,7 +29,7 @@ def _write(tmp_path, text: str):
 BASE = """
 name: bigtable-assert-case
 op:
-  jar: java/OpenProcessors/BigtableWriter
+  jar: java/OpenProcessors/BigtableApiWriter
 requires: [bigtable]
 """
 

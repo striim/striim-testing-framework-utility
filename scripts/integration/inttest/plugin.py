@@ -3268,6 +3268,16 @@ class PerfYamlItem(pytest.Item):
                 raise  # real Spanner: objects left in a shared database fail the case
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
                 _teardown_leak(self, f"drop Spanner tables prefixed {self.tokens['TID']!r}", e)
+        if "bigtable" in m.requires and hasattr(self, "tokens"):
+            # perf._reset_once re-creates each `setup: bigtable:` table before every measured
+            # iteration, and nothing else drops the last iteration's: without this a passing run
+            # leaves it in the shared emulator. Same keep gate as above; a failure is a teardown leak.
+            for spec in getattr(m, "bigtable_setup", None) or []:
+                table = tokens_mod.render(spec.table, self.tokens)
+                try:
+                    dbroutes_mod.teardown_bigtable(table, route=spec.db, tokens=self.tokens)
+                except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
+                    _teardown_leak(self, f"drop bigtable table {table!r} on {spec.db!r}", e)
 
 
 def pytest_collection_modifyitems(config, items):

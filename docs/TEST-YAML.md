@@ -1005,8 +1005,8 @@ action:
     cycles: 1           # optional, default 1
     delay_before: 3     # optional, default 3 -- wait before each stop
     down_for: 5         # optional, default 5 -- how long the service stays down
-    signal: KILL        # optional, default KILL -- KILL | TERM | RESTART
-    ready_timeout: 120  # optional, default 120 -- wait for healthy after docker start
+    signal: KILL        # optional, default KILL -- KILL | TERM | RESTART | PAUSE
+    ready_timeout: 120  # optional, default 120 -- wait for healthy after docker start (or unpause)
     settle: 30          # optional, default 30 -- app status watched after each restore
 ```
 
@@ -1015,14 +1015,16 @@ action:
 | `service` | the `requires:` service whose container is stopped (with `RESTART`: whose server restarts in place) |
 | `cycles` | stop/start repetitions (with `RESTART`: restarts) |
 | `delay_before`, `down_for`, `ready_timeout`, `settle` | durations (`3`, `"500ms"`, `"2m"`); `0` is legal |
-| `signal` | `KILL`: `docker kill -s KILL`, no shutdown at all. `TERM`: graceful stop via `docker stop`, which sends the image's stop signal and KILLs after the grace period. The postgres image's stop signal is SIGINT, a fast shutdown that sends `57P01` (admin_shutdown) to every session, so the app sees a different error than under `KILL`. A service whose PID 1 ignores that signal sets `graceful_stop` (see `YOUR-OWN-SERVICES.md`); `TERM` then runs it in the container and waits up to `graceful_stop_timeout` for the container to exit, and fails the test (after a KILL) if it does not. mssql sets it: its PID 1 is a bash wrapper, so `docker stop` would end in SIGKILL. `RESTART`: the container keeps running; the service's `restart_in_place` command (see `YOUR-OWN-SERVICES.md`) restarts the server inside it and returns once it is back, for a server whose container cannot be stopped without harm (the Teradata VM). The manifest fails to load if the service has no `restart_in_place`, and refuses `down_for` and `ready_timeout`. A hook that fails or does not return within `restart_in_place_timeout` fails the test and leaves the container running: it is never KILLed |
+| `signal` | `KILL`: `docker kill -s KILL`, no shutdown at all. `TERM`: graceful stop via `docker stop`, which sends the image's stop signal and KILLs after the grace period. The postgres image's stop signal is SIGINT, a fast shutdown that sends `57P01` (admin_shutdown) to every session, so the app sees a different error than under `KILL`. A service whose PID 1 ignores that signal sets `graceful_stop` (see `YOUR-OWN-SERVICES.md`); `TERM` then runs it in the container and waits up to `graceful_stop_timeout` for the container to exit, and fails the test (after a KILL) if it does not. mssql sets it: its PID 1 is a bash wrapper, so `docker stop` would end in SIGKILL. `RESTART`: the container keeps running; the service's `restart_in_place` command (see `YOUR-OWN-SERVICES.md`) restarts the server inside it and returns once it is back, for a server whose container cannot be stopped without harm (the Teradata VM). The manifest fails to load if the service has no `restart_in_place`, and refuses `down_for` and `ready_timeout`. A hook that fails or does not return within `restart_in_place_timeout` fails the test and leaves the container running: it is never KILLed. `PAUSE`: `docker pause` freezes every process in the container and keeps its state; the run confirms the container is paused (not that it stopped), and the restore is `docker unpause`. Nothing shuts down and no connection is reset, so the app sees the service hang rather than go away |
 | `concurrent` | as for `stop_start_cycle`: SQL loops on background threads for the whole action. Errors on a route of the stopped `service` are expected and do not fail the case; each loop must still succeed at least once |
 
 Per cycle: wait `delay_before`, stop the container and confirm it is not running, wait `down_for`,
 `docker start` it and wait for its healthcheck to report healthy (5 s after running if it has
 none), then re-read the app status for `settle` seconds. An app that leaves RUNNING (COMPLETED is
 accepted) fails the test. If a step fails before the restart (including Ctrl-C), the container is
-still started before the error is reported. With `signal: RESTART` the stop, `down_for` and
+still started (with `PAUSE`, unpaused) before the error is reported. With `signal: PAUSE` the stop
+is `docker pause` and the start is `docker unpause`; `down_for`, `ready_timeout` and `settle` apply
+as for a stop. With `signal: RESTART` the stop, `down_for` and
 `docker start` are replaced by the one `restart_in_place` call; the settle is the same. A
 failure or Ctrl-C during it leaves the container running, and the hook may still be running in
 it. A RESTART case needs the service roots that define `restart_in_place` to be active (the
@@ -1030,7 +1032,8 @@ consumer's `servicesRoots`), since the manifest checks for it when it loads.
 
 - **Docker only.** The test skips when the service runs from a live override (e.g. `SLT_PG_HOST`)
   or has no container.
-- **It restarts the shared container** (with `RESTART`, the server in it), so every other test
+- **It restarts the shared container** (with `RESTART`, the server in it; with `PAUSE`, it
+  freezes it), so every other test
   using that service sees the outage.
   Pair it with `disabled_parallel:`.
 
