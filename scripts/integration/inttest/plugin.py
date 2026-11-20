@@ -1446,6 +1446,17 @@ def _drop_oracle_test_prefix(prefix: str) -> None:
 # ============================================================================
 
 
+def _switch_problems(env) -> list:
+    """One message per switch, or declared opt-in gate, that `env` sets to something other than 1 or 0.
+    The gates are read through livetest.service_env; where livetest cannot be imported (the plugin
+    treats it as optional, see _docker_mod), the switches alone are checked, as before the gates were."""
+    try:
+        from livetest import service_env
+    except ImportError:
+        return paths_mod.flag_problems(env)
+    return service_env.switch_problems(env)
+
+
 def pytest_configure(config):
     """Register markers (pytest.ini already lists them under --strict-markers; this
     makes conftest.py self-sufficient too) and enforce the SLT_PARALLEL opt-in for
@@ -1455,8 +1466,7 @@ def pytest_configure(config):
     os.environ.update(paths_mod.effective_env(os.environ))
     # A switch set to anything but 1 or 0 is a settings mistake: refuse the run before anything
     # reads it (paths.flag). A service's declared opt-in gate is a switch too.
-    from livetest import service_env
-    problems = service_env.switch_problems(os.environ)
+    problems = _switch_problems(os.environ)
     # INT_STACK_PREFIX names the session lock, every state file and every container: an invalid one is a
     # settings mistake too, reported here rather than as a traceback from the first file it names.
     if _docker_mod is not None:

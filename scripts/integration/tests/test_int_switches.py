@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import types
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -188,3 +189,13 @@ def test_a_bad_switch_stops_the_run_before_collection(pytester, monkeypatch, tmp
     result = pytester.runpytest_subprocess("-p", "inttest.plugin", "-p", "no:cacheprovider", "case")
     assert result.ret == pytest.ExitCode.USAGE_ERROR, result.stdout.str()
     assert "SLT_RUN_DISABLED='true'" in result.stderr.str() + result.stdout.str()
+
+
+def test_the_switch_check_at_configure_does_not_need_livetest(monkeypatch):
+    # The plugin treats livetest-dependent modules as optional (services may be None); the switch
+    # check at configure falls back to the switches alone where livetest.service_env cannot be
+    # imported, rather than failing the session at startup (review N4).
+    monkeypatch.setitem(sys.modules, "livetest.service_env", None)
+    assert P._switch_problems({"SLT_RUN_DISABLED": "1"}) == []
+    problems = P._switch_problems({"SLT_RUN_DISABLED": "true"})
+    assert len(problems) == 1 and "SLT_RUN_DISABLED='true'" in problems[0]
