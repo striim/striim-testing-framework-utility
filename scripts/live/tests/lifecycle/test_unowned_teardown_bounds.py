@@ -198,6 +198,23 @@ def test_a_deferred_delete_runs_once_its_own_admin_is_free_whatever_hangs_before
     assert out["running"] == ["topic a1"]
 
 
+# --- a slow call started near the deadline gets its whole bound (review N3) --------------------------
+# A call started near the deadline was bounded by what was left of it, as little as 0.05 s; a healthy
+# call that needed longer was abandoned, reported as still running, and stopped the run.
+
+
+def test_a_call_started_near_the_deadline_is_not_cut_short(gate):
+    deleted = []
+
+    def slow(topic):
+        time.sleep(0.6)
+        deleted.append(topic)
+    out = teardown_unowned({}, [], {}, [], [(_admin(delete_topic=slow), "t1"), (_admin(delete_topic=slow), "t2")],
+                           None, lambda p: None, [], lambda n: None, op_s=2.0, deadline_s=0.8)
+    assert deleted == ["t1", "t2"]                           # t2 started with 0.2 s left and finished
+    assert out["failed"] == {} and out["running"] == []
+
+
 def test_a_case_whose_delete_is_still_running_stops_the_run():
     session = SimpleNamespace(shouldfail=False)
     from livetest.plugin import stop_if_teardown_running

@@ -158,7 +158,8 @@ the last release; the release makes it that version's entry.
   stops an integration run before collection, as a usage error naming the setting, and
   `inttest.cli` exits 2. `SLT_STACK_PREFIX` with a trailing newline is refused.
 - **A case without a `lifecycle:` block bounds its best-effort teardown**: 60 s for each step and
-  600 s for the whole teardown, the ownership ledger's bounds. A hung delete is reported as a
+  600 s for the whole teardown, the ownership ledger's bounds (no step starts after 600 s; one
+  started before then still gets its 60 s). A hung delete is reported as a
   failure, which fails the case, instead of hanging the run. A delete that outlives its 60 s is
   still waited for, within the 600 s, before the case ends and before another delete on the same
   database or client starts; one still running at 600 s stops the run after that case.

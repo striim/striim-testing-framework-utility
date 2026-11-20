@@ -1595,14 +1595,15 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
 
     It runs after the ledger's cleanup and outside its deadline, so it carries the ledger's bounds itself:
     each call gets ``op_s`` (``CLEANUP_OP_S``) and the whole teardown ``deadline_s``
-    (``CLEANUP_DEADLINE_S``). A call that outlives its bound is recorded as failed, and the calls on other
-    admins go on. It is not left running past the case: a later call on the same admin is deferred until
-    the other calls are done and then runs once that admin is free, whatever another admin's call is still
-    doing (one admin's client is never used from two threads),
-    and the teardown waits for it before returning, both while the deadline lasts, so the case keeps its
-    in-use lock, and its database connections, until its deletes have ended. Once the deadline has passed,
-    the calls left are recorded as not attempted, and a call still running is listed under "running": the
-    caller stops the run (``stop_if_teardown_running``)."""
+    (``CLEANUP_DEADLINE_S``): no call starts after the deadline, and one started before it gets its whole
+    ``op_s``, so the teardown ends within ``deadline_s + op_s``. A call that outlives its bound is
+    recorded as failed, and the calls on other admins go on. It is not left running past the case: a
+    later call on the same admin is deferred until the other calls are done and then runs once that admin
+    is free, whatever another admin's call is still doing (one admin's client is never used from two
+    threads), and the teardown waits for it before returning, both while the deadline lasts, so the case
+    keeps its in-use lock, and its database connections, until its deletes have ended. Once the deadline
+    has passed, the calls left are recorded as not attempted, and a call still running is listed under
+    "running": the caller stops the run (``stop_if_teardown_running``)."""
     out = {"attempted": [], "failed": {}, "running": []}
     deadline = _slt_lifecycle.Deadline(deadline_s)
     abandoned = []                      # (subjects, owner, thread) of each call left running at its bound
@@ -1628,7 +1629,9 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
         if deadline.expired():
             out["failed"].update({s: "cleanup-deadline: not attempted" for s in subjects})
             return
-        bound = max(0.05, min(op_s, deadline.remaining()))
+        # A call started before the deadline gets its whole bound: one started with little of the
+        # deadline left is not cut short and reported as still running when it is only slow.
+        bound = op_s
         try:
             _slt_lifecycle.bounded(lambda: fn(*args), bound)
         except _slt_lifecycle.ProbeHung as hung:
