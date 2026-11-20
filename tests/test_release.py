@@ -134,6 +134,18 @@ def test_refuses_main_behind_origin(repo, tmp_path, capsys):
     assert "origin/main" in capsys.readouterr().err
 
 
+def test_no_fetch_compares_with_the_last_fetched_origin_main(repo, tmp_path, capsys):
+    """`--no-fetch` (RELEASING.md): main is compared with origin/main as last fetched, so a push
+    elsewhere since then is not seen and the preflight passes."""
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)], check=True)
+    commit(other, "Landed elsewhere (#3)")
+    git(other, "push", "-q", "origin", "main")
+    assert run(repo, "--bump", "minor", "--no-fetch", "--skip-tests") == 0
+    captured = capsys.readouterr()
+    assert "refused" not in captured.err and "DRY RUN" in captured.out
+
+
 def test_refuses_an_existing_tag_or_a_version_not_above_the_last_release(repo, capsys):
     git(repo, "tag", "-a", "v0.2.0", "-m", "v0.2.0")
     git(repo, "push", "-q", "origin", "v0.2.0")
@@ -283,6 +295,7 @@ def test_untracked_files_are_refused_and_notes_are_never_read_from_the_tree(repo
     assert "draft.md" not in git(repo, "show", "--name-only", "--format=", "HEAD")
 
 
+@pytest.mark.git_checkout
 def test_every_runtime_version_literal_in_this_repo_is_one_the_tool_moves():
     """A new `__version__ = "..."` anywhere in the engines must be added to RUNTIME_VERSIONS."""
     tracked = subprocess.run(["git", "-C", str(REPO), "ls-files", "*.py"], capture_output=True, text=True).stdout.split()
@@ -383,3 +396,95 @@ def test_bootstrap_repairs_a_worked_consumer_pin(repo):
     baseline = git(repo, 'rev-parse', 'HEAD')
     assert run(repo, '--bootstrap-pin', '--apply') == 0
     assert example_pin.read_text().strip() == baseline
+
+
+# --- the standing Unreleased sections -----------------------------------------------------
+
+UNRELEASED_NOTES = ("# Release notes\n\nIntro.\n\n## Unreleased\n\n**Breaking changes and changed behaviour**\n\n"
+                    "- Unknown spec keys are refused at load.\n\n## v0.1.0 (2026-10-01)\n\n- Older entry.\n")
+EMPTY_NOTES = "# Release notes\n\nIntro.\n\n## Unreleased\n\nNothing yet.\n\n## v0.1.0 (2026-10-01)\n\n- Older entry.\n"
+UPGRADING_TEXT = ("# Upgrading the framework\n\nIntro.\n\n## Unreleased\n\n### Spec keys (breaking)\n\nFix typos.\n\n"
+                  "## v0.1.0\n\n### Old (breaking)\n\nOld advice.\n")
+
+
+def _commit_files(repo, files):
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text)
+    git(repo, "add", *files)
+    git(repo, "commit", "-q", "-m", "Docs: unreleased entries")
+    git(repo, "push", "-q", "origin", "main")
+
+
+def test_unreleased_entries_become_the_release_entry(repo, monkeypatch, capsys):
+    """Hand-written in the tree, so no PR list and no deny-pattern file is needed."""
+    monkeypatch.delenv("RELEASE_DENY_PATTERNS")
+    _commit_files(repo, {"RELEASE-NOTES.md": UNRELEASED_NOTES})
+    assert run(repo, "--bump", "minor", "--apply", "--skip-tests") == 0
+    notes = (repo / "RELEASE-NOTES.md").read_text()
+    head, _, rest = notes.partition("## v0.2.0 (")
+    assert head.endswith("## Unreleased\n\nNothing yet.\n\n"), notes
+    assert rest.index("Unknown spec keys are refused at load.") < rest.index("## v0.1.0 (2026-10-01)")
+    assert notes.count("Unknown spec keys") == 1 and "(#1)" not in notes and "(#2)" not in notes
+    tag = git(repo, "tag", "-l", "--format=%(contents)", "v0.2.0")
+    assert "**Breaking changes and changed behaviour**" in tag and "Unknown spec keys" in tag
+    assert release.unreleased(notes) == ""
+
+
+def test_an_empty_unreleased_section_keeps_generated_notes_below_it(repo):
+    _commit_files(repo, {"RELEASE-NOTES.md": EMPTY_NOTES})
+    assert run(repo, "--bump", "minor", "--apply", "--skip-tests") == 0
+    notes = (repo / "RELEASE-NOTES.md").read_text()
+    assert notes.count("## Unreleased") == 1 and notes.count("Nothing yet.") == 1
+    assert notes.index("## Unreleased") < notes.index("## v0.2.0 (") < notes.index("## v0.1.0 (")
+    assert "- Live harness: first fix (#1)" in notes
+
+
+def test_unreleased_entries_and_a_notes_file_are_refused(repo, tmp_path, capsys):
+    _commit_files(repo, {"RELEASE-NOTES.md": UNRELEASED_NOTES})
+    other = tmp_path / "notes.md"
+    other.write_text("Something else.\n")
+    assert run(repo, "--bump", "minor", "--notes-file", str(other)) == 2
+    err = capsys.readouterr().err
+    assert "## Unreleased" in err and "--notes-file" in err and git(repo, "tag") == "v0.1.0"
+
+
+def test_unreleased_entries_are_checked_against_the_deny_patterns(repo, capsys):
+    _commit_files(repo, {"RELEASE-NOTES.md": UNRELEASED_NOTES.replace("at load.", "at load for Acme.")})
+    assert run(repo, "--bump", "minor") == 2
+    assert "Acme" in capsys.readouterr().err and git(repo, "tag") == "v0.1.0"
+
+
+def test_a_first_release_may_take_its_notes_from_the_unreleased_section(repo, capsys):
+    git(repo, "tag", "-d", "v0.1.0")
+    _commit_files(repo, {"RELEASE-NOTES.md": UNRELEASED_NOTES})
+    assert run(repo, "0.1.0") == 0
+    out = capsys.readouterr().out
+    assert "Unknown spec keys are refused at load." in out and "#900" not in out
+
+
+def test_upgrading_unreleased_becomes_the_version_and_is_committed(repo):
+    _commit_files(repo, {"RELEASE-NOTES.md": EMPTY_NOTES, "docs/UPGRADING.md": UPGRADING_TEXT})
+    assert run(repo, "--bump", "minor", "--apply", "--skip-tests") == 0
+    text = (repo / "docs/UPGRADING.md").read_text()
+    assert text == ("# Upgrading the framework\n\nIntro.\n\n## Unreleased\n\nNothing yet.\n\n## v0.2.0\n\n"
+                    "### Spec keys (breaking)\n\nFix typos.\n\n## v0.1.0\n\n### Old (breaking)\n\nOld advice.\n")
+    assert "docs/UPGRADING.md" in git(repo, "show", "--name-only", "--format=", "HEAD").split()
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_an_empty_upgrading_unreleased_section_is_left_alone(repo):
+    empty = UPGRADING_TEXT.replace("### Spec keys (breaking)\n\nFix typos.", "Nothing yet.")
+    _commit_files(repo, {"RELEASE-NOTES.md": EMPTY_NOTES, "docs/UPGRADING.md": empty})
+    assert run(repo, "--bump", "minor", "--apply", "--skip-tests") == 0
+    assert (repo / "docs/UPGRADING.md").read_text() == empty
+    assert "docs/UPGRADING.md" not in git(repo, "show", "--name-only", "--format=", "HEAD").split()
+
+
+def test_the_dry_run_names_the_upgrading_step_and_changes_nothing(repo, capsys):
+    _commit_files(repo, {"RELEASE-NOTES.md": UNRELEASED_NOTES, "docs/UPGRADING.md": UPGRADING_TEXT})
+    assert run(repo, "--bump", "minor") == 0
+    out = capsys.readouterr().out
+    assert "docs/UPGRADING.md: '## Unreleased' -> '## v0.2.0'" in out and "Unknown spec keys" in out
+    assert (repo / "docs/UPGRADING.md").read_text() == UPGRADING_TEXT
+    assert (repo / "RELEASE-NOTES.md").read_text() == UNRELEASED_NOTES

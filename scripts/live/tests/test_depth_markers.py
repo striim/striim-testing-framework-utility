@@ -5,9 +5,9 @@ a tier with `-m "depth_regression"` the same way it already selects a service wi
 `-m spanner`. Two layers, mirroring the existing per-service marker tests in
 test_plugin_routing.py:
 
-  * `_declared_depth` (collection-time raw-YAML read, tolerant of unparseable/missing depth --
-    same rationale as `_declared_services`: collection must not fail on a manifest
-    `load_manifest` would reject).
+  * `_declared_depth` (collection-time raw-YAML read; a missing depth is `regression`, the
+    loader's default). Collection also runs `load_manifest`, so a manifest it rejects (a
+    misspelt depth, an unknown key, unparseable YAML) is a collection error in every tier.
   * `LiveItem.__init__` stamps `depth_<value>` alongside `live` and the service markers.
 
 The `--collect-only -m depth_smoke` count below is the smoke tier of the framework's own
@@ -50,18 +50,21 @@ def test_declared_depth_reads_the_key(tmp_path):
     p.write_text("name: x\ntql: app.tql\ndepth: fault\nassert:\n  smoke: true\n")
     assert _declared_depth(p) == "fault"
 
-def test_declared_depth_is_none_when_absent(tmp_path):
+def test_declared_depth_defaults_to_regression_when_absent(tmp_path):
+    # load_manifest defaults a missing depth to regression, so the marker must agree: a case
+    # without `depth:` runs under `-m depth_regression` instead of being dropped by it.
     p = tmp_path / "test.yaml"
     p.write_text("name: x\ntql: app.tql\nassert:\n  smoke: true\n")
-    assert _declared_depth(p) is None
+    assert _declared_depth(p) == "regression"
 
-def test_declared_depth_tolerates_unparseable_yaml(tmp_path):
-    # Same contract as _declared_services: an unreadable manifest gets no depth marker rather
-    # than crashing collection. Its error belongs at RUN time (load_manifest), where it names
-    # the file and the reason.
-    p = tmp_path / "test.yaml"
-    p.write_text("name: [unclosed\n")
-    assert _declared_depth(p) is None
+def test_an_unparseable_manifest_is_a_collection_error(tmp_path):
+    # _declared_depth still never raises on one; the loader, which collection now runs, names
+    # the file and the YAML error instead of leaving it to run time (or to no time at all, when
+    # a -m filter deselected the unmarked case).
+    rc, out = _collect_case(tmp_path, "", "depth_smoke", raw="name: [unclosed\n")
+    assert rc not in (0, 5), out[-800:]
+    assert "invalid YAML" in out and "dcase" in out, out[-800:]
+
 
 def test_declared_depth_ignores_non_string_value(tmp_path):
     p = tmp_path / "test.yaml"
@@ -121,3 +124,70 @@ def test_no_test_fails_on_an_unknown_depth_marker():
         capture_output=True, text=True, cwd=str(LIVE_ROOT), env=_child_env(),
     )
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+
+# ---- a case's depth selects it, and a manifest error is a collection error -------------------
+
+_CASE = "name: {name}\npurpose: a depth case\ntql: app.tql\n{extra}assert:\n  smoke: true\n"
+
+
+def _collect_case(tmp_path, extra, marker, name="dcase", raw=None):
+    case = tmp_path / "cases" / name
+    case.mkdir(parents=True)
+    (case / "test.yaml").write_text(raw if raw is not None else _CASE.format(name=name, extra=extra))
+    (case / "app.tql").write_text("CREATE APPLICATION ${APP};\nEND APPLICATION ${APP};\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SLT_", "INT_", "PYTEST_", "COVERAGE_", "STRIIM"))}
+    env.update(SLT_LOCK_DIR=str(tmp_path / "locks"), SLT_CASE_RECORDS="off", SLT_PRE_UP="0")
+    r = subprocess.run([sys.executable, "-m", "pytest", "-p", "livetest.plugin", "-p", "no:cacheprovider",
+                        "--import-mode=importlib", "--collect-only", "-q", "-m", marker, str(tmp_path / "cases")],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    return r.returncode, r.stdout + r.stderr
+
+
+def test_a_declared_depth_selects_its_tier(tmp_path):
+    rc, out = _collect_case(tmp_path, "depth: smoke\n", "depth_smoke")
+    assert rc == 0 and "1 test collected" in out, out[-800:]
+
+
+def test_a_case_is_not_selected_by_another_tier(tmp_path):
+    rc, out = _collect_case(tmp_path, "depth: smoke\n", "depth_gate")
+    assert rc == 5 and "1 deselected" in out, out[-800:]
+
+
+def test_a_case_without_depth_is_selected_as_regression(tmp_path):
+    rc, out = _collect_case(tmp_path, "", "depth_regression")
+    assert rc == 0 and "1 test collected" in out, out[-800:]
+
+
+def test_a_misspelt_depth_is_a_collection_error_in_every_tier(tmp_path):
+    # Before: `depth: smok` got no marker, `-m depth_smoke` deselected it, and the loader that
+    # would refuse it never ran -- exit 5 and nothing naming the typo.
+    rc, out = _collect_case(tmp_path, "depth: smok\n", "depth_smoke")
+    assert rc not in (0, 5), out[-800:]
+    assert "error" in out.lower() and "'depth' must be one of" in out and "dcase" in out, out[-800:]
+
+
+def test_any_manifest_error_is_a_collection_error_even_when_its_tier_is_filtered_out(tmp_path):
+    rc, out = _collect_case(tmp_path, "depth: smoke\ntimout: 30\n", "depth_gate")
+    assert rc not in (0, 5), out[-800:]
+    assert "unknown manifest key(s) ['timout']" in out, out[-800:]
+
+
+def test_every_depth_marker_is_registered_by_the_plugin_for_strict_markers(tmp_path):
+    # A project's own configuration need not list the depth markers: under --strict-markers an
+    # unregistered depth_regression (every manifest without depth:) was a collection error.
+    for name, extra in (("nodepth", ""), ("smokecase", "depth: smoke\n"), ("canarycase", "depth: canary\n")):
+        case = tmp_path / "cases" / name
+        case.mkdir(parents=True)
+        (case / "test.yaml").write_text(_CASE.format(name=name, extra=extra))
+        (case / "app.tql").write_text("CREATE APPLICATION ${APP};\nEND APPLICATION ${APP};\n")
+    (tmp_path / "pytest.ini").write_text("[pytest]\nmarkers =\n    live: live case\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("SLT_", "INT_", "PYTEST_", "COVERAGE_", "STRIIM"))}
+    env.update(SLT_LOCK_DIR=str(tmp_path / "locks"), SLT_CASE_RECORDS="off", SLT_PRE_UP="0")
+    r = subprocess.run([sys.executable, "-m", "pytest", "-p", "livetest.plugin", "-p", "no:cacheprovider",
+                        "--import-mode=importlib", "--collect-only", "-q", "--strict-markers",
+                        "-W", "error::pytest.PytestUnknownMarkWarning", str(tmp_path / "cases")],
+                       cwd=tmp_path, env=env, capture_output=True, text=True, timeout=300)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0 and "3 tests collected" in out, out[-800:]

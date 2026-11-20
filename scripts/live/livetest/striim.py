@@ -256,21 +256,32 @@ class StriimClient:
         Normalizes two distinct platform shapes to one Python list: a row per recorded
         checkpoint when at least one exists, or a `CommandResponse(404, "... not available
         yet")` failure when none does. Callers only need "some rows" vs "no rows" -- treating
-        the failure as `[]` rather than raising means "nothing recorded" and "the reader has
-        no RECOVERY clause at all" both read the same way, which is what they are."""
+        that failure as `[]` rather than raising means "nothing recorded" and "the reader has
+        no RECOVERY clause at all" both read the same way, which is what they are.
+
+        Any other answer is a history that could not be read, and raises StriimError: another
+        failure (a syntax error, an app that does not exist), a response that is not a list of
+        results (an HTTP error body: the Tungsten post does not check the status code), or a
+        result whose `output` is not a list. Read as `[]`, any of them would pass `empty`."""
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 resp = self._read_only(lambda api, t: api.post_tungsten_line(f"SHOW {app} CHECKPOINT HISTORY;", timeout=t),
                                        POLL_TIMEOUT if timeout is None else timeout)
         except Exception as e:
             raise StriimError(f"could not read SHOW {app} CHECKPOINT HISTORY: {e!r}") from e
-        if isinstance(resp, list) and resp:
-            first = resp[0]
-            if isinstance(first, dict) and first.get("executionStatus") == "Failure":
+        first = resp[0] if isinstance(resp, list) and resp else None
+        if not isinstance(first, dict):
+            raise StriimError(f"SHOW {app} CHECKPOINT HISTORY returned no result: {redact(repr(resp))[:300]}")
+        if first.get("executionStatus") == "Failure":
+            message = str(first.get("failureMessage") or "")
+            if "not available yet" in message.lower():
                 return []
-            out = first.get("output") if isinstance(first, dict) else None
-            return out if isinstance(out, list) else []
-        return []
+            raise StriimError(f"SHOW {app} CHECKPOINT HISTORY failed: {redact(message)[:300] or 'no failure message'}")
+        out = first.get("output")
+        if not isinstance(out, list):
+            raise StriimError(f"SHOW {app} CHECKPOINT HISTORY returned output that is not a list: "
+                              f"{redact(repr(out))[:300]}")
+        return out
 
     def node_status(self, name: str, timeout=None) -> dict:
         """The runtime application states reported by ``STATUS <server>;``."""

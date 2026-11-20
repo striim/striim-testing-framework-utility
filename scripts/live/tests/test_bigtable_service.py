@@ -96,14 +96,16 @@ def test_live_compose_remaps_only_the_host_port():
     # Spanner's shape: the emulator listens on a fixed 9470 inside the container, and
     # SLT_BIGTABLE_GRPC_HOST_PORT moves only the published host side.
     svc = yaml.safe_load(_LIVE_COMPOSE.read_text())["services"]["slt-bigtable"]
-    assert svc["ports"] == ["${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"]
+    assert svc["ports"] == [f"{b}:${{SLT_BIGTABLE_GRPC_HOST_PORT:-9470}}:9470"     # bind address, gateway
+                            for b in ("${SLT_BIND_ADDRESS:-0.0.0.0}",
+                                      "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}")]
     assert svc["command"][-1].endswith("--host-port=0.0.0.0:9470")
     assert "SLT_BIGTABLE_GRPC_HOST_PORT" not in str(svc["command"]) + str(svc["healthcheck"])
     assert "$" not in svc["image"]                       # hard-coded, as Spanner's is
 
 
 def test_live_striim_overlay_injects_emulator_host_on_all_three_containers():
-    # A BigtableWriter/reader in the cluster reaches the emulator only through the JVM-global
+    # A BigtableApiWriter/reader in the cluster reaches the emulator only through the JVM-global
     # BIGTABLE_EMULATOR_HOST, so the overlay must reach slt-striim, slt-node AND slt-agent at the
     # published host port -- and must stay OUT of the base compose (a plain `up` then still
     # targets real Bigtable, never this empty emulator).

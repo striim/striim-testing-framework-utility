@@ -52,6 +52,7 @@ import difflib
 import re
 import socket
 import subprocess
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -246,6 +247,27 @@ def check_env(env: dict, clone: Path) -> tuple[list, dict]:
             checks.append(_fail("env", f"{key}={raw!r} (set in environment) does not exist: "
                                        f"{Path(raw).expanduser().resolve()}"))
     return checks, values
+
+
+def check_switches(env: dict) -> list:
+    """A switch, or a service's declared opt-in gate, set to anything but 1 or 0 refuses the run in
+    both engines (paths.flag)."""
+    from livetest import paths, service_env
+    try:
+        merged = paths.effective_env(env)
+    except paths.PathConfigError:
+        return []                       # reported by check_env
+    return [_fail("switch", problem) for problem in service_env.switch_problems(merged)]
+
+
+def _switch(name: str, env: dict) -> bool:
+    """A switch, for a check that depends on it; a bad value reads as off, and check_switches
+    reports it."""
+    from livetest import paths
+    try:
+        return paths.flag(name, env)
+    except paths.FlagError:
+        return False
 
 
 def check_api_timeout(env: dict) -> list:
@@ -491,7 +513,7 @@ def check_installers(env: dict) -> list:
         if not sp._in_checkout():
             return [_fail("installers", f"{sp.DEPS_MANIFEST_ENV} is unset, and an installed "
                                         f"framework builds Striim only from a manifest; see "
-                                        f"the README's Docker mode")]
+                                        f"docs/RUN-YOUR-FIRST-TEST.md, \"3b. Docker mode\"")]
         return [_ok("installers", f"{sp.DEPS_MANIFEST_ENV} unset; the first build downloads "
                                   f"about 6.3 GB of Striim packages and drivers")]
     try:
@@ -742,7 +764,7 @@ def check_case_gates(files: list, env: dict, dotenv: dict, tier_of=None, which=N
         except Exception:                   # noqa: BLE001 - reported by the manifest check
             continue
         subject = f"case {f.parent.name}"
-        if (getattr(m, "recover", None) or {}).get("node") and env.get("SLT_ENABLE_NODE_FAULTS") != "1":
+        if (getattr(m, "recover", None) or {}).get("node") and not _switch("SLT_ENABLE_NODE_FAULTS", env):
             checks.append(_skip(subject, "recover.node skips without SLT_ENABLE_NODE_FAULTS=1 (a dedicated, "
                                          "disposable stack)"))
         if native and m.topology in ("cluster", "agent"):
@@ -810,19 +832,22 @@ def check_int_services(need: dict, env: dict, docker=None) -> list:
 
 
 def check_int_session(env: dict) -> list:
-    """Another integration session against this checkout refuses the run
+    """Another integration session against this stack (its machine-wide session lock) refuses the run
     (inttest.plugin._acquire_session_lock); the lock is tried and released at once."""
     from filelock import FileLock, Timeout
 
     from inttest import plugin as int_plugin
-    if (env.get("INT_SHARED_SERVICES") or "").strip() == "1" or env.get("INT_ALLOW_CONCURRENT_SESSIONS"):
+    from livetest import lockdir
+    if _switch("INT_ALLOW_CONCURRENT_SESSIONS", env):
         return []
     path = int_plugin._session_lock_path()
     if not path.exists():
         return [_ok("integration session", "no other integration session")]
-    lock = FileLock(str(path), timeout=0)
+    lock = FileLock(str(path), timeout=0, mode=lockdir.file_mode())
     try:
         lock.acquire()
+    except PermissionError as e:
+        return [_fail("integration session", lockdir.unopenable_lock_message(path, e), INFRA)]
     except Timeout:
         return [_fail("integration session", f"another integration session holds {path}; the run is "
                                              f"refused until it finishes", INFRA)]
@@ -837,7 +862,7 @@ def check_lock_dir(env: dict) -> list:
     target = d if d.exists() else next((p for p in d.parents if p.exists()), d)
     if not os.access(target, os.W_OK | os.X_OK):
         return [_fail("lock dir", f"{target} is not writable by this user; export "
-                                  f"SLT_LOCK_DIR=$HOME/.slt-locks (README, \"When a run cannot start\")")]
+                                  f"SLT_LOCK_DIR=$HOME/.slt-locks (docs/RUN-YOUR-FIRST-TEST.md, \"If it did not work\")")]
     return [_ok("lock dir", f"{d} is writable")]
 
 
@@ -961,9 +986,11 @@ def _loaders():
 
 def check_manifests(files: list, tier_of=None) -> list:
     """One check per case: its test.yaml loads as a run of its tier loads it (the live loader with the
-    ``exact:`` and ``lifecycle:`` rules; the integration and perf loaders for those tiers), so a typo
+    ``exact:`` and ``lifecycle:`` rules and every assertion spec parsed; the integration and perf
+    loaders for those tiers), so a typo
     fails here and not at run time. Without ``tier_of`` every case is live. A case outside every
     case root is not checked: ``run`` refuses it anyway, naming the roots."""
+    from livetest.manifest import CardinalityWarning
     loaders = _loaders()
     checks = []
     for f in files:
@@ -977,13 +1004,23 @@ def check_manifests(files: list, tier_of=None) -> list:
             continue
         load, error, how = loaders[tier]
         try:
-            m = load(f)
+            with warnings.catch_warnings(record=True) as seen:
+                warnings.simplefilter("always", CardinalityWarning)
+                warnings.simplefilter("always", DeprecationWarning)
+                m = load(f)
         except error as e:
             checks.append(_fail(subject, str(e)))
         except (OSError, ValueError, TypeError, AttributeError, KeyError) as e:
             checks.append(_fail(subject, f"{f}: {type(e).__name__}: {e}"))
         else:
             checks.append(_ok(subject, f"test.yaml loads{how} ({getattr(m, 'name', None) or f.parent.name})"))
+            # A set-only match loads, but it cannot see a duplicated row (CardinalityWarning); a
+            # deprecated form loads, and the loader names the file in its warning. Show both here,
+            # where an author looks, before a later release refuses the deprecated form.
+            for w in seen:
+                if issubclass(w.category, CardinalityWarning) or (
+                        issubclass(w.category, DeprecationWarning) and str(w.message).startswith(f"{f}: ")):
+                    checks.append(_warn(subject, str(w.message).removeprefix(f"{f}: ")))
     return checks
 
 
@@ -1060,7 +1097,12 @@ def check_services(need: dict, env: dict, tcp=None, login=None, docker=None,
             checks.append(_fail(subject, f"required by {cases}: {why}", INFRA) if fail
                           else _skip(subject, f"required by {cases}: {why}; they skip until then"))
             continue
-        if defn.opt_in_env and not registry.opted_in(defn.opt_in_env, env):
+        try:
+            opted = not defn.opt_in_env or registry.opted_in(defn.opt_in_env, env)
+        except ValueError as e:         # paths.FlagError: the gate is set to neither 1 nor 0
+            checks.append(_fail(subject, str(e)))
+            continue
+        if not opted:
             checks.append(_warn(subject, f"opt-in: `start all` and other bring-ups not tied to a "
                                          f"case leave it out unless {defn.opt_in_env}=1 or "
                                          f"SLT_EMULATORS=1; a live case that requires it ({cases}) "
@@ -1179,6 +1221,7 @@ def run_checks(env: dict, clone: Path, cases=(), probe=None, docker=None, tcp=No
     # Integration and perf cases run without a Striim cluster: with only those selected, the
     # cluster, ownership and lock dir do not decide the run.
     cluster = not (integration and len(integration) == len(files))
+    checks += check_switches(run_env)
     checks += check_api_timeout(run_env)
     if cluster:
         checks += check_tryouts(run_env)

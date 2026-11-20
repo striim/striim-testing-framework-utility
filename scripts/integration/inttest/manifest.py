@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import itertools
 import re
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -49,6 +48,14 @@ DEFAULT_DB_ROUTE = "postgres-source"
 #: unlike `ddl:`/`seed:`, which seed the SOURCE side and default to `postgres-source`.
 DEFAULT_TARGET_DB_ROUTE = "postgres-target"
 DEFAULT_TIMEOUT = 120
+
+#: Every top-level key load_manifest reads besides `assert:`. Any other key is refused at load:
+#: a misspelt `matrix:` would otherwise run the case once and report it as covering the
+#: permutations. inttest.perfmanifest shares the set, with `performance:` in place of `assert:`.
+_TEST_MANIFEST_KEYS = frozenset({
+    "name", "op", "udf", "properties", "password_properties", "purpose", "requires", "ddl",
+    "seed", "timeout", "disabled", "types", "source", "target", "variants", "matrix", "setup",
+})
 
 #: `seed:` runs before the reader is driven (the default) or after its source has started.
 SEED_WHEN_VALUES = ("pre_start", "post_start")
@@ -506,8 +513,8 @@ def _normalize_requires(raw, path) -> list:
     if isinstance(raw, str):
         if not raw:
             raise ManifestError(f"{path}: 'requires' string entry must be non-empty")
-        return [raw]
-    if isinstance(raw, list):
+        out = [raw]
+    elif isinstance(raw, list):
         out = []
         for item in raw:
             if not isinstance(item, str) or not item:
@@ -515,9 +522,20 @@ def _normalize_requires(raw, path) -> list:
                     f"{path}: 'requires' list items must be non-empty service-name "
                     f"strings, got {item!r}")
             out.append(item)
-        return out
-    raise ManifestError(
-        f"{path}: 'requires' must be a service name string or a list of them, got {raw!r}")
+    else:
+        raise ManifestError(
+            f"{path}: 'requires' must be a service name string or a list of them, got {raw!r}")
+    # A misspelt service used to load and then skip at run time as "unsupported service": an
+    # authoring mistake reported as this host lacking something. The known set is the built-ins
+    # plus every service a services root defines, as the run resolves them.
+    from . import services
+    known = services.supported_services()
+    unknown = [name for name in out if name not in known]
+    if unknown:
+        raise ManifestError(
+            f"{path}: 'requires' names {unknown}, which no services root defines (known: "
+            f"{sorted(known)})")
+    return out
 
 
 def _normalize_file_specs(raw, field_name: str, test_dir: Path, path) -> list:
@@ -602,6 +620,29 @@ def _normalize_field_paths(item: dict, key: str, idx: int, path) -> tuple:
 
 _ASSERT_TIERS = {"smoke", "data", "gcs_objects", "target", "expect_error", "expect_log", "monitor",
                  "jmx", "acked", "restarts", "replayed", "exception_store"}
+
+
+_TOO_BROAD = {"error", "exception", "failed", "failure"}
+
+
+def expect_error_breadth(text: str) -> str | None:
+    """Why `text` is too broad to be an `assert.expect_error` substring, or None. Applied at load
+    to the raw text and per variant, and by the runner to the rendered text: a token can render it
+    empty, which is a substring of every failure."""
+    if not text.strip():
+        return (f"is empty ({text!r}): an empty substring matches every failure, including the "
+                f"harness failing to start.")
+    # A bare "Exception"/"Error" would pass against ANY failure, including the harness failing
+    # to start or the database being unreachable -- a case that cannot tell the refusal it is
+    # testing from an environment problem is worse than no case.
+    if text.strip().lower() in _TOO_BROAD:
+        return (f"is too broad: {text!r} matches almost any failure, including the harness "
+                f"failing to start. Quote enough of the message to name the refusal this case is "
+                f"about.")
+    return None
+
+
+_TOKEN_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
@@ -792,14 +833,9 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
             raise ManifestError(
                 f"{path}: 'assert.expect_error' must be a non-empty substring of the failure the "
                 f"drive is expected to produce, got {expect_error!r}")
-        # A bare "Exception"/"Error" would pass against ANY failure, including the harness failing
-        # to start or the database being unreachable -- a case that cannot tell the refusal it is
-        # testing from an environment problem is worse than no case.
-        if expect_error.strip().lower() in {"error", "exception", "failed", "failure"}:
-            raise ManifestError(
-                f"{path}: 'assert.expect_error' is too broad: {expect_error!r} matches almost any "
-                f"failure, including the harness failing to start. Quote enough of the message to "
-                f"name the refusal this case is about.")
+        broad = expect_error_breadth(expect_error)
+        if broad:
+            raise ManifestError(f"{path}: 'assert.expect_error' {broad}")
 
     # ⚠ WHAT THE OPERATOR SAID, on a run that SUCCEEDS. `expect_error` reads the failure text and
     # `target:` reads the database; neither can see a WARNING on an otherwise-clean run, which is
@@ -940,11 +976,17 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
 
     if expect_error is not None and expect_log:
         # The failure path asserts the error text and `target:` only; `expect_log` is not read.
-        warnings.warn(
-            f"{path}: 'assert.expect_log' is ignored when 'assert.expect_error' is set -- the "
+        raise ManifestError(
+            f"{path}: 'assert.expect_log' is never evaluated beside 'assert.expect_error' -- the "
             f"failure path does not check what the operator logged. Put the expected text in "
-            f"'expect_error', or move 'expect_log' to a case whose run succeeds.",
-            UserWarning, stacklevel=2)
+            f"'expect_error', or move 'expect_log' to a case whose run succeeds.")
+    if expect_log and not data and not is_target:
+        # The log is read only from a drive: the `data:` drive or the `target:` drive. A
+        # smoke-only op case never drives the operator, so the key would be declared and inert.
+        raise ManifestError(
+            f"{path}: 'assert.expect_log' is never evaluated on a smoke-only case -- it never "
+            f"drives the operator, so nothing it logs is read. Add an 'assert.data' entry, or "
+            f"move 'expect_log' to a case that drives it.")
 
     return AssertSpec(data=data, smoke=smoke, gcs_objects=gcs_objects, target=target, acked=acked,
                       restarts=restarts, replayed=replayed, expect_error=expect_error,
@@ -1493,7 +1535,12 @@ _ASSERTABLE_METRICS = {
 #: carries counts (window counts, close reasons, ignored rows by code) beside clocks (commit ms,
 #: idle %) in one object, so an exact string could never be asserted and the counts would go
 #: unread. A case names the counts and leaves the clocks out.
-_SUBSET_METRICS = {"ADAPTER_BASIC"}
+_SUBSET_METRICS = {
+    "ADAPTER_BASIC",
+    # The same kind of object: ADAPTER_DETAIL is an adapter's detailed figures; SpannerWriter's
+    # LAST_BATCH_INFO and DATABASE_WRITE_INFO describe its last batch and its last commit.
+    "ADAPTER_DETAIL", "LAST_BATCH_INFO", "DATABASE_WRITE_INFO",
+}
 
 #: MON metrics a case may NOT assert: they are CLOCKS. A case asserting a latency or a timestamp
 #: is measuring the machine it runs on, which is the same mistake §6.1a refuses for performance --
@@ -1503,6 +1550,8 @@ _CLOCK_METRICS = {
     # §156. An AGE is a clock measured from a clock -- asserting "0.003 seconds since the last
     # write" is asserting how fast this machine ran. Published for a human, never assertable.
     "LAST_WRITE_AGE",
+    # SpannerWriter's millis spent committing the last batch.
+    "TIME_TAKEN_FOR_MERGE",
 }
 
 #: MON metrics whose SHAPE is assertable but whose values are clocks: `COMMIT_LAG` is
@@ -1887,6 +1936,11 @@ def load_manifest(path) -> TestManifest:
         raise ManifestError(f"{path}: manifest is empty")
     if not isinstance(raw, dict):
         raise ManifestError(f"{path}: top level must be a mapping, got {type(raw).__name__}")
+    allowed = _TEST_MANIFEST_KEYS | {"assert"}
+    unknown = sorted(str(k) for k in raw if k not in allowed)
+    if unknown:
+        raise ManifestError(
+            f"{path}: unknown top-level key(s) {unknown} -- allowed: {sorted(allowed)}")
 
     name = raw.get("name")
     if not isinstance(name, str) or not name:
@@ -2019,6 +2073,25 @@ def load_manifest(path) -> TestManifest:
             f"here would be silently ignored and the case would test one engine while appearing "
             f"to declare several. Until the data path supports it, give each engine its own case "
             f"with its own 'requires:'.")
+
+    # `expect_error` is rendered per variant, so each variant must leave it specific: a token
+    # it leaves empty makes the expectation a substring of every failure for that variant only.
+    if variants and assert_.expect_error is not None:
+        used = set(_TOKEN_REF.findall(assert_.expect_error))
+        for variant in variants:
+            for key in sorted(used & set(variant.tokens)):
+                if not variant.tokens[key].strip():
+                    raise ManifestError(
+                        f"{path}: 'variants.{variant.name}.tokens.{key}' is empty, and "
+                        f"'assert.expect_error' uses it: that variant would match every failure. "
+                        f"Give it the message that variant's engine refuses with.")
+            rendered = _TOKEN_REF.sub(
+                lambda t: variant.tokens.get(t.group(1), t.group(0)), assert_.expect_error)
+            broad = None if _TOKEN_REF.search(rendered) else expect_error_breadth(rendered)
+            if broad:
+                raise ManifestError(
+                    f"{path}: 'variants.{variant.name}' renders 'assert.expect_error' to "
+                    f"{rendered!r}, which {broad}")
 
     if matrix and udf is not None:
         raise ManifestError(

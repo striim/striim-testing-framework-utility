@@ -17,15 +17,6 @@ Two isolation patterns coexist, matching sql/*/templates.sql:
 Token derivation (`_slug` / `_tid_oracle`) is copied verbatim from scripts/live's
 livetest/plugin.py so that a value like ${TID_ORACLE} means the same short,
 Oracle-safe, collision-resistant hash in both tiers.
-
-INT_SHARED_SERVICES: a later phase will let an external broker bring up shared service
-containers once and export their endpoints, the way the (now-deleted)
-scripts/integration/services.sh's `it_shared()` mode worked for the old per-operator
-bash harnesses. That broker integration is NOT implemented here -- only structured
-for: `tokens()` reads every value through `os.getenv(NAME, default)` first, so any env
-vars a broker exports simply take priority for free, and `_ensure_up()` short-circuits
-(never touches docker) whenever INT_SHARED_SERVICES=1, on the assumption a broker
-already owns container lifecycle.
 """
 from __future__ import annotations
 
@@ -106,7 +97,7 @@ def _parallel(env: dict) -> bool:
     register-once) must engage in BOTH — Phase 2 keyed them on the xdist worker var alone, which
     the console's separate-subprocess model does not set. Serial (neither var) is unchanged; the
     xdist worker case is unchanged (the var is still present)."""
-    return bool(env.get("PYTEST_XDIST_WORKER") or env.get("SLT_PARALLEL"))
+    return bool(env.get("PYTEST_XDIST_WORKER") or paths_mod.flag("SLT_PARALLEL", env))
 
 
 def _slug(name: str) -> str:
@@ -258,15 +249,9 @@ def _require_service_opt_in(name: str) -> None:
     JVM-global on the cluster and affects non-Spanner tests too), so a test that
     `requires` one stays opt-in rather than provisioning unconditionally."""
     gate = _load_service_yaml(name).get("opt_in_env")
-    if gate and not (os.environ.get(gate) or os.environ.get("INT_EMULATORS")):
+    if gate and not (paths_mod.flag(gate) or paths_mod.flag("INT_EMULATORS")):
         pytest.skip(f"set {gate}=1 (or INT_EMULATORS=1) to opt in to the {name!r} service")
 
-
-def _shared_services() -> bool:
-    """True once a Phase-2 broker owns shared-service lifecycle (see module docstring).
-    Not implemented here; this is the structural hook a future broker integration
-    flips on."""
-    return os.environ.get("INT_SHARED_SERVICES", "").strip() == "1"
 
 
 def _postgres_tokens() -> dict:
@@ -397,8 +382,16 @@ def _started_registry() -> Path:
     return _state_root() / _int_state_name(".int-services-up.json")
 
 
+def _host_lock_path(base: str) -> Path:
+    # The containers these locks guard are per HOST (one `int-postgres` per INT_STACK_PREFIX on a
+    # machine), so the locks are too: two checkouts, or two state dirs, on one stack take the same lock. The
+    # records (the started registry) stay in the state dir.
+    from livetest import stack
+    return stack.host_lock_path(_int_state_name(base))
+
+
 def _compose_lock_path() -> Path:
-    return _state_root() / _int_state_name(".int-compose.lock")
+    return _host_lock_path(".int-compose.lock")
 
 
 def _op_build_lock_path(op_jar_ref: str) -> Path:
@@ -409,9 +402,10 @@ def _op_build_lock_path(op_jar_ref: str) -> Path:
 
 def _session_lock_path() -> Path:
     # Prefix-scoped like every other state file here: INT_STACK_PREFIX is what separates
-    # two DELIBERATE stacks in one checkout, and those are exactly the concurrent sessions
-    # that are safe -- they own different containers and different state files.
-    return _state_root() / _int_state_name(".int-session.lock")
+    # two DELIBERATE stacks, and those are exactly the concurrent sessions that are safe --
+    # they own different containers and different state files. Machine-wide: a
+    # second checkout on the same stack is a second session on the same containers.
+    return _host_lock_path(".int-session.lock")
 
 
 #: Held for the whole session by the controller; see `_acquire_session_lock`. Module-level
@@ -445,8 +439,7 @@ def _acquire_session_lock(config) -> None:
     down -v`, volume included -- when the owner finishes.
 
     Skipped for `--collect-only` (it touches no service), for xdist workers (they are one
-    session with the controller), under `INT_SHARED_SERVICES` (a broker owns lifecycle, so
-    concurrency is the design), and under `INT_ALLOW_CONCURRENT_SESSIONS` for anyone who
+    session with the controller), and under `INT_ALLOW_CONCURRENT_SESSIONS` for anyone who
     has read the above and means it.
     """
     global _session_lock
@@ -463,15 +456,18 @@ def _acquire_session_lock(config) -> None:
         return
     if os.environ.get("PYTEST_XDIST_WORKER"):
         return                      # a worker shares the controller's session
-    if _shared_services() or os.environ.get("INT_ALLOW_CONCURRENT_SESSIONS"):
+    if paths_mod.flag("INT_ALLOW_CONCURRENT_SESSIONS"):
         return
-    lock = FileLock(str(_session_lock_path()), timeout=0)
+    from livetest import lockdir
+    lock = FileLock(str(_session_lock_path()), timeout=0, mode=lockdir.file_mode())
     try:
         lock.acquire()
+    except PermissionError as e:
+        raise pytest.UsageError(lockdir.unopenable_lock_message(_session_lock_path(), e)) from None
     except Timeout:
         raise pytest.UsageError(
-            f"another integration-test session is already running against this checkout "
-            f"({_session_lock_path().name}).\n"
+            f"another integration-test session is already running against this stack's services "
+            f"({_session_lock_path()}).\n"
             f"\n"
             f"They cannot share it. In a serial run ${{TID}} is EMPTY, so both sessions "
             f"address the same fixed table names in the same schemas and will drop, "
@@ -516,10 +512,18 @@ def compose_lock() -> FileLock:
     nesting `with compose_lock:` around a call into services.docker (which also
     locks internally) is safe.
 
-    No timeout, as in the live tier and cli.py: a waiter blocks until the holder's bring-up
-    ends. A 120 s wait failed workers queued behind a Teradata boot (up to ~2 h under
-    emulation), and a timeout adds no protection -- a hung holder hangs the run either way."""
-    return FileLock(str(_compose_lock_path()))
+    Bounded by ``dockercmd.LOCK_WAIT_S`` (``_compose_filelock``), not 120 s: a 120 s wait failed workers
+    queued behind a Teradata boot (up to ~2 h under emulation). The holder's compose calls are bounded
+    too, so a waiter outlives any holder still making progress."""
+    return _compose_filelock()
+
+
+def _compose_filelock() -> FileLock:
+    """The compose lock, waited for at most ``dockercmd.LOCK_WAIT_S``: the holder's `down`, `up` and post-up
+    are each bounded, so a waiter outlives any holder still making progress, and a hung holder no longer hangs
+    every other worker forever."""
+    from livetest import dockercmd, lockdir
+    return FileLock(str(_compose_lock_path()), timeout=dockercmd.LOCK_WAIT_S, mode=lockdir.file_mode())
 
 
 def _ensure_up(name: str, lock: FileLock) -> bool:
@@ -532,13 +536,11 @@ def _ensure_up(name: str, lock: FileLock) -> bool:
     tear down something this session didn't start. Returns True iff this call did the
     registering (mirrors `services.ensure_up`'s return contract, even though no
     current caller here consumes it)."""
-    # Whole-profile preflight from ONE origin BEFORE every shortcut (broker-owned lifecycle,
-    # missing-compose skip, docker): incomplete resources are a named
+    # Whole-profile preflight from ONE origin BEFORE every shortcut (missing-compose skip,
+    # docker): incomplete resources are a named
     # inttest.resources.ResourceError, never a skip. An unavailable docker still skips below.
     from . import resources as _resources
     _resources.select_profile(name)
-    if _shared_services():
-        return False  # Phase 2: a broker already owns lifecycle -- see module docstring.
     if _docker_mod is None:
         _env_skip("env", f"services/docker.py not found; cannot bring up the {name!r} service")
     compose_file = _service_file(name, "compose.yaml")
@@ -571,7 +573,7 @@ def _ensure_up(name: str, lock: FileLock) -> bool:
 
 def pytest_unconfigure(config):
     """Release the session lock. Separate from `pytest_sessionfinish` on purpose: that hook
-    returns early for workers and under INT_SHARED_SERVICES, and does not run at all when collection fails,
+    returns early for workers, and does not run at all when collection fails,
     whereas the lock must be dropped on every exit path."""
     _release_session_lock()
 
@@ -580,9 +582,12 @@ def _int_all_skipped_guard(session, exitstatus):
     """An integration or perf run that executed no case because this host could not run them
     must not exit 0: ``7 skipped`` reads as green to every caller (live's ``_slt_infra_guard``).
 
-    Fires when at least one case skipped for an environment or build reason (``EnvSkip``) and no
-    case executed. A partial run keeps its status; a declared skip (``disabled:``, an opt-in gate)
-    never fires it. ``INT_ALLOW_ALL_SKIPPED=1`` opts out, but not when a build was the cause."""
+    Fires when at least one case skipped for an environment or build reason (``EnvSkip``) and
+    either no case executed, or one of the skips has the cause ``build``. A partial run with only
+    absent infrastructure keeps its status; a module that could not be built is different: the
+    cases that load it were never tested, and the cases that did run cannot vouch for them, so it
+    fails the run whatever else ran. A declared skip (``disabled:``, an opt-in gate) never fires
+    it. ``INT_ALLOW_ALL_SKIPPED=1`` opts out, but never for a build skip."""
     tr = session.config.pluginmanager.get_plugin("terminalreporter")
     if tr is None:
         return exitstatus
@@ -592,10 +597,21 @@ def _int_all_skipped_guard(session, exitstatus):
         return [r for r in stats.get(key, []) if getattr(r, "_int_case", False)]
 
     blocked = [r for r in cases("skipped") if getattr(r, "_int_env_skip", "")]
-    if not blocked or cases("passed") or cases("failed") or cases("error"):
+    if not blocked:
         return exitstatus
+    if cases("passed") or cases("failed") or cases("error"):
+        unbuilt = [r for r in blocked if r._int_env_skip == "build"]
+        if not unbuilt:
+            return exitstatus
+        print("")
+        print(f"[integration] {len(unbuilt)} case(s) were skipped because a module they load could "
+              f"not be built; they were never tested, so the run FAILS.")
+        for r in unbuilt:
+            why = r.longrepr[2] if isinstance(r.longrepr, tuple) else str(r.longrepr)
+            print(f"[integration]   {r.nodeid}: {why}")
+        return 1 if exitstatus == 0 else exitstatus
     causes = {r._int_env_skip for r in blocked}
-    if os.environ.get("INT_ALLOW_ALL_SKIPPED") and "build" not in causes:
+    if paths_mod.flag("INT_ALLOW_ALL_SKIPPED") and "build" not in causes:
         return exitstatus
     first = blocked[0]
     reason = first.longrepr[2] if isinstance(first.longrepr, tuple) else str(first.longrepr)
@@ -613,7 +629,13 @@ def _int_all_skipped_guard(session, exitstatus):
 def pytest_sessionfinish(session, exitstatus):
     """Tear down every service THIS host brought up -- but only from the xdist
     controller (workers each reach sessionfinish independently and must not race each
-    other's teardown), and never under INT_SHARED_SERVICES (a broker owns lifecycle).
+    other's teardown).
+
+    Under SLT_INFRA_OWNERSHIP=shared nothing is torn down either (shared never tears a service down,
+    and another checkout may be using it); the services left running are printed.
+
+    A failed teardown fails the session (exit status 1 when it was 0; case results stand) and
+    keeps the failed names in the registry, so the next session tears them down.
 
     Under INT_KEEP_SERVICES (fast local iteration without re-provisioning containers
     between runs), the containers are deliberately left running -- but the registry
@@ -628,25 +650,46 @@ def pytest_sessionfinish(session, exitstatus):
     # INT_EMPTY_SELECTION_OK=1: a `-m` that deselected every item is not a failure (a runner's
     # marker-split pass that this selection happens to leave empty).
     if (session.exitstatus == pytest.ExitCode.NO_TESTS_COLLECTED
-            and os.environ.get("INT_EMPTY_SELECTION_OK") == "1"
+            and paths_mod.flag("INT_EMPTY_SELECTION_OK")
             and session.config.getoption("markexpr", "")):
         session.exitstatus = pytest.ExitCode.OK
-    if _shared_services():
-        return
     if os.environ.get("PYTEST_XDIST_WORKER"):
         return  # a worker, not the controller -- see live's plugin.py for the same guard
     if _docker_mod is None or not _started_registry().exists():
         return
-    lock = FileLock(str(_compose_lock_path()))
+    lock = _compose_filelock()
     with lock:
         started = _read_started()
-        if not os.environ.get("INT_KEEP_SERVICES"):
-            for name in started:
+        if _docker_mod.shared_ownership():
+            # SLT_INFRA_OWNERSHIP=shared: reuse what is running, start what is missing, never tear it down.
+            # Another checkout may be using a service this session started.
+            if started:
+                print(f"[integration] left running (SLT_INFRA_OWNERSHIP=shared): {', '.join(sorted(started))}")
+        elif not paths_mod.flag("INT_KEEP_SERVICES"):
+            failed = set()
+            for name in sorted(started):
                 try:
                     _docker_mod.compose_down(name, lock)
-                except Exception as e:  # noqa: BLE001 - teardown must not mask the run's real outcome
-                    print(f"[integration] WARNING: failed to tear down {name!r}: {e!r} "
+                    # `down` is project-scoped: a same-named container of another compose project survives it
+                    # and `down` still exits 0 (the same check `inttest.cli stop` makes).
+                    survivors = _docker_mod.surviving_containers(name)
+                    if survivors:
+                        raise RuntimeError(f"{', '.join(survivors)} still present after `compose down`; remove "
+                                           f"it once with: docker rm -f {' '.join(survivors)}")
+                except Exception as e:  # noqa: BLE001 - one failure must not strand the rest
+                    print(f"[integration] ERROR: failed to tear down {name!r}: {e!r} "
                           f"(container may still be running)")
+                    failed.add(name)
+            if failed:
+                # As the live tier: case results stand, the session fails, and the failed names stay
+                # recorded so the next session tears them down (it would otherwise find them "already up"
+                # and never own them again).
+                _write_started(failed)
+                print(f"[integration] ERROR: teardown failed for {', '.join(sorted(failed))}; kept in "
+                      f"{_started_registry().name} so the next session retries")
+                if session.exitstatus == 0:
+                    session.exitstatus = 1
+                return
         try:
             _started_registry().unlink()
         except FileNotFoundError:
@@ -868,6 +911,9 @@ def pytest_runtest_makereport(item, call):
         rep._int_case = True
         exc = call.excinfo.value if call.excinfo is not None else None
         rep._int_env_skip = exc.cause if isinstance(exc, EnvSkip) else ""
+        leaks = getattr(item, "_slt_teardown_leaks", None)
+        if leaks and rep.when == "teardown":
+            rep._int_teardown_leaks = list(leaks)
         rec = _case_recorder(item.config)
         if rec is not None:
             rec.mark(item, rep)
@@ -894,7 +940,7 @@ def _keep_resources(request) -> bool:
         return True  # keep on failure, for debugging
     if request.config.getoption("--slt-keep-resources", False):
         return True
-    if os.environ.get("INT_KEEP_RESOURCES"):
+    if paths_mod.flag("INT_KEEP_RESOURCES"):
         return True
     return False
 
@@ -1179,10 +1225,7 @@ def _group_requires(m, group_services: set) -> list:
 def _variant_items(env) -> bool:
     """`INT_VARIANT_ITEMS`: unset or `1`, a variants case is one item per variant group; `0`, one
     item for the whole case, its groups driven in turn or by `INT_VARIANT_WORKERS`."""
-    raw = (env.get("INT_VARIANT_ITEMS") or "1").strip()
-    if raw not in ("0", "1"):
-        raise ValueError(f"INT_VARIANT_ITEMS must be 0 or 1, got {raw!r}")
-    return raw == "1"
+    return paths_mod.flag("INT_VARIANT_ITEMS", env)
 
 
 def _group_items(m) -> list:
@@ -1403,6 +1446,17 @@ def _drop_oracle_test_prefix(prefix: str) -> None:
 # ============================================================================
 
 
+def _switch_problems(env) -> list:
+    """One message per switch, or declared opt-in gate, that `env` sets to something other than 1 or 0.
+    The gates are read through livetest.service_env; where livetest cannot be imported (the plugin
+    treats it as optional, see _docker_mod), the switches alone are checked, as before the gates were."""
+    try:
+        from livetest import service_env
+    except ImportError:
+        return paths_mod.flag_problems(env)
+    return service_env.switch_problems(env)
+
+
 def pytest_configure(config):
     """Register markers (pytest.ini already lists them under --strict-markers; this
     makes conftest.py self-sufficient too) and enforce the SLT_PARALLEL opt-in for
@@ -1410,6 +1464,18 @@ def pytest_configure(config):
     per-test objects are tokenized (${TID}/${TID_ORACLE}) so parallel runs are
     supported, but stay opt-in."""
     os.environ.update(paths_mod.effective_env(os.environ))
+    # A switch set to anything but 1 or 0 is a settings mistake: refuse the run before anything
+    # reads it (paths.flag). A service's declared opt-in gate is a switch too.
+    problems = _switch_problems(os.environ)
+    # INT_STACK_PREFIX names the session lock, every state file and every container: an invalid one is a
+    # settings mistake too, reported here rather than as a traceback from the first file it names.
+    if _docker_mod is not None:
+        try:
+            _docker_mod.stack_prefix(os.environ)
+        except _docker_mod.StackPrefixError as e:
+            problems = [*problems, str(e)]
+    if problems:
+        raise pytest.UsageError("integration: " + "\n".join(problems))
     config.addinivalue_line("markers", "integration: integration test (requires Docker services)")
     config.addinivalue_line("markers", "postgres: requires the Postgres integration service")
     config.addinivalue_line("markers", "oracle: requires the Oracle integration service")
@@ -1431,7 +1497,7 @@ def pytest_configure(config):
                 "pytest-xdist (-n/--dist) is not allowed under --perf, even with "
                 "SLT_PARALLEL=1."
             )
-        if not os.environ.get("SLT_PARALLEL"):
+        if not paths_mod.flag("SLT_PARALLEL"):
             raise pytest.UsageError(
                 "the integration-test suite runs SERIALLY by default. Per-test object "
                 "names are tokenized (${TID}/${TID_ORACLE}) so parallel runs are "
@@ -1460,7 +1526,7 @@ def pytest_configure(config):
     # does that routinely). Unconditional serial runs never touch this registry at
     # all (the parallel branch is the only caller of ensure_provisioned_once), so
     # this is a no-op there beyond deleting a file that likely doesn't exist.
-    if os.environ.get("SLT_PARALLEL") and not os.environ.get("PYTEST_XDIST_WORKER"):
+    if paths_mod.flag("SLT_PARALLEL") and not os.environ.get("PYTEST_XDIST_WORKER"):
         if _docker_mod is not None:
             _docker_mod.clear_provision_registry()
     _install_case_records(config)
@@ -1586,9 +1652,14 @@ def _build_operator_jar(name: str, op_jar_ref: str, report=None):
     `report`, when given, is passed straight through to `opartifacts.build_jar` --
     `PerfYamlItem` uses it to record whether this run rebuilt the jar (PERF_SPEC.md
     §12's "whether the jar was rebuilt during this run or reused"); `IntYamlItem`
-    leaves it `None`, unchanged from before."""
+    leaves it `None`, unchanged from before.
+
+    A missing build prerequisite (STRIIM_HOME, `mvn`, the release's JDK) skips with the cause
+    "build", which fails the run whatever else ran (`_int_all_skipped_guard`). A module path
+    that is not there, a prebuilt jar that cannot be used, or a build that ran and failed or
+    produced the wrong release fails the case."""
     if not os.environ.get("STRIIM_HOME"):
-        _env_skip("env", 
+        _env_skip("build", 
             f"{name}: STRIIM_HOME is not set -- building {op_jar_ref!r} needs a "
             f"Striim install (running the fast unit suite does not)"
         )
@@ -1609,8 +1680,47 @@ def _build_operator_jar(name: str, op_jar_ref: str, report=None):
         # A FAILURE, not a skip: the build ran, so the module itself is broken, and a skip
         # would let a run that tested nothing of it read green.
         pytest.fail(f"{name}: operator jar {op_jar_ref!r} failed to build: {e}")
+    except opartifacts_mod.OpJarRejected as e:
+        # The run was told to use this jar, so the case cannot pass without it.
+        pytest.fail(f"{name}: cannot use the prebuilt jar for {op_jar_ref!r}: {e}", pytrace=False)
+    except opartifacts_mod.OpModuleMissing as e:
+        pytest.fail(f"{name}: {e}", pytrace=False)
     except (opartifacts_mod.OpArtifactError, FileNotFoundError) as e:
+        # A missing build prerequisite (no `mvn`, no JDK for the release), or a reused jar
+        # stamped for another release that needs `mvn clean`.
         _env_skip("build", f"{name}: cannot build operator jar {op_jar_ref!r}: {e}")
+
+
+def _teardown_leak(item, step: str, error: Exception) -> None:
+    """A per-case teardown step that failed and left the case's objects behind. Shown on the
+    terminal now, listed again in the session's summary (`pytest_terminal_summary`) and counted in
+    the case record (`teardownLeaks`); the case keeps its outcome, and the next case's setup reset
+    tries again."""
+    leaks = getattr(item, "_slt_teardown_leaks", None)
+    if leaks is None:
+        leaks = item._slt_teardown_leaks = []
+    leaks.append({"step": step, "error": repr(error)})
+    _terminal_emit(item.config, f"[integration] WARNING: failed to {step} for {item.manifest.name}: "
+                                f"{error!r}")
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """The cases whose teardown left objects behind (`_teardown_leak`), from every process: the
+    leaks travel on the reports, so an xdist controller lists its workers' too."""
+    leaks = {}
+    for reports in terminalreporter.stats.values():
+        for report in reports:
+            found = getattr(report, "_int_teardown_leaks", None)
+            if found:
+                leaks[report.nodeid] = found
+    if not leaks:
+        return
+    terminalreporter.section("integration teardown left objects behind", sep="-", yellow=True)
+    for nodeid, found in leaks.items():
+        for leak in found:
+            terminalreporter.write_line(f"{nodeid}: failed to {leak['step']}: {leak['error']}")
+    terminalreporter.write_line(f"{len(leaks)} case(s) left objects behind; the next run's setup reset "
+                                f"tries again. Their case records count them (teardownLeaks).")
 
 
 def _terminal_emit(config, text: str) -> None:
@@ -1718,6 +1828,37 @@ def _redacted_failure(item, excinfo):
                                   redact_mod.known_secrets(extra=extra))
 
 
+def _note_variants(config, m) -> None:
+    """Record a collected case's variant names, for `pytest_collection_finish`'s INT_VARIANT check."""
+    if m.variants:
+        seen = config.stash.setdefault(_VARIANTS_SEEN, {})
+        seen[m.name] = [v.name for v in m.variants]
+
+
+_VARIANTS_SEEN = pytest.StashKey[dict]()
+
+
+def pytest_collection_finish(session):
+    """`INT_VARIANT` narrows every variants case to the variant it names. A name that matched no
+    variant of any collected case dropped them all and exited 0 without a word, which reads as a
+    passing run of fewer cases: it is a usage error. Otherwise one line says what was narrowed."""
+    only = manifest_mod._only_variant()
+    if not only:
+        return
+    seen = session.config.stash.get(_VARIANTS_SEEN, {})
+    matched = [name for name, variants in seen.items() if only in variants]
+    if seen and not matched:
+        names = sorted({v for variants in seen.values() for v in variants})
+        raise pytest.UsageError(
+            f"INT_VARIANT={only} names no variant of the {len(seen)} collected case(s) that "
+            f"declare variants (their variants: {', '.join(names)}); those cases would not run. "
+            f"Fix the name, or unset INT_VARIANT.")
+    tr = session.config.pluginmanager.get_plugin("terminalreporter")
+    if tr is not None:
+        tr.write_line(f"[integration] INT_VARIANT={only}: running only that variant of "
+                      f"{len(matched)} case(s)")
+
+
 class IntYamlFile(pytest.File):
     """A pytest.File subclass for test.yaml manifests (SPEC §3). Parsing/normalization
     is entirely `inttest.manifest.load_manifest`'s job; this class only turns a parse
@@ -1728,6 +1869,7 @@ class IntYamlFile(pytest.File):
             test_manifest = manifest_mod.load_manifest(self.path)
         except manifest_mod.ManifestError as e:
             pytest.fail(str(e))
+        _note_variants(self.config, test_manifest)
         for suffix, runs, requires in _group_items(test_manifest):
             yield IntYamlItem.from_parent(
                 self,
@@ -1786,7 +1928,7 @@ class IntYamlItem(pytest.Item):
 
         # --- 1. Skip gate: disabled: truthy skips before any provisioning/build work,
         # unless forced via SLT_RUN_DISABLED=1. ---
-        if m.disabled and os.environ.get("SLT_RUN_DISABLED") != "1":
+        if m.disabled and not paths_mod.flag("SLT_RUN_DISABLED"):
             reason = m.disabled if isinstance(m.disabled, str) else "disabled"
             pytest.skip(f"{m.name}: disabled ({reason}); set SLT_RUN_DISABLED=1 to force")
 
@@ -1796,7 +1938,7 @@ class IntYamlItem(pytest.Item):
         # _ensure_up call during fixture SETUP (before runtest() ever runs) -- this
         # call is what SPEC §5 step 2 itself asks for and is a harmless idempotent
         # no-op if that already happened.
-        lock = FileLock(str(_compose_lock_path()))
+        lock = _compose_filelock()
         _provision_requires(m.name, self.requires, lock)
 
         # --- 3. Build/reuse the operator jar for the detected Striim release. ---
@@ -2002,11 +2144,20 @@ class IntYamlItem(pytest.Item):
                     props.update(overrides or {})
                     # Named in every failure, so a mismatch says WHICH run made it.
                     at = _run_label(None, overrides)
-                    for spec in m.assert_.data:
+                    for index, spec in enumerate(m.assert_.data):
                         if m.source is None:
                             raw_input = Path(spec.input_path).read_text()
                             rendered_input = tokens_mod.render(raw_input, self.tokens)
                             input_events = waevent_mod.load(rendered_input)
+                            if not input_events:
+                                # An operator fed nothing emits nothing, so an empty `match` would
+                                # pass without the operator ever running a line of its code. An
+                                # empty `match` beside real input stays legal: it says the
+                                # operator filtered everything.
+                                pytest.fail(
+                                    f"{m.name}{at}: assert.data[{index}].input {spec.input} has no "
+                                    f"events, so the operator is never fed and the comparison "
+                                    f"proves nothing. Give it the events the operator should see.")
                         else:
                             # A `source:` case has no input fixture -- the events come from
                             # ticking the reader, not from a file (load_manifest rejects an
@@ -2117,17 +2268,22 @@ class IntYamlItem(pytest.Item):
 
         at = _run_label(variant, overrides)
         tok = self._variant_tokens(variant)
+        # The load-time breadth guard saw the raw text; a token can render it empty (a substring
+        # of every failure) or down to a bare "Exception". Checked before the drive, on what will
+        # actually be matched.
+        expected = tokens_mod.render(m.assert_.expect_error, tok)
+        broad = manifest_mod.expect_error_breadth(expected)
+        if broad:
+            pytest.fail(f"{m.name}{at}: assert.expect_error renders to {expected!r} here: {broad}",
+                        pytrace=False)
         props = {k: tokens_mod.render(v, tok) for k, v in m.properties.items()}
         props.update(overrides or {})
         if "ConfigFile" in props:
             props["ConfigFile"] = render_config_file(props["ConfigFile"], tok)
 
-        if m.target is not None:
-            raw_input = Path(m.target.input_path).read_text()
-        elif m.assert_.data:
-            raw_input = Path(m.assert_.data[0].input_path).read_text()
-        else:
-            raw_input = "[]"
+        # An op: case without target: has no input for the failure path (load refuses `data:`
+        # beside expect_error), so only a refusal at construction or start can be asserted there.
+        raw_input = Path(m.target.input_path).read_text() if m.target is not None else "[]"
         input_events = waevent_mod.load(tokens_mod.render(raw_input, tok))
 
         try:
@@ -2150,7 +2306,6 @@ class IntYamlItem(pytest.Item):
             # "Cannot insert the value NULL into column", Oracle raises ORA-01400, and there is no
             # common sqlState either (23502 / 23000 / 23000). Rendering costs nothing for a case
             # with no tokens in its expect_error, which is all of them today.
-            expected = tokens_mod.render(m.assert_.expect_error, self._variant_tokens(variant))
             if refusal is not None and expected in refusal:
                 # Refused, for the stated reason. Now check what the failure LEFT BEHIND: a
                 # rollback is only proved by the database, not by the exception.
@@ -2164,7 +2319,7 @@ class IntYamlItem(pytest.Item):
                 f"--- harness error ---\n{e}")
         pytest.fail(
             f"{m.name}{at}: expected the drive to be REFUSED with a failure containing "
-            f"{tokens_mod.render(m.assert_.expect_error, self._variant_tokens(variant))!r}, "
+            f"{expected!r}, "
             f"but it SUCCEEDED. A refusal that stopped happening is a "
             f"behaviour change, and silently writing what this case says must be rejected is the "
             f"outcome it exists to prevent.")
@@ -2543,7 +2698,8 @@ class IntYamlItem(pytest.Item):
             raw_expected = tokens_mod.render(Path(spec.match_path).read_text(), tok)
             expected = json.loads(raw_expected)
             actual = _jsonable_rows(rows)
-            if actual != expected:
+            # Typed, as assert.data compares: `True` is not `1` and `5.0` is not `5`.
+            if not waevent_mod._same(actual, expected):
                 pytest.fail(
                     f"{m.name}{at}: assert.target mismatch against {route!r}\n"
                     f"  query:    {shown}\n"
@@ -2596,13 +2752,13 @@ class IntYamlItem(pytest.Item):
 
     def _teardown_bigtable(self) -> None:
         """Drop the tables `_setup_bigtable` created. An already-missing table is fine; any other
-        failure is reported and does not mask the case's own outcome."""
+        failure is a teardown leak (`_teardown_leak`: shown, summarised and counted in the case
+        record) and does not mask the case's own outcome."""
         for route, table, tok in getattr(self, "_bigtable_created", []):
             try:
                 dbroutes_mod.teardown_bigtable(table, route=route, tokens=tok)
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
-                print(f"[integration] WARNING: failed to drop bigtable table {table!r} on "
-                      f"{route!r}: {e!r}")
+                _teardown_leak(self, f"drop bigtable table {table!r} on {route!r}", e)
         self._bigtable_created = []
 
     def _teardown_db_isolation(self, failed: bool) -> None:
@@ -2616,7 +2772,7 @@ class IntYamlItem(pytest.Item):
         keep = (
             failed
             or self.config.getoption("--slt-keep-resources", False)
-            or bool(os.environ.get("INT_KEEP_RESOURCES"))
+            or paths_mod.flag("INT_KEEP_RESOURCES")
         )
         if getattr(self, "_bigtable_env_set", False):
             os.environ.pop("BIGTABLE_EMULATOR_HOST", None)
@@ -2638,14 +2794,12 @@ class IntYamlItem(pytest.Item):
                 else:
                     self._pg_admin.reset_schemas()
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
-                print(f"[integration] WARNING: failed to reset Postgres test objects "
-                      f"for {self.manifest.name}: {e!r}")
+                _teardown_leak(self, "reset Postgres test objects", e)
         if self._oracle_prefix is not None:
             try:
                 _drop_oracle_test_prefix(self._oracle_prefix)
             except Exception as e:  # noqa: BLE001
-                print(f"[integration] WARNING: failed to drop Oracle tables prefixed "
-                      f"{self._oracle_prefix!r}: {e!r}")
+                _teardown_leak(self, f"drop Oracle tables prefixed {self._oracle_prefix!r}", e)
         if self._spanner_prefix is not None:
             # Only drops this test's ${TID}-prefixed tables (mirrors scripts/live's
             # _DDL_TEARDOWN_PREFIX_TOKENS behavior for spanner) -- deliberately NOT
@@ -2662,8 +2816,7 @@ class IntYamlItem(pytest.Item):
             except spanneradmin_mod.RealSpannerError:
                 raise  # real Spanner: objects left in a shared database fail the case
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
-                print(f"[integration] WARNING: failed to drop Spanner tables prefixed "
-                      f"{self._spanner_prefix!r}: {e!r}")
+                _teardown_leak(self, f"drop Spanner tables prefixed {self._spanner_prefix!r}", e)
 
 
 # ============================================================================
@@ -2785,6 +2938,7 @@ class PerfYamlFile(pytest.File):
         # §88's complaint that a fanned-out case reports `1 passed` whether it ran one run or
         # twenty -- here twenty runs are twenty reported items.
         m = perf_manifest.test_manifest
+        _note_variants(self.config, m)
         for variant, overrides in m.runs():
             yield PerfYamlItem.from_parent(
                 self,
@@ -2832,15 +2986,9 @@ class PerfYamlItem(pytest.Item):
 
         self.add_marker(pytest.mark.integration)
         self.add_marker(pytest.mark.perf)
+        # One marker per service, as IntYamlItem does, so `--perf -m sqlserver` selects them.
         for svc in test_manifest.requires:
-            if svc == "postgres":
-                self.add_marker(pytest.mark.postgres)
-            elif svc == "oracle":
-                self.add_marker(pytest.mark.oracle)
-            elif svc == "spanner":
-                self.add_marker(pytest.mark.spanner)
-            elif svc == "gcs":
-                self.add_marker(pytest.mark.gcs)
+            self.add_marker(getattr(pytest.mark, svc))
 
     def repr_failure(self, excinfo):
         return _redacted_failure(self, excinfo)
@@ -2855,7 +3003,7 @@ class PerfYamlItem(pytest.Item):
         # --- 1. Skip gate: disabled: truthy skips before any provisioning/build work,
         # same as IntYamlItem step 1 -- this perf test.yaml's own `disabled:` key
         # (PERF_SPEC.md §3: structurally identical to a regression test.yaml). ---
-        if m.disabled and os.environ.get("SLT_RUN_DISABLED") != "1":
+        if m.disabled and not paths_mod.flag("SLT_RUN_DISABLED"):
             reason = m.disabled if isinstance(m.disabled, str) else "disabled"
             pytest.skip(f"{m.name}: disabled ({reason}); set SLT_RUN_DISABLED=1 to force")
 
@@ -2867,7 +3015,7 @@ class PerfYamlItem(pytest.Item):
 
         # --- 2-3. Provision services, build the operator jar -- identical to
         # IntYamlItem, off this perf test.yaml's own manifest. ---
-        lock = FileLock(str(_compose_lock_path()))
+        lock = _compose_filelock()
         _provision_requires(m.name, m.requires, lock)
         self.artifact = artifact = _build_operator_jar(m.name, m.module_ref, report=rebuild_reasons.append)
 
@@ -3076,7 +3224,7 @@ class PerfYamlItem(pytest.Item):
         keep = (
             failed
             or self.config.getoption("--slt-keep-resources", False)
-            or bool(os.environ.get("INT_KEEP_RESOURCES"))
+            or paths_mod.flag("INT_KEEP_RESOURCES")
         )
         if keep:
             return
@@ -3093,8 +3241,7 @@ class PerfYamlItem(pytest.Item):
                 else:
                     pg.reset_schemas()
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
-                print(f"[integration] WARNING: failed to reset Postgres test objects "
-                      f"for {m.name}: {e!r}")
+                _teardown_leak(self, "reset Postgres test objects", e)
         if "oracle" in m.requires and hasattr(self, "tokens"):
             # ${TID_ORACLE}, NOT ${TID_ORACLE_DB} (removed -- see tokens.isolation_tokens):
             # empty in a serial run (SPEC §6), same as IntYamlItem's _oracle_prefix, so
@@ -3105,7 +3252,7 @@ class PerfYamlItem(pytest.Item):
                 try:
                     _drop_oracle_test_prefix(tid_oracle)
                 except Exception as e:  # noqa: BLE001
-                    print(f"[integration] WARNING: failed to drop Oracle tables for {m.name}: {e!r}")
+                    _teardown_leak(self, f"drop Oracle tables prefixed {tid_oracle!r}", e)
         if "spanner" in m.requires and hasattr(self, "tokens") and self.tokens.get("TID"):
             # Mirrors IntYamlItem's Spanner branch exactly, including its choice NOT to fall
             # back to a blanket prefix="" drop in serial runs: ${TID} is empty there by design,
@@ -3120,8 +3267,17 @@ class PerfYamlItem(pytest.Item):
             except spanneradmin_mod.RealSpannerError:
                 raise  # real Spanner: objects left in a shared database fail the case
             except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
-                print(f"[integration] WARNING: failed to drop Spanner tables prefixed "
-                      f"{self.tokens['TID']!r} for {m.name}: {e!r}")
+                _teardown_leak(self, f"drop Spanner tables prefixed {self.tokens['TID']!r}", e)
+        if "bigtable" in m.requires and hasattr(self, "tokens"):
+            # perf._reset_once re-creates each `setup: bigtable:` table before every measured
+            # iteration, and nothing else drops the last iteration's: without this a passing run
+            # leaves it in the shared emulator. Same keep gate as above; a failure is a teardown leak.
+            for spec in getattr(m, "bigtable_setup", None) or []:
+                table = tokens_mod.render(spec.table, self.tokens)
+                try:
+                    dbroutes_mod.teardown_bigtable(table, route=spec.db, tokens=self.tokens)
+                except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
+                    _teardown_leak(self, f"drop bigtable table {table!r} on {spec.db!r}", e)
 
 
 def pytest_collection_modifyitems(config, items):

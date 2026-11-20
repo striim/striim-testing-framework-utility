@@ -376,7 +376,6 @@ def test_session_guard_refuses_a_second_session_and_names_the_cause(monkeypatch,
     try:
         monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
         monkeypatch.delenv("INT_ALLOW_CONCURRENT_SESSIONS", raising=False)
-        monkeypatch.delenv("INT_SHARED_SERVICES", raising=False)
         # A lock file this test owns, so the assertion is about the guard rather than about
         # whatever the surrounding run happens to be holding.
         foreign = tmp_path / ".int-session.lock"
@@ -543,3 +542,93 @@ assert:
 
     # The explicit route wins; the other follows the variant. Ordinal 3 is untouched.
     assert ran == [("postgres-source", "-- wait.sql"), ("oracle-target", "-- probe.sql")]
+
+
+# --- session teardown: every started service, and a failure fails the session -------
+
+@pytest.fixture
+def int_session(monkeypatch, tmp_path):
+    """A controller session whose registry names oracle and postgres; tearing oracle down fails."""
+    import json
+    from types import SimpleNamespace
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("SLT_STATE_DIR", str(state))
+    for var in ("PYTEST_XDIST_WORKER", "INT_KEEP_SERVICES", "INT_STACK_PREFIX",
+                "INT_EMPTY_SELECTION_OK", "INT_ALLOW_ALL_SKIPPED", "SLT_INFRA_OWNERSHIP"):
+        monkeypatch.delenv(var, raising=False)
+    calls, survivors = [], {}
+
+    def compose_down(name, lock):
+        calls.append(name)
+        if name == "oracle":
+            raise RuntimeError("down failed")
+
+    monkeypatch.setattr(plugin, "_docker_mod", SimpleNamespace(
+        compose_down=compose_down, surviving_containers=lambda name: survivors.get(name, []),
+        shared_ownership=lambda: False, state_name=lambda base: base))
+    plugin._write_started({"oracle", "postgres"})
+    config = SimpleNamespace(pluginmanager=SimpleNamespace(get_plugin=lambda name: None),
+                             getoption=lambda *a, **k: "")
+    session = SimpleNamespace(config=config, exitstatus=0)
+    return SimpleNamespace(session=session, calls=calls, survivors=survivors,
+                           registry=plugin._started_registry(), read=lambda: json.loads(
+                               plugin._started_registry().read_text()))
+
+
+def test_session_finish_tears_down_every_started_service(int_session, capsys):
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert int_session.calls == ["oracle", "postgres"]          # one failed teardown does not stop the rest
+    assert "failed to tear down 'oracle'" in capsys.readouterr().out
+
+
+def test_a_failed_teardown_fails_the_session_and_keeps_the_failed_name(int_session, capsys):
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert int_session.session.exitstatus == 1
+    assert int_session.read() == ["oracle"]                      # postgres went; oracle is still owned
+    assert "kept in .int-services-up.json so the next session retries" in capsys.readouterr().out
+
+
+def test_a_failed_teardown_keeps_a_worse_exit_status(int_session):
+    int_session.session.exitstatus = 2
+    plugin.pytest_sessionfinish(int_session.session, 2)
+    assert int_session.session.exitstatus == 2
+
+
+def test_the_next_session_retries_a_failed_teardown(int_session, monkeypatch):
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    downs = []
+    monkeypatch.setattr(plugin._docker_mod, "compose_down", lambda name, lock: downs.append(name))
+    int_session.session.exitstatus = 0
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert downs == ["oracle"]
+    assert int_session.session.exitstatus == 0 and not int_session.registry.exists()
+
+
+def test_a_container_that_survives_compose_down_is_a_failed_teardown(int_session, monkeypatch, capsys):
+    monkeypatch.setattr(plugin._docker_mod, "compose_down", lambda name, lock: int_session.calls.append(name))
+    int_session.survivors["postgres"] = ["int-postgres"]
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert int_session.session.exitstatus == 1
+    assert int_session.read() == ["postgres"]
+    assert "docker rm -f int-postgres" in capsys.readouterr().out
+
+
+def test_a_clean_teardown_clears_the_registry_and_keeps_the_run_green(int_session, monkeypatch):
+    monkeypatch.setattr(plugin._docker_mod, "compose_down", lambda name, lock: int_session.calls.append(name))
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert int_session.calls == ["oracle", "postgres"]
+    assert int_session.session.exitstatus == 0 and not int_session.registry.exists()
+
+
+def test_int_keep_services_keeps_containers_and_clears_the_registry(int_session, monkeypatch):
+    monkeypatch.setenv("INT_KEEP_SERVICES", "1")
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert int_session.calls == [] and not int_session.registry.exists()
+    assert int_session.session.exitstatus == 0
+
+
+def test_a_worker_run_never_tears_down(int_session, monkeypatch):
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    plugin.pytest_sessionfinish(int_session.session, 0)
+    assert int_session.calls == [] and int_session.registry.exists()

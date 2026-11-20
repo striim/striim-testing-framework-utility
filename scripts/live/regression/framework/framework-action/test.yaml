@@ -25,7 +25,8 @@ topology: single
 requires: [postgres]
 
 # The feature under test. `action:` runs AFTER every post_start step and BEFORE every assertion.
-# `stop_start_cycle` STOPs the app, waits `stop_duration`, STARTs it and waits for RUNNING, and
+# `stop_start_cycle` STOPs the app, waits until it has stopped (DEPLOYED/STOPPED/CREATED; any
+# other status fails the case), waits `stop_duration`, STARTs it and waits for RUNNING, and
 # repeats `cycles` times with `delay_before_stop` between. The difference from `recover:` is
 # the loop and the `concurrent:` block: each entry is a SQL file run on its own thread, every
 # `loop_interval`, from the moment the phase starts until the last cycle's app is RUNNING again.

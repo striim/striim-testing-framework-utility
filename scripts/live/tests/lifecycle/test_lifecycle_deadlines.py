@@ -151,6 +151,53 @@ def test_stability_lost_fails():
     assert state.stability["held"] is False and state.stability["seconds"] == 2.0 and state.stability["value"] == 2
 
 
+def test_an_app_that_crashes_during_stability_fails_completion():
+    # The count is reached and still holds after the interval, but the app left RUNNING meanwhile.
+    clock, state = FakeClock(), lifecycle.State("cdc")
+    admins = _admins(target_fn=lambda s, p: [(3,)])
+    statuses = lambda a: "RUNNING" if clock.t < 1001.0 else "CRASH"     # noqa: E731
+    with pytest.raises(LifecycleError, match=r"completion row-count failed: terminal-status:CRASH \(NS.lcApp\)"):
+        lifecycle.complete(state, _spec(stability="2s"), **_kw(clock, admins, statuses))
+    assert state.completion["reason"] == "terminal-status:CRASH (NS.lcApp)"
+    assert state.stability["held"] is False and state.stability["value"] == 3
+    assert state.stability["status"] == "CRASH (NS.lcApp)"
+
+
+def test_an_app_that_crashes_during_stability_fails_readiness():
+    clock, state = FakeClock(), lifecycle.State("cdc")
+    admins = _admins(source_fn=lambda s, p: [(True,)])
+    statuses = lambda a: "RUNNING" if clock.t < 1001.0 else "HALT"      # noqa: E731
+    with pytest.raises(LifecycleError, match=r"readiness source-progress failed: terminal-status:HALT"):
+        lifecycle.smoke_and_ready(state, _spec(stability="2s"), **_kw(clock, admins, statuses))
+    assert state.stability["held"] is False and state.stability["status"] == "HALT (NS.lcApp)"
+
+
+def test_an_unreadable_status_after_stability_is_stability_lost():
+    clock, state = FakeClock(), lifecycle.State("cdc")
+    admins = _admins(target_fn=lambda s, p: [(3,)])
+
+    def statuses(app):
+        if clock.t >= 1001.0:
+            raise RuntimeError("status endpoint down")
+        return "RUNNING"
+    with pytest.raises(LifecycleError, match="stability-lost"):
+        lifecycle.complete(state, _spec(stability="2s"), **_kw(clock, admins, statuses))
+    assert state.stability["held"] is False and "status endpoint down" in state.stability["statusError"]
+
+
+def test_stability_reads_the_status_after_the_interval_and_holds_on_running():
+    clock, state = FakeClock(), lifecycle.State("cdc")
+    admins = _admins(target_fn=lambda s, p: [(3,)])
+    read_at = []
+
+    def statuses(app):
+        read_at.append(clock.t)
+        return "RUNNING"
+    lifecycle.complete(state, _spec(stability="2s"), **_kw(clock, admins, statuses))
+    assert state.completion["reason"] == "satisfied" and state.stability["held"] is True
+    assert state.stability["status"] is None and read_at[-1] >= 1002.0     # read after the sleep
+
+
 def test_baseline_landed_requires_sink_equal_positive_baseline_and_running():
     clock, state = FakeClock(), lifecycle.State("initial-load")
     spec = _initial()

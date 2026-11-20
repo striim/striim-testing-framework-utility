@@ -66,3 +66,11 @@ def _no_tryout_docker(monkeypatch):
 def real_prestart_run():
     """The unstubbed livetest.prestart.run_hook."""
     return REAL_RUN
+
+
+@pytest.fixture(autouse=True)
+def _no_bind_gateway_probe(monkeypatch):
+    """A harness `compose up` asks Docker for the bridge gateway (livetest.bindaddr). Docker is a stub
+    here, so the answer is fixed at Docker Desktop's (none); probe tests call detect_gateway."""
+    from livetest import bindaddr
+    monkeypatch.setattr(bindaddr, "_cached_gateway", lambda run=None: None)

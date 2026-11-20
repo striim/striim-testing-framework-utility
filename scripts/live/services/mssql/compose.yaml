@@ -28,11 +28,15 @@ services:
       MSSQL_SA_PASSWORD: "QAtestuser1"
       MSSQL_PID: "Developer"                # free, full-featured (CDC, Agent)
       MSSQL_AGENT_ENABLED: "TRUE"           # Agent runs the CDC capture/cleanup jobs
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :1433 is already taken. When
       # overriding, point the framework at it too: SLT_MSSQL_HOST=localhost
       # SLT_MSSQL_PORT=<port> (+ the SLT_MSSQL_* creds; see docs/internals/ENGINE.md).
-      - "${SLT_MSSQL_HOST_PORT:-1433}:1433"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_MSSQL_HOST_PORT:-1433}:1433"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_MSSQL_HOST_PORT:-1433}:1433"
     networks:
       - slt-mssql-net
     healthcheck:

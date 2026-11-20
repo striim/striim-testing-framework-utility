@@ -12,7 +12,8 @@ from pathlib import Path
 
 SCHEMA_VERSION = 1
 
-VALID_TEST_STATUSES = {"passed", "failed", "skipped", "error"}
+# xfailed: an xfail'd case failed as the manifest declared; xpassed: it passed anyway (non-strict).
+VALID_TEST_STATUSES = {"passed", "failed", "skipped", "error", "xfailed", "xpassed"}
 VALID_ASSERTION_STATUSES = {"passed", "failed"}
 VALID_ASSERTION_TYPES = {
     "smoke", "data", "diff", "file", "gcs", "json", "halt", "monitor", "checkpoint_history",

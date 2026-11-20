@@ -10,7 +10,7 @@ two targets.
 |---|---|
 | `referenceop-copy-adds-userdata/test.yaml` | the case |
 | `referenceop-copy-adds-userdata/expected/items.csv` | rows the Postgres target must hold |
-| `referenceop-copy-adds-userdata/expected/userdata.csv` | the `processed` stamp the file target must show |
+| `referenceop-copy-adds-userdata/expected/userdata.csv` | the `processed` stamp the file target must show, one row per event |
 | `java/OpenProcessors/ReferenceOp/` | the Maven module that `op.jar:` names |
 | `java/OpenProcessors/ReferenceOp/examples/copy-adds-userdata/` | the directory that `example:` names: `app.tql`, the DDL and seed files, and a README walking through the pipeline |
 | `java/OpenProcessors/OpenProcessorCommon/src/main/java/` | the shared OP base classes (`AbstractOpenProcessorApp`, `EventProcessor`, `BuiltInFuncs`, `Logger` …), compiled into the OP jar by the pom |
@@ -23,8 +23,14 @@ because Striim refuses to load two jars that declare the same class.
 ## What the case checks
 
 - `smoke`: the app reaches RUNNING.
-- `data`: the target table matches `expected/items.csv`, so the columns passed through unchanged.
-- `file`: at least 2 JSON events carry `userdata.processed`, matching `expected/userdata.csv`.
+- `lifecycle`: the target holds as many rows as the source before any check runs.
+- `data`: the target table holds exactly the rows of `expected/items.csv`, each once, so the
+  columns passed through unchanged and nothing was delivered twice.
+- `file`: the file holds exactly 2 JSON events, one per seeded row, and each carries
+  `userdata.processed=true`: `expected/userdata.csv` has one row per event. An event the operator
+  forwards unstamped (its error path, in the ReferenceOp README) or writes twice fails.
+
+The case runs in Docker mode only: see [the code samples README](../README.md).
 
 ## Build and run
 

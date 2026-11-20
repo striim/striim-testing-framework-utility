@@ -760,6 +760,27 @@ def test_fallback_checkpoint_files_reported_not_deleted(tmp_path, world):
     assert ownership.clear_own_checkpoints(SimpleNamespace(mode="native"), led.ident.ns, led) == []
 
 
+def test_a_failed_checkpoint_delete_fails_the_cleanup(tmp_path, world, monkeypatch):
+    # A leftover OP checkpoint moves where the next run of the same case resumes: not a gap, a failure.
+    led = _ledger(tmp_path)
+
+    def broken(ctx, ns, ledger=None):
+        raise RuntimeError("rm: cannot remove: Device or resource busy")
+    monkeypatch.setattr(ownership, "clear_own_checkpoints", broken)
+    result = _cleanup(led, world, checkpoint_ns=led.ident.ns)
+    assert result.status == "failed" and result.verified is False
+    assert result.failures == [{"kind": "op-checkpoint", "name": led.ident.ns,
+                                "error": "rm: cannot remove: Device or resource busy"}]
+    assert "op-checkpoint" in result.detail and "Device or resource busy" in result.detail
+
+
+def test_a_clean_checkpoint_delete_leaves_the_cleanup_ok(tmp_path, world):
+    led = _ledger(tmp_path)
+    world.docker.files.add(f"/opt/striim/{led.ident.ns}.lcApp.cursors.json")
+    result = _cleanup(led, world, checkpoint_ns=led.ident.ns)
+    assert result.status == "ok" and result.failures == [] and world.docker.files == set()
+
+
 def test_fault_injection_fails_cleanup_and_marks_envelope(tmp_path, world):
     led = _ledger(tmp_path, env={"SLT_LIFECYCLE_FAULT": "cleanup:table"})
     t = led.ident.tid

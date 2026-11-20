@@ -20,18 +20,37 @@ seed:
 topology: single
 requires: [postgres]
 
+exact: {version: 1, max_rows: 10}
 assert:
   smoke: true
   data:
     - target: ${PG_TARGET_SCHEMA}.${TID}out
       target_db: postgres-target
       match: expected/out.csv
+      exact: true             # counted: a row delivered twice fails
   file:
-    - path: /tmp/${TID}${NS}_out
+    # One golden row per event: the seed has one row, so exactly one event, stamped.
+    - path: ${OWNED_DIR}/out.json
       project: userdata
       keys: [processed]
-      min_events: 1
+      events: 1
+      multiset: true
       match: expected/userdata.csv
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}out"}
+  completion:
+    kind: source-count
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}src"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}out"}
+  stability: 2s
+  deadlines: {readiness: 90s, completion: 120s}
+  reset: owned
 
 timeout: 180
 tags: [udf, referenceudf, postgres, sample]

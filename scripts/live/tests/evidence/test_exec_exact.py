@@ -65,10 +65,11 @@ def test_exec_order_sequence_permutation_fails(run_case):
 def test_exec_exact_manifest_error_before_any_fake_provisioning_call(run_case):
     run = run_case("exact-db-any", {"initial_load": True}, fixtures=CASES,
                    edit=lambda y: y.replace("exact: {version: 1, max_rows: 100}", "exact: {version: 2}"))
-    env = _agree(run, "failed")
-    assert "exact.version 2 is not supported" in run.junit()[2]
+    # A manifest the loader refuses is a collection error: named, and nothing provisioned or run.
+    assert run.ret == 2 and "ERROR collecting cases/exact-db-any/test.yaml" in run.text, run.text
+    assert "exact.version 2 is not supported" in run.text
     assert not {"resolve_striim", "resolve", "create", "deploy", "select"} & set(run.names())
-    assert env["lifecycle"]["mode"] == "unknown"
+    assert not list((run.root / "live" / "evidence").glob("*/*/evidence.json"))
 
 
 def test_exec_foreign_target_exact_fails_before_read(run_case):

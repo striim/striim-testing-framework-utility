@@ -36,9 +36,9 @@ class PreUpError(Exception):
 
 
 def enabled(env=None) -> bool:
-    """False when SLT_PRE_UP=0, in the environment or the project .env."""
+    """False when SLT_PRE_UP=0, in the environment or the project .env; unset is on."""
     from livetest import paths
-    return (paths.setting(OFF_SWITCH, env) or "").strip() != "0"
+    return paths.parse_flag(OFF_SWITCH, paths.setting(OFF_SWITCH, env))
 
 
 def lock_path(name: str) -> Path:

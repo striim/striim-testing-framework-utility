@@ -829,3 +829,32 @@ def test_an_unknown_key_in_the_mapping_form_is_rejected(tmp_path):
         block="  SRC.T:\n    columns: [a]\n    key: [a]"))
     with pytest.raises(ManifestError, match="unknown key"):
         load_manifest(manifest_path)
+
+
+# --- `requires:` names a service this tier knows -------------------------------------------------
+# A misspelt service used to load, then skip at run time as "unsupported service": an authoring
+# mistake reported as this host lacking something, which a partial run reads as green.
+
+def _requires_case(services: str) -> str:
+    return f"""
+name: requires-check
+op:
+  jar: some/module
+requires: {services}
+assert:
+  smoke: true
+"""
+
+
+def test_requires_naming_an_unknown_service_is_refused_at_load(tmp_path):
+    manifest_path, _ = _write(tmp_path, _requires_case("[postgres, postgress]"))
+    with pytest.raises(ManifestError, match=r"'requires'.*'postgress'.*postgres"):
+        load_manifest(manifest_path)
+
+
+def test_requires_accepts_a_service_a_services_root_defines(tmp_path, monkeypatch):
+    from inttest import services
+    monkeypatch.setattr(services, "supported_services",
+                        lambda: frozenset({"postgres", "my-cache"}))
+    manifest_path, _ = _write(tmp_path, _requires_case("[my-cache]"))
+    assert load_manifest(manifest_path).requires == ["my-cache"]

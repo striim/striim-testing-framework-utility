@@ -26,7 +26,6 @@ them when the route was used (:meth:`PgServerAdmin.reset`), and every PostgreSQL
 """
 from __future__ import annotations
 
-import os
 import re
 import time
 
@@ -96,8 +95,8 @@ class PgServerAdmin:
 
     def run_sql(self, sql: str, *, phase="ddl", timeout=None, run_id=None, owners=None) -> None:
         stmts = check(sql)
-        parallel = self._parallel if self._parallel is not None else bool(
-            os.environ.get("SLT_PARALLEL") not in (None, "", "0"))
+        from livetest import paths
+        parallel = self._parallel if self._parallel is not None else paths.flag("SLT_PARALLEL")
         if parallel:
             raise PgAdminRouteError("postgres-admin-parallel: the route changes server-wide "
                                     "settings, which would stall other cases' commits; mark the "

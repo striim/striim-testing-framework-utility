@@ -139,3 +139,27 @@ def test_selector_tokens_are_rendered_before_matching():
         nothing.assert_nothing([check], kind='data', tokens={'PG_TARGET_SCHEMA':'qatarget','TID':'t1_'},
             completion={'kind':'sentinel','reason':'satisfied'}, clock=Clock(),
             read=lambda *a: [{'name':'t1_row'}])
+
+
+@pytest.mark.parametrize("read_timeout, budget", [(None, 5.0), ("2s", 2.0), ("750ms", 0.75)])
+def test_read_timeout_is_the_budget_of_every_read(read_timeout, budget):
+    """`nothing.read_timeout` (default 5s) is what each read of the sink is given."""
+    check = spec()
+    if read_timeout is not None:
+        check["nothing"]["read_timeout"] = read_timeout
+    budgets = []
+    nothing.assert_nothing([check], kind="data", tokens={"PG_TARGET_SCHEMA": "qatarget", "TID": "test_"},
+        completion={"kind": "sentinel", "reason": "satisfied"}, clock=Clock(),
+        read=lambda spec, remaining: budgets.append(remaining) or [])
+    assert budgets and set(budgets) == {budget}
+
+
+@pytest.mark.parametrize("read_timeout, message", [
+    ("0s", "read_timeout must be positive"),
+    ("soon", "nothing.read_timeout"),
+])
+def test_read_timeout_is_validated_at_load(read_timeout, message):
+    check = spec()
+    check["nothing"]["read_timeout"] = read_timeout
+    with pytest.raises(ValueError, match=f"invalid-nothing-spec: test.yaml: .*{message}"):
+        nothing.validate({"assert": {"data": [check]}}, "test.yaml", None)

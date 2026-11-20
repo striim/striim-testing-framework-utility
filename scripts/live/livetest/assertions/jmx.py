@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import os
 import re
-import time
 import urllib.request
 from urllib.parse import urlparse
 
-from livetest.assertions import AssertionFailed
+from livetest.assertions import AssertionFailed, poll_holding
 from livetest.resultschema import build_assertion_result
 
 # `assert.jmx:` reads a plugin's MBean attributes the way an operator's Prometheus does: from
@@ -278,38 +277,46 @@ def _evaluate(spec: dict, ns: str, scraped: dict[str, list], errors: dict[str, s
     return (not misses), "; ".join(misses) or None, oname, expected, {"kind": "rows", "rows": rows}
 
 
+def _positive(want) -> bool:
+    # A non-zero value or a `min` above zero matches only once something happened; an upper
+    # bound, a zero or `false` already matches before the plugin has done anything.
+    if isinstance(want, dict):
+        return want.get("min", 0) > 0
+    return float(want) != 0
+
+
 def assert_jmx(specs: list[dict], ns: str, timeout: int, poll: float = 2.0, endpoints=None,
                fetch=_fetch, status_probe=None, progress=None) -> list[dict]:
     """Polls every exporter endpoint until each spec's bean shows every expected attribute,
     or the deadline expires. An endpoint that does not answer is reported, not skipped
-    silently; a bean found nowhere is a failure, never a pass."""
+    silently; a bean found nowhere is a failure, never a pass. A spec with no positive value
+    (only upper bounds, zeros and `false`) is then re-read until the deadline, and fails as soon
+    as it stops matching."""
     endpoints = exporter_endpoints() if endpoints is None else endpoints
-    deadline = time.monotonic() + timeout
-    while True:
-        if status_probe:
-            status_probe()
+
+    def evaluate(indices):
         scraped, errors = {}, {}
         for url in endpoints:
             try:
                 scraped[url] = parse_samples(fetch(url))
             except Exception as e:
                 errors[url] = f"{type(e).__name__}: {e}"
-        results = [_evaluate(s, ns, scraped, errors) for s in specs]
-        detail = next((d for ok, d, *_ in results if not ok), None)
-        if detail is None or time.monotonic() >= deadline:
-            records = [
-                build_assertion_result(type="jmx", status="passed" if ok else "failed",
-                                       spec=s, target=oname, db=None,
-                                       detail="ok" if ok else d, expected=exp, actual=act)
-                for s, (ok, d, oname, exp, act) in zip(specs, results)
-            ]
-            if detail is None:
-                return records
-            raise AssertionFailed(f"jmx assertion not satisfied within {timeout}s: {detail}",
-                                  records)
-        if progress:
-            try:
-                progress(timeout - (deadline - time.monotonic()), float(timeout))
-            except Exception:
-                pass
-        time.sleep(poll or 0.05)
+        return [_evaluate(specs[i], ns, scraped, errors) for i in indices]
+
+    holds = [not any(_positive(w) for w in list(s.get("attributes", {}).values()) + [
+        w for entries in s.get("rows", {}).values() for w in entries.values()]) for s in specs]
+    results, outcome = poll_holding(evaluate, holds, timeout, poll, status_probe, progress)
+    records = [
+        build_assertion_result(type="jmx", status="passed" if ok else "failed",
+                               spec=s, target=oname, db=None,
+                               detail="ok" if ok else d, expected=exp, actual=act)
+        for s, (ok, d, oname, exp, act) in zip(specs, results)
+    ]
+    if outcome == "passed":
+        return records
+    detail = next(d for ok, d, *_ in results if not ok)
+    if outcome == "broke":
+        raise AssertionFailed(
+            f"jmx assertion: {detail}. The spec has no positive value, so it must hold until the "
+            f"{timeout}s timeout; it matched, then stopped matching.", records)
+    raise AssertionFailed(f"jmx assertion not satisfied within {timeout}s: {detail}", records)

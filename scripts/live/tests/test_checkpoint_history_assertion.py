@@ -10,13 +10,23 @@ class FakeStriim:
     """`checkpoint_history(app)`: one list per poll, consumed in order (the last one repeats
     once exhausted) so a test can script the platform recording its first checkpoint late."""
 
-    def __init__(self, histories):
+    def __init__(self, histories, status="RUNNING"):
         self.histories = list(histories)
         self.polls = 0
+        self.status, self.status_reads = status, 0
 
     def checkpoint_history(self, app):
         self.polls += 1
-        return self.histories.pop(0) if len(self.histories) > 1 else self.histories[0]
+        h = self.histories.pop(0) if len(self.histories) > 1 else self.histories[0]
+        if isinstance(h, Exception):
+            raise h
+        return h
+
+    def current_status(self, app):
+        self.status_reads += 1
+        if isinstance(self.status, Exception):
+            raise self.status
+        return self.status
 
 
 # ---- spec parsing --------------------------------------------------------------------
@@ -81,6 +91,73 @@ def test_empty_holds_for_the_whole_timeout(monkeypatch):
     fake = FakeStriim([[]])
     assert assert_checkpoint_history(fake, "NS.App", "empty", timeout=60, poll=2)[0]["status"] == "passed"
     assert now[0] >= 60 and fake.polls == 31
+
+
+def test_empty_reads_the_app_status_in_every_poll():
+    fake = FakeStriim([[]])
+    assert_checkpoint_history(fake, "NS.App", "empty", timeout=0, poll=0)
+    assert fake.polls == 1 and fake.status_reads == 1
+
+
+def test_empty_fails_on_an_unreadable_history():
+    from livetest.striim import StriimError
+    fake = FakeStriim([[], StriimError("SHOW NS.App CHECKPOINT HISTORY failed: application NS.App does not exist")])
+    with pytest.raises(AssertionFailed, match="does not exist") as e:
+        assert_checkpoint_history(fake, "NS.App", "empty", timeout=10, poll=0)
+    assert fake.polls == 2                       # the first unreadable read ends it; no later read decides
+    assert e.value.records[0]["status"] == "failed" and "unreadable" in e.value.records[0]["detail"]
+
+
+def test_empty_fails_when_the_app_is_not_shown_in_the_same_poll():
+    from livetest.striim import StriimError
+    for status in (StriimError("could not read status for NS.App: 401"), None, ""):
+        fake = FakeStriim([[]], status=status)
+        with pytest.raises(AssertionFailed, match="NS.App") as e:
+            assert_checkpoint_history(fake, "NS.App", "empty", timeout=0, poll=0)
+        assert e.value.records[0]["status"] == "failed"
+
+
+def test_nonempty_retries_an_unreadable_read_and_names_the_last_error_at_the_deadline():
+    from livetest.striim import StriimError
+    fake = FakeStriim([StriimError("boom"), [{"serialNo": 1}]])
+    assert assert_checkpoint_history(fake, "NS.App", "nonempty", timeout=10, poll=0)[0]["status"] == "passed"
+    assert fake.polls == 2
+    fake = FakeStriim([StriimError("SHOW NS.App CHECKPOINT HISTORY failed: Syntax error")])
+    with pytest.raises(AssertionFailed, match="Syntax error"):
+        assert_checkpoint_history(fake, "NS.App", "nonempty", timeout=0, poll=0)
+
+
+class _Api:
+    def __init__(self, resp):
+        self.resp = resp
+
+    def post_tungsten_line(self, line, timeout=None):
+        return self.resp
+
+
+@pytest.mark.parametrize("resp", [
+    [{"executionStatus": "Failure", "failureMessage": "Syntax error at CHECKPOINT"}],
+    [{"executionStatus": "Failure", "failureMessage": "application NS.nosuch does not exist"}],
+    {"message": "Unauthorized"},
+    [{"executionStatus": "Success", "output": "not a list"}],
+    [],
+], ids=["syntax-error", "does-not-exist", "401-body", "odd-output", "empty-response"])
+def test_empty_never_passes_on_a_history_the_real_client_could_not_read(resp):
+    from livetest.striim import StriimClient
+    client = StriimClient.__new__(StriimClient)
+    client.api = _Api(resp)
+    client.current_status = lambda app, timeout=None: "RUNNING"
+    with pytest.raises(AssertionFailed):
+        assert_checkpoint_history(client, "NS.App", "empty", timeout=0, poll=0)
+
+
+def test_empty_passes_on_the_real_clients_not_available_yet_answer():
+    from livetest.striim import StriimClient
+    client = StriimClient.__new__(StriimClient)
+    client.api = _Api([{"executionStatus": "Failure",
+                        "failureMessage": "Checkpoint History for application NS.App is not available yet."}])
+    client.current_status = lambda app, timeout=None: "RUNNING"
+    assert assert_checkpoint_history(client, "NS.App", "empty", timeout=0, poll=0)[0]["status"] == "passed"
 
 
 def test_status_probe_runs_every_poll():
@@ -185,6 +262,38 @@ def test_predates_fails_when_the_restored_app_checkpoints_before_the_running_rea
 def test_predates_fails_without_a_checkpoint_before_the_seed():
     w = _run([], [], [])
     with pytest.raises(AssertionFailed, match="no checkpoint was recorded before seed seed_b.sql"):
+        assert_checkpoint_predates(w, SPEC)
+
+
+@pytest.mark.parametrize("interrupt, restored, empty", [
+    ([], [], "interrupt"), ([A], [], "restored"), ([], [A], "interrupt"),
+])
+def test_predates_fails_when_a_read_after_the_seed_comes_back_empty(interrupt, restored, empty):
+    # A history that existed before the seed does not vanish: a restored app still shows it
+    # after a kill restart. An empty later read shows nothing new, so it cannot show that no
+    # checkpoint was recorded after the seed.
+    w = _run([A], interrupt, restored)
+    with pytest.raises(AssertionFailed, match=f"the '{empty}' read shows no checkpoint") as e:
+        assert_checkpoint_predates(w, SPEC)
+    assert e.value.records[0]["status"] == "failed"
+
+
+def test_predates_fails_when_a_later_show_fails():
+    # The real client, whose failed SHOW must not pass as a later read with nothing new in it.
+    from livetest.striim import StriimClient
+    answers = {"seed": [{"executionStatus": "Success", "output": [A]}],
+               "interrupt": [{"executionStatus": "Success", "output": [A]}],
+               "restored": [{"executionStatus": "Failure", "failureMessage": "HTTP 500"}]}
+
+    class Api:
+        def post_tungsten_line(self, line, timeout=None):
+            return answers[phase]
+    client = StriimClient.__new__(StriimClient)
+    client.api = Api()
+    w = CheckpointWitness(client, "NS.App", now=lambda: "t")
+    for phase in CheckpointWitness.PHASES:
+        w.capture(phase)
+    with pytest.raises(AssertionFailed, match="the 'restored' read"):
         assert_checkpoint_predates(w, SPEC)
 
 

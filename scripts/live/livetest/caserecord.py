@@ -18,7 +18,9 @@ Lines, in order:
   (``passed``/``failed``/``error``/``skipped``), skip or xfail reason, start and end, and
   ``jars``: each jar the case loaded (module, ``built``/``reused``/``prebuilt``, sha256), and
   ``striim``: the release the engine resolved (from ``STRIIM_HOME``; ``STRIIM_VERSION`` does not
-  choose it), ``STRIIM_HOME`` and ``SLT_STRIIM_TRYOUT_JARS``.
+  choose it), ``STRIIM_HOME`` and ``SLT_STRIIM_TRYOUT_JARS``; and ``teardownLeaks``: each step of
+  the case's own teardown that failed and left its objects behind (``step``, ``error``; the
+  integration engine sets them; empty when none did).
 - ``end``, at session finish: exit status, the nodeids an evidence error marked, the failed
   teardowns of owned infrastructure, and the source and framework state read again (a change
   during the run shows as a difference from the header).
@@ -282,7 +284,7 @@ class Recorder:
             info = getattr(report, "_slt_case_info", None) or {}
             case = info.get("case")
             self._write({"kind": "item", "case": case, "item": info.get("name"), "nodeid": report.nodeid,
-                         "jars": info.get("jars"),
+                         "jars": info.get("jars"), "teardownLeaks": info.get("teardownLeaks") or [],
                          "variants": list(self.variants.get(case) or []), "status": state["status"],
                          "skipReason": state["reason"], "xfail": state["xfail"],
                          "striim": self._striim_identity(),
@@ -299,7 +301,8 @@ class Recorder:
             return
         report._slt_case_record = True
         report._slt_case_info = {"case": self._relative(self.case_dir(item)), "name": item.name,
-                                 "jars": self._jars(item)}
+                                 "jars": self._jars(item),
+                                 "teardownLeaks": list(getattr(item, "_slt_teardown_leaks", None) or [])}
 
     def _jars(self, item):
         """The jars the case loaded (the engine sets ``_slt_case_jars`` once it has them): module dir

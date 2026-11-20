@@ -1,0 +1,29 @@
+name: or-stop-cycle-feed
+purpose: hermetic orchestration fixture - stop_start_cycle runs two cycles while a concurrent SQL loop must deliver
+tql: app.tql
+requires: [postgres]
+timeout: 30
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+  - file: ddl_target.sql
+    db: postgres-target
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: pre_deploy
+action:
+  - type: stop_start_cycle
+    cycles: 2
+    delay_before_stop: 0
+    stop_duration: 0
+    concurrent:
+      - {db: postgres-source, file: feed.sql, loop_interval: 50ms}
+exact: {version: 1}
+assert:
+  smoke: true
+  data:
+    - target: "${PG_TARGET_SCHEMA}.${TID}tgt"
+      target_db: postgres-target
+      match: expected/tgt.csv
+      exact: {columns: {id: integer}}

@@ -76,7 +76,7 @@ def test_healthcheck_marker_and_database_match_entrypoint_and_defaults():
 
 def test_published_port_matches_service_defaults():
     port = _defaults()["port"]
-    assert f"${{INT_VERTICA_HOST_PORT:-{port}}}:5433" in _compose_service()["ports"]
+    assert f"${{SLT_BIND_ADDRESS:-0.0.0.0}}:${{INT_VERTICA_HOST_PORT:-{port}}}:5433" in _compose_service()["ports"]
 
 
 def test_image_differs_from_the_live_tiers_copy_only_by_names():

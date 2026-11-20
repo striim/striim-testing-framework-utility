@@ -23,6 +23,9 @@ requires: [postgres]
 #   match:     the distinct row set equals a golden CSV, order-insensitive
 #   keys:      projects the row down to named columns before comparing, for when a table
 #              carries columns the test does not want to pin
+# Each match also carries `rows: 3` (seed.sql inserts 3 rows, read once by the initial load):
+# a match with no count loads with a warning, because the distinct-set compare cannot see a
+# duplicate.
 assert:
   smoke: true
   data:
@@ -32,10 +35,12 @@ assert:
     - target: ${PG_TARGET_SCHEMA}.${TID}tgt
       target_db: postgres-target
       match: expected/tgt.csv
+      rows: 3
     - target: ${PG_TARGET_SCHEMA}.${TID}tgt
       target_db: postgres-target
       keys: [id]
       match: expected/tgt_ids.csv
+      rows: 3
 
 timeout: 180
 tags: [framework, assert, postgres, regression]

@@ -31,7 +31,8 @@ from livetest import lockdir
 
 # Compose project names must match [a-z0-9][a-z0-9_-]*; keep the prefix to the dashed subset so
 # one rule is valid everywhere (project names, container names, filenames).
-_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# \Z, not $: $ also matches before a final "\n", so "alt\n" passed and reached compose and filenames.
+_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
 
 # Base (unprefixed) CONTAINER names — the `docker exec/cp/restart/logs/inspect` targets.
 #
@@ -85,6 +86,24 @@ def state_name(base: str, env=None) -> str:
     return f"{p}-{base}"
 
 
+def adopt_prefix(env=None) -> None:
+    """Put the effective SLT_STACK_PREFIX into this process's environment (``livetest.cli`` and
+    ``python -m livetest.preflight``, which a pytest session's own .env merge does not cover).
+
+    The service compose calls resolve settings through the .env layers, but the Striim cluster's
+    compose calls (`ps`, `down -v`) read only os.environ. A prefix set only in .env would then scope
+    the database containers to the reader's stack and the Striim cluster to the unprefixed one, and
+    `stop striim` could remove another stack's cluster and its MDR volume. A prefix exported in the
+    shell already wins in both, and is left alone."""
+    from livetest import paths
+    env = os.environ if env is None else env
+    if (env.get("SLT_STACK_PREFIX") or "").strip():
+        return
+    value = (paths.effective_env(env).get("SLT_STACK_PREFIX") or "").strip()
+    if value:
+        env["SLT_STACK_PREFIX"] = value
+
+
 # ---------------------------------------------------------------------------
 # Coordination locks live OUTSIDE the checkout, machine-wide.
 #
@@ -103,8 +122,14 @@ _LOCK_DIR = Path(os.environ.get("SLT_LOCK_DIR", "/tmp/slt-locks"))
 
 def lock_path(base: str, env=None) -> Path:
     """Machine-wide path for a coordination lock, prefix-scoped per stack."""
+    return host_lock_path(state_name(base, env))
+
+
+def host_lock_path(name: str) -> Path:
+    """Machine-wide path for a coordination lock named ``name`` as given. The integration tier scopes its
+    names by INT_STACK_PREFIX (its containers are named by that prefix, not by SLT_STACK_PREFIX)."""
     lockdir.ensure_dir(_LOCK_DIR)       # shared by every user on the host
-    return _LOCK_DIR / state_name(base, env)
+    return _LOCK_DIR / name
 
 
 def striim_container(env=None) -> str:

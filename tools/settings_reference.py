@@ -63,6 +63,11 @@ SECTIONS = (
          "and tear everything down at the end, `--parallel` included."),
         ("SLT_KEEP_SERVICES", "unset", "`1`: keep the cluster and service containers after the run. "
                                        "Required with `shared`."),
+        ("SLT_SHARED_PROVISION", "unset (`1`)",
+         "Under `shared`, `0`: never start a missing service; the case fails and names "
+         "`SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>` (`livetest.cli start` reads this "
+         "setting too). For a lane that must not start shared services. Any value other than `1` or `0` is "
+         "refused."),
         ("SLT_KEEP_RESOURCES", "unset", "`1`: keep each test's app, tables and slots whatever the result "
                                         "(`--keep-resources`)."),
         ("SLT_KEEP_RESOURCES_ON_ERROR", "unset",
@@ -81,7 +86,9 @@ SECTIONS = (
         ("SLT_LIVE_CASES", "`scripts/live/regression`",
          "The live case root, or several separated by `:` (`;` on Windows). `striim-test run PATH` "
          "runs only cases under it."),
-        ("SLT_INT_CASES", "the clone's integration cases", "The integration case root."),
+        ("SLT_INT_CASES", "`scripts/integration/regression`",
+         "The integration case root. The framework ships one sample case there "
+         "(`op/referenceop/referenceop-adds-processed`); set it to your own cases."),
         ("SLT_SERVICES_DIR", "`scripts/live/services`", "Live service definitions."),
         ("SLT_INT_SERVICES_DIR", "`scripts/integration/services`", "Integration service definitions."),
         ("SLT_STATE_DIR", "`scripts/live`", "Run directories and coordination files."),
@@ -91,7 +98,8 @@ SECTIONS = (
         ("SLT_MACHINE_ENV", "`${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env`",
          "The machine-wide settings file."),
         ("SLT_FRAMEWORK_DOTENV", "the clone's `.env`",
-         "A file to read as the framework clone's `.env`, when `SLT_PROJECT_ROOT` is not set."),
+         "A file to read in place of the framework clone's `.env`. That layer is read whether or not "
+         "`SLT_PROJECT_ROOT` is set, below the project's `.env`; a file that does not exist reads as empty."),
         ("SLT_LOCK_DIR", "`/tmp/slt-locks`",
          "The coordination directory every run on the machine shares (mode 1777)."),
     )),
@@ -117,7 +125,8 @@ SECTIONS = (
                                          "twice at the same bytes in this run."),
         ("SLT_RECOVER_RESTORE_TIMEOUT", "`600`", "Seconds a `recover:` phase allows for its restore."),
         ("SLT_STACK_PREFIX", "unset", "Run a second, independent stack on the same machine: its "
-                                      "containers and cleanup carry this prefix."),
+                                      "containers and cleanup carry this prefix. Lowercase letters, digits and dashes, starting "
+                                      "with a letter or digit."),
         ("SLT_JDK<release>_HOME", "on macOS, the JDK `java_home` finds",
          "The JDK that builds Open Processor and UDF jars for that Java release, for example "
          "`SLT_JDK17_HOME`. Off macOS the JDK comes only from here."),
@@ -127,6 +136,23 @@ SECTIONS = (
          "([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md))."),
         ("SLT_PREBUILT_JAR", "unset", "A jar, or a folder, for every module the run builds."),
         ("SLT_PREBUILT_DIR", "unset", "A folder holding one jar per module and series."),
+        ("STRIIM_BUILD_<version>", "unset",
+         "The build matrix: one line per Striim release you build for, the version with `_` for "
+         "`.` and an install path as the value, for example `STRIIM_BUILD_5_4_2=/opt/striim-5.4.2`. "
+         "A relative path is taken from the matrix file's folder. The releases it names, with "
+         "`STRIIM_HOME`'s, decide the version suffix of every jar's file name "
+         "([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md))."),
+        ("SLT_BUILD_MATRIX_ENV", "`.env` in the project root",
+         "The file the build matrix is read from; a relative path is taken from the project root."),
+        ("FTC_PUBLISHER_RELEASES_ENV", "unset",
+         "Deprecated older name for `SLT_BUILD_MATRIX_ENV`, read only when that is unset; it will "
+         "be removed in a later release."),
+        ("SLT_BIND_ADDRESS", "unset: this machine and its containers",
+         "The host address every service port the framework starts is published on, for example "
+         "`0.0.0.0` for every interface. Unset, a framework run publishes on `127.0.0.1` and, on a "
+         "Linux engine, the Docker bridge gateway that containers reach the host on; nothing is "
+         "reachable from another machine, so forward a port over SSH. A plain `docker compose up` "
+         "with it unset publishes on every interface, as before ([SERVICES.md](SERVICES.md))."),
     )),
     ("The Docker Striim cluster", (
         ("SLT_STRIIM_PRIMARY_CPUS", None,
@@ -160,11 +186,16 @@ SECTIONS = (
         ("SLT_STRIIM_JMX_HOST_PORT", None, "Host port of the primary's JMX Prometheus exporter."),
         ("SLT_STRIIM_NODE_JMX_HOST_PORT", None, "Host port of the second node's JMX exporter."),
         ("SLT_STRIIM_AGENT_JMX_HOST_PORT", None, "Host port of the agent's JMX exporter."),
-        ("SLT_STRIIM_DEBUG_HOST_PORT", None, "Host port of the primary's JDWP remote debugger."),
+        ("SLT_STRIIM_DEBUG", "unset (off)",
+         "`1`: run the primary's JDWP remote debugger, published on `127.0.0.1` only. JDWP has no "
+         "authentication; from another machine, forward the port over SSH."),
+        ("SLT_STRIIM_DEBUG_HOST_PORT", "`8787` when enabled",
+         "Host port of the primary's JDWP remote debugger; published only with `SLT_STRIIM_DEBUG=1`."),
     )),
     ("Integration tier", (
         ("INT_STACK_PREFIX", "unset", "Run a second integration stack on the same machine, with its own "
-                                      "containers and state."),
+                                      "containers and state. Lowercase letters, digits and dashes, starting with a letter or "
+                                      "digit."),
         ("INT_KEEP_SERVICES", "unset", "`1`: leave the service containers running after the session, for "
                                        "fast local iteration."),
         ("INT_KEEP_RESOURCES", "unset", "`1`: keep each case's resources after it runs."),
@@ -172,7 +203,8 @@ SECTIONS = (
                                    "`opt_in_env`."),
         ("INT_VARIANT", "unset: every variant",
          "Run only this variant of each case, to iterate on one engine without starting every "
-         "database. A name no case defines runs nothing."),
+         "database. A name that matches no variant of any collected case is a usage error; "
+         "otherwise the run prints the narrowing."),
         ("INT_EMPTY_SELECTION_OK", "unset",
          "`1`: a run whose `-m` deselects every item exits 0, not 5 (for a runner's marker-split "
          "passes)."),
@@ -190,10 +222,9 @@ SECTIONS = (
         ("INT_ALLOW_CONCURRENT_SESSIONS", "unset", "`1`: allow a second integration session on the same "
                                                    "stack at the same time."),
         ("INT_ALLOW_ALL_SKIPPED", "unset", "`1`: do not fail a run in which every case skipped because a "
-                                           "service or Docker was missing. A build prerequisite missing "
-                                           "still fails it."),
-        ("INT_SHARED_SERVICES", "unset", "Reserved: a broker owns the services, and the session does not "
-                                         "tear them down."),
+                                           "service or Docker was missing. A case skipped because its "
+                                           "module could not be built (no `STRIIM_HOME`, `mvn` or JDK) "
+                                           "still fails the run, even when other cases passed."),
     )),
 )
 # Service settings no service.yaml field explains.
@@ -238,9 +269,14 @@ FRAMEWORK_SET = (
     (("SLT_LIFECYCLE_FAULT",), "fault injection for the framework's own lifecycle tests"),
 )
 RETIRED = {"SLT_MODE": "SLT_FRAMEWORK_MODE", "SLT_FRAMEWORK": "SLT_FRAMEWORK_HOME"}
-# Names the code holds that are not settings: tokens it fills in itself.
+# Names the code holds that are not settings: tokens it fills in itself, and variables other
+# programs define (pytest-xdist's worker id, the JDK's JAVA_HOME, the Spanner and Bigtable
+# clients' emulator hosts, a Kafka container's own environment).
 NOT_SETTINGS = {"SLT_BIGQUERY_GOMEMLIMIT", "STRIIM_RELEASE", "STRIIM_VERSION", "STRIIM_SERIES", "STRIIM_WEB_URL", "TID",
-                "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER"}
+                "STRIIM_PRIMARY_SERVER", "STRIIM_SECONDARY_SERVER", "STRIIM_AGENT_SERVER",
+                "PYTEST_XDIST_WORKER", "JAVA_HOME", "SPANNER_EMULATOR_HOST", "KAFKA_BROKER_ID",
+                "KAFKA_ZOOKEEPER_CONNECT", "BIGTABLE_EMULATOR_HOST",
+                "SLT_BIND_GATEWAY"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
          "mysql": "MySQL", "mariadb": "MariaDB", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
@@ -309,6 +345,7 @@ def service_settings(services: Path) -> list:
         compose = file.parent / raw["compose"] if raw.get("compose") else None
         text = compose.read_text() if compose and compose.is_file() else ""
         defaults, compose_vals = raw.get("docker_defaults") or {}, compose_defaults(text)
+        required = set(raw.get("required_env") or ())
         rows, seen = [], set()
 
         def add(name, default, what):
@@ -321,8 +358,13 @@ def service_settings(services: Path) -> list:
                 what = "the optional observer admin account, owning database logon triggers in the data PDB"
             if name == "SLT_MYSQL_ADMIN_USER":
                 what = "the admin account, which makes missing schemas and cleans up; it never creates or changes an account"
-            add(name, code(defaults.get(field)), "Your own instance: " + what + "." if field != "host"
-                else what[0].upper() + what[1:] + ".")
+            if file.parent.name == "teradata" and field in ("user", "password"):
+                what = FIELDS["admin_" + field]
+            if field == "host" and compose is None:
+                what = ("your own instance's host. The framework ships no container for this service: with "
+                        "this unset, its tests skip")
+            add(name, code(defaults.get(field)), ("**Required.** " if name in required else "")
+                + ("Your own instance: " + what + "." if field != "host" else what[0].upper() + what[1:] + "."))
         for field, name in (raw.get("docker_env") or {}).items():
             add(name, code(compose_vals.get(name, defaults.get(field))),
                 "Host port the container publishes" + ("" if field == "port" else " for "
@@ -331,7 +373,8 @@ def service_settings(services: Path) -> list:
             if (name and name not in seen and name not in CORE and name not in NOT_SETTINGS
                     and file.parent.name != "striim"):
                 add(name, code(compose_vals.get(name)), describe(name)[1])
-        out.append((file.parent.name, rows))
+        rows.sort(key=lambda row: row[0] != raw.get("live_env", {}).get("host"))   # the host row first
+        out.append((file.parent.name, rows, compose is None))
     return out
 
 
@@ -344,7 +387,13 @@ def describe(name: str) -> tuple:
     raise SystemExit(f"settings_reference: no description for {name}; add one to tools/settings_reference.py")
 
 
+# Read outside the settings files' layers, from a file of its own.
+MATRIX = "STRIIM_BUILD_<version>"
+
+
 def where(name: str, allowed: set) -> str:
+    if name == MATRIX:
+        return "shell, matrix file"
     if name not in allowed:
         return "shell"
     if name in paths.LICENCE_KEYS:
@@ -371,7 +420,7 @@ def build() -> str:
     live = [s for s in service_settings(ROOT / "scripts/live/services") if s[0] != "striim"]
     integration = service_settings(ROOT / "scripts/integration/services")
     listed = {n for _, rows in SECTIONS for n, _, _ in rows}
-    listed |= {n for _, rows in live + integration for n, _, _ in rows}
+    listed |= {n for _, rows, _ in live + integration for n, _, _ in rows}
     # Service settings no service file names (view hosts, extras): file them under their service.
     prefixes = {"PG": "postgres", "POSTGRES": "postgres", "ORA": "oracle", "ORACLE": "oracle",
                 "MSSQL": "mssql", "MYSQL": "mysql", "MARIADB": "mariadb", "VERTICA": "vertica", "KAFKA": "kafka",
@@ -381,7 +430,7 @@ def build() -> str:
         tier, _, rest = name.partition("_")
         service = prefixes.get(rest.split("_")[0])
         group = live if tier == "SLT" else integration
-        match = [rows for svc, rows in group if svc == service or (svc, service) == ("sqlserver", "mssql")]
+        match = [rows for svc, rows, _ in group if svc == service or (svc, service) == ("sqlserver", "mssql")]
         if not service or not match:
             raise SystemExit(f"settings_reference: {name} belongs to no section; describe it in "
                              "tools/settings_reference.py")
@@ -393,16 +442,28 @@ def build() -> str:
         "Every setting the framework reads: where you can set it, its default, and what it does.",
         "`tests/test_settings_reference.py` fails when the code reads a setting this page does not list.", "",
         "## Where settings come from", "",
-        "Highest first: your shell's environment, then `.env` in your project root (in a framework "
-        "clone, its root), then the machine file `${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env` "
-        "(or the file `SLT_MACHINE_ENV` names). The **Where** column says which of them a setting is read from:", "",
+        "Highest first: your shell's environment, then `.env` in your project root (`SLT_PROJECT_ROOT`), "
+        "then the framework clone's own `.env` (or the file `SLT_FRAMEWORK_DOTENV` names), then the machine "
+        "file `${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env` (or the file `SLT_MACHINE_ENV` "
+        "names). Without `SLT_PROJECT_ROOT` the project is the clone, and its `.env` is read once. The clone's "
+        "`.env` is read under a project root too, so a value left in it, such as `SLT_PG_HOST`, reaches your "
+        "project's runs unless your project's `.env` or your shell sets it. "
+        "The **Where** column says which of them a setting is read from:", "",
         "- **shell**: only from the environment. In `.env` it is not read.",
-        "- **`.env`**: from the environment or `.env`.",
+        "- **`.env`**: from the environment, the project's `.env` or the clone's `.env`.",
         "- **machine**: from the machine file too. " + LANES + " are never read from it, so two "
         "checkouts on one machine stay apart; license keys are read from the shell or the machine file "
-        "only, never `.env`.", "",
+        "only, never `.env`.",
+        f"- **matrix file**: `{MATRIX}` only, from the environment or the build matrix file: `.env` in "
+        "your project root, or the file `SLT_BUILD_MATRIX_ENV` names. Only `STRIIM_BUILD_` lines are "
+        "read from it, so the matrix can share your `.env`.", "",
         "Start from your repository's `.env.example`. `striim-test doctor` lists the settings that are "
         "set and where each came from.", "",
+        "**Switches.** A setting described below as `` `1`: ... `` or `` `0`: ... ``, `SLT_ENABLE_NODE_FAULTS` "
+        "and a service's `opt_in_env` are switches: `1` is on and `0` is off. Unset is off, except "
+        "`SLT_PRE_UP` and `INT_VARIANT_ITEMS`, which are on. Any other value, `true` and `yes` included, "
+        "is a settings mistake: the run stops with exit 2 before any test, and `striim-test doctor` "
+        "names it.", "",
     ]
     for title, rows in SECTIONS:
         if title == "Integration tier":
@@ -412,17 +473,20 @@ def build() -> str:
         out.append("")
     out += ["## Services", "",
             "To use your own database instead of the container the framework starts, set its host (the "
-            "first row); the other settings default to the container's values, shown here. "
+            "first row); the other settings default to the container's values, shown here. Teradata and "
+            "ServiceNow have no container: their tests run only against your own instance, and skip while "
+            "its host is unset. A setting marked **Required** must be set before such a test can connect. "
             "[SERVICES.md](SERVICES.md) has each service's accounts, tokens and routes.", ""]
-    for svc, rows in live:
-        out += [f"### {NAMES.get(svc, svc)} (`{svc}`)", ""] + table(rows, allowed, "Docker default") + [""]
+    for svc, rows, external in live:
+        out += [f"### {NAMES.get(svc, svc)} (`{svc}`)", ""]
+        out += table(rows, allowed, "Default" if external else "Docker default") + [""]
     title, rows = next(s for s in SECTIONS if s[0] == "Integration tier")
     out += [f"## {title}", "", "The integration engine's own settings "
             "([INTEGRATION-TESTS.md](INTEGRATION-TESTS.md)), then its services'.", ""]
     out += table(rows, allowed) + [""]
-    for svc, rows in integration:
+    for svc, rows, external in integration:
         out += [f"### {NAMES.get(svc, svc)}, integration (`{svc}`)", ""]
-        out += table(rows, allowed, "Docker default") + [""]
+        out += table(rows, allowed, "Default" if external else "Docker default") + [""]
     out += ["## Set by the framework", "",
             "The framework sets these for its own processes. Do not set them.", "",
             "| Names | What they carry |", "|---|---|"]

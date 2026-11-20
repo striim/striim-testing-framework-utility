@@ -32,16 +32,19 @@ def _install_version(home: Path) -> str | None:
 
 
 def configured_versions(root: Path, env=None) -> set[str]:
-    """Read the existing build matrix and the selected STRIIM_HOME, best effort.
+    """Read the build matrix and the selected STRIIM_HOME, best effort.
 
-    Use the same matrix file selection and STRIIM_BUILD_<version> grammar as the
-    console. An annotation without an install path does not configure a release.
-    No configuration is written, imported from a consumer, or executed. Other
-    installs beside STRIIM_HOME are not counted, so one matrix gives the same
-    names on every host.
+    The matrix file is SLT_BUILD_MATRIX_ENV (FTC_PUBLISHER_RELEASES_ENV, its
+    deprecated older name, when that is unset), else the project's .env; a
+    relative path is taken from the project root. Each STRIIM_BUILD_<version>
+    line in it, or in the environment, names an install; an annotation without
+    an install path does not configure a release. No configuration is written,
+    imported from a consumer, or executed. Other installs beside STRIIM_HOME are
+    not counted, so one matrix gives the same names on every host.
     """
     env = os.environ if env is None else env
-    matrix = Path(env.get('FTC_PUBLISHER_RELEASES_ENV') or '.env').expanduser()
+    matrix = Path(env.get('SLT_BUILD_MATRIX_ENV') or env.get('FTC_PUBLISHER_RELEASES_ENV')
+                  or '.env').expanduser()
     if not matrix.is_absolute():
         matrix = root / matrix
     values = {}

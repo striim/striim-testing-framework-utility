@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import math
 import re
-import time
 
-from livetest.assertions import AssertionFailed
+from livetest.assertions import AssertionFailed, poll_holding
 from livetest.resultschema import build_assertion_result
 
 # T4-MON. Assert what the platform's monitor SHOWS for a target -- `MON <target>;` over the
@@ -13,7 +12,9 @@ from livetest.resultschema import build_assertion_result
 # A writer that writes correctly and publishes nothing looks dead on the monitor page, and
 # these assertions detect that gap. Polls until
 # every figure matches or the timeout expires: MON republishes once per monitoring snapshot,
-# so a value that is right in the database is a few seconds behind on the monitor.
+# so a value that is right in the database is a few seconds behind on the monitor. A spec with
+# no positive figure (only upper bounds, zeros and absences) matches before anything happens,
+# so it must keep matching until the timeout instead.
 
 # Figures that measure the machine the case runs on, never the writer. Refused by name at
 # load, for the reason the integration tier refuses its clocks: a case asserting one is a
@@ -44,7 +45,9 @@ def parse_monitor_specs(raw: list) -> list[dict]:
     {matches: <regex>}), or a mapping compared key by key against a structured field (a subset
     match, so a case can pin `individualOperationCount: {Insert: 5}` without naming every op).
     A mapping with a `min` or `max` key is a bound, and one with a matcher key a matcher, at any
-    depth. Strings and patterns may carry ${...} tokens, rendered when the tier runs."""
+    depth. Strings and patterns may carry ${...} tokens, rendered when the tier runs. A spec with
+    {absent: true} needs a positive figure (see _positive) beside it; a figure written as a token
+    passes here and is checked again once rendered."""
     if not isinstance(raw, list) or not raw:
         raise MonitorSpecError("'assert.monitor' must be a non-empty list of specs")
     for spec in raw:
@@ -70,6 +73,9 @@ def parse_monitor_specs(raw: list) -> list[dict]:
                     f"'assert.monitor' metric {name!r}: expected a number, a string or a "
                     f"mapping, got {value!r}")
             _check_bounds(name, value)
+        unanchored = _unanchored_absent(metrics)
+        if unanchored:
+            raise MonitorSpecError(unanchored)
         if "target" in spec and (not isinstance(spec["target"], str) or not spec["target"]):
             raise MonitorSpecError("monitor spec 'target' must be a non-empty component name")
         if "component" in spec:
@@ -136,6 +142,44 @@ def _check_bounds(name, value):
             f"got {value!r}")
     if "min" in value and "max" in value and value["min"] > value["max"]:
         raise MonitorSpecError(f"'assert.monitor' metric {name!r}: min > max in {value!r}")
+
+
+def _unanchored_absent(metrics: dict) -> str | None:
+    """Why a spec's `absent` figure has nothing to be checked against, or None."""
+    absent = next((n for n, v in metrics.items() if _has_absent(v)), None)
+    if absent is None or any(_positive(v) for v in metrics.values()):
+        return None
+    return (f"'assert.monitor' metric {absent!r}: 'absent' needs a positive figure in the same "
+            f"spec (a count above zero, a {{min}} above zero, a string, {{present: true}} or "
+            f"{{matches}}), which shows the component has published what the absent figure "
+            f"is checked against; on its own a misspelt name passes for ever")
+
+
+def _holds(spec: dict) -> bool:
+    """Whether a rendered spec has no positive figure, so its first match proves nothing."""
+    return not any(_positive(v) for v in spec["metrics"].values())
+
+
+def _has_absent(want) -> bool:
+    if _is_matcher(want):
+        return "absent" in want
+    return isinstance(want, dict) and not _is_bound(want) and any(
+        _has_absent(v) for v in want.values())
+
+
+def _positive(want) -> bool:
+    """Whether a figure matches only once something has happened: a non-zero number, a `min`
+    above zero, a shown or matched value, or a string that is not a zero or an empty structure.
+    Upper bounds, zeros and `absent` already match before the component has done anything."""
+    if _is_matcher(want):
+        return "absent" not in want
+    if _is_bound(want):
+        return want.get("min", 0) > 0
+    if isinstance(want, dict):
+        return any(_positive(v) for v in want.values())
+    if isinstance(want, (int, float)):
+        return want != 0
+    return _num(want) != 0 and str(want).strip() not in ("", "{}", "[]")
 
 
 def _render(want) -> str:
@@ -321,6 +365,14 @@ def _check_bounds_all(spec: dict) -> None:
             raise AssertionFailed(f"monitor: {e}", []) from None
 
 
+def _rendered_away(raw: dict, rendered: dict) -> str | None:
+    """Why `absent` lost its positive figure in rendering (a token that renders to zero), or None.
+    A spec that had none before rendering was parse_monitor_specs' to refuse."""
+    if _unanchored_absent(raw["metrics"]):
+        return None
+    return _unanchored_absent(rendered["metrics"])
+
+
 def _recaptured(client, spec: dict, app: str, tokens: dict):
     """Re-read every `recapture:` value, then render the spec against them: (spec, None), or
     (None, why) when a value is not shown this poll."""
@@ -338,6 +390,9 @@ def _recaptured(client, spec: dict, app: str, tokens: dict):
                           f"for {cap['field']!r}")
         tokens[cap["token"]] = value
     rendered = render_spec(spec, tokens)
+    unanchored = _rendered_away(spec, rendered)
+    if unanchored:            # a recaptured value can be zero on one read and not the next
+        return None, unanchored
     _check_bounds_all(rendered)
     return rendered, None
 
@@ -347,21 +402,28 @@ def assert_monitor(client, app: str, specs: list[dict], timeout: int, poll: floa
     """Polls every spec until all match or `timeout`. A spec with `recapture:` re-reads those
     values on every poll, just before its MON read, and is rendered against that read: a value
     that keeps moving on a running app (a checkpoint advanced by idle heartbeats) is compared with
-    its current reading, not with one taken once and outrun."""
+    its current reading, not with one taken once and outrun. A spec with no positive figure is
+    then re-read until `timeout`, and fails as soon as it stops matching. Which specs hold is
+    decided from the rendered spec each read evaluates, so a token that renders to zero holds
+    like a written zero."""
     local = dict(tokens or {})
     fixed = {}
     for i, s in enumerate(specs):
         if not s.get("recapture"):
             fixed[i] = render_spec(s, tokens)
             _check_bounds_all(fixed[i])
-    deadline = time.monotonic() + timeout
+            unanchored = _rendered_away(s, fixed[i])
+            if unanchored:
+                raise AssertionFailed(f"monitor: {unanchored}", [])
     resolved: dict[int, str] = {}
     shown_specs = list(specs)
-    while True:
-        if status_probe:
-            status_probe()
+    # Read by poll_holding on every poll; a recaptured spec's entry follows its latest rendering.
+    holds = [_holds(fixed[i]) if i in fixed else True for i in range(len(specs))]
+
+    def evaluate(indices):
         results = []
-        for i, raw in enumerate(specs):
+        for i in indices:
+            raw = specs[i]
             spec = fixed.get(i)
             if spec is None:
                 spec, why = _recaptured(client, raw, app, local)
@@ -370,6 +432,7 @@ def assert_monitor(client, app: str, specs: list[dict], timeout: int, poll: floa
                     results.append((False, why, empty, empty))
                     continue
             shown_specs[i] = spec
+            holds[i] = _holds(spec)
             if i not in resolved:
                 if spec.get("component"):
                     resolved[i] = resolve_component(
@@ -378,24 +441,24 @@ def assert_monitor(client, app: str, specs: list[dict], timeout: int, poll: floa
                     resolved[i] = resolve_target(
                         find_targets(client.mon(app)), spec.get("target"), app)
             results.append(_evaluate(client.mon(resolved[i]), spec))
-        detail = next((d for ok, d, _, _ in results if not ok), None)
-        if detail is None or time.monotonic() >= deadline:
-            records = [
-                build_assertion_result(type="monitor", status="passed" if ok else "failed",
-                                        spec=s, db=None, target=resolved.get(
-                                            i, s.get("component") or s.get("target") or app),
-                                        detail="ok" if ok else d, expected=exp, actual=act)
-                for i, (s, (ok, d, exp, act)) in enumerate(zip(shown_specs, results))
-            ]
-            if detail is None:
-                return records
-            raise AssertionFailed(
-                f"monitor assertion not satisfied within {timeout}s: {detail}. This is what a "
-                f"person reads off the monitor page to decide whether a flow is progressing.",
-                records)
-        if progress:
-            try:
-                progress(timeout - (deadline - time.monotonic()), float(timeout))
-            except Exception:
-                pass
-        time.sleep(poll or 0.05)
+        return results
+
+    results, outcome = poll_holding(evaluate, holds, timeout, poll, status_probe, progress)
+    records = [
+        build_assertion_result(type="monitor", status="passed" if ok else "failed",
+                                spec=s, db=None, target=resolved.get(
+                                    i, s.get("component") or s.get("target") or app),
+                                detail="ok" if ok else d, expected=exp, actual=act)
+        for i, (s, (ok, d, exp, act)) in enumerate(zip(shown_specs, results))
+    ]
+    if outcome == "passed":
+        return records
+    detail = next(d for ok, d, _, _ in results if not ok)
+    if outcome == "broke":
+        raise AssertionFailed(
+            f"monitor assertion: {detail}. The spec has no positive figure, so it must hold until "
+            f"the {timeout}s timeout; it matched, then stopped matching.", records)
+    raise AssertionFailed(
+        f"monitor assertion not satisfied within {timeout}s: {detail}. This is what a "
+        f"person reads off the monitor page to decide whether a flow is progressing.",
+        records)

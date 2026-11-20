@@ -38,11 +38,15 @@ services:
       # a FIXED pair, not per-test -- are created at runtime by MySQLAdmin.ensure_setup().
       # Per-test isolation is by ${TID} table-name prefix; see README.md.
       - ./init-mysql.sql:/docker-entrypoint-initdb.d/init.sql
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :3306 is already taken. When
       # overriding, point the framework at it too: SLT_MYSQL_HOST=localhost
       # SLT_MYSQL_PORT=<port> (+ the SLT_MYSQL_* creds; see docs/internals/ENGINE.md).
-      - "${SLT_MYSQL_HOST_PORT:-3306}:3306"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_MYSQL_HOST_PORT:-3306}:3306"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_MYSQL_HOST_PORT:-3306}:3306"
     networks:
       - slt-mysql-net
     healthcheck:

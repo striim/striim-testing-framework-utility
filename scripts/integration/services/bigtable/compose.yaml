@@ -13,10 +13,14 @@ services:
     cpus: ${INT_BIGTABLE_CPUS:-0.5}
     mem_limit: ${INT_BIGTABLE_MEM_LIMIT:-2g}
     command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Do NOT set INT_BIGTABLE_HOST to "point the framework at it": that is live_override_env, which
       # makes services.resolve() return mode="live"/started=False and skip `docker compose up`.
-      - "${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:9470"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:9470"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:9470"
     healthcheck:
       # /dev/tcp is a bash feature and the image's /bin/sh is Debian's dash, so run it under bash.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9470"]

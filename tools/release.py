@@ -10,9 +10,11 @@
 Maintainers only; see docs/internals/RELEASING.md. Refuses unless the checkout is `main`, has
 no uncommitted or untracked files and equals `origin/main` after a fetch. The hermetic suites run
 before any file changes (`--skip-tests` skips them, with a warning). The notes are either written
-by hand (`--notes-file`, required for the first release) or the titles of the pull requests merged
-since the previous `vX.Y.Z` tag; generated notes need a deny-pattern file (`--deny-patterns` or
-RELEASE_DENY_PATTERNS) and are refused if any title matches. The notes travel in the annotated tag.
+by hand (the `## Unreleased` section of RELEASE-NOTES.md, or `--notes-file`) or the titles of the pull
+requests merged since the previous `vX.Y.Z` tag; generated notes need a deny-pattern file
+(`--deny-patterns` or RELEASE_DENY_PATTERNS) and are refused if any title matches. The notes travel in
+the annotated tag. The release turns the `## Unreleased` sections of RELEASE-NOTES.md and
+docs/UPGRADING.md into the version's own and leaves each an empty `## Unreleased` for the next one.
 
 A release refuses while the consumer template's pin names nothing in this repository, which is the
 state of a fresh repository made from another one's tree. `--bootstrap-pin`, before the first
@@ -32,12 +34,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECTS = ("pyproject.toml", "scripts/live/pyproject.toml", "scripts/integration/pyproject.toml")
 NOTES = "RELEASE-NOTES.md"
-NOTES_HEADER = "# Release notes\n\nOne entry per release, newest first: the pull requests it contains.\n"
-# The hermetic suites: (directory, arguments after the interpreter). No Docker, no Striim.
+NOTES_HEADER = ("# Release notes\n\nOne entry per release, newest first. `## Unreleased` at the top is what `main` has "
+                "gained since\nthe last release; the release makes it that version's entry.\n")
+UPGRADING = "docs/UPGRADING.md"
+# The standing section each pull request that changes behaviour adds to, and what it holds when empty.
+UNRELEASED = "## Unreleased"
+UNRELEASED_EMPTY = "Nothing yet."
+_UNRELEASED = re.compile(r"^## Unreleased[ \t]*\n", re.M)
+# The hermetic suites: (directory, arguments after the interpreter). No Docker, no Striim. The same
+# three as CONTRIBUTING.md and .github/workflows/hermetic-tests.yml (tests/test_ci_workflow.py).
 SUITES = [
-    (".", ["-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]),
+    (".", ["-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not live and not docker", "tests"]),
     ("scripts/live", ["-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not live", "tests"]),
-    ("scripts/integration", ["-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not docker", "tests"]),
+    ("scripts/integration", ["-m", "pytest", "-q", "-p", "no:cacheprovider", "-m", "not integration and not docker",
+                             "tests"]),
 ]
 SEMVER = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _SQUASH = re.compile(r"^(?P<title>.+) \(#(?P<n>\d+)\)$")
@@ -178,9 +188,41 @@ def notes_entry(version, prs, date, body=None):
     return f"## v{version} ({date})\n\n" + (body.strip() + "\n" if body is not None else notes_body(prs))
 
 
+def _unreleased_span(text):
+    """(start, body start, end) of the `## Unreleased` section, or None."""
+    m = _UNRELEASED.search(text or "")
+    if not m:
+        return None
+    nxt = re.search(r"^## ", text[m.end():], re.M)
+    return m.start(), m.end(), m.end() + nxt.start() if nxt else len(text)
+
+
+def unreleased(text):
+    """The `## Unreleased` section's entries ("" when it holds only the placeholder), or None without one."""
+    span = _unreleased_span(text)
+    if span is None:
+        return None
+    body = text[span[1]:span[2]].strip()
+    return "" if body in ("", UNRELEASED_EMPTY) else body
+
+
+def promote_unreleased(text, heading):
+    """`text` with its `## Unreleased` entries under `heading` and an empty `## Unreleased` above, or
+    None when the section is missing or empty."""
+    body = unreleased(text)
+    if not body:
+        return None
+    start, _, end = _unreleased_span(text)
+    return text[:start] + f"{UNRELEASED}\n\n{UNRELEASED_EMPTY}\n\n{heading}\n\n{body}\n\n" + text[end:].lstrip("\n")
+
+
 def add_entry(existing, entry):
-    """The notes file with `entry` as its newest entry."""
+    """The notes file with `entry` as its newest entry, below an empty `## Unreleased` if it has one."""
     text = existing if existing is not None else NOTES_HEADER
+    span = _unreleased_span(text)
+    if span is not None:
+        start, _, end = span
+        return text[:start] + f"{UNRELEASED}\n\n{UNRELEASED_EMPTY}\n\n" + entry + "\n" + text[end:].lstrip("\n")
     m = re.search(r"^## ", text, re.M)
     if m:
         return text[:m.start()] + entry + "\n" + text[m.start():]
@@ -275,7 +317,18 @@ def plan(repo, args):
     if prev and parse(version) <= parse(prev[1:]):
         raise Refused(f"{version} is not above the previous release {prev}")
     date = datetime.date.today().isoformat()
-    if args.notes_file:
+    notes_path = repo / NOTES
+    pending = unreleased(notes_path.read_text(encoding="utf-8")) if notes_path.exists() else None
+    if pending and args.notes_file:
+        raise Refused(f"{NOTES} has entries under {UNRELEASED!r} and --notes-file was given; release from "
+                      f"the section (drop --notes-file), or move its entries into the notes file and leave "
+                      f"the section {UNRELEASED_EMPTY!r}")
+    if pending:
+        # Hand-written in the tree by the pull requests themselves: checked like a --notes-file.
+        labelled = [(f"{NOTES} {UNRELEASED} line {i}", line) for i, line in enumerate(pending.splitlines(), 1)]
+        hits = deny_hits(labelled, load_patterns(args.deny_patterns))
+        entry = notes_entry(version, None, date, pending)
+    elif args.notes_file:
         try:
             body = args.notes_file.read_text(encoding="utf-8")
         except OSError as e:
@@ -376,9 +429,15 @@ def main(argv=None):
     step(f"{NOTES}: add this entry\n{entry}")
     if not dry:
         notes.write_text(add_entry(notes.read_text() if notes.exists() else None, entry))
+    upgrading = repo / UPGRADING
+    promoted = promote_unreleased(upgrading.read_text(encoding="utf-8"), f"## {tag}") if upgrading.exists() else None
+    if promoted is not None:
+        step(f"{UPGRADING}: {UNRELEASED!r} -> '## {tag}', and a new empty {UNRELEASED!r}")
+        if not dry:
+            upgrading.write_text(promoted, encoding="utf-8")
 
     body = entry.split("\n", 2)[2]                       # the entry without its heading
-    commands = [(["git", "add", *current, *pins, NOTES], None),
+    commands = [(["git", "add", *current, *pins, NOTES, *([UPGRADING] if promoted is not None else [])], None),
                 (["git", "commit", "-q", "-m", f"Release {tag}"], None),
                 (["git", "tag", "-a", tag, "--cleanup=verbatim", "-m", body], "<the entry above, without its heading>")]
     for cmd, shown in commands:

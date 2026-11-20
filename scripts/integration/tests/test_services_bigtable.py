@@ -102,7 +102,9 @@ def test_integration_compose_remaps_only_the_host_port():
     # Spanner's shape: a fixed 9470 inside the container; INT_BIGTABLE_GRPC_HOST_PORT (19470 by
     # default, so both tiers' stacks can run at once) moves only the published host side.
     svc = yaml.safe_load(_INT_COMPOSE.read_text())["services"]["int-bigtable"]
-    assert svc["ports"] == ["${INT_BIGTABLE_GRPC_HOST_PORT:-19470}:9470"]
+    assert svc["ports"] == [f"{b}:${{INT_BIGTABLE_GRPC_HOST_PORT:-19470}}:9470"   # bind address, gateway
+                            for b in ("${SLT_BIND_ADDRESS:-0.0.0.0}",
+                                      "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}")]
     assert svc["command"][-1].endswith("--host-port=0.0.0.0:9470")
     assert "INT_BIGTABLE_GRPC_HOST_PORT" not in str(svc["command"]) + str(svc["healthcheck"])
 

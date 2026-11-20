@@ -12,8 +12,10 @@ from pathlib import Path
 _SERIES_JAVA = {"5.4": "17", "5.0": "11", "5.2": "11"}
 _DEFAULT_JAVA = "17"
 
-# Fallback used ONLY when STRIIM_HOME is unset (e.g. a standalone `mvn package` that relies on the
-# pom's own defaults). Kept in sync with the pom defaults.
+# Fallback used ONLY when STRIIM_HOME is unset: the release the framework then builds jars against.
+# It is not the sample poms' own STRIIM_VERSION default (5.4.0.6), which
+# applies only to a `mvn package` run outside the framework: the framework passes this release to
+# Maven, whose `release-from-env` profile then overrides the pom default.
 _DEFAULT_VERSION = "5.4.2"
 
 class ReleaseError(Exception):

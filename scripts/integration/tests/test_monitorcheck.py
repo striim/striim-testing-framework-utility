@@ -43,3 +43,29 @@ def test_true_is_not_one():
 def test_render_strings_renders_leaves_only():
     out = render_strings({"${K}": "${V}", "n": 1, "l": ["${V}"]}, lambda s: s.replace("${V}", "v"))
     assert out == {"${K}": "v", "n": 1, "l": ["v"]}
+
+
+
+# --- an empty mapping means exactly empty; null means absent; lists compare element by element ---
+
+def test_an_empty_mapping_requires_an_empty_object():
+    assert subset_mismatches({"IgnoredByCode": {}}, {"IgnoredByCode": {}}) == []
+    assert subset_mismatches({"IgnoredByCode": {}}, {"IgnoredByCode": {"23505": 7}}) == [
+        "IgnoredByCode: expected an empty object, published {'23505': 7}"]
+
+
+def test_null_asserts_the_key_is_absent():
+    assert subset_mismatches({"ClosedOnError": None}, {"Windows": 3}) == []
+    assert subset_mismatches({"ClosedOnError": None}, {"ClosedOnError": 2}) == [
+        "ClosedOnError: expected absent, published 2"]
+
+
+def test_list_elements_compare_type_strictly():
+    assert subset_mismatches({"Flags": [1, 0]}, {"Flags": [1, 0]}) == []
+    assert subset_mismatches({"Flags": [1, 0]}, {"Flags": [True, False]}) == [
+        "Flags[0]: expected 1, published True", "Flags[1]: expected 0, published False"]
+
+
+def test_a_list_of_another_length_is_a_mismatch():
+    assert subset_mismatches({"Flags": [1, 0]}, {"Flags": [1]}) == [
+        "Flags: expected 2 element(s), published 1: [1]"]

@@ -1155,3 +1155,30 @@ def test_a_jmx_bean_without_a_domain_is_a_manifest_error(tmp_path):
 def test_xfail_tiers_may_name_jmx(tmp_path):
     m = load_manifest(_xf(tmp_path, 'xfail: {reason: "r", tiers: [jmx]}'))
     assert m.xfail["tiers"] == ["jmx"]
+
+
+@pytest.mark.parametrize("value", ["90s", "''", "null"])
+def test_timeout_that_is_not_a_number_is_a_manifest_error_naming_the_file(tmp_path, value):
+    """`timeout` is a bare number of seconds (TEST-YAML.md). A duration string, which other keys
+    accept, is refused at load as a ManifestError naming the file, not a bare ValueError."""
+    p = _write(tmp_path, f"""
+        name: hello-single
+        tql: app.tql
+        timeout: {value}
+        assert:
+          smoke: true
+    """)
+    with pytest.raises(ManifestError, match=r"test\.yaml: 'timeout' must be a number of seconds"):
+        load_manifest(p)
+
+
+@pytest.mark.parametrize("value,loaded", [("2.9", 2), ("0", 0), ("300", 300)])
+def test_timeout_keeps_whole_seconds_as_documented(tmp_path, value, loaded):
+    p = _write(tmp_path, f"""
+        name: hello-single
+        tql: app.tql
+        timeout: {value}
+        assert:
+          smoke: true
+    """)
+    assert load_manifest(p).timeout == loaded

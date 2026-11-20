@@ -30,11 +30,15 @@ def test_reordered_object_keys_equal():
     assert ok and diff is None
 
 
-def test_reordered_array_elements_equal():
-    a = [1, 2, 3]
-    e = [3, 1, 2]
-    ok, diff = json_equal(a, e)
-    assert ok and diff is None
+def test_reordered_array_elements_differ_by_default():
+    # Position is part of an array's value (a SQL ARRAY column, a list of steps).
+    ok, diff = json_equal([1, 2, 3], [3, 1, 2])
+    assert not ok and diff == "[0] (expected 3, got 1)"
+
+
+def test_root_array_order_is_ignored_when_listed_unordered():
+    assert json_equal([1, 2, 3], [3, 1, 2], unordered=["$"]) == (True, None)
+    assert json_equal([1, 2, 2], [2, 1, 1], unordered=["$"])[0] is False     # a multiset, not a set
 
 
 def test_differing_leaf_returns_path():
@@ -76,10 +80,32 @@ def test_bool_is_not_equal_to_int_at_any_depth(actual, expected):
 
 
 def test_bool_equals_bool():
-    assert json_equal({"a": [True, False]}, {"a": [False, True]}) == (True, None)
+    assert json_equal({"a": [True, False]}, {"a": [True, False]}) == (True, None)
+    assert json_equal({"a": [True, False]}, {"a": [False, True]}, unordered=["a"]) == (True, None)
 
 
-def test_nested_array_in_array_equal_when_key_reordered():
+@pytest.mark.parametrize("actual, expected", [
+    (1.0, 1), (1, 1.0), ({"n": 2.0}, {"n": 2}), ([1, 2.0], [1, 2]), ({"a": [{"b": 0}]}, {"a": [{"b": 0.0}]})])
+def test_an_integer_is_not_equal_to_a_float_at_any_depth(actual, expected):
+    ok, diff = json_equal(actual, expected)
+    assert not ok and diff
+
+
+def test_floats_and_integers_equal_their_own_type():
+    assert json_equal({"f": 1.5, "i": 7, "z": 0.0}, {"f": 1.5, "i": 7, "z": 0.0}) == (True, None)
+
+
+def test_unordered_path_covers_that_array_only():
+    a = {"items": [{"id": 2, "sub": [1, 2]}, {"id": 1, "sub": [3, 4]}]}
+    e = {"items": [{"id": 1, "sub": [3, 4]}, {"id": 2, "sub": [1, 2]}]}
+    assert json_equal(a, e)[0] is False
+    assert json_equal(a, e, unordered=["items"]) == (True, None)
+    swapped = {"items": [{"id": 1, "sub": [4, 3]}, {"id": 2, "sub": [1, 2]}]}
+    assert json_equal(a, swapped, unordered=["items"])[0] is False          # sub keeps its order
+    assert json_equal(a, swapped, unordered=["items", "items[].sub"]) == (True, None)
+
+
+def test_nested_array_in_array_differs_by_default_and_equal_when_both_paths_listed():
     a = {
         "ID": "1",
         "questions": [
@@ -94,8 +120,9 @@ def test_nested_array_in_array_equal_when_key_reordered():
             {"Q": "q2", "answers": [{"A": "a1"}, {"A": "a2"}]},
         ],
     }
-    ok, diff = json_equal(a, e)
-    assert ok and diff is None
+    assert json_equal(a, e)[0] is False
+    assert json_equal(a, e, unordered=["questions"])[0] is False
+    assert json_equal(a, e, unordered=["questions", "questions[].answers"]) == (True, None)
 
 
 # ---- parse_json_specs -----------------------------------------------------------------
@@ -144,6 +171,18 @@ def test_parse_json_specs_missing_key_raises():
 def test_parse_json_specs_empty_key_list_raises():
     with pytest.raises(JsonSpecError):
         parse_json_specs([_base_spec(key=[])])
+
+
+def test_parse_json_specs_accepts_unordered_paths():
+    specs = parse_json_specs([_base_spec(unordered=["$", "items", "items[].subitems", "$[]", "m[][]"])])
+    assert specs[0]["unordered"] == ["$", "items", "items[].subitems", "$[]", "m[][]"]
+
+
+@pytest.mark.parametrize("bad", ["items", [], [""], ["items[0]"], ["a..b"], [".a"], ["a."],
+                                 ["[]x"], ["a b"], ["items", "items"], [3]])
+def test_parse_json_specs_refuses_a_bad_unordered(bad):
+    with pytest.raises(JsonSpecError, match="unordered"):
+        parse_json_specs([_base_spec(unordered=bad)])
 
 
 def test_parse_json_specs_non_list_raw_raises():
@@ -204,6 +243,42 @@ def test_load_expected_not_a_list_raises(tmp_path):
     spec = _base_spec()
     with pytest.raises(JsonSpecError):
         _load_expected(spec, tmp_path)
+
+
+def test_load_expected_refuses_two_rows_for_one_key(tmp_path):
+    (tmp_path / "expected").mkdir()
+    (tmp_path / "expected" / "user_data.json").write_text(json.dumps([
+        {"user_id": "1", "user_responses": {"v": "first"}},
+        {"user_id": "1", "user_responses": {"v": "second"}}]))
+    with pytest.raises(JsonSpecError, match="key user_id='1' appears 2 times"):
+        _load_expected(_base_spec(), tmp_path)
+
+
+def test_load_expected_refuses_keys_equal_only_as_text(tmp_path):
+    # Keys are compared as text (the read stringifies them), so 1 and "1" are the same row.
+    (tmp_path / "expected").mkdir()
+    (tmp_path / "expected" / "user_data.json").write_text(json.dumps([
+        {"user_id": 1, "user_responses": {}}, {"user_id": "1", "user_responses": {}}]))
+    with pytest.raises(JsonSpecError, match="appears 2 times"):
+        _load_expected(_base_spec(), tmp_path)
+
+
+def test_load_expected_refuses_a_duplicate_member_name(tmp_path):
+    (tmp_path / "expected").mkdir()
+    (tmp_path / "expected" / "user_data.json").write_text(
+        '[{"user_id": "1", "user_responses": {"v": 1, "v": 2}}]')
+    with pytest.raises(JsonSpecError, match="duplicate member 'v'"):
+        _load_expected(_base_spec(), tmp_path)
+
+
+def test_load_expected_refuses_an_unordered_path_naming_no_array(tmp_path):
+    (tmp_path / "expected").mkdir()
+    (tmp_path / "expected" / "user_data.json").write_text(json.dumps([
+        {"user_id": "1", "user_responses": {"items": [{"subitems": [1]}], "n": 1}}]))
+    _load_expected(_base_spec(unordered=["items", "items[].subitems"]), tmp_path)
+    for bad in (["itemz"], ["n"], ["items[].subitemz"], ["$"]):
+        with pytest.raises(JsonSpecError, match="names no array"):
+            _load_expected(_base_spec(unordered=bad), tmp_path)
 
 
 # ---- assert_json ------------------------------------------------------------------
@@ -277,3 +352,153 @@ def test_assert_json_requires_json_capable_admin(tmp_path):
 
     with pytest.raises(JsonSpecError):
         assert_json(NoJsonAdmin(), [spec], tmp_path, timeout=0, poll=0, db="postgres")
+
+
+def test_assert_json_fails_two_rows_for_one_key_in_the_read(tmp_path):
+    _write_golden(tmp_path, [{"user_id": "1", "user_responses": {"ID": "1"}}])
+    admin = StubAdmin([(("1",), {"ID": "1"}), (("1",), {"ID": "1"})])
+    with pytest.raises(AssertionFailed, match="key user_id='1' appears 2 times") as e:
+        assert_json(admin, [_base_spec()], tmp_path, timeout=0, poll=0)
+    assert e.value.records[0]["status"] == "failed"
+
+
+def test_assert_json_fails_a_reordered_array_and_passes_it_when_unordered(tmp_path):
+    _write_golden(tmp_path, [{"user_id": "1", "user_responses": {"steps": ["a", "b", "c"]}}])
+    admin = StubAdmin([(("1",), {"steps": ["c", "a", "b"]})])
+    with pytest.raises(AssertionFailed, match=r"steps\[0\] \(expected 'a', got 'c'\)"):
+        assert_json(admin, [_base_spec()], tmp_path, timeout=0, poll=0)
+    records = assert_json(admin, [_base_spec(unordered=["steps"])], tmp_path, timeout=0, poll=0)
+    assert records[0]["status"] == "passed"
+
+
+# The review's two defect tests, inverted.
+class _RowsAdmin:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def select_json_rows(self, target, key, column):
+        return self.rows
+
+
+def test_fwl8_array_order_duplicate_read_keys_and_float_for_int_fail(tmp_path):
+    (tmp_path / "g.json").write_text('[{"id": 1, "doc": {"steps": ["a", "b", "c"], "n": 1}}]')
+    spec = parse_json_specs([{"target": "t", "db": "spanner", "column": "doc", "match": "g.json", "key": "id"}])
+    rows = [(("1",), {"steps": ["zzz"], "n": 9}),
+            (("1",), {"steps": ["c", "a", "b"], "n": 1.0})]
+    with pytest.raises(AssertionFailed, match="appears 2 times"):
+        assert_json(_RowsAdmin(rows), spec, tmp_path, timeout=0.05, poll=0.01)
+    with pytest.raises(AssertionFailed, match=r"steps\[0\]"):
+        assert_json(_RowsAdmin([(("1",), {"steps": ["c", "a", "b"], "n": 1})]), spec, tmp_path,
+                    timeout=0.05, poll=0.01)
+    with pytest.raises(AssertionFailed, match=r"n \(expected 1, got 1\.0\)"):
+        assert_json(_RowsAdmin([(("1",), {"steps": ["a", "b", "c"], "n": 1.0})]), spec, tmp_path,
+                    timeout=0.05, poll=0.01)
+
+
+def test_fwl8_golden_with_two_rows_for_one_key_is_refused(tmp_path):
+    (tmp_path / "g.json").write_text('[{"id": 1, "doc": {"v": "first"}}, {"id": 1, "doc": {"v": "second"}}]')
+    spec = parse_json_specs([{"target": "t", "db": "spanner", "column": "doc", "match": "g.json", "key": "id"}])
+    with pytest.raises(JsonSpecError, match="appears 2 times"):
+        assert_json(_RowsAdmin([(("1",), {"v": "second"})]), spec, tmp_path, timeout=0.05, poll=0.01)
+
+
+# ---- stable_seconds: hold a passing JSON assertion for N seconds -------------------------------
+
+
+class SequenceAdmin:
+    """Each read returns the next state; the last one repeats. A state is a row list, or an
+    exception instance to raise."""
+    def __init__(self, *states):
+        self.states, self.reads = list(states), 0
+
+    def select_json_rows(self, table, key_cols, column):
+        state = self.states[min(self.reads, len(self.states) - 1)]
+        self.reads += 1
+        if isinstance(state, Exception):
+            raise state
+        return state
+
+
+_N1 = [(("1",), {"n": 1})]
+_N2 = [(("1",), {"n": 2})]
+
+
+def _n_golden(tmp_path):
+    _write_golden(tmp_path, [{"user_id": "1", "user_responses": {"n": 1}}])
+
+
+def test_parse_json_specs_accepts_stable_seconds():
+    assert parse_json_specs([_base_spec(stable_seconds=0)])
+    assert parse_json_specs([_base_spec(stable_seconds=2.5)])
+
+
+@pytest.mark.parametrize("bad", [-1, "5", True, None, [5]])
+def test_parse_json_specs_refuses_a_bad_stable_seconds(bad):
+    with pytest.raises(JsonSpecError, match="stable_seconds"):
+        parse_json_specs([_base_spec(stable_seconds=bad)])
+
+
+def test_without_stable_seconds_a_late_json_change_is_never_read(tmp_path):
+    # The default is unchanged: the first equal read passes.
+    _n_golden(tmp_path)
+    admin = SequenceAdmin(_N1, _N2)
+    records = assert_json(admin, [_base_spec()], tmp_path, timeout=5, poll=0.01)
+    assert records[0]["status"] == "passed" and admin.reads == 1
+
+
+def test_stable_seconds_fails_a_json_value_overwritten_in_the_window(tmp_path):
+    _n_golden(tmp_path)
+    admin = SequenceAdmin(_N1, _N1, _N2)
+    with pytest.raises(AssertionFailed) as ei:
+        assert_json(admin, [_base_spec(stable_seconds=5)], tmp_path, timeout=5, poll=0.01)
+    msg = str(ei.value)
+    assert "passed, then failed within its stable_seconds window" in msg
+    assert "expected 1, got 2" in msg
+    assert admin.reads == 3
+    assert [r["status"] for r in ei.value.records] == ["failed"]
+
+
+def test_stable_seconds_fails_a_json_row_added_in_the_window(tmp_path):
+    _n_golden(tmp_path)
+    admin = SequenceAdmin(_N1, _N1 + [(("2",), {"n": 1})])
+    with pytest.raises(AssertionFailed, match="unexpected key"):
+        assert_json(admin, [_base_spec(stable_seconds=5)], tmp_path, timeout=5, poll=0.01)
+
+
+def test_stable_seconds_passes_an_unchanged_json_value_held_through_the_window(tmp_path):
+    import time
+    _n_golden(tmp_path)
+    admin = SequenceAdmin(_N1)
+    t0 = time.monotonic()
+    records = assert_json(admin, [_base_spec(stable_seconds=0.3)], tmp_path, timeout=5, poll=0.05)
+    assert time.monotonic() - t0 >= 0.3
+    assert admin.reads > 2
+    assert records[0]["status"] == "passed"
+
+
+def test_json_stable_seconds_is_the_longest_of_the_group(tmp_path):
+    import time
+    _n_golden(tmp_path)
+    t0 = time.monotonic()
+    assert_json(SequenceAdmin(_N1), [_base_spec(stable_seconds=0.3), _base_spec()], tmp_path,
+                timeout=5, poll=0.05)
+    assert time.monotonic() - t0 >= 0.3
+
+
+def test_json_stable_seconds_runs_past_the_timeout_when_it_must(tmp_path):
+    # As in assert.data and assert.file: the window starts at the first pass and is held in full.
+    import time
+    _n_golden(tmp_path)
+    t0 = time.monotonic()
+    assert_json(SequenceAdmin(_N1), [_base_spec(stable_seconds=0.3)], tmp_path, timeout=0, poll=0.05)
+    assert time.monotonic() - t0 >= 0.3
+
+
+def test_a_json_read_that_raises_in_the_window_is_not_a_pass(tmp_path):
+    # A JSON read has no "not readable yet" state: a read that raises ends the assertion, so an
+    # unreadable target in the window can neither pass it nor hold it open.
+    _n_golden(tmp_path)
+    admin = SequenceAdmin(_N1, RuntimeError("table gone"))
+    with pytest.raises(RuntimeError, match="table gone"):
+        assert_json(admin, [_base_spec(stable_seconds=5)], tmp_path, timeout=5, poll=0.01)
+    assert admin.reads == 2

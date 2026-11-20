@@ -77,11 +77,13 @@ PARTIAL_MISSING_41 = ["inputs.source", "inputs.productBuild", "inputs.renderedMa
 _TOP_KEYS_41 = {"evidenceVersion", "partial", "run", "inputs", "runtime", "lifecycle", "assertions",
                 "reports", "resources", "review"}
 _RUN_KEYS_41 = RUN_KEYS - {"invocation", "nodeid"}
-_STATUSES = {"passed", "failed", "skipped", "error"}
+_STATUSES = {"passed", "failed", "skipped", "error", "xfailed", "xpassed"}
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _SHA = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SECRET_NAME = re.compile(r"(?i)(PASS|PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|AUTH|COMPANY_NAME|CLUSTER_NAME)")
-_USERINFO = re.compile(r"(?P<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+# A URL's credentials: everything up to the LAST "@" of the authority, which ends at the first "/", "?" or
+# "#" (RFC 3986). Up to the first "@", a password containing one ("p@ss") kept its tail.
+_USERINFO = re.compile(r"(?P<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/?#\s\"']+@")
 _FORMS = ("unreadable", "unobserved")
 
 
@@ -375,7 +377,7 @@ def final_outcome(status: str, lc_state, cleanup: dict, resources: dict, *, exac
     """One source of truth for the case's final status and whether it qualifies. ``exact`` (the C7.3
     1.9.0 clauses) is ``{data, integrity, assertions, blocked}``; legacy callers omit it."""
     cleanup = cleanup or NO_CLEANUP_RECORD
-    if status == "passed" and cleanup.get("status") == "failed":
+    if status in ("passed", "xpassed") and cleanup.get("status") == "failed":
         status = "failed"
     reason = None
     lc = lc_state.to_dict() if hasattr(lc_state, "to_dict") else (lc_state or {})
@@ -460,6 +462,8 @@ def exact_view(doc: dict) -> dict:
 def _report_status(report) -> str | None:
     when, outcome = getattr(report, "when", None), getattr(report, "outcome", None)
     if when == "call":
+        if hasattr(report, "wasxfail") and outcome in ("passed", "skipped"):
+            return "xpassed" if outcome == "passed" else "xfailed"
         return {"passed": "passed", "failed": "failed", "skipped": "skipped"}.get(outcome, "error")
     if when == "setup" and outcome == "failed":
         return "error"
@@ -610,7 +614,8 @@ def case_envelope(item, report, status: str) -> dict:
     doc["run"] = {"runId": run_id, "attempt": getattr(ident, "attempt", None), "caseId": f"live:{rel}::{item.name}",
                   "suite": rel, "tier": "live", "startedAt": getattr(lc, "started_at", None),
                   "endedAt": _lifecycle.now_iso(), "status": status,
-                  "skipReason": _skip_reason(report) if status == "skipped" else None,
+                  "skipReason": (_skip_reason(report) if status == "skipped"
+                                 else str(report.wasxfail) if status == "xfailed" else None),
                   "failure": _failure(report) if status in ("failed", "error") else None,
                   "qualifies": qualifies, "qualifiesReason": why,
                   "invocation": os.environ.get("SLT_INVOCATION_ID"),
@@ -1326,7 +1331,7 @@ def fold_evidence_errors(session, write_sidecar=None) -> None:
     affected = {e["nodeid"]: results.get(e["nodeid"]) or {"name": e["name"], "nodeid": e["nodeid"]} for e in errors
                 if e.get("nodeid") is not None}     # a session-level error (a sidecar write) marks no case
     for tr in affected.values():
-        if tr.get("status") == "passed":
+        if tr.get("status") in ("passed", "xpassed"):
             tr["status"] = "error"
     if write_sidecar is not None:
         write_sidecar(config)
@@ -1357,7 +1362,7 @@ def finalize_session(session, write_sidecar=None) -> None:
             infra = getattr(config, "_slt_infra", None)
             doc["resources"]["infrastructure"] = infra.record() if infra is not None else \
                 {**(doc["resources"].get("infrastructure") or {}), "teardown": {"status": "failed", "failures": failures}}
-            if doc["run"]["status"] == "passed":
+            if doc["run"]["status"] in ("passed", "xpassed"):
                 doc["run"]["status"] = "error"
                 doc["run"]["failure"] = detail[:2000]
             doc["run"]["qualifies"], doc["run"]["qualifiesReason"] = False, detail
@@ -1371,7 +1376,7 @@ def finalize_session(session, write_sidecar=None) -> None:
             print(f"[slt] WARNING: could not record the teardown failure in {path}: {e!r}")
     results = getattr(config, "_slt_results", None) or {}
     for tr in results.values():
-        if tr.get("status") == "passed":
+        if tr.get("status") in ("passed", "xpassed"):
             tr["status"] = "error"
     if write_sidecar is not None:
         write_sidecar(config)
@@ -1619,6 +1624,11 @@ def _junit_key(nodeid: str) -> tuple[str, str]:
     return ".".join(names[:-1]), names[-1]
 
 
+def _as_junit(status):
+    """A status as JUnit and the guard's results record it: an xfail as skipped, a non-strict XPASS as passed."""
+    return {"xfailed": "skipped", "xpassed": "passed"}.get(status, status)
+
+
 def _reconcile(tier_dir: Path, junit, facts, results, status_results: dict, mine) -> tuple[bool, list | str]:
     """Every source must be readable and schema-valid, and the executed case sets of the JUnit, the
     guard's results, the v1 sidecar and this invocation's envelopes must match in both directions, one record per
@@ -1646,10 +1656,10 @@ def _reconcile(tier_dir: Path, junit, facts, results, status_results: dict, mine
     for t in sidecar["tests"]:
         if t["nodeid"] in side_status:
             dup_side.append(t["nodeid"])
-        side_status[t["nodeid"]] = t["status"]
+        side_status[t["nodeid"]] = _as_junit(t["status"])
     env_status = {}
     for _p, e in mine:
-        env_status.setdefault(e.doc["run"]["nodeid"], e.doc["run"]["status"])
+        env_status.setdefault(e.doc["run"]["nodeid"], _as_junit(e.doc["run"]["status"]))
     known = set(status_results) | set(side_status) | set(env_status)
     by_key = {_junit_key(n): n for n in known}
     junit_status, unmatched, dups = {}, [], []

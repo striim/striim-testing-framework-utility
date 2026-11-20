@@ -3,7 +3,9 @@ assertions (T2a) -- pure parsing tests, no Docker/Striim/pytest-plugin collectio
 """
 from __future__ import annotations
 
+import re
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -544,7 +546,8 @@ assert:
     assert load_manifest(path).assert_.expect_error == "matched 2 tables"
 
 
-def test_expect_error_with_expect_log_warns_that_the_log_is_ignored(tmp_path):
+def test_expect_error_with_expect_log_is_refused(tmp_path):
+    # The failure path never reads the log, so the key would be declared and never evaluated.
     path, _ = _write(tmp_path, BASE + """
 target:
   input: input/events.json
@@ -552,8 +555,8 @@ assert:
   expect_error: 'matched 2 tables'
   expect_log: 'CommitPolicy is set to'
 """)
-    with pytest.warns(UserWarning, match="'assert.expect_log' is ignored when 'assert.expect_error'"):
-        assert load_manifest(path).assert_.expect_error == "matched 2 tables"
+    with pytest.raises(ManifestError, match="'assert.expect_log' is never evaluated beside 'assert.expect_error'"):
+        load_manifest(path)
 
 
 def test_expect_error_alone_does_not_warn(tmp_path):
@@ -1059,6 +1062,49 @@ assert:
         load_manifest(path)
 
 
+@pytest.mark.parametrize("name", ["ADAPTER_DETAIL", "LAST_BATCH_INFO", "DATABASE_WRITE_INFO"])
+def test_monitor_takes_the_other_json_metrics_as_subset_mappings(tmp_path, name):
+    """Each is a JSON object the harness models, published beside ADAPTER_BASIC's kind: counts
+    and clocks in one object, so a case names the keys it compares."""
+    path, _ = _write(tmp_path, BASE + f"""
+target:
+  input: input/events.json
+assert:
+  monitor:
+    {name}:
+      Count: 3
+""")
+    assert load_manifest(path).assert_.monitor == {name: {"Count": 3}}
+
+
+def test_monitor_refuses_time_taken_for_merge_as_a_clock(tmp_path):
+    path, _ = _write(tmp_path, BASE + """
+target:
+  input: input/events.json
+assert:
+  monitor:
+    TIME_TAKEN_FOR_MERGE: 0
+""")
+    with pytest.raises(ManifestError, match="is a CLOCK"):
+        load_manifest(path)
+
+
+def test_every_monitor_type_the_harness_models_is_classified_exactly_once():
+    """A Type added to MonitorEvent.java and not to manifest.py is refused as 'not a metric this
+    writer publishes' -- which is what happened to the four this test was written for."""
+    from inttest import manifest as M
+    java = (Path(M.__file__).resolve().parents[1] / "java/src/main/java/com/webaction/runtime/"
+            "monitor/MonitorEvent.java")
+    modelled = re.findall(r'new Type<[^>]*>\("([A-Z_]+)"\)', java.read_text())
+    assert len(modelled) >= 20
+    sets = {"assertable": M._ASSERTABLE_METRICS, "subset": M._SUBSET_METRICS,
+            "shape": M._SHAPE_METRICS, "clock": M._CLOCK_METRICS}
+    for name in modelled:
+        assert [k for k, s in sets.items() if name in s] != [], f"{name} is in no set"
+        assert len([k for k, s in sets.items() if name in s]) == 1, f"{name} is in several sets"
+    assert set().union(*sets.values()) == set(modelled)
+
+
 def test_monitor_needs_a_target_block(tmp_path):
     path, _ = _write(tmp_path, """
 name: op-case
@@ -1278,3 +1324,80 @@ assert:
 """)
     with pytest.raises(ManifestError, match="SHAPE metric"):
         load_manifest(path)
+
+
+# --- expect_error rendered per variant: a token that renders empty matches every failure --------
+
+REFUSE = BASE.replace("requires: [postgres]", "requires: [postgres, oracle]") + """
+target:
+  input: input/events.json
+variants:
+  postgres: {{db: postgres-target, tokens: {{V_MSG: 'null value in column'}}}}
+  oracle: {{db: oracle-target, tokens: {{V_MSG: {oracle}}}}}
+assert:
+  expect_error: '${{V_MSG}}'
+"""
+
+
+@pytest.mark.parametrize("value", ["", "'  '"])
+def test_a_variant_leaving_an_expect_error_token_empty_is_refused(tmp_path, value):
+    path, _ = _write(tmp_path, REFUSE.format(oracle=value))
+    with pytest.raises(ManifestError, match=r"variants\.oracle.*V_MSG.*expect_error"):
+        load_manifest(path)
+
+
+def test_a_variant_rendering_expect_error_too_broad_is_refused(tmp_path):
+    path, _ = _write(tmp_path, REFUSE.format(oracle="Exception"))
+    with pytest.raises(ManifestError, match=r"variants\.oracle.*too broad"):
+        load_manifest(path)
+
+
+def test_every_variant_rendering_a_specific_expect_error_loads(tmp_path):
+    path, _ = _write(tmp_path, REFUSE.format(oracle="'ORA-01400'"))
+    assert [v.tokens["V_MSG"] for v in load_manifest(path).variants] == [
+        "null value in column", "ORA-01400"]
+
+
+# --- expect_log is evaluated only on a drive that runs: `data:`, or a `target:` drive -------------
+
+OP = """
+name: op-case
+op:
+  jar: java/OpenProcessors/SomeOp
+"""
+
+
+def test_expect_log_on_a_smoke_only_op_case_is_refused(tmp_path):
+    # A smoke-only op case never drives the operator, so nothing it logs is ever read.
+    path, _ = _write(tmp_path, OP + """
+assert:
+  smoke: true
+  expect_log: 'a line the operator must log'
+""")
+    with pytest.raises(ManifestError, match="'assert.expect_log' is never evaluated on a smoke-only case"):
+        load_manifest(path)
+
+
+def test_expect_log_beside_data_loads(tmp_path):
+    path, test_dir = _write(tmp_path, OP + """
+assert:
+  data:
+    - input: in.json
+      match: out.json
+  expect_log: 'a line the operator must log'
+""")
+    for name in ("in.json", "out.json"):
+        (test_dir / name).write_text("[]")
+    assert load_manifest(path).assert_.expect_log == ["a line the operator must log"]
+
+
+def test_expect_log_on_a_smoke_target_case_loads(tmp_path):
+    # The target drive runs for a smoke target case, and reads the log.
+    path, _ = _write(tmp_path, BASE + """
+target:
+  input: input/events.json
+assert:
+  smoke: true
+  expect_log: 'set-based apply path backed out'
+""")
+    assert load_manifest(path).assert_.expect_log == ["set-based apply path backed out"]

@@ -43,7 +43,7 @@ Finder hide them; `ls -a` shows them.
 
 The validator loads every manifest, checks assertion specs, files and tokens, and checks golden
 consistency by executing the fixture SQL in SQLite; it ends with `PASS: 3 manifests and all offline
-contract checks`. `list` and `--dry-run` print the three cases a run selects without provisioning
+contract checks`, one manifest per case under `tests/live`. `list` and `--dry-run` print the three cases a run selects without provisioning
 or deploying. None of this needs Striim or Docker, and none of it tests an adapter.
 
 ## Run it live
@@ -146,8 +146,8 @@ framework commit on the default branch that has the guidance used for these case
 contain its own SHA, so it is an earlier one). At release, `tools/release.py` rewrites both this pin and the consumer template pin to the
 release tag; bootstrap repairs carried-over pins in a fresh repository. See
 [RELEASING](../../docs/internals/RELEASING.md). [SET-UP-YOUR-OWN-REPO](../../docs/SET-UP-YOUR-OWN-REPO.md)
-explains the pin, the sync script and CI. Never run the sync script inside `examples/`: it would clone
-another framework there. After copying, read the framework links above as paths under the framework
+explains the pin, the sync script and CI. The sync script refuses to run inside the framework checkout
+(exit 2), where it would clone another framework: copy the folder out first. After copying, read the framework links above as paths under the framework
 checkout beside your repository.
 
 ## License

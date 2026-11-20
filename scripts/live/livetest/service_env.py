@@ -54,8 +54,9 @@ def compose_keys(text):
     return set(re.findall(r'\$\{([A-Z][A-Z0-9_]*)', text))
 
 
-def declarations(env=None):
-    """Declared keys across visible profiles, first definition wins within each tier.
+def _service_definitions(env=None):
+    """(file, raw mapping) of each visible service.yaml in both tiers, the first definition of a
+    name winning within each tier.
 
     Read path settings without service discovery to avoid recursive dotenv lookups.
     Manifest validation/expansion uses this explicit environment, before CLI dispatch.
@@ -82,7 +83,6 @@ def declarations(env=None):
     live_roots = [layout._services_dir_for(Path(p)) for p in entries]
     roots_by_tier = [live_roots + [paths.services_dir(env, dotenv=basic)],
                      [p / 'integration' for p in live_roots] + [int_paths.services_dir(env, dotenv=basic)]]
-    types = {}
     for roots in roots_by_tier:
         seen = set()
         for root in roots:
@@ -91,21 +91,43 @@ def declarations(env=None):
                 if file.parent.name in seen:
                     continue
                 seen.add(file.parent.name)
-                raw = yaml.safe_load(Path(watch(file)).read_text()) or {}
-                keys = {raw.get('live_override_env'), raw.get('opt_in_env')}
-                keys.update(required_env(raw.get('required_env'), file))
-                for key in ('docker_env', 'live_env'):
-                    keys.update((raw.get(key) or {}).values())
-                compose = raw.get('compose')
-                if compose:
-                    watch(file.parent / compose, content=True)
-                if compose and (file.parent / compose).is_file():
-                    keys.update(compose_keys((file.parent / compose).read_text()))
-                for key in keys:
-                    if key:
-                        types.setdefault(key, 'string')
-                types.update(pre_up_env(raw.get('pre_up_env'), file))
+                yield file, yaml.safe_load(Path(watch(file)).read_text()) or {}
+
+
+def declarations(env=None):
+    """Declared keys across visible profiles, first definition wins within each tier."""
+    types = {}
+    for file, raw in _service_definitions(env):
+        keys = {raw.get('live_override_env'), raw.get('opt_in_env')}
+        keys.update(required_env(raw.get('required_env'), file))
+        for key in ('docker_env', 'live_env'):
+            keys.update((raw.get(key) or {}).values())
+        compose = raw.get('compose')
+        if compose:
+            watch(file.parent / compose, content=True)
+        if compose and (file.parent / compose).is_file():
+            keys.update(compose_keys((file.parent / compose).read_text()))
+        for key in keys:
+            if key:
+                types.setdefault(key, 'string')
+        types.update(pre_up_env(raw.get('pre_up_env'), file))
     return types
+
+
+def opt_in_gates(env=None) -> list:
+    """The `opt_in_env` settings the visible services declare, in both tiers. Each is a switch
+    (paths.flag), read only when a case needs its service."""
+    return sorted({raw['opt_in_env'] for _file, raw in _service_definitions(env)
+                   if isinstance(raw.get('opt_in_env'), str) and raw['opt_in_env'].strip()})
+
+
+def switch_problems(env) -> list:
+    """paths.flag_problems over the switches and every declared opt-in gate, so a gate set to
+    anything but 1 or 0 stops the run with the switches, once, before any case asks for its
+    service. `env` is the effective environment (process environment merged with .env)."""
+    from livetest import paths
+    gates = tuple(g for g in opt_in_gates(env) if g not in paths.SWITCHES)
+    return paths.flag_problems(env, paths.SWITCHES + gates)
 
 
 def values(paths, env=None):

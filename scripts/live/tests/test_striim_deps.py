@@ -297,6 +297,7 @@ def test_installed_tree_without_manifest_never_downloads(tmp_path, monkeypatch):
 
 
 def test_checkout_without_manifest_keeps_legacy_download(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     monkeypatch.setattr(sp, "_in_checkout", lambda: True)
     rec = _Recorder()
     sp.ensure_deps(tmp_path / "ctx", run=rec)
@@ -396,6 +397,8 @@ class _FakeDocker:
         if verb == "images":
             return SimpleNamespace(stdout="img\n" if self.embedded is not None else "", returncode=0)
         if verb == "rm":
+            return SimpleNamespace(stdout="", returncode=0)
+        if argv[1:3] == ["ps", "-a"]:              # the leaked-probe listing: none leaked
             return SimpleNamespace(stdout="", returncode=0)
         if verb == "create":
             if self.create_mode == "oserror":
@@ -497,7 +500,8 @@ def test_this_checkout_is_a_checkout_and_site_packages_is_not(monkeypatch):
     assert sp.candidate_mode() is True
 
 
-def test_nothing_set_downloads_missing_deps_as_before(tmp_path):
+def test_nothing_set_downloads_missing_deps_as_before(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     rec = _Recorder()
     sp.ensure_deps(tmp_path / "ctx", run=rec)
     assert rec.calls == [(["./download-dependencies.sh"], str(tmp_path / "ctx"))]

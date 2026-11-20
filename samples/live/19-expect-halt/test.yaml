@@ -1,0 +1,18 @@
+name: expect-halt
+purpose: An app whose writer names a table that does not exist halts, and the halt reason names that table.
+tql: app.tql
+topology: single
+requires: [postgres]
+timeout: 180
+tags: [sample, halt, postgres]
+ddl:
+  - file: ddl_source.sql
+    db: postgres-source
+seed:
+  - file: seed.sql
+    db: postgres-source
+    when: pre_deploy
+# The halt is the assertion: no assert: block is needed. expect_halt_contains narrows it to a
+# reason naming this case's own ${TID}-prefixed table, so another case's halt cannot satisfy it.
+expect_halt: true
+expect_halt_contains: no_such_target

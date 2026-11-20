@@ -37,7 +37,7 @@ CREATE OR REPLACE TARGET PgReplica USING Global.DatabaseWriter (
 ) INPUT FROM ProcessedStream;
 
 CREATE OR REPLACE TARGET FileOut USING Global.FileWriter (
-  FileName:    '/tmp/${TID}${NS}_out',
+  FileName:    '${OWNED_DIR}/out.json',
   FlushPolicy: 'EventCount:100,Interval:1s'
 ) FORMAT USING Global.JSONFormatter () INPUT FROM ProcessedStream;
 

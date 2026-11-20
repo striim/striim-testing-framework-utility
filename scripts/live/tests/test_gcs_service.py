@@ -50,3 +50,27 @@ def test_external_url_tracks_the_published_host_port():
     assert "SLT_GCS_HOST_PORT" in m.group(1), (
         f"-external-url must interpolate the published host port, got {m.group(1)!r} -- "
         "otherwise remapping the port moves the emulator and not the client following mediaLink")
+
+
+def _fake_key_token_uri(monkeypatch, tmp_path, port):
+    """The token_uri written into the fake GCP key a native Striim is given."""
+    import json
+    from types import SimpleNamespace
+    from livetest import plugin
+    if port is None:
+        monkeypatch.delenv("SLT_GCS_TOKEN_HOST_PORT", raising=False)
+    else:
+        monkeypatch.setenv("SLT_GCS_TOKEN_HOST_PORT", port)
+    (tmp_path / "UploadedFiles").mkdir()
+    monkeypatch.setenv("STRIIM_HOME", str(tmp_path))
+    plugin.ensure_fake_gcp_key(SimpleNamespace(), SimpleNamespace(mode="native"))
+    return json.loads((tmp_path / "UploadedFiles" / plugin._FAKE_KEY_NAME).read_text())["token_uri"]
+
+
+def test_fake_key_points_at_the_published_token_port(monkeypatch, tmp_path):
+    """SLT_GCS_TOKEN_HOST_PORT moves the fake token server (compose publishes it); the key follows."""
+    assert _fake_key_token_uri(monkeypatch, tmp_path, "4555") == "http://localhost:4555/token"
+
+
+def test_fake_key_token_port_defaults_to_4444(monkeypatch, tmp_path):
+    assert _fake_key_token_uri(monkeypatch, tmp_path, None) == "http://localhost:4444/token"

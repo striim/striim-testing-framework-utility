@@ -2,8 +2,10 @@
 writes.
 
 A setting is any string in the engines' and the CLI's code shaped like one (SLT_*, INT_*, STRIIM_*,
-GOLD_TARGETS), and every key a .env or machine file may hold. Each must be on the page, or be one of
-the tool's NOT_SETTINGS: tokens the framework fills in itself.
+GOLD_TARGETS, or a prefix of one such as STRIIM_BUILD_), any NAME the code reads with
+``<...env...>.get("NAME")``, and every key a .env or machine file may hold. Each must be on the
+page, or be one of the tool's NOT_SETTINGS: tokens the framework fills in itself, and variables
+other programs define.
 """
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = ROOT / "docs" / "SETTINGS.md"
-SHAPE = re.compile(r"(SLT|INT|STRIIM)_[A-Z0-9_]*[A-Z0-9]|GOLD_TARGETS")
+# A whole name, or a prefix the code completes (STRIIM_BUILD_ + a version).
+SHAPE = re.compile(r"(SLT|INT|STRIIM)_[A-Z0-9_]*[A-Z0-9_]|GOLD_TARGETS")
 
 
 def _tool():
@@ -39,16 +42,37 @@ def test_the_page_is_what_the_tool_writes():
     assert r.returncode == 0, r.stderr
 
 
+def _env_get(node) -> str | None:
+    """The literal NAME of an ``<...env...>.get("NAME", ...)`` call: a setting whatever its shape."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get" and node.args and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)):
+        return None
+    owner = node.func.value
+    owner = owner.attr if isinstance(owner, ast.Attribute) else getattr(owner, "id", "")
+    name = node.args[0].value
+    return name if "env" in owner.lower() and re.fullmatch(r"[A-Z][A-Z0-9_]*", name) else None
+
+
 def test_every_setting_the_code_names_is_listed():
     names = {}
     for file in sorted((ROOT / "scripts").rglob("*.py")):
         rel = file.relative_to(ROOT)
         if {"tests", "regression"} & set(rel.parts):
             continue
-        for node in ast.walk(ast.parse(file.read_text(), str(file))):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and SHAPE.fullmatch(node.value):
+        tree = ast.parse(file.read_text(), str(file))
+        # The literal parts of an f-string are fragments of a name, not names.
+        fragments = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for v in n.values}
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in fragments
+                    and SHAPE.fullmatch(node.value)):
                 names.setdefault(node.value, rel.as_posix())
-    missing = {n: f for n, f in names.items() if n not in _listed() and n not in _tool().NOT_SETTINGS}
+            if _env_get(node):
+                names.setdefault(_env_get(node), rel.as_posix())
+    listed = _listed()
+    # A prefix the code matches a family by is listed when a listed setting carries it.
+    missing = {n: f for n, f in names.items() if n not in listed and n not in _tool().NOT_SETTINGS
+               and not (n.endswith("_") and any(m.startswith(n) and m != n for m in listed))}
     assert not missing, f"describe these in tools/settings_reference.py, then run it: {missing}"
 
 

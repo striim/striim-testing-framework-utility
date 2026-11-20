@@ -20,11 +20,15 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: striim
       POSTGRES_DB: intdb
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :15432 is already taken (distinct
       # from the live tier's :5432 so both stacks can run at once). When overriding,
       # point the framework at it too: INT_PG_HOST=localhost INT_PG_PORT=<port>.
-      - "${INT_PG_HOST_PORT:-15432}:5432"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_PG_HOST_PORT:-15432}:5432"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_PG_HOST_PORT:-15432}:5432"
     volumes:
       # The tzdata script is RUN WITH sh before the entrypoint rather than dropped into
       # initdb.d: a bind-mounted file can report executable while the mount refuses to exec

@@ -10,7 +10,7 @@ from a CQ between a Postgres `DatabaseReader` and two targets.
 |---|---|
 | `referenceudf-mark-processed/test.yaml` | the case |
 | `referenceudf-mark-processed/expected/out.csv` | rows the Postgres target must hold |
-| `referenceudf-mark-processed/expected/userdata.csv` | the `processed` stamp the file target must show |
+| `referenceudf-mark-processed/expected/userdata.csv` | the `processed` stamp the file target must show, one row per event |
 | `java/UserDefinedFunctions/ReferenceUdf/` | the Maven module that `udf.jar:` names |
 | `java/UserDefinedFunctions/ReferenceUdf/examples/ReferenceUdfMarkProcessed/` | the directory that `example:` names: `app.tql`, `ddl.sql`, `seed.sql` |
 | `java/SampleCommon/src/main/java/` | shared helper code (`WAEvents`), compiled into the UDF jar by the pom |
@@ -19,9 +19,14 @@ from a CQ between a Postgres `DatabaseReader` and two targets.
 ## What the case checks
 
 - `smoke`: the app reaches RUNNING.
-- `data`: the target table matches `expected/out.csv`, so the columns passed through unchanged.
-- `file`: at least 1 JSON event the `FileWriter` wrote carries `userdata.processed`, matching
-  `expected/userdata.csv`. A database target can't show userdata, so this check needs the file.
+- `lifecycle`: the target holds as many rows as the source before any check runs.
+- `data`: the target table holds exactly the row of `expected/out.csv`, once, so the column passed
+  through unchanged and the row was not delivered twice.
+- `file`: the file the `FileWriter` wrote holds exactly 1 JSON event, carrying
+  `userdata.processed=true`: `expected/userdata.csv` has one row per event. A database target can't
+  show userdata, so this check needs the file.
+
+The case runs in Docker mode only: see [the code samples README](../README.md).
 
 ## Build and run
 

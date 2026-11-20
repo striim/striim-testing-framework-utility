@@ -1,0 +1,17 @@
+name: spanner-json
+purpose: SpannerWriter copies a Spanner JSON column with every member, type and array order intact.
+tql: app.tql
+requires: [spanner]
+ddl:
+  - {file: ddl.sql, db: spanner-google}
+seed:
+  - {file: seed.sql, db: spanner-google}
+assert:
+  json:
+    - target: ${TID}tgt
+      db: spanner-google
+      key: [id]
+      column: doc
+      match: expected/tgt.json
+timeout: 180
+tags: [sample, spanner, json]

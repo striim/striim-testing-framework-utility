@@ -68,6 +68,11 @@ After each test:
 
 Cleanup is skipped if a test fails, allowing manual debugging.
 
+A YAML case's teardown step that fails (`_teardown_leak`) does not change the case's outcome. It
+is printed on the terminal as it happens, listed again under "integration teardown left objects
+behind" at the end of the run (an xdist controller lists its workers' too), and counted in the
+case record's `teardownLeaks`. The next case's setup reset tries again.
+
 ## Fixtures
 
 Core fixtures (from `conftest.py`):
@@ -153,9 +158,19 @@ The failures this produces name the wrong thing every time — a unique-constrai
 missing table, a missing lookup row, in whichever module happened to be executing.
 
 ```
-ERROR: another integration-test session is already running against this checkout
-       (.int-session.lock).
+ERROR: another integration-test session is already running against this stack's services
+       (/tmp/slt-locks/.int-session.lock).
 ```
+
+The session lock and the compose lock are machine-wide (`<SLT_LOCK_DIR>/.int-session.lock` and
+`.int-compose.lock`, prefixed by `INT_STACK_PREFIX`), because the containers they guard are one per
+host and prefix: a second checkout, or a second `SLT_STATE_DIR`, on the same stack is a second
+session. The started-services record (`.int-services-up.json`) stays in the state dir.
+
+**A failed teardown fails the session.** At session end the controller runs `compose down -v` for
+every service it started and checks that no same-named container survived. A failure is reported,
+the session exits 1 (case results stand; a worse exit status is kept), and the failed names stay in
+`.int-services-up.json`, so the next session tears them down.
 
 **A dead session cannot strand the next one.** The marker is an OS `fcntl` lock, not the file's
 existence — the kernel drops it when the holder dies, so even a `SIGKILL` (no `atexit`, no
@@ -164,6 +179,13 @@ inert; nothing ever consults whether it exists. Verified end to end: a real sess
 mid-run leaves the file on disk with the lock free, and the next run proceeds. There is no
 "remove the stale lock" step, and there must never be one — see
 `test_session_guard_cannot_strand_future_runs_with_a_stale_file`.
+
+**The hermetic suite does not take it.** A session whose `-m` expression can select no
+`integration` or `docker` item (the suite's own `-m 'not integration and not docker'`) touches no
+service, so `scripts/integration/conftest.py` points `SLT_STATE_DIR` at a temporary directory and
+drops `SLT_FRAMEWORK_HOME` and `INT_STACK_PREFIX` before the plugin's `pytest_configure` runs. A
+unit run therefore neither waits for nor blocks a real session in the state directory the shell
+names, and leaves no lock files there. Any other expression, or none, is a real session.
 
 Parallelism *within* one session is fine and is what `SLT_PARALLEL=1 -n N` is for — xdist workers
 share the controller's session and each test gets a unique `${TID}`. A variants case is one item
@@ -176,16 +198,13 @@ stacks, give the second its own `INT_STACK_PREFIX` so it owns separate container
 files. `INT_ALLOW_CONCURRENT_SESSIONS=1` bypasses the check for anyone who has read this and
 means it.
 
-`INT_SHARED_SERVICES=1` is for a caller that owns the service containers itself (a runner
-that brings them up once and exports their `INT_*` endpoints): the tier then never starts,
-stops or tears down a container, and skips this session check, since concurrency is the point.
-
 ### ⚠ A tier REBUILDS the operator module — do not build it yourself while one runs
 
 **The integration and perf tiers run `mvn` in the module under test**, because a tier that drove a
 stale jar would report green over a real regression (`opartifacts.py` rebuilds whenever anything
-under the module's `src/main`, its `pom.xml`, or a shared source folder it compiles in is newer than the
-jar). So a tier in flight and a packaging build in another shell are two Maven builds in one
+under the module's `src/main`, its `pom.xml`, a parent pom it inherits from, or any source root its pom
+add-sources (`OpenProcessorCommon`, `FieldCommon`, ...) is newer than the jar, was deleted since the
+build, or no longer matches the content digest recorded beside the jar; `livetest/jarinputs.py`, which both engines import, lists those inputs). So a tier in flight and a packaging build in another shell are two Maven builds in one
 module directory, and one of them deletes `target/` while the other is compiling.
 
 **It breaks in BOTH directions, and neither failure names the cause.**

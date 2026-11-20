@@ -12,9 +12,10 @@ SETTLE_SECONDS = 1.0
 def assert_smoke(client, app: str | list[str], timeout: int, settle_seconds: float = SETTLE_SECONDS,
                   *, db: str | None = None, progress=None) -> list[dict]:
     # The settle catches an app that leaves RUNNING within settle_seconds of reaching it. A later
-    # exit is caught only by the plugin's terminal-status probe (CRASH, HALT, TERMINATED,
-    # DEPLOY_FAILED), which runs while a polling assertion (data, diff, file, ...) is still
-    # waiting. An app that halts after those assertions pass, or in a smoke-only case, passes.
+    # exit is caught by the plugin's terminal-status probe (CRASH, HALT, TERMINATED,
+    # DEPLOY_FAILED), which runs before each read of a polling assertion (data, diff, file, ...)
+    # and once more after the last tier, smoke-only cases included. An app that exits after that
+    # last read, while the case is torn down, is not seen.
     # Lifecycle cases do not come through here (lifecycle.smoke_and_ready).
     # No specs to evaluate -- smoke is a single pass/fail check with nothing to snapshot.
     # await_running/current_status raising, or an app not settling on RUNNING, are all

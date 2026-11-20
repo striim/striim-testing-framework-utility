@@ -13,8 +13,8 @@ other user out. ``ensure_dir`` widens the framework's own entries that the calli
 process; what another user owns is theirs to widen, and a dir nobody lets us write to fails with the
 fixes named.
 
-An explicit ``SLT_LOCK_DIR`` is a dir of the user's own (README, "When a run cannot start"): it is
-never widened, and its files follow the umask.
+An explicit ``SLT_LOCK_DIR`` is a dir of the user's own (docs/RUN-YOUR-FIRST-TEST.md, "If it did not
+work"): it is never widened, and its files follow the umask.
 """
 import os
 import pwd
@@ -25,9 +25,10 @@ from pathlib import Path
 
 DIR_MODE = 0o1777
 FILE_MODE = 0o666
-# What the framework makes in the dir: `.slt-...` or `.<prefix>-slt-...` (stack.state_name), and the
-# marker and member files inside such a dir. Nothing else is widened.
-_OURS = re.compile(r"^\.(?:[a-z0-9][a-z0-9-]*-)?slt-")
+# What the framework makes in the dir: `.slt-...` or `.<prefix>-slt-...` (stack.state_name), the integration
+# tier's `.int-...` or `.<prefix>-int-...` locks, and the marker and member files inside such a dir. Nothing
+# else is widened.
+_OURS = re.compile(r"^\.(?:[a-z0-9][a-z0-9-]*-)?(?:slt|int)-")
 
 _widened: set = set()
 
@@ -61,6 +62,19 @@ def file_mode() -> int:
     return FILE_MODE & ~umask
 
 
+def unopenable_lock_message(path, error: OSError) -> str:
+    """What to do about a lock in the dir that this user may not open (``PermissionError``): another user's
+    file that an older version made without ``FILE_MODE``. Its owner's next run of this version widens it."""
+    path = Path(path)
+    try:
+        who = _owner(path.stat().st_uid)
+    except OSError:
+        who = "its owner"
+    return (f"cannot open the lock {path} ({error.strerror or error}): {who} made it with an older "
+            f"striim-test, without write access for other users. Any run of this version as {who} widens it, "
+            f"or {who} can run `chmod 666 {path}`")
+
+
 def _owner(uid: int) -> str:
     try:
         return pwd.getpwuid(uid).pw_name
@@ -87,7 +101,7 @@ def ensure_dir(d) -> Path:
             f"the shared lock dir {d} belongs to {who} (mode {stat.S_IMODE(st.st_mode):o}) and you cannot "
             f"write to it; an older striim-test made it. Any run of this version as {who} widens it, or "
             f"{who} can run `chmod 1777 {d}`. Or use a dir of your own: export SLT_LOCK_DIR=$HOME/.slt-locks "
-            f"(README, \"When a run cannot start\")")
+            f"(docs/RUN-YOUR-FIRST-TEST.md, \"If it did not work\")")
     return d
 
 

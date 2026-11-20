@@ -15,7 +15,8 @@ def built(tmp_path, monkeypatch):
     """An op module whose jar is newer than every source and carries its source record."""
     _hermetic_build_env(tmp_path, monkeypatch)
     mod = tmp_path / MODULE
-    _mk(mod / "pom.xml", 1000)
+    _mk(mod / "pom.xml", 1000,
+        b"<project><source>${project.basedir}/../OpenProcessorCommon/src/main/java</source></project>")
     _mk(mod / "src" / "main" / "java" / "x" / "A.java", 1000)
     _mk(mod / "src" / "main" / "java" / "x" / "B.java", 1000)
     _mk(mod / "src" / "main" / "resources" / "defaults.properties", 1000)
@@ -95,7 +96,8 @@ def harness_dir(tmp_path, monkeypatch):
         _mk(jar, 2000)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(harness.subprocess, "run", fake_mvn)
+    from livetest import dockercmd
+    monkeypatch.setattr(dockercmd, "run", fake_mvn)            # the harness builds through it
     return java, jar, fake_mvn
 
 

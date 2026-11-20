@@ -11,6 +11,8 @@ Read [docs/START-HERE.md](docs/START-HERE.md) first.
 |---|---|
 | `samples/live/` | runnable sample tests, simplest first; copy the closest one |
 | `samples/code/` | samples that build and load an Open Processor or UDF |
+| `scripts/integration/regression/` | the shipped integration case (an Open Processor driven without Striim); copy it for the integration tier |
+| `scripts/live/regression/framework/` | the framework gallery: one small live case per `test.yaml` feature (actions, `xfail:`, `tokens:`, `server_files:`, recovery and more); look here for a key no sample uses |
 | `templates/consumer-repo/` | a starter for a test repo of one's own |
 | `docs/` | the guides; `docs/TEST-YAML.md` is the reference for every key |
 | `docs/tql/` | writing, tuning and reviewing TQL; start at `docs/tql/README.md` |

@@ -240,3 +240,111 @@ def test_runtest_stores_the_noted_resources_for_the_evidence():
     src = inspect.getsource(plugin.LiveItem._runtest)
     assert "self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)" in src
     assert src.index("self._slt_resources = cleanup.resources()") < src.index("note_unowned_teardown(")
+
+
+# ---- a failed unowned delete is a cleanup failure, not only a gap line ------------------------------------------
+
+def _append(root, text):
+    conftest = root / "conftest.py"
+    conftest.write_text(conftest.read_text() + text)
+
+
+_FAILING_TOPIC = '''
+
+class _BrokenKafka:
+    def delete_topic(self, topic):
+        raise RuntimeError("broker down")
+_slt_real_teardown_unowned = P.teardown_unowned
+def _slt_failing(admins, ddl_files, tokens, gcs_cleanup, kafka_cleanup, *a, **k):
+    log("teardown_unowned")
+    return _slt_real_teardown_unowned(admins, ddl_files, tokens, gcs_cleanup,
+                                      list(kafka_cleanup) + [(_BrokenKafka(), "SLT_x_T")], *a, **k)
+P.teardown_unowned = _slt_failing
+'''
+
+
+def test_exec_a_failed_unowned_delete_fails_a_passing_case(run_case):
+    run = run_case("legacy", prepare=lambda root, name: _append(root, _FAILING_TOPIC))
+    assert run.ret == 1, run.text
+    assert run.junit()[0] == "failed" and "cleanup failed: " in run.text and "topic SLT_x_T" in run.text
+    env = run.envelope()
+    cleanup = env["lifecycle"]["cleanup"]
+    assert cleanup["status"] == "failed" and "broker down" in cleanup["detail"], cleanup
+    assert "topic SLT_x_T: pre-ledger teardown failed: RuntimeError('broker down')" in \
+        env["resources"]["verificationGaps"]
+    assert env["resources"]["cleanupVerified"] is False
+
+
+def test_exec_a_failed_unowned_delete_never_replaces_the_cases_own_failure(run_case):
+    run = run_case("legacy", prepare=lambda root, name: _append(root, _FAILING_TOPIC + '''
+def _slt_smoke_fails(*a, **k):
+    raise RuntimeError("verification failed")
+P.assert_smoke = _slt_smoke_fails
+'''))
+    assert run.ret == 1 and "verification failed" in run.text, run.text
+    assert "cleanup failed: " not in run.text            # the warning line says "cleanup failed for"
+    assert run.envelope()["lifecycle"]["cleanup"]["status"] == "failed"
+
+
+def test_exec_an_unowned_teardown_that_raises_fails_the_case(run_case):
+    run = run_case("legacy", prepare=lambda root, name: _append(root, '''
+def _slt_raising(*a, **k):
+    raise RuntimeError("teardown exploded")
+P.teardown_unowned = _slt_raising
+'''))
+    assert run.ret == 1 and "cleanup failed: " in run.text, run.text
+    cleanup = run.envelope()["lifecycle"]["cleanup"]
+    assert cleanup["status"] == "failed" and "teardown exploded" in cleanup["detail"]
+
+
+def test_exec_a_delete_still_running_at_the_teardown_deadline_stops_the_run(run_case):
+    run = run_case("legacy", prepare=lambda root, name: _append(root, '''
+def _slt_still_running(*a, **k):
+    log("teardown_unowned")
+    return {"attempted": ["engine-tables mysql-source"], "running": ["engine-tables mysql-source"],
+            "failed": {"engine-tables mysql-source": "did not finish within 60.0s; still running at the "
+                                                     "teardown deadline"}}
+P.teardown_unowned = _slt_still_running
+'''))
+    assert "teardown_unowned" in run.names(), run.text
+    assert run.ret == 1 and "cleanup failed: " in run.text, run.text
+    assert "the run stops" in run.text and "engine-tables mysql-source" in run.text, run.text
+
+
+def test_exec_a_failing_drop_test_tables_ends_in_cleanup_error(run_case):
+    def prepare(root, name):
+        (root / "cases" / "legacy" / "m.sql").write_text("CREATE TABLE ${TID}m (id int);\n")
+        _append(root, '''
+FakeMySQLAdmin.run_sql = lambda self, sql: log("mysql_sql")
+def _slt_drop_fails(self, prefix=""):
+    log("mysql_drop", prefix=prefix)
+    raise RuntimeError("Lock wait timeout exceeded")
+FakeMySQLAdmin.drop_test_tables = _slt_drop_fails
+''')
+    run = run_case("legacy", prepare=prepare,
+                   edit=lambda y: y.replace("requires: [postgres]\n", "requires: [postgres, mysql]\n")
+                   + "\nddl:\n  - {db: mysql-source, file: m.sql}\n")
+    assert "mysql_drop" in run.names(), run.text
+    assert run.ret == 1 and "cleanup failed: " in run.text and "engine-tables mysql-source" in run.text, run.text
+    assert "Lock wait timeout exceeded" in run.envelope()["lifecycle"]["cleanup"]["detail"]
+
+
+def test_exec_a_clean_unowned_teardown_leaves_the_cleanup_ok(run_case):
+    run = run_case("legacy", prepare=_spy)
+    assert run.ret == 0, run.text
+    assert run.envelope()["lifecycle"]["cleanup"]["status"] == "ok"
+
+
+def test_fold_unowned_teardown_marks_each_failed_subject_as_a_failure():
+    from livetest.ownership import CleanupResult
+    cleanup = CleanupResult("ok", None, verified=True)
+    plugin.fold_unowned_teardown(cleanup, {"topic SLT_x_T": "RuntimeError('broker down')",
+                                           "file-output /tmp/o*": "OSError('x')"})
+    assert cleanup.status == "failed" and cleanup.verified is False
+    assert cleanup.failures == [{"kind": "topic", "name": "SLT_x_T", "error": "RuntimeError('broker down')"},
+                                {"kind": "file-output", "name": "/tmp/o*", "error": "OSError('x')"}]
+    assert cleanup.detail == ("unowned-teardown-failed: topic SLT_x_T: RuntimeError('broker down'); "
+                              "file-output /tmp/o*: OSError('x')")
+    untouched = CleanupResult("ok", None, verified=True)
+    plugin.fold_unowned_teardown(untouched, {})
+    assert untouched.status == "ok" and untouched.verified is True and untouched.failures == []

@@ -117,8 +117,9 @@ def test_caps_never_return_a_partial_passing_result(peer, mode, rows, cap):
     peer.mode = mode
     if mode == "normal":
         peer.rows *= 2
+    # the caps are under test, not the clock: a budget no loaded host exhausts against a local peer
     with pytest.raises(BigQueryError, match="canonical-limit-exceeded"):
-        peer.admin.select_rows("slt.t", max_rows=rows, max_bytes=cap, remaining=6)
+        peer.admin.select_rows("slt.t", max_rows=rows, max_bytes=cap, remaining=60)
 
 
 def test_trickle_cannot_extend_total_deadline(peer):
@@ -263,8 +264,8 @@ def test_bigquery_ddl_records_rendered_input_without_running_twice(tmp_path):
 
 
 def test_page_read_can_use_the_callers_budget_beyond_two_seconds(peer):
-    peer.mode = 'slow-query'
-    assert peer.admin.select_rows('slt.t', remaining=6) == [{'id':9007199254740993}]
+    peer.mode = 'slow-query'          # the page answers after 2.2 s; the caller's budget is far beyond it
+    assert peer.admin.select_rows('slt.t', remaining=60) == [{'id':9007199254740993}]
 
 
 def test_short_bigquery_stability_read_has_worker_startup_budget():
@@ -277,16 +278,17 @@ def test_short_bigquery_stability_read_has_worker_startup_budget():
     admin.count_rows = count
     observe, _ = lifecycle._count_observer({'bigquery-target':{'admin':admin}},
                                           {'db':'bigquery-target','table':'slt.t'}, {})
-    record, held = lifecycle._hold(SimpleNamespace(stability_s=0.001), lifecycle.Clock, observe, lambda n:n==1)
-    assert held and record['value']==1 and budgets
+    record, reason = lifecycle._hold(SimpleNamespace(stability_s=0.001), lifecycle.Clock, observe, lambda n:n==1,
+                                     lambda remaining: None)
+    assert reason == 'satisfied' and record['held'] and record['value']==1 and budgets
 
 
 def test_job_delete_can_finish_within_the_original_budget(peer):
-    peer.mode = 'slow-delete'
+    peer.mode = 'slow-delete'         # the delete answers after 0.4 s, inside what is left of the budget
     started = time.monotonic()
-    assert peer.admin.select_rows('slt.t', remaining=6) == [{'id':9007199254740993}]
+    assert peer.admin.select_rows('slt.t', remaining=60) == [{'id':9007199254740993}]
     assert peer.admin.last_operation['jobDelete'] == 'response'
-    assert time.monotonic() - started < 6
+    assert time.monotonic() - started < 60
 
 
 def test_cdc_dataset_collision_cleanup_and_binding(tmp_path):

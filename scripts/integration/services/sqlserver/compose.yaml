@@ -37,11 +37,15 @@ services:
       MSSQL_PID: "Developer"
       # Agent OFF: it exists to run the CDC capture/cleanup jobs, and this tier has no CDC.
       MSSQL_AGENT_ENABLED: "FALSE"
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :11433 is already taken. When
       # overriding, point the framework at it too: INT_MSSQL_HOST=localhost
       # INT_MSSQL_PORT=<port>.
-      - "${INT_MSSQL_HOST_PORT:-11433}:1433"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_MSSQL_HOST_PORT:-11433}:1433"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_MSSQL_HOST_PORT:-11433}:1433"
     networks:
       - int-mssql-net
     healthcheck:

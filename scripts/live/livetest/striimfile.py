@@ -5,7 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from livetest import stack
+from livetest import dockercmd, stack
 
 # Read/clear a target's output FILE on the Striim server, mode-aware. A FileWriter
 # writes to the server's local filesystem and adds a rollover sequence to the declared name:
@@ -111,12 +111,20 @@ def _join_files(parts) -> str:
     return "".join(out)
 
 
-def read_server_files(ctx, path: str, run=None) -> str:
+def read_server_files(ctx, path: str, run=None, read_timeout: float | None = None) -> str:
     # Content of <path>'s FileWriter output (see _output_names) from the Striim server, file by
     # file and node by node (see _join_files); "" when none exists yet. A failed listing or read
-    # raises StriimFileError.
+    # raises StriimFileError. The read runs under the transfer bound (the whole output, however
+    # large) unless `read_timeout` names another: a polling reader passes the query bound, so one
+    # hung read does not hold its poll for the transfer bound.
     _check(path)
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    if run:
+        read = run
+    elif read_timeout is not None:
+        read = lambda argv: dockercmd.run(argv, timeout=read_timeout)   # noqa: E731
+    else:
+        read = dockercmd.transfer
+    run = run or dockercmd.run
     if ctx.mode == "docker":
         parts = []
         for node in stack.app_nodes():
@@ -125,7 +133,7 @@ def read_server_files(ctx, path: str, run=None) -> str:
                 continue
             # One exec per node; the paths travel as arguments, and a NUL after each file marks
             # where it ends (text FileWriter output contains no NUL).
-            r = run(["docker", "exec", node, "sh", "-c", _CAT_EACH, "sh", *files])
+            r = read(["docker", "exec", node, "sh", "-c", _CAT_EACH, "sh", *files])
             if getattr(r, "returncode", 0) != 0:
                 raise _fail(f"reading {' '.join(files)}", node, r)
             parts.extend((getattr(r, "stdout", "") or "").split("\0")[:-1])
@@ -153,7 +161,7 @@ def clear_server_dir(ctx, dest: str, run=None) -> None:
     # is left alone. Best-effort, like the output side.
     _check(dest)
     parent = str(Path(dest).parent)
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     if ctx.mode == "docker":
         for node in stack.app_nodes():
             run(["docker", "exec", node, "sh", "-c", f"rm -f {parent}/*"])
@@ -171,7 +179,7 @@ def ensure_server_dir(ctx, dest: str, run=None) -> None:
     # sees the dir at deploy, even when the file itself is dropped later / post_start).
     _check(dest)
     parent = str(Path(dest).parent)
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     if ctx.mode == "docker":
         for node in stack.app_nodes():
             run(["docker", "exec", node, "mkdir", "-p", parent])
@@ -184,10 +192,10 @@ def place_server_file(ctx, src, dest: str, run=None) -> None:
     # the local fs for native). Creates the parent dir first.
     _check(dest)
     ensure_server_dir(ctx, dest, run=run)
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    copy = run or dockercmd.transfer        # a seed of any size
     if ctx.mode == "docker":
         for node in stack.app_nodes():
-            r = run(["docker", "cp", str(src), f"{node}:{dest}"])
+            r = copy(["docker", "cp", str(src), f"{node}:{dest}"])
             if getattr(r, "returncode", 1) != 0:
                 raise StriimFileError(
                     f"docker cp {src} -> {node}:{dest} failed: {getattr(r, 'stderr', '')}")
@@ -201,7 +209,7 @@ def clear_server_files(ctx, path: str, run=None) -> None:
     # server so a re-run's assertion doesn't see a prior run's output (FileWriter appends
     # across runs). Nothing to remove is fine; a failed listing or removal raises.
     _check(path)
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     if ctx.mode == "docker":
         for node in stack.app_nodes():
             files = _docker_output_files(run, node, path)
@@ -301,7 +309,7 @@ def clear_op_checkpoints(ctx, namespace: str, run=None, suffixes=_CHECKPOINT_SUF
             f"(allowed: letters, digits, _ -)")
     if getattr(ctx, "mode", None) != "docker":
         return
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     pattern = " ".join(f"{_DOCKER_HOME}/*{namespace}.*{suffix}*" for suffix in suffixes)
     bare = _BARE_CHECKPOINT_SH.format(globs=" ".join(f"{_DOCKER_HOME}/*{suffix}*" for suffix in suffixes))
     for node in stack.app_nodes():

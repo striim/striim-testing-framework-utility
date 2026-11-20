@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from livetest import paths
+from livetest import dockercmd, paths
 
 # Python wrapper around the standalone Java decode harness
 # (tools/ggtrail-harness/TrailDumpHarness.java). GGTrailParser is read-only -- it has no
@@ -31,6 +31,23 @@ def missing_reason() -> str | None:
     return f"ggtrail harness not in this project: no {src} (tools/ggtrail-harness in your test repo)"
 
 
+ORACLE_HOW_TO_RUN = (
+    "To run them: export STRIIM_HOME=<a Striim install with lib/*.jar>, put a JDK (javac, java) on PATH, "
+    "and set SLT_PROJECT_ROOT to a test repo that ships tools/ggtrail-harness/TrailDumpHarness.java")
+
+
+def oracle_skip_reason() -> str | None:
+    """Why the byte-level oracle tests (scripts/live/tests/test_ggtrail_*) cannot run here, and how
+    to run them; None when STRIIM_HOME is set and the project ships the harness source."""
+    missing = [] if os.environ.get("STRIIM_HOME") else ["STRIIM_HOME is unset"]
+    why = missing_reason()
+    if why:
+        missing.append(why)
+    if not missing:
+        return None
+    return "ggtrail Java oracle not run: " + "; ".join(missing) + ". " + ORACLE_HOW_TO_RUN
+
+
 def _striim_home() -> Path:
     home = os.environ.get("STRIIM_HOME")
     if not home:
@@ -48,8 +65,8 @@ def ensure_built() -> str:
     if not cls.exists() or cls.stat().st_mtime < src.stat().st_mtime:
         if shutil.which("javac") is None:
             raise RuntimeError("javac not found on PATH -- the ggtrail validation harness needs a JDK")
-        subprocess.run(["javac", "-cp", classpath, "-d", str(hdir), str(src)],
-                       check=True, capture_output=True, text=True)
+        dockercmd.run(["javac", "-cp", classpath, "-d", str(hdir), str(src)],
+                      timeout=dockercmd.BUILD_TIMEOUT_S, check=True)
     return classpath
 
 

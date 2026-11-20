@@ -58,7 +58,7 @@ _FULL = """
         stopped_seed:
           - {file: stopped_seed.sql, local: true}
     assert:
-      data: [{table: t, rows: 1}]
+      data: [{target: t, rows: 1}]
 """
 _LOCAL = ("test_views.sql", "recovery_seed.sql", "config_kill.json", "action_seed.sql",
           "stopped_seed.sql")

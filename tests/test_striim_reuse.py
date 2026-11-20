@@ -97,6 +97,8 @@ class _Docker:
             return SimpleNamespace(stdout="img\n" if self.embedded is not None else "", returncode=0)
         if verb == "rm":
             return SimpleNamespace(stdout="", returncode=0)
+        if argv[1:3] == ["ps", "-a"]:              # the leaked-probe listing: none leaked
+            return SimpleNamespace(stdout="", returncode=0)
         if verb == "create":
             return SimpleNamespace(stdout="cid\n", returncode=0)
         if verb == "cp":

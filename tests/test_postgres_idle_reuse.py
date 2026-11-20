@@ -10,7 +10,7 @@ def test_kept_stack_applies_changed_budget(monkeypatch, tier):
     mod = live if tier == 'live' else integration
     key = 'SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS' if tier == 'live' else 'INT_PG_IDLE_TRANSACTION_TIMEOUT_MS'
     calls = []
-    monkeypatch.setattr(mod.subprocess, 'run', lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(mod.dockercmd, 'run', lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))
     if tier == 'live':
         monkeypatch.setenv('SLT_KEEP_SERVICES', '1')
         monkeypatch.setattr(live, '_preflight_profile', lambda d: None)
@@ -40,7 +40,7 @@ def test_invalid_budget_never_runs_compose(monkeypatch, tier, value):
     monkeypatch.setenv(key, value)
     monkeypatch.setenv('SLT_KEEP_SERVICES', '1')
     calls = []
-    monkeypatch.setattr(mod.subprocess, 'run', lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))
+    monkeypatch.setattr(mod.dockercmd, 'run', lambda argv, **kw: calls.append(argv) or SimpleNamespace(returncode=0))
     monkeypatch.setattr(live, '_preflight_profile', lambda d: None)
     monkeypatch.setattr(live, '_compose_env', lambda: dict(__import__('os').environ))
     monkeypatch.setattr(integration, '_checked_compose_file', lambda s: Path('/service/compose.yaml'))

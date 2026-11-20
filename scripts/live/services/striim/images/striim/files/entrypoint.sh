@@ -174,7 +174,17 @@ if [ "${ROLE}" == "primary" ]; then
 
     cp /opt/striim/bin/server.sh.orig /opt/striim/bin/server.sh
     sed -i "s|#!/bin/bash|#!/bin/bash\n\nJAVA_AGENT=\"-javaagent:/opt/striim/jmx/jmx_prometheus_javaagent-0.16.1.jar=7071:/opt/striim/jmx/jmx_prometheus_config.yaml\"|g" /opt/striim/bin/server.sh
-    sed -i "s|#!/bin/bash|#!/bin/bash\n\nJVM_DEBUG_OPTS=\"-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=0.0.0.0:8787\"|g" /opt/striim/bin/server.sh
+    # JDWP remote debugger, opt-in. JDWP has no authentication: whoever reaches the port runs code
+    # in this JVM, whose environment holds the licence. SLT_STRIIM_DEBUG=1 adds
+    # compose.debug.yaml, which sets STRIIM_DEBUG=1 here and publishes 8787 on the host's
+    # 127.0.0.1 only. The address below is the container's side of that mapping. Without it the
+    # stock server.sh leaves $JVM_DEBUG_OPTS empty (it sets it only from a JVM_DEBUG_OPTS key in
+    # startUp.properties, which this entrypoint never writes). The node copies this server.sh,
+    # so with debug on it listens too, unpublished, on the cluster network only.
+    if [ "${STRIIM_DEBUG:-0}" = "1" ]; then
+        sed -i "s|#!/bin/bash|#!/bin/bash\n\nJVM_DEBUG_OPTS=\"-Xdebug -Xrunjdwp:transport=dt_socket,server=y,suspend=n,address=0.0.0.0:8787\"|g" /opt/striim/bin/server.sh
+    fi
+    # Unconditional: the java command line names $JVM_DEBUG_OPTS whether or not it is set.
     sed -i 's|$JVM_DEBUG_OPTS \\|$JVM_DEBUG_OPTS $JAVA_AGENT \\|g' /opt/striim/bin/server.sh
 
     # ⚠ Force the JDK's own JAXP provider. This image ships Oracle's xmlparserv2-21.1.0.0.jar,

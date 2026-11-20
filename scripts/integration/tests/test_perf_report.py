@@ -631,11 +631,23 @@ def test_collect_git_info_not_a_work_tree():
     assert "not a git repository" in info["unavailable_reason"]
 
 
-@pytest.mark.skipif(
-    subprocess.run(["git", "--version"], capture_output=True).returncode != 0,
-    reason="git not on PATH")
+def _not_a_git_checkout(path: Path) -> str | None:
+    """Why ``path`` is not inside a git work tree (no git, or a copy without ``.git``), or None."""
+    try:
+        r = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"git cannot run here ({e})"
+    return None if r.returncode == 0 else f"{path} is not in a git checkout ({r.stderr.strip() or r.returncode})"
+
+
 def test_collect_git_info_real_git_smoke():
-    info = perfreport.collect_git_info(Path(__file__).resolve().parent)
+    here = Path(__file__).resolve().parent
+    # decided by git itself, not by collect_git_info: a broken collector must fail here, not skip
+    reason = _not_a_git_checkout(here)
+    if reason:
+        pytest.skip(f"needs a git checkout: {reason}")
+    info = perfreport.collect_git_info(here)
     assert info["commit"] is not None
     assert __import__("re").match(r"^[0-9a-f]{40}$", info["commit"])
     assert Path(info["repository_root"]).is_dir()

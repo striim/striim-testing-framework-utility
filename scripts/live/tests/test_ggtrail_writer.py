@@ -1,15 +1,13 @@
 from __future__ import annotations
 import datetime
-import os
 import pytest
 from livetest.ggtrail.writer import TrailFileWriter
 from livetest.ggtrail.defwriter import ColumnSpec, TableSchema, ASCII_V
 
-pytestmark = pytest.mark.skipif(not os.environ.get("STRIIM_HOME"), reason="requires STRIIM_HOME for the Java oracle")
-# The Java oracle is tools/ggtrail-harness in your test repo: without it, skip, even with STRIIM_HOME set.
+# The Java oracle needs STRIIM_HOME and tools/ggtrail-harness from your test repo; the skip says how to run it.
 from livetest.ggtrail import harness as _ggtrail_harness  # noqa: E402
-_NO_HARNESS = _ggtrail_harness.missing_reason()
-pytestmark = [pytestmark, pytest.mark.skipif(_NO_HARNESS is not None, reason=_NO_HARNESS or "")]
+_NO_ORACLE = _ggtrail_harness.oracle_skip_reason()
+pytestmark = pytest.mark.skipif(_NO_ORACLE is not None, reason=_NO_ORACLE or "")
 
 SCHEMA = TableSchema("SCOTT.WIDGETS", [ColumnSpec("ID", ASCII_V, 10), ColumnSpec("NAME", ASCII_V, 50)])
 ORDERS = TableSchema("SCOTT.ORDERS", [ColumnSpec("ID", ASCII_V, 10, is_key=True),

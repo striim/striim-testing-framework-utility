@@ -231,16 +231,23 @@ def test_a_family_probe_reads_a_malformed_definition_as_its_own_name(tmp_path, o
     with pytest.raises(RegistryError, match="service extdb: its service.yaml cannot be read"):
         registry.owns_route("extdb", "bigquery-target")
 
-@pytest.mark.parametrize("env", [{}, {"SLT_EMULATORS": ""}, {"SLT_EMULATORS": "0"}, {"SLT_EMULATORS": "false"},
-                                 {"SLT_EMULATORS": " Off "}, {"SLT_EMU": "0"},
-                                 {"SLT_EMU": "no", "SLT_EMULATORS": "FALSE"}])
+@pytest.mark.parametrize("env", [{}, {"SLT_EMULATORS": ""}, {"SLT_EMULATORS": "0"}, {"SLT_EMU": "0"},
+                                 {"SLT_EMU": "0", "SLT_EMULATORS": "0"}])
 def test_an_opt_in_set_off_does_not_opt_in(env):
     from livetest import registry
     assert registry.opted_in("SLT_EMU", env) is False
 
 
+@pytest.mark.parametrize("env", [{"SLT_EMULATORS": "false"}, {"SLT_EMULATORS": " Off "},
+                                 {"SLT_EMU": "no"}, {"SLT_EMU": "true"}])
+def test_an_opt_in_set_to_anything_but_1_or_0_is_refused(env):
+    from livetest import paths, registry
+    with pytest.raises(paths.FlagError, match="a switch is 1 \\(on\\) or 0 \\(off\\)"):
+        registry.opted_in("SLT_EMU", env)
+
+
 @pytest.mark.parametrize("env", [{"SLT_EMULATORS": "1"}, {"SLT_EMU": "1"},
-                                 {"SLT_EMU": "true"}, {"SLT_EMU": "0", "SLT_EMULATORS": "1"}])
+                                 {"SLT_EMU": "0", "SLT_EMULATORS": "1"}])
 def test_an_opt_in_set_on_opts_in(env):
     from livetest import registry
     assert registry.opted_in("SLT_EMU", env) is True

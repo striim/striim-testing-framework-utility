@@ -41,6 +41,22 @@ def test_discover_existing_matrix_and_selected_install(tmp_path):
     assert opjarrelease.configured_versions(tmp_path, {}) == set()
 
 
+@pytest.mark.parametrize('engine', ['livetest', 'inttest'])
+def test_matrix_file_is_named_by_slt_build_matrix_env_with_the_old_name_as_a_fallback(tmp_path, engine):
+    import importlib
+    opjarrelease = importlib.import_module(f'{engine}.opjarrelease')
+    (tmp_path / '.env').write_text('STRIIM_BUILD_5_4_9=nine\n')
+    new = tmp_path / 'new.env'
+    new.write_text('STRIIM_BUILD_5_4_2=two\n')
+    old = tmp_path / 'old.env'
+    old.write_text('STRIIM_BUILD_5_2_0=zero\n')
+    assert opjarrelease.configured_versions(tmp_path, {}) == {'5.4.9'}
+    assert opjarrelease.configured_versions(tmp_path, {'SLT_BUILD_MATRIX_ENV': 'new.env'}) == {'5.4.2'}
+    assert opjarrelease.configured_versions(tmp_path, {'FTC_PUBLISHER_RELEASES_ENV': str(old)}) == {'5.2.0'}
+    both = {'SLT_BUILD_MATRIX_ENV': str(new), 'FTC_PUBLISHER_RELEASES_ENV': str(old)}
+    assert opjarrelease.configured_versions(tmp_path, both) == {'5.4.2'}
+
+
 def _jar(path, version):
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, 'w') as z:

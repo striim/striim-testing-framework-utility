@@ -11,11 +11,14 @@ from livetest.preflight import (
     provision as preflight_provision,
     provision_cluster as preflight_provision_cluster,
     provision_services as preflight_provision_services,
+    stop_command as preflight_stop_command,
+    stop_reserved as preflight_stop_reserved,
     teardown as preflight_teardown,
     teardown_cluster as preflight_teardown_cluster,
     teardown_services as preflight_teardown_services,
 )
 from livetest.registry import all_services
+from livetest.stack import adopt_prefix
 
 # The Striim cluster is a startable target but NOT a registry service: it has compose files
 # and no service.yaml, and striim_provision owns its lifecycle. Named here so `start live`
@@ -98,22 +101,37 @@ def cmd_up(targets: list) -> int:
     return cluster_rc or services_rc or tests_rc
 
 
-def cmd_down(targets: list) -> int:
+def cmd_down(targets: list, force: bool = False) -> int:
     _as_coordinator()
     services, test_ids, cluster = _resolve_targets(targets)
+    # Checked once for the whole command, so a refusal names the one command that stops it all
+    # anyway, and reserved in the same step: no session is admitted on the endpoint until every half
+    # has run. Each half checks again inside this reservation. --force skips the checks, not the
+    # reservation.
+    reservation = preflight_stop_reserved(os.environ, force, retry=preflight_stop_command(targets))
+    if reservation is None:
+        return 2
+    try:
+        return _down_reserved(services, test_ids, cluster, force)
+    finally:
+        reservation.release()
+
+
+def _down_reserved(services, test_ids, cluster, force: bool) -> int:
+    kw = {"force": True} if force else {}
     # Every half runs, whatever the others returned, and the worst rc wins: a teardown that
     # gives up at the first failure strands exactly the containers it was asked to remove
     # (same rule as _take_down_services). Cluster last -- tearing the engine down first would
     # leave the service teardown talking to a half-gone stack.
-    rc = preflight_teardown_services(services) if services else 0
+    rc = preflight_teardown_services(services, **kw) if services else 0
     # explicit=True: a typed `stop` is not end-of-run cleanup (see preflight.teardown). This
     # tears down that test's SERVICES, so it belongs on the service side of the cluster --
     # `stop striim <test-id>` used to run it after the engine was already gone, the exact
     # ordering the rule above forbids.
     if test_ids:
-        rc = preflight_teardown(test_ids, explicit=True) or rc
+        rc = preflight_teardown(test_ids, explicit=True, **kw) or rc
     if cluster:
-        rc = preflight_teardown_cluster() or rc
+        rc = preflight_teardown_cluster(**kw) or rc
     return rc
 
 
@@ -134,21 +152,9 @@ def cmd_ggtrail(args) -> int:
     return 0
 
 
-def _adopt_stack_prefix(env=None) -> None:
-    """Put the effective SLT_STACK_PREFIX into this process's environment.
-
-    The service compose calls resolve settings through the .env layers, but the Striim cluster's
-    compose calls (`ps`, `down -v`) read only os.environ. A prefix set only in .env would then scope
-    the database containers to the reader's stack and the Striim cluster to the unprefixed one, and
-    `stop striim` could remove another stack's cluster and its MDR volume. A prefix exported in the
-    shell already wins in both, and is left alone."""
-    from livetest import paths
-    env = os.environ if env is None else env
-    if (env.get("SLT_STACK_PREFIX") or "").strip():
-        return
-    value = (paths.effective_env(env).get("SLT_STACK_PREFIX") or "").strip()
-    if value:
-        env["SLT_STACK_PREFIX"] = value
+# The effective SLT_STACK_PREFIX into this process's environment (stack.adopt_prefix): shared with
+# `python -m livetest.preflight`, which reaches the same cluster compose calls.
+_adopt_stack_prefix = adopt_prefix
 
 
 def main() -> int:
@@ -159,6 +165,12 @@ def main() -> int:
         project.load_and_activate()
     except Exception as e:                     # ProjectError, PathConfigError, LayoutError
         print(f"livetest.cli: cannot activate the project manifest: {e}", file=sys.stderr)
+        return 2
+    from livetest import paths
+    from livetest import service_env
+    problems = service_env.switch_problems(paths.effective_env(os.environ))
+    if problems:                               # a switch or opt-in gate set to neither 1 nor 0
+        print("livetest.cli: " + "\n".join(problems), file=sys.stderr)
         return 2
     _adopt_stack_prefix()
     p = argparse.ArgumentParser(prog="python -m livetest.cli")
@@ -171,6 +183,8 @@ def main() -> int:
     down = sub.add_parser("stop", help="stop service(s), 'all', or a test id's full pre-flight")
     down.add_argument("target", nargs="+",
                       help=f"service name(s) {all_services()}, {CLUSTER!r}, 'all', or a test id")
+    down.add_argument("--force", action="store_true",
+                      help="stop even while other live sessions use the stack (it is refused otherwise)")
 
     gg = sub.add_parser("ggtrail", help="generate GoldenGate trail files from a workload.yaml")
     gg.add_argument("--workload", required=True, help="workload.yaml describing schema + workload")
@@ -187,7 +201,7 @@ def main() -> int:
     if args.cmd == "start":
         return cmd_up(args.target)
     if args.cmd == "stop":
-        return cmd_down(args.target)
+        return cmd_down(args.target, force=args.force)
     if args.cmd == "ggtrail":
         return cmd_ggtrail(args)
     return 1

@@ -28,7 +28,7 @@ CREATE OR REPLACE TARGET ItemsReplica USING Global.DatabaseWriter (
 ) INPUT FROM ProcessedStream;
 
 CREATE OR REPLACE TARGET ItemsOut USING Global.FileWriter (
-  FileName:    '/tmp/${TID}${NS}_out',
+  FileName:    '${OWNED_DIR}/out.json',
   FlushPolicy: 'EventCount:10,Interval:1s'
 ) FORMAT USING Global.JSONFormatter () INPUT FROM ProcessedStream;
 

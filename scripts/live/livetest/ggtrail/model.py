@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .defwriter import ColumnSpec, TableSchema, ASCII_F, ASCII_V, SINT64
+from .defwriter import ColumnSpec, TableSchema, ASCII_F, ASCII_V, SINT64, DATETIME
 
 # Layer 1 logical schema (spec §4). The user declares *logical* tables/columns/types; this
 # module validates the referential shape of that declaration and maps it onto the Layer 0
@@ -20,6 +20,9 @@ _SIMPLE_WIRE = {
     "uuid": (ASCII_V, 36, 0),
     "date": (ASCII_V, 10, 0),
     "timestamp": (ASCII_V, 19, 0),
+    # GoldenGate's own DATETIME(192), as it writes an Oracle DATE: the reader returns a date
+    # object (Joda LocalDateTime by default) where date/timestamp above return a String.
+    "datetime": (DATETIME, 19, 0),
 }
 _PARAM_ARITY = {"decimal": 2, "varchar": 1, "char": 1}
 

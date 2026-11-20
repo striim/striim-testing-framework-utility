@@ -20,18 +20,39 @@ seed:
 topology: single
 requires: [postgres]
 
+exact: {version: 1, max_rows: 10}
 assert:
   smoke: true
   data:
     - target: ${PG_TARGET_SCHEMA}.${TID}items
       target_db: postgres-target
       match: expected/items.csv
+      exact:
+        columns: {id: integer}
   file:
-    - path: /tmp/${TID}${NS}_out
+    # One golden row per event: the seed has two rows, so exactly two events, each stamped.
+    # An event the operator forwards unstamped (its error path) or delivers twice fails.
+    - path: ${OWNED_DIR}/out.json
       project: userdata
       keys: [processed]
-      min_events: 2
+      events: 2
+      multiset: true
       match: expected/userdata.csv
+lifecycle:
+  version: 1
+  mode: initial-load
+  sink: db
+  readiness:
+    kind: baseline-landed
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}items"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}items"}
+  completion:
+    kind: source-count
+    source: {db: postgres-source, table: "${PG_SOURCE_SCHEMA}.${TID}items"}
+    target: {db: postgres-target, table: "${PG_TARGET_SCHEMA}.${TID}items"}
+  stability: 2s
+  deadlines: {readiness: 90s, completion: 120s}
+  reset: owned
 
 timeout: 180
 tags: [op, referenceop, postgres, sample]

@@ -52,7 +52,6 @@ import os
 import posixpath
 import re
 import socket
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,7 +59,7 @@ from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from livetest import lifecycle as _lifecycle
-from livetest import runident, stack
+from livetest import dockercmd, runident, stack
 
 LEDGER_VERSION = 2
 PG_ROUTES = ("postgres-source", "postgres-target")
@@ -130,9 +129,8 @@ _GRPC_LOG_LINE = re.compile(r"^[IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\S+:\d
 
 
 def _docker(argv):
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+    r = dockercmd.run(argv, timeout=DOCKER_TIMEOUT_S)
+    if r.returncode == dockercmd.TIMED_OUT:
         return SimpleNamespace(returncode=124, stdout="", stderr=f"timed out after {DOCKER_TIMEOUT_S:.0f}s")
     stderr = getattr(r, "stderr", "") or ""
     kept = [ln for ln in stderr.splitlines() if not _GRPC_LOG_LINE.match(ln)]
@@ -1173,7 +1171,9 @@ class Ledger:
                 try:
                     clear_own_checkpoints(ctx, checkpoint_ns, self)
                 except Exception as exc:    # noqa: BLE001
+                    # a leftover checkpoint moves where the next run of the same OP case resumes
                     self.gaps.append(f"op-checkpoint cleanup: {exc}")
+                    result.failures.append({"kind": "op-checkpoint", "name": checkpoint_ns, "error": str(exc)})
             self._verify_all([x for x in self.entries if x["attempt"] == mine and x["state"] == "deleted"],
                              result, targets, deadline)
             for pattern in file_globs:

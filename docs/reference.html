@@ -562,7 +562,7 @@ cd my-striim-tests
 git init
 python3 scripts/sync-framework.py</code></pre></div>
     <p>Any <code>python3</code> can run the sync script. It makes <code>.venv</code> with a Python the pinned framework supports, using <code>python3.12</code> or newer from your <code>PATH</code> when <code>python3</code> is older (<code>--python PATH</code> picks one), and refuses a venv whose Python is too old. It installs the pinned framework into <code>.venv</code>, keeps its separate checkout at a detached HEAD, and copies <code>.env.example</code> to <code>.env</code> when there is none. Both files start with a dot, so <code>ls</code> and Finder hide them; <code>ls -a</code> shows them. Choose a release tag or full commit for <code>framework.pin</code>. The Acme example already contains this structure and all three apps. At release, the release tool updates both the example and template pins to the release tag.</p>
-    <div class="callout">Always copy a repository out of the framework checkout before running its sync script. Run inside <code>examples/</code> or <code>templates/</code>, it would clone another framework there.</div>
+    <div class="callout">Always copy a repository out of the framework checkout before running its sync script. Run inside <code>examples/</code> or <code>templates/</code>, it refuses (exit 2) rather than clone another framework there.</div>
     <p class="step-links"><a href="SET-UP-YOUR-OWN-REPO.md">Repository setup guide</a> · <a href="../templates/consumer-repo/README.md">Template README</a></p>
    </li>
    <li class="step" id="write-apps" data-tab="Write the apps"><h3>Write the apps once, beside their fixtures</h3>

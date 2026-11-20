@@ -127,6 +127,33 @@ def test_interrupt_command(signal, argv):
     assert len(run.calls) == 3
 
 
+def test_pause_freezes_the_container_and_confirms_it_paused():
+    # PAUSE keeps the container running (only frozen), so the stop check is replaced by a paused check.
+    run = FakeRun(inspect=("true",))
+    run._inspect = ["true"]
+    outage.interrupt("c1", "PAUSE", run=run, poll=0)
+    assert run.calls[0] == ["docker", "pause", "c1"]
+    assert run.calls[1] == ["docker", "container", "inspect", "-f", "{{.State.Paused}}", "c1"]
+    assert len(run.calls) == 2
+
+
+def test_pause_raises_when_the_container_is_not_paused():
+    with pytest.raises(OutageError, match="not paused"):
+        outage.interrupt("c1", "PAUSE", run=FakeRun(inspect=("false",)), poll=0)
+
+
+def test_restore_after_pause_unpauses_instead_of_starting():
+    run = FakeRun(inspect=("healthy|true",))
+    outage.restore("c1", run=run, paused=True, poll=0)
+    assert run.calls[0] == ["docker", "unpause", "c1"]
+
+
+def test_restore_after_kill_still_starts():
+    run = FakeRun(inspect=("healthy|true",))
+    outage.restore("c1", run=run, poll=0)
+    assert run.calls[0] == ["docker", "start", "c1"]
+
+
 def test_interrupt_raises_when_still_running():
     with pytest.raises(OutageError, match="still running"):
         outage.interrupt("c1", "KILL", run=FakeRun(inspect=("true",)), verify_timeout=0, poll=0)
@@ -589,3 +616,35 @@ def test_concurrent_route_check_reports_an_invalid_family(tmp_path, family_servi
     conc = "    concurrent:\n      - {db: postgres-source, file: loop.sql}\n"
     with pytest.raises(ManifestError, match="'family' must be a non-empty string"):
         _load(tmp_path, "  - type: stop_start_cycle\n" + conc, base=base)
+
+
+def test_signal_pause_parses(tmp_path):
+    m = _load(tmp_path, "  - type: service_outage\n    service: postgres\n    signal: PAUSE\n")
+    assert m.action_specs[0]["signal"] == "PAUSE"
+
+
+def test_cycle_pause_unpauses_after_the_wait():
+    run = FakeRun(inspect=("true", "healthy|true"))
+    outage.cycle("c1", "PAUSE", 0.0, 0.0, wait=lambda _s: None, run=run)
+    verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
+    assert verbs == ["pause", "unpause"]
+
+
+def test_cycle_pause_failure_after_pausing_unpauses_and_keeps_the_error():
+    run = FakeRun(inspect=("true", "true", "healthy|true"))
+
+    def wait(_s):
+        raise RuntimeError("wait broke")
+    with pytest.raises(RuntimeError, match="wait broke"):
+        outage.cycle("c1", "PAUSE", 5.0, 0.0, wait=wait, run=run)
+    verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
+    assert verbs == ["pause", "unpause"]
+
+
+def test_cycle_pause_that_failed_leaves_a_running_container_alone():
+    # docker pause exits non-zero; the container is neither paused nor stopped: no unpause, no start.
+    run = FakeRun(inspect=("false", "true"), returncode=1)
+    with pytest.raises(OutageError):
+        outage.cycle("c1", "PAUSE", 5.0, 0.0, wait=lambda _s: None, run=run)
+    verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
+    assert verbs == ["pause"]

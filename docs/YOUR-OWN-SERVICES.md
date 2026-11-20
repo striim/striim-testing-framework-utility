@@ -103,16 +103,25 @@ Every key a `service.yaml` can hold:
 | `required_env` | no | List of environment variable names that must be nonblank before connection settings are resolved. No default satisfies this requirement; errors list names only. Use this for credentials on external services. |
 | `live_defaults` | no | `key: value` fallbacks for `live_env` keys that apply only to the existing instance (the override set and the key's variable unset), ahead of `docker_defaults`. For a container that listens on another port or scheme than a real instance does. Each key must be a `live_env` key |
 | `provides` | no | the tokens a test's TQL and SQL can use: `TOKEN: "template"`, with `{key}` from the settings above. `{view_host}` is the host the Striim server reaches the service by |
-| `opt_in_env` | no | a variable for heavy services; no shipped service sets it. In the live tier, until it (or `SLT_EMULATORS`) is set, `start all` and other bring-ups not tied to a selected test leave the service out; a live test that requires it still starts it. In the integration tier (umbrella `INT_EMULATORS`), tests that require it are skipped until it is set |
+| `opt_in_env` | no | a variable for heavy services; no shipped service sets it. It is a switch, `1` or `0`. In the live tier, until it (or `SLT_EMULATORS`) is `1`, `start all` and other bring-ups not tied to a selected test leave the service out; a live test that requires it still starts it. In the integration tier (umbrella `INT_EMULATORS`), tests that require it are skipped until it is `1` |
 | `post_up` | no | a script path inside the container, run with `bash` after it is healthy |
 | `required_files` | no | files the container needs that git does not carry (VM disks, licensed installers), relative to the service's folder. While one is missing and no existing instance is set, tests that require the service skip, naming the files, and `start all` leaves it out. To fetch them, give the service a `pre_up` script |
+| `required_files_env` | no | `VARIABLE: folder`: when `VARIABLE` is set, the `required_files` under that folder are read from the folder it names instead of the service's own. For files whose location is a setting (a shared cache). See "Stricter preparation" |
 | `python_module` | no | a Python client module the framework's own connection needs that is not installed by default (a separately licensed driver, say). Without it, tests that require the service skip with `python_module_hint`, which says how to install it. The shipped `teradata` definitions declare `teradatasql` |
+| `python_module_hint` | no | the text a skip for a missing `python_module` shows: how to install it |
 | `driver` | no | a Python module in the service's folder with the setup compose cannot do (hooks the framework calls). See "Code a service needs" |
 | `pre_up` | no | a script, relative to the service's folder, that the framework runs on the host before it starts the service: fetching the `required_files`, say. See "Services that fetch their own files" |
+| `pre_up_env` | no | the `pre_up` script's own inputs: a list of `{name: VARIABLE, type: string \| path}`. A `path` is resolved against the `.env` that set it |
+| `pre_up_check` | no | `missing_files` (default): run `pre_up` only when a `required_files` entry is missing. `always`: run it every time, for a script that checks more than file presence |
+| `pre_up_timeout` | no | seconds `pre_up` may run (default 7200); then its process group is killed and the test fails |
+| `unavailable_policy` | no | `skip` (default) or `fail`: whether a missing prerequisite skips a test that requires the service or fails it |
 | `graceful_stop` | no | a shell command run in the container (`docker exec <container> sh -c`) when a `service_outage` action stops it with `signal: TERM`, in place of `docker stop`. For an image whose PID 1 is a wrapper that ignores SIGTERM, so the server itself gets the signal: mssql uses `kill -TERM $(ps -C sqlservr -o pid=)`. The container must have no restart policy: the server exits on its own, which docker would restart during `down_for` |
 | `graceful_stop_timeout` | no | seconds to wait for the container to exit after `graceful_stop` (default 60). A stop that takes longer is KILLed and fails the test |
 | `restart_in_place` | no | a shell command run in the container (`docker exec <container> sh -c`) when a `service_outage` action uses `signal: RESTART`. It restarts the server without stopping the container and exits 0 once the server accepts work again; a non-zero exit fails the test |
 | `restart_in_place_timeout` | no | seconds to wait for `restart_in_place` to return (default 900). A hook that takes longer fails the test as a hang; the container is left running, never KILLed |
+
+Any other key is refused when the definition loads, naming the key and the file, so a misspelt
+`live_overide_env:` is an error rather than a service that silently runs in container mode.
 
 **A definition with neither `compose` nor `container` is connection-only**, as the shipped
 `teradata` is: nothing is started, and a test runs against the instance its `live_override_env`

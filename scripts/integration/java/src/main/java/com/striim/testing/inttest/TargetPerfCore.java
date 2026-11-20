@@ -77,6 +77,21 @@ final class TargetPerfCore implements EventDriver {
     }
 
     @Override
+    public boolean writes() {
+        return true;
+    }
+
+    @Override
+    public long acknowledgedEvents() {
+        return core.isAcknowledgeable() ? core.ackedEvents() : -1;
+    }
+
+    @Override
+    public String publishedProcessed() throws Exception {
+        return core.monitorEvents().get("PROCESSED");
+    }
+
+    @Override
     public void close() throws Exception {
         core.close();
     }

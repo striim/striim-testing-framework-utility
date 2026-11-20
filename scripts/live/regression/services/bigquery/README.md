@@ -20,9 +20,10 @@ including the trailing single row. `batch-scalar` keeps the legacy scalar input
 and hand-written golden unchanged, with quoted newlines explicitly enabled.
 
 The installed Java 2.59.0 exact-chunk-boundary defect is excluded from bounded L2.
-The [disabled positive client regression](../../../services/bigquery/tests/test_java_boundary.py)
-still expects one exact row. Re-enable it with a corrected client and the original
-payload; a skip does not qualify that boundary. No padding or chunk-size workaround
+The framework no longer carries a client regression for that boundary: it was removed
+with the emulator build recipe. Before the exclusion is lifted, a client regression
+that expects one exact row from the original payload must be re-added and pass with a
+corrected client; a skip does not qualify that boundary. No padding or chunk-size workaround
 is used by these writer fixtures.
 
 

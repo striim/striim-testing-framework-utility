@@ -49,12 +49,14 @@ def test_download_script_fetches_it_only_on_opt_in():
     assert text.count(JAR) == gate.group(1).count(JAR)
 
 
-def test_ensure_deps_skips_when_required_present_and_not_opted_in(tmp_path):
+def test_ensure_deps_skips_when_required_present_and_not_opted_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     _deps(tmp_path)
     sp.ensure_deps(tmp_path, run=lambda *a, **k: pytest.fail("downloaded"))
 
 
 def test_ensure_deps_fetches_when_opted_in_and_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     _deps(tmp_path)
     monkeypatch.setenv(sp.TERADATA_JDBC_ENV, "1")
     calls = []
@@ -63,6 +65,7 @@ def test_ensure_deps_fetches_when_opted_in_and_missing(tmp_path, monkeypatch):
 
 
 def test_the_opt_in_is_read_from_dotenv_and_handed_to_the_script(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     _deps(tmp_path)
     monkeypatch.setattr(paths, "dotenv_values", lambda env=None: {sp.TERADATA_JDBC_ENV: "1"})
     seen = []
@@ -72,6 +75,7 @@ def test_the_opt_in_is_read_from_dotenv_and_handed_to_the_script(tmp_path, monke
 
 
 def test_ensure_deps_skips_when_opted_in_and_present(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     (_deps(tmp_path) / JAR).write_text("jar")
     monkeypatch.setenv(sp.TERADATA_JDBC_ENV, "1")
     sp.ensure_deps(tmp_path, run=lambda *a, **k: pytest.fail("downloaded"))

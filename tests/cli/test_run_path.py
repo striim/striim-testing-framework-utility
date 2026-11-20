@@ -50,6 +50,20 @@ def test_path_in_default_project(clone):
         "live:scripts/live/regression/hello/hello-4col::hello-4col"], r.stderr
 
 
+def test_relative_case_root_from_the_shell_means_the_same_to_the_tier_child(clone):
+    """A relative path key exported in the shell is relative to where striim-test runs. The CLI
+    resolves it there, and the pytest child, which runs in the run directory, gets the same
+    absolute folder instead of resolving the relative value again."""
+    key, value = "SLT_LIVE_CASES", "scripts/live/regression/hello"
+    absolute = run_cli(["run", "scripts/live/regression/hello/hello-4col", "--dry-run"], cwd=clone,
+                       env=clone_env(clone, **{key: str(clone / value)}))
+    relative = run_cli(["run", "scripts/live/regression/hello/hello-4col", "--dry-run"], cwd=clone,
+                       env=clone_env(clone, **{key: value}))
+    assert absolute.rc == 0 and absolute.ids(), absolute.stdout + absolute.stderr
+    assert relative.rc == 0, relative.stdout + relative.stderr
+    assert relative.ids() == absolute.ids()
+
+
 def test_path_outside_every_case_root(project, tmp_path):
     stray = tmp_path / "stray"
     stray.mkdir()

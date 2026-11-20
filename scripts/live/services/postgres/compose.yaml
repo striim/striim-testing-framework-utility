@@ -34,11 +34,15 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: striim
       POSTGRES_DB: sltdb
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :5432 is already taken. When
       # overriding, point the framework at it too: SLT_PG_HOST=localhost
       # SLT_PG_PORT=<port> (+ the SLT_PG_* creds; see docs/internals/ENGINE.md).
-      - "${SLT_PG_HOST_PORT:-5432}:5432"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_PG_HOST_PORT:-5432}:5432"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_PG_HOST_PORT:-5432}:5432"
     networks:
       - slt-postgres-net
     healthcheck:

@@ -51,6 +51,8 @@ from typing import Iterator
 
 from filelock import FileLock
 
+from livetest import dockercmd
+
 _HERE = Path(__file__).resolve().parent  # scripts/integration/inttest/
 _STARTED_REGISTRY_NAME = ".int-services-up.json"
 _PROVISION_REGISTRY_NAME = ".int-provision-registry.json"
@@ -62,6 +64,30 @@ def _state_root() -> Path:
     # dir cli.py and plugin.py use (gitignored).
     from inttest import resources as _resources
     return _resources.state_root()
+
+
+# The live tier's SLT_STACK_PREFIX rule (livetest.stack._PREFIX_RE): the prefix names compose
+# projects ([a-z0-9][a-z0-9_-]*), container names and files in the state dir. \Z, not $: $ also
+# matches before a final "\n".
+_PREFIX_RE = re.compile(r"^[a-z0-9][a-z0-9-]*\Z")
+
+
+class StackPrefixError(ValueError):
+    """INT_STACK_PREFIX is not a valid stack prefix."""
+
+
+def stack_prefix(env) -> str:
+    """INT_STACK_PREFIX from ``env`` ("" when unset or blank). Raises ``StackPrefixError`` on any
+    other value that does not match [a-z0-9][a-z0-9-]*: used as given, ``../x`` reached a filename
+    and a trailing newline reached compose."""
+    p = env.get("INT_STACK_PREFIX") or ""
+    if not p.strip():
+        return ""
+    if not _PREFIX_RE.match(p):
+        raise StackPrefixError(
+            f"invalid INT_STACK_PREFIX {p!r}: must match [a-z0-9][a-z0-9-]* "
+            f"(lowercase letters, digits, dashes; no whitespace)")
+    return p
 
 
 def state_name(base: str, env=None) -> str:
@@ -85,7 +111,7 @@ def state_name(base: str, env=None) -> str:
     Two separate CHECKOUTS never collided (each has its own scripts/integration/), which
     is exactly why this survived: it only bites when one checkout drives two stacks.
     """
-    p = (env if env is not None else os.environ).get("INT_STACK_PREFIX", "").strip()
+    p = stack_prefix(env if env is not None else os.environ)
     if not p:
         return base
     return f".{p}-{base[1:]}" if base.startswith(".") else f"{p}-{base}"
@@ -156,7 +182,7 @@ def shared_ownership(env=None) -> bool:
 
 def _inspect(container: str, run=None) -> dict | None:
     """`docker container inspect` of one container, or None when it does not exist."""
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     try:
         r = run(["docker", "container", "inspect", container])
     except OSError:
@@ -299,15 +325,17 @@ def compose_up(service_name: str, lock: FileLock) -> None:
     if shared_reuse(service_name):
         return
     from livetest import pgidle
+    from livetest import bindaddr
     env = _compose_up_env(service_name)
     sql = pgidle.policy_sql(env, "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "intdb") if service_name == "postgres" else None
     compose = _checked_compose_file(service_name)
-    subprocess.run(
-        ["docker", "compose", "-f", str(compose), "up", "-d", "--wait"],
-        check=True, env=env,
-    )
+    # Where the published ports bind: SLT_BIND_ADDRESS, else this machine and its containers only.
+    # Asked after every refusal above, so a refused bring-up runs no Docker command.
+    env.update(bindaddr.compose_env(env, run=dockercmd.run))
+    dockercmd.run(["docker", "compose", "-f", str(compose), "up", "-d", "--wait"],
+                  timeout=dockercmd.COMPOSE_UP_TIMEOUT_S, check=True, capture=False, env=env)
     if sql:
-        pgidle.apply_policy(compose, env, "integration", sql, subprocess.run)
+        pgidle.apply_policy(compose, env, "integration", sql, dockercmd.run)
 
 
 
@@ -486,8 +514,7 @@ def declared_containers(compose_paths, env=None) -> list[str]:
     keeps this module dependency-light (`inttest.cli stop gcs` must work in a checkout with
     only the runtime deps installed)."""
     from inttest import paths
-    prefix = (paths.effective_env(os.environ if env is None else env).get("INT_STACK_PREFIX")
-              or "").strip()
+    prefix = stack_prefix(paths.effective_env(os.environ if env is None else env))
     names: list[str] = []
     for path in compose_paths:
         try:
@@ -527,8 +554,7 @@ def container_exists(container: str) -> bool:
     # images, volumes and networks, and volumes/networks carry `.Name` -- so a VOLUME named
     # int-postgres would read as a surviving container (see the live tier's twin).
     try:
-        r = subprocess.run(["docker", "container", "inspect", "-f", "{{.Name}}", container],
-                           capture_output=True, text=True)
+        r = dockercmd.run(["docker", "container", "inspect", "-f", "{{.Name}}", container])
     except OSError:
         return False
     return r.returncode == 0
@@ -560,10 +586,8 @@ def compose_down(service_name: str, lock: FileLock) -> None:
         CalledProcessError: if `docker compose down` fails
         FileNotFoundError: if docker is not available
     """
-    subprocess.run(
-        ["docker", "compose", "-f", str(_compose_file(service_name)), "down", "-v"],
-        check=True,
-    )
+    dockercmd.run(["docker", "compose", "-f", str(_compose_file(service_name)), "down", "-v"],
+                  timeout=dockercmd.COMPOSE_DOWN_TIMEOUT_S, check=True, capture=False)
 
 
 def is_up(service_name: str) -> bool:
@@ -583,10 +607,8 @@ def is_up(service_name: str) -> bool:
     if not compose_file.exists():
         return False
     try:
-        r = subprocess.run(
-            ["docker", "compose", "-f", str(compose_file), "ps", "-q", "--status", "running"],
-            capture_output=True, text=True, check=True,
-        )
+        r = dockercmd.run(["docker", "compose", "-f", str(compose_file), "ps", "-q", "--status", "running"],
+                          check=True)
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
     return bool(r.stdout.strip())
@@ -739,7 +761,13 @@ def ensure_up_for_test(service_name: str, lock: FileLock) -> Iterator[None]:
     try:
         yield
     finally:
-        if started_here:
+        if started_here and shared_ownership():
+            # SLT_INFRA_OWNERSHIP=shared never tears a service down: hand it over, as the session does.
+            with lock:
+                started = _read_started()
+                started.discard(service_name)
+                _write_started(started)
+        elif started_here:
             ensure_down(service_name, lock)
 
 

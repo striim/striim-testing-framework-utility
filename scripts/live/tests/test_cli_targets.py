@@ -13,6 +13,13 @@ import pytest
 from livetest import cli
 
 
+@pytest.fixture(autouse=True)
+def _private_lock_dir(monkeypatch, tmp_path):
+    """`stop` reads the machine-wide ownership registry: a private lock dir, never /tmp/slt-locks."""
+    from livetest import stack
+    monkeypatch.setattr(stack, "_LOCK_DIR", tmp_path / "locks")
+
+
 def test_service_names_resolve_to_services(monkeypatch):
     monkeypatch.setattr(cli, "all_services", lambda: ["gcs", "postgres"])
     monkeypatch.setattr(cli, "known_test_ids", set)
@@ -319,7 +326,76 @@ def test_stop_runs_with_the_dotenv_prefix_in_its_environment(tmp_path, monkeypat
     monkeypatch.delenv("SLT_STACK_PREFIX", raising=False)
     monkeypatch.delenv("GOLD_TARGETS", raising=False)
     seen = []
-    monkeypatch.setattr(cli, "cmd_down", lambda targets: seen.append((targets, os.environ.get("SLT_STACK_PREFIX"))) or 0)
+    monkeypatch.setattr(cli, "cmd_down", lambda targets, force=False: seen.append((targets, os.environ.get("SLT_STACK_PREFIX"))) or 0)
     monkeypatch.setattr("sys.argv", ["livetest.cli", "stop", "striim", "postgres"])
     assert cli.main() == 0
     assert seen == [(["striim", "postgres"], "review-a")]
+
+
+@pytest.mark.parametrize("argv, entry", [(["--teardown"], "teardown"), ([], "provision"),
+                                         (["--restart-app-nodes"], "restart_app_nodes")])
+def test_the_preflight_entry_point_runs_with_the_dotenv_prefix_in_its_environment(tmp_path, monkeypatch,
+                                                                                 real_dotenv, argv, entry):
+    """`python -m livetest.preflight` reaches the same Striim cluster compose calls as `livetest.cli`, which
+    read os.environ only: it adopts .env's SLT_STACK_PREFIX the same way, or `--teardown` would run
+    `down -v` on the unprefixed cluster."""
+    from livetest import preflight
+    (tmp_path / ".env").write_text("SLT_STACK_PREFIX=review-a\n")
+    monkeypatch.setenv("SLT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SLT_STACK_PREFIX", "")              # recorded, so the adopted value is undone
+    monkeypatch.delenv("SLT_STACK_PREFIX")
+    monkeypatch.delenv("GOLD_TARGETS", raising=False)
+    seen = []
+    record = lambda *a, **k: seen.append(os.environ.get("SLT_STACK_PREFIX")) or 0
+    for name in ("teardown", "provision", "restart_app_nodes"):
+        monkeypatch.setattr(preflight, name, record if name == entry else
+                            (lambda *a, **k: pytest.fail(f"{entry} expected")))
+    assert preflight.main(argv) == 0
+    assert seen == ["review-a"]
+
+
+def _ggtrail(monkeypatch, *argv):
+    """Run `python -m livetest.cli ggtrail ...` with the runner's two entry points recorded."""
+    from livetest import project
+    from livetest.ggtrail import runner
+    calls = []
+    monkeypatch.setattr(project, "load_and_activate", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_adopt_stack_prefix", lambda env=None: None)
+    monkeypatch.setattr(runner, "generate_from_yaml",
+                        lambda workload, out: calls.append(("batch", workload, out)) or {"summary": {"ops": 1}})
+    monkeypatch.setattr(runner, "stream_from_yaml",
+                        lambda workload, out, rate, duration: calls.append(("stream", workload, out, rate, duration))
+                        or {"summary": {"ops": 2}})
+    monkeypatch.setattr("sys.argv", ["livetest.cli", "ggtrail", *argv])
+    assert cli.main() == 0
+    return calls
+
+
+def test_ggtrail_workload_and_out_generate_a_batch(monkeypatch, capsys):
+    from pathlib import Path
+    calls = _ggtrail(monkeypatch, "--workload", "w.yaml", "--out", "trail")
+    assert calls == [("batch", Path("w.yaml"), Path("trail"))]
+    assert '"ops": 1' in capsys.readouterr().out
+
+
+def test_ggtrail_rate_and_duration_stream(monkeypatch):
+    from pathlib import Path
+    calls = _ggtrail(monkeypatch, "--workload", "w.yaml", "--out", "trail", "--rate", "50", "--duration", "2.5")
+    assert calls == [("stream", Path("w.yaml"), Path("trail"), 50.0, 2.5)]
+
+
+def test_ggtrail_max_records_per_file_is_parsed_and_left_to_the_workload(monkeypatch):
+    """The help says rollover size is normally set in the workload.yaml; the flag is accepted (an
+    integer) and not forwarded to the runner."""
+    from pathlib import Path
+    calls = _ggtrail(monkeypatch, "--workload", "w.yaml", "--out", "trail", "--max-records-per-file", "10")
+    assert calls == [("batch", Path("w.yaml"), Path("trail"))]
+    with pytest.raises(SystemExit):
+        _ggtrail(monkeypatch, "--workload", "w.yaml", "--out", "trail", "--max-records-per-file", "ten")
+
+
+def test_ggtrail_needs_workload_and_out(monkeypatch):
+    with pytest.raises(SystemExit):
+        _ggtrail(monkeypatch, "--out", "trail")
+    with pytest.raises(SystemExit):
+        _ggtrail(monkeypatch, "--workload", "w.yaml")

@@ -17,6 +17,8 @@ import os
 import shutil
 import subprocess
 
+from livetest import dockercmd
+
 # A first build needs the image (~22 GB) plus the staged installers in the build context
 # (~5.2 GB, on the HOST disk on Docker Desktop, the same disk on Linux), BuildKit's
 # intermediate layers, and room for the running cluster's Derby, logs and Kafka. 35 GB is
@@ -32,7 +34,7 @@ _PROBE_PREFERENCE = ("alpine", "busybox", "ubuntu", "debian", "amd64/ubuntu")
 
 
 def _default_run(argv):
-    return subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    return dockercmd.run(argv, timeout=120)
 
 
 def _out(r) -> str:

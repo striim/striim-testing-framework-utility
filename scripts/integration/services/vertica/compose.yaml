@@ -24,11 +24,15 @@ services:
       nofile:
         soft: 32768
         hard: 32768
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :15433 is already taken. When
       # overriding, point the framework at it too: INT_VERTICA_HOST=localhost
       # INT_VERTICA_PORT=<port>.
-      - "${INT_VERTICA_HOST_PORT:-15433}:5433"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_VERTICA_HOST_PORT:-15433}:5433"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_VERTICA_HOST_PORT:-15433}:5433"
     networks:
       - int-vertica-net
     healthcheck:

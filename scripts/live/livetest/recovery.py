@@ -23,7 +23,7 @@ import subprocess
 import os
 import time
 
-from livetest import stack
+from livetest import dockercmd, stack
 
 # Statuses from which a START is meaningful. A `stop` leaves the app DEPLOYED (or CREATED if
 # the platform undeployed it); a `kill` leaves whatever the dying JVM last persisted, and the
@@ -32,7 +32,16 @@ _RESTARTABLE = {"CREATED", "DEPLOYED", "STOPPED", "QUIESCED",
                 # A SIGKILLed app very plausibly comes back CRASH or HALT. Omitting these sent
                 # `kill` down the "wait for the platform" branch, where await_running raises
                 # "reached terminal status CRASH" instead of issuing the START that recovers it.
+                # Only `kill` reaches restore() in either: `interrupt` refuses a STOP or QUIESCE
+                # that did not settle on one of SETTLED's statuses.
                 "CRASH", "HALT"}
+
+# What a STOP or QUIESCE must leave the app in to count as a verified interruption. Anything
+# else -- CRASH or HALT above all -- means the command broke the app rather than interrupted it:
+# restarting it and letting the assertions pass on the replay would report a crash as a clean
+# stop, and a QUIESCE whose flush crashed is no longer the drain arm of the stop/quiesce pair.
+SETTLED = {"stop": frozenset({"DEPLOYED", "STOPPED", "CREATED"}),
+           "quiesce": frozenset({"QUIESCED"})}
 
 # Statuses the platform is still moving through. STOP and QUIESCE are ASYNCHRONOUS -- the API
 # returns when the command is accepted, not when it has taken effect -- so these are the states
@@ -76,8 +85,23 @@ class RecoveryError(Exception):
     pass
 
 
+class InterruptionNotSettled(RecoveryError):
+    """A STOP or QUIESCE that did not leave the app stopped; `status` is the last status read."""
+
+    def __init__(self, message: str, status: str):
+        super().__init__(message)
+        self.status = status
+
+
+def verify_timeout(manifest_timeout) -> float:
+    """How long a STOP or QUIESCE may take to settle: half the manifest's timeout, floored at
+    120s. On an 80 000-event pipeline a STOP can legitimately sit in STOPPING for minutes, and a
+    fixed budget would report a WORKING stop as "not interrupted"."""
+    return max(120.0, float(manifest_timeout) / 2.0)
+
+
 def _sh(argv, run=None):
-    run = run or (lambda a: subprocess.run(a, capture_output=True, text=True))
+    run = run or dockercmd.run
     return run(argv)
 
 
@@ -116,10 +140,10 @@ def await_left_running(client, app: str, timeout: float, poll: float = 2.0,
     status = client.current_status(app)
     while status == "RUNNING" or status in _TRANSITIONAL:
         if time.monotonic() >= deadline:
-            raise RecoveryError(
+            raise InterruptionNotSettled(
                 f"{app} was still {status} {timeout:.0f}s after the interruption was issued -- "
                 f"treating it as not interrupted rather than proceeding, because an "
-                f"un-interrupted run would pass and prove nothing")
+                f"un-interrupted run would pass and prove nothing", status)
         if report:
             try:
                 report(f"recover: waiting for app to stop (now {status})")
@@ -128,6 +152,162 @@ def await_left_running(client, app: str, timeout: float, poll: float = 2.0,
         time.sleep(poll)
         status = client.current_status(app)
     return status
+
+
+def await_interrupted(client, app: str, mode: str, timeout: float, poll: float = 2.0,
+                      report=None) -> str:
+    """`await_left_running`, then require the status `mode` leaves behind (SETTLED); return it.
+
+    Raises InterruptionNotSettled for an app still RUNNING at the timeout, and for one that left
+    RUNNING into anything else, CRASH and HALT included.
+    """
+    status = await_left_running(client, app, timeout, poll=poll, report=report)
+    if status not in SETTLED[mode]:
+        raise InterruptionNotSettled(
+            f"{app} is {status} after {mode.upper()}, not {' or '.join(sorted(SETTLED[mode]))} -- "
+            f"the command did not interrupt the app, it left it {status}; not treating that as a "
+            f"verified interruption, and not restarting it", status)
+    return status
+
+
+def stop_cycle(client, app: str, *, cycle: int, timeout: float, record, poll: float = 0.5,
+               report=None) -> str:
+    """STOP `app` for one `stop_start_cycle` iteration and wait until it has stopped.
+
+    Returns the status it settled on, and writes one `recovery` record per call, passed or
+    failed, so the evidence shows every cycle's STOP. `stop_app` returns when the request is
+    sent, and `striim_api` does not raise on a rejected one: without this wait a STOP that never
+    happened left the app RUNNING, the START was a no-op, and the case passed as an undisturbed
+    run. Waiting here also keeps the START from being sent while the app is still STOPPING.
+    """
+    from datetime import datetime, timezone
+    from livetest.resultschema import build_assertion_result
+    # issuedAt/settledAt are monotonic, for durations; the *Utc twins, stamped at the same moment,
+    # are what lines a cycle up with server logs and other evidence. Null until reached.
+    row = {"cycle": cycle, "status": None, "issuedAt": None, "issuedUtc": None,
+           "settledAt": None, "settledUtc": None}
+    ok, detail = False, "ok"
+    try:
+        row["issuedAt"] = time.monotonic()
+        row["issuedUtc"] = datetime.now(timezone.utc).isoformat()
+        client.stop_app(app)
+        row["status"] = await_interrupted(client, app, "stop", timeout, poll=poll, report=report)
+        row["settledAt"] = time.monotonic()
+        row["settledUtc"] = datetime.now(timezone.utc).isoformat()
+        ok = True
+        return row["status"]
+    except InterruptionNotSettled as e:
+        row["status"], detail = e.status, str(e)
+        raise
+    except Exception as e:
+        detail = str(e)
+        raise
+    finally:
+        record(build_assertion_result(
+            type="recovery", status="passed" if ok else "failed",
+            spec={"action": "stop_start_cycle", "cycle": cycle}, target=app, db=None,
+            detail=detail, expected={"kind": "rows", "rows": [{"status": sorted(SETTLED["stop"])}]},
+            actual={"kind": "rows", "rows": [row]}))
+
+
+def await_action_interrupted(client, app: str, mode: str, before: str, timeout: float,
+                             poll: float = 2.0, report=None) -> str:
+    """The settle check after an `action:` step's own STOP or QUIESCE; returns the status.
+
+    `before` is the status read just before the command. An app that was RUNNING then is held to
+    the `recover:` rule (await_interrupted): a CRASH or HALT is the command's doing, and the
+    captures, stopped seeds and ALTER that follow would run against a broken app. An app that was
+    not RUNNING (an in-place upgrade of a HALTed app, a drop of one already stopped) keeps the
+    status it had; only the wait for a transition to finish applies.
+    """
+    if before == "RUNNING":
+        return await_interrupted(client, app, mode, timeout, poll=poll, report=report)
+    return await_left_running(client, app, timeout, poll=poll, report=report)
+
+
+# What `recover.expect_running: false` must find once the restore has run: the app stopped, as a
+# STOP or QUIESCE leaves it. RUNNING (the platform restarted it) and a terminal status (it died)
+# are the two outcomes that flag was used to wave through unread.
+STOPPED = SETTLED["stop"] | SETTLED["quiesce"]
+
+
+def utc_at(monotonic_value, now=time.monotonic):
+    """The UTC time, ISO 8601, of a `time.monotonic()` reading (or of `now`'s clock): evidence
+    records carry one beside every monotonic value, which means nothing outside the process."""
+    from datetime import datetime, timedelta, timezone
+    if monotonic_value is None:
+        return None
+    return (datetime.now(timezone.utc) + timedelta(seconds=monotonic_value - now())).isoformat()
+
+
+def await_stopped(client, app: str, mode: str, timeout: float, poll: float = 2.0,
+                  record=None, report=None) -> str:
+    """`expect_running: false`: wait for the app to settle, require a STOPPED status, record it.
+
+    Transitional and self-healing statuses are waited out (until `timeout`); what the app then
+    reports must be one of STOPPED. Writes one `recovery` record, passed or failed.
+    """
+    from livetest.resultschema import build_assertion_result
+    deadline = time.monotonic() + timeout
+    status = client.current_status(app)
+    while status in _TRANSITIONAL or status in _SELF_HEALING:
+        if time.monotonic() >= deadline:
+            break
+        if report:
+            try:
+                report(f"recover: waiting for app to settle (now {status})")
+            except Exception:
+                pass
+        time.sleep(poll)
+        status = client.current_status(app)
+    observed = time.monotonic()
+    ok = status in STOPPED
+    detail = "ok" if ok else (
+        f"{app} is {status} after the restore, not {' or '.join(sorted(STOPPED))} -- "
+        f"recover.expect_running is false, so the app must stay stopped; "
+        + ("it is still settling" if status in _TRANSITIONAL or status in _SELF_HEALING
+           else "it is running again" if status == "RUNNING" else f"it is {status}"))
+    if record is not None:
+        record(build_assertion_result(
+            type="recovery", status="passed" if ok else "failed", target=app, db=None,
+            spec={"mode": mode, "expect_running": False}, detail=detail,
+            expected={"kind": "rows", "rows": [{"status": sorted(STOPPED)}]},
+            actual={"kind": "rows", "rows": [{"status": status, "expectRunning": False,
+                                              "observedAt": observed,
+                                              "observedUtc": utc_at(observed)}]}))
+    if not ok:
+        raise RecoveryError(detail)
+    return status
+
+
+def watched_settle(status, seconds: float, *, app: str, poll: float = 2.0, report=None,
+                   heartbeat=None, what: str = "the post-recovery settle",
+                   now=time.monotonic, sleep=time.sleep) -> str:
+    """Wait `seconds`, re-reading `status()` throughout; return the last status read.
+
+    Raises RecoveryError the moment the app is anything but RUNNING or COMPLETED, including on
+    the read taken at the deadline. COMPLETED ends the wait early: a bounded source finished its
+    input, which is what the settle waits for. `seconds` 0 is one checked read.
+    """
+    deadline = now() + seconds
+    while True:
+        current = status()
+        # COMPLETED is a SUCCESS status, not a death: a non-CDC source (DatabaseReader doing
+        # an initial load) finishes its input and the app completes. Treating it as a failure
+        # would make this phase unusable for any bounded source, and the settle exists to let
+        # replay drain -- which a COMPLETED app has, by definition, finished doing.
+        if current not in ("RUNNING", "COMPLETED"):
+            raise RecoveryError(f"{app} left RUNNING during {what} (now {current})")
+        if current == "COMPLETED":
+            if report:
+                report("recover: app COMPLETED during the settle (bounded source); done waiting")
+            return current
+        left = deadline - now()
+        if left <= 0:
+            return current
+        if heartbeat is not None:
+            heartbeat(seconds - left, seconds)
+        sleep(min(poll, left))
 
 
 def _await_left_status(client, app: str, from_status: str, timeout: float,
@@ -149,7 +329,7 @@ def _await_left_status(client, app: str, from_status: str, timeout: float,
 
 
 def interrupt(client, ctx, app: str, mode: str, run=None, report=None,
-              verify_timeout: float = 120.0, poll: float = 2.0) -> None:
+              verify_timeout: float = 120.0, poll: float = 2.0) -> str | None:
     """Interrupt `app` by `mode`. Raises RecoveryError if the interruption itself failed.
 
     Not best-effort, unlike teardown: an interruption that quietly did not happen turns the
@@ -158,8 +338,9 @@ def interrupt(client, ctx, app: str, mode: str, run=None, report=None,
 
     For `stop`/`quiesce` the command is asynchronous, so this also WAITS for the app to leave
     RUNNING before returning -- the verification belongs here, at the point where the claim
-    "the app was interrupted" is made. `kill` cannot be verified this way: the node hosting the
-    status endpoint is the thing being killed.
+    "the app was interrupted" is made -- and requires the status the mode leaves behind
+    (SETTLED), which it returns. `kill` cannot be verified this way: the node hosting the
+    status endpoint is the thing being killed; it returns None.
     """
     def _say(msg):
         if report:
@@ -184,14 +365,16 @@ def interrupt(client, ctx, app: str, mode: str, run=None, report=None,
     if mode == "stop":
         _say("recover: STOP APPLICATION")
         client.stop_app(app)
-        _say(f"recover: app is {await_left_running(client, app, verify_timeout, poll=poll, report=report)}")
-        return
+        status = await_interrupted(client, app, mode, verify_timeout, poll=poll, report=report)
+        _say(f"recover: app is {status}")
+        return status
 
     if mode == "quiesce":
         _say("recover: QUIESCE APPLICATION")
         client.quiesce_app(app)
-        _say(f"recover: app is {await_left_running(client, app, verify_timeout, poll=poll, report=report)}")
-        return
+        status = await_interrupted(client, app, mode, verify_timeout, poll=poll, report=report)
+        _say(f"recover: app is {status}")
+        return status
 
     raise RecoveryError(f"unknown recover.mode {mode!r}")
 
@@ -210,11 +393,14 @@ def _restore_budget(default: float = 600.0) -> float:
 
 def restore(client, ctx, app: str, mode: str, timeout: int, settle: float = 0.0,
             expect_running: bool = True, run=None, report=None, progress=None,
-            poll: float = 2.0, at_running=None) -> str:
+            poll: float = 2.0, at_running=None, record=None) -> str:
     """Bring `app` back to RUNNING after `interrupt`, then pause `settle` seconds.
 
     `at_running`, when given, is called once the app is RUNNING and before the settle (the
     checkpoint_history `predates` read, which must come before the restored app checkpoints).
+
+    With `expect_running` false the app is not started: the status it settles on must be one of
+    STOPPED (await_stopped), and `record` receives the `recovery` record that says so.
 
     Returns the final status. The `settle` pause is not politeness: recovery replays
     asynchronously, so an assertion that fires the instant the app reports RUNNING measures a
@@ -253,7 +439,7 @@ def restore(client, ctx, app: str, mode: str, timeout: int, settle: float = 0.0,
         striim_provision.restart_app_nodes(client, run=run, timeout=int(budget))
 
     if not expect_running:
-        status = client.current_status(app)
+        status = await_stopped(client, app, mode, budget, poll=poll, record=record, report=report)
         _say(f"recover: app is {status}; expect_running is false, not starting it")
         return status
 
@@ -298,25 +484,8 @@ def restore(client, ctx, app: str, mode: str, timeout: int, settle: float = 0.0,
 
     if settle > 0:
         _say(f"recover: settling {settle:.0f}s for replay to drain")
-        deadline = time.monotonic() + settle
-        while True:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                break
-            # Re-read the status while settling: an app that recovers into a HALT would
-            # otherwise be discovered only by the assertions timing out, which reports the
-            # symptom (no data) and hides the cause (the app died again).
-            now = client.current_status(app)
-            # COMPLETED is a SUCCESS status, not a death: a non-CDC source (DatabaseReader doing
-            # an initial load) finishes its input and the app completes. Treating it as a failure
-            # would make this phase unusable for any bounded source, and the settle exists to let
-            # replay drain -- which a COMPLETED app has, by definition, finished doing.
-            if now not in ("RUNNING", "COMPLETED"):
-                raise RecoveryError(
-                    f"{app} left RUNNING during the post-recovery settle (now {now})")
-            if now == "COMPLETED":
-                _say("recover: app COMPLETED during the settle (bounded source); done waiting")
-                break
-            time.sleep(min(2.0, left))
-
-    return client.current_status(app)
+    # Re-read the status while settling, and once more at its end: an app that recovers into a
+    # HALT would otherwise be discovered only by the assertions timing out, which reports the
+    # symptom (no data) and hides the cause (the app died again). With settle 0 (a cycle before
+    # the last) the one read is still checked before the next interruption is aimed at it.
+    return watched_settle(lambda: client.current_status(app), settle, app=app, report=_say)

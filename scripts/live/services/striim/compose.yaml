@@ -78,14 +78,20 @@ services:
       # host-published Oracle/Postgres/Kafka/etc. ports. No-op on Mac (already provided).
       extra_hosts:
          - "host.docker.internal:host-gateway"
+      # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+      # interfaces with neither set; this machine and its containers on a framework run
+      # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
       ports:
          # Host ports are overridable for machines where these are already taken. When
          # overriding the console port, point the framework at it too:
          # STRIIM_URL=http://localhost:<port> (see docs/internals/ENGINE.md).
-         - "${SLT_STRIIM_HTTP_HOST_PORT:-9080}:9080"    # console / HTTP API
-         - "${SLT_STRIIM_HTTPS_HOST_PORT:-9081}:9081"   # HTTPS
-         - "${SLT_STRIIM_JMX_HOST_PORT:-7071}:7071"     # JMX Prometheus exporter
-         - "${SLT_STRIIM_DEBUG_HOST_PORT:-8787}:8787"   # JDWP remote debug
+         - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_STRIIM_HTTP_HOST_PORT:-9080}:9080"    # console / HTTP API
+         - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_STRIIM_HTTP_HOST_PORT:-9080}:9080"
+         - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_STRIIM_HTTPS_HOST_PORT:-9081}:9081"   # HTTPS
+         - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_STRIIM_HTTPS_HOST_PORT:-9081}:9081"
+         - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_STRIIM_JMX_HOST_PORT:-7071}:7071"     # JMX Prometheus exporter
+         - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_STRIIM_JMX_HOST_PORT:-7071}:7071"
+         # JDWP (8787) is not published here: it is opt-in, see compose.debug.yaml.
       volumes:
          - slt-striim-shared:/shared
       build:
@@ -150,7 +156,8 @@ services:
          - "host.docker.internal:host-gateway"
       ports:
          # Host port is overridable; :7071 is the node's JMX Prometheus exporter.
-         - "${SLT_STRIIM_NODE_JMX_HOST_PORT:-7075}:7071"
+         - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_STRIIM_NODE_JMX_HOST_PORT:-7075}:7071"
+         - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_STRIIM_NODE_JMX_HOST_PORT:-7075}:7071"
       volumes:
          - slt-striim-shared:/shared
       depends_on:
@@ -181,7 +188,8 @@ services:
          - "host.docker.internal:host-gateway"
       ports:
          # Host port is overridable; :7071 is the agent's JMX Prometheus exporter.
-         - "${SLT_STRIIM_AGENT_JMX_HOST_PORT:-7076}:7071"
+         - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_STRIIM_AGENT_JMX_HOST_PORT:-7076}:7071"
+         - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_STRIIM_AGENT_JMX_HOST_PORT:-7076}:7071"
       volumes:
          - slt-striim-shared:/shared
       depends_on:

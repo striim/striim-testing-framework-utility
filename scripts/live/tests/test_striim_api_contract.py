@@ -259,3 +259,33 @@ def test_the_cli_reports_a_malformed_setting_without_a_traceback(monkeypatch):
     with pytest.raises(SystemExit) as e:
         runpy.run_path(striim_api.__file__, run_name="__main__")
     assert "STRIIM_API_TIMEOUT" in str(e.value.code)
+
+
+@pytest.mark.parametrize("argv, want", [
+    (["status", "app1"], ("localhost", 9080, "admin", "striim")),
+    (["status", "app1", "--host", "striim.example", "--port", "9443", "--username", "ops", "--password", "pw"],
+     ("striim.example", 9443, "ops", "pw")),
+])
+def test_command_line_connects_with_host_port_and_username(monkeypatch, argv, want):
+    """`striim_api.py <action> <name> --host --port --username --password`: the connection the
+    command line asks for is the one the client is built with, and the action reaches it."""
+    built, called = [], []
+
+    class FakeApi:
+        def __init__(self, host, port, username, password):
+            built.append((host, port, username, password))
+
+        def status_application(self, name):
+            called.append(("status", name))
+
+    monkeypatch.setattr(sys, "argv", ["striim_api.py", *argv])
+    monkeypatch.setattr(striim_api, "StriimApi", FakeApi)
+    striim_api._main(striim_api.parse_arguments())
+    assert built == [want] and called == [("status", "app1")]
+
+
+def test_command_line_refuses_a_port_out_of_range(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["striim_api.py", "status", "app1", "--port", "70000"])
+    with pytest.raises(SystemExit) as exit_:
+        striim_api.parse_arguments()
+    assert exit_.value.code == 1 and "Port must be between 1 and 65535" in capsys.readouterr().out

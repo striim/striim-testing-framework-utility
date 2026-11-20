@@ -513,3 +513,33 @@ def test_exec_runtime_row_value_spelling_a_column_type_is_redacted(run_case):
     value = next(r["actual"]["rows"][0]["columns"]["password"] for r in doc["assertions"]
                  if (r.get("actual") or {}).get("kind") == "rows")
     assert value == evidence.REDACTED, (value, rec["valid"], rec["qualified"])
+
+
+# ---------------------------------------------------------------- xfail outcomes (FW-16)
+
+_XFAIL_DATA = lambda y: y + "xfail: {reason: known defect, tiers: [data]}\n"
+_EVIDENCE_CASES = Path(__file__).resolve().parents[4] / "tests" / "fixtures" / "evidence" / "cases"
+
+
+def test_an_xfailed_case_is_xfailed_in_the_sidecar_and_envelope_and_the_run_record_agrees(run_case):
+    run, tier, identity = produce(run_case, case="exact-wrong-golden", fixtures=_EVIDENCE_CASES, edit=_XFAIL_DATA)
+    assert run.junit()[0] == "skipped" and run.ret == 0, run.text      # JUnit has no xfail element
+    side, env = run.sidecar(), run.envelope()["run"]
+    assert side["status"] == "xfailed" and side["skip_reason"] == "known defect"
+    assert env["status"] == "xfailed" and env["skipReason"] == "known defect" and env["qualifies"] is False
+    record = checked(tier, identity)
+    assert "counts-agree" not in failing(record), _counts_detail(record)
+    assert record["valid"] is True and record["qualified"] is False, record["checks"]
+
+
+def test_an_xpassed_case_is_xpassed_never_qualifies_and_is_reported_at_session_end(run_case):
+    run, tier, identity = produce(run_case, edit=_XFAIL_DATA)
+    assert run.junit()[0] == "passed" and run.ret == 0, run.text       # non-strict: pytest exits 0
+    side, env = run.sidecar(), run.envelope()["run"]
+    assert side["status"] == "xpassed"
+    assert env["status"] == "xpassed" and env["qualifies"] is False
+    assert env["qualifiesReason"] == "run status xpassed"
+    assert "XPASS" in run.text and "initial-load" in run.text and "known defect" in run.text
+    record = checked(tier, identity)
+    assert "counts-agree" not in failing(record), _counts_detail(record)
+    assert record["valid"] is True and record["qualified"] is False, record["checks"]

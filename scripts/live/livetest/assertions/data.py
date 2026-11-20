@@ -5,13 +5,31 @@ import io
 import time
 from pathlib import Path
 
-from livetest.assertions import AssertionFailed, NotYetReadable, PartialRead
+from livetest.assertions import AssertionFailed, NotYetReadable, PartialRead, refuse_unknown_keys
 from livetest.assertions.expected import load_expected_text
 from livetest.resultschema import build_assertion_result
 
 
 class DataSpecError(Exception):
     pass
+
+
+#: The longest `stable_seconds` window: what fits in a signed 32-bit count of milliseconds, the
+#: bound the framework already puts on a Postgres statement budget (a little under 25 days).
+MAX_STABLE_SECONDS = 2_147_483_647 / 1000
+
+
+def check_stable_seconds(value, where: str, error: type[Exception]) -> None:
+    """Refuse a `stable_seconds` that is not a finite number of seconds from 0 to the bound.
+
+    The window starts at the first pass and is held in full, past `timeout` if it must, so an
+    infinite window never returns; `nan` compares false against everything, so the window would
+    be skipped. The chained comparison is false for `nan` and for either infinity, and also holds
+    for an integer too large to convert to a float.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= MAX_STABLE_SECONDS:
+        raise error(f"{where}: 'stable_seconds' must be a finite number of seconds from 0 to"
+                    f" {MAX_STABLE_SECONDS}, got {value!r}")
 
 
 #: Golden cell meaning "this column must be ABSENT from the record", as distinct from
@@ -131,10 +149,21 @@ def sorted_rows_for_display(rows) -> list:
     return sorted(per_row_sorted, key=repr)
 
 
+#: Every key an `assert.data` spec may carry: what assert_data, the plugin's routing
+#: (`_spec_route`: source_db, target_db, db), the typed `exact:` path (canon, exactdata), the
+#: `nothing:` and `audit:` checks read. `nothing` specs are validated by livetest.nothing.
+DATA_SPEC_KEYS = frozenset({
+    "target", "db", "target_db", "source_db", "min_rows", "rows", "match",
+    "project", "keys", "ordered", "payload", "exact", "nothing", "audit", "stable_seconds",
+})
+
+
 def parse_data_specs(raw: list) -> list[dict]:
     if not isinstance(raw, list):
         raise DataSpecError("'assert.data' must be a list of specs")
     for spec in raw:
+        if isinstance(spec, dict):
+            refuse_unknown_keys(spec, DATA_SPEC_KEYS, f"data spec {spec.get('target')!r}", DataSpecError)
         if not isinstance(spec, dict) or not spec.get("target"):
             raise DataSpecError(f"data spec needs a 'target': {spec!r}")
         if "project" in spec:
@@ -171,6 +200,8 @@ def parse_data_specs(raw: list) -> list[dict]:
             if rows < 0:
                 raise DataSpecError(
                     f"data spec {spec['target']!r}: 'rows' must be non-negative, got {rows}")
+        if "stable_seconds" in spec:
+            check_stable_seconds(spec["stable_seconds"], f"data spec {spec['target']!r}", DataSpecError)
     return raw
 
 
@@ -188,8 +219,9 @@ def _load_want(spec: dict, basedir, tokens: dict | None = None):
 
 
 def _uncommitted(pg, specs: list[dict]) -> list[tuple[int, str, bool]]:
-    """(index, why, locked) for each `rows:` or `min_rows:` spec whose committed count is not
-    confirmed. `locked`: the committed read was refused because a writer holds the lock.
+    """(index, why, unread) for each `rows:` or `min_rows:` spec whose committed count is not
+    confirmed. `unread`: the committed read failed (a writer holds the lock, or another error), so
+    nothing is known about the committed rows; False when it read a count that disagrees.
 
     Only an admin exposing `count_rows_committed` (mssql and teradata, whose `count_rows` can see
     uncommitted rows) is asked; every other admin's count is already committed. Every failure
@@ -209,7 +241,7 @@ def _uncommitted(pg, specs: list[dict]) -> list[tuple[int, str, bool]]:
             out.append((i, f"{target}: committed count not readable: {e}", True))
             continue
         except Exception as e:      # noqa: BLE001 -- maybe transient: poll again, but say what it was
-            out.append((i, f"{target}: committed count could not be read: {type(e).__name__}: {e}", False))
+            out.append((i, f"{target}: committed count could not be read: {type(e).__name__}: {e}", True))
             continue
         if ("rows" in spec and committed != int(spec["rows"])) or \
                 ("min_rows" in spec and committed < int(spec["min_rows"])):
@@ -429,29 +461,68 @@ def assert_data(pg, specs: list[dict], basedir, timeout: int, poll: float = 2.0,
     # what a diff's elapsed means. A min_rows or match spec has no such line and carries none.
     started = time.monotonic()
     deadline = started + timeout
+    # stable_seconds (as in assert.file): after every spec first passes, keep polling for the
+    # longest window in the group; a poll that no longer passes fails the run, so a late row is
+    # read instead of missed because the first satisfying poll ended the assertion.
+    stable_for = max((float(s.get("stable_seconds", 0)) for s in specs), default=0.0)
+    passed_at = first_elapsed = None
+
+    def failed_records(results):
+        return [
+            build_assertion_result(type="data", status="passed" if ok else "failed", spec=s,
+                                    target=s["target"], db=db, detail="ok" if ok else d,
+                                    expected=exp, actual=act)
+            for s, (ok, d, exp, act) in zip(specs, results)
+        ]
+
     while True:
         if status_probe:
             status_probe()
         results = [_evaluate(pg, s, rows, want) for s, (rows, want) in zip(specs, goldens)]
         detail = next((d for ok, d, _, _ in results if not ok), None)
         dirty = _uncommitted(pg, specs) if detail is None else []
-        if dirty and time.monotonic() >= deadline and all(
-                locked and "rows" not in specs[i] for i, _why, locked in dirty):
-            # A min_rows writer that still held its lock on the last poll: the committed count is
-            # unknowable, so the dirty count stands -- as it did before committed reads existed.
-            # Not done earlier: an executed, uncommitted batch holds exactly that lock.
-            for i, why, _locked in dirty:
-                results[i] = (True, f"ok (dirty count; {why})", *results[i][2:])
-            dirty = []
         if dirty:
             # The count was satisfied by a dirty read: the rows are executed but not yet
             # committed, or the committed read failed. Keep polling; the clock keeps running
-            # until the committed count agrees.
-            for i, why, _locked in dirty:
+            # until the committed count agrees. A committed count still unreadable at the
+            # deadline fails: the dirty count may hold rows that are later rolled back, and
+            # reaching the deadline is no evidence that they committed.
+            at_deadline = time.monotonic() >= deadline
+            for i, why, unread in dirty:
+                if unread and at_deadline:
+                    why = (f"{why}; committed count never readable before the deadline (dirty count "
+                           f"{(results[i][3] or {}).get('count')} not accepted)")
                 results[i] = (False, why, *results[i][2:])
-            detail = dirty[0][1]
+            detail = next(d for ok, d, _, _ in results if not ok)
+        # A spec that could not be read this poll (not readable yet, or its committed count
+        # refused) says nothing about whether the result changed.
+        unread = {i for i, (ok, _d, _e, act) in enumerate(results) if not ok and act is None}
+        unread |= {i for i, _why, u in dirty if u}
+        if passed_at is not None:
+            now = time.monotonic()
+            if any(not ok and i not in unread for i, (ok, *_rest) in enumerate(results)):
+                raise AssertionFailed(
+                    "data assertion passed, then failed within its stable_seconds window (a late"
+                    f" row changed the result):{_format_data_failure(results)}", failed_records(results))
+            if not unread and now - passed_at >= stable_for:
+                return [
+                    build_assertion_result(type="data", status="passed", spec=s, target=s["target"], db=db,
+                                            detail=d or "ok", expected=exp, actual=act,
+                                            **({"elapsed_s": first_elapsed} if "rows" in s else {}))
+                    for s, (ok, d, exp, act) in zip(specs, results)
+                ]
+            if unread and now >= max(deadline, passed_at + stable_for):
+                raise AssertionFailed(
+                    "data assertion passed, but its target could not be read again before its"
+                    f" stable_seconds window closed:{_format_data_failure(results)}", failed_records(results))
+            time.sleep(poll or 0.05)
+            continue
         if detail is None:
             elapsed = time.monotonic() - started
+            if stable_for > 0:
+                passed_at, first_elapsed = time.monotonic(), elapsed
+                time.sleep(min(poll or 0.05, stable_for))
+                continue
             return [
                 build_assertion_result(type="data", status="passed", spec=s, target=s["target"], db=db,
                                         detail=d or "ok", expected=exp, actual=act,
@@ -459,12 +530,7 @@ def assert_data(pg, specs: list[dict], basedir, timeout: int, poll: float = 2.0,
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
         if time.monotonic() >= deadline:
-            records = [
-                build_assertion_result(type="data", status="passed" if ok else "failed", spec=s,
-                                        target=s["target"], db=db, detail="ok" if ok else d,
-                                        expected=exp, actual=act)
-                for s, (ok, d, exp, act) in zip(specs, results)
-            ]
+            records = failed_records(results)
             # A "must be EMPTY" assertion that failed: the offending rows ARE the diagnosis, and
             # reporting the count alone throws it away. These targets are violation views --
             # gviolations, gorphan_late -- whose columns say WHICH row broke the rule and by how

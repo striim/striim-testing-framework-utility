@@ -1,0 +1,12 @@
+name: aa-stop-cycle
+purpose: hermetic appactions fixture - stop_start_cycle waits for each STOP to settle on a stopped status before it starts the app again
+tql: app.tql
+requires: [postgres]
+timeout: 30
+action:
+  - type: stop_start_cycle
+    cycles: 2
+    delay_before_stop: 0
+    stop_duration: 0
+assert:
+  smoke: true

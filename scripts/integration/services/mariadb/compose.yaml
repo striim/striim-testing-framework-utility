@@ -14,11 +14,15 @@ services:
       # Superuser (root). init.sql (below) creates the qasource/qatarget users + schemas.
       MARIADB_ROOT_PASSWORD: striim
       MARIADB_DATABASE: intdb
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable when :13307 is taken (13306 is the integration mysql).
       # When overriding, point the framework at it too: INT_MARIADB_HOST=localhost
       # INT_MARIADB_PORT=<port>.
-      - "${INT_MARIADB_HOST_PORT:-13307}:3306"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_MARIADB_HOST_PORT:-13307}:3306"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_MARIADB_HOST_PORT:-13307}:3306"
     volumes:
       - ./sql/init.sql:/docker-entrypoint-initdb.d/10-qausers.sql:ro
     networks:

@@ -232,3 +232,41 @@ def test_unreadable_target_count_still_refuses_an_unproven_fault_boundary():
     def unavailable(left): raise ConnectionError('target count unavailable')
     with pytest.raises(progress.ProgressError, match='fault-missed'):
         progress.after_interrupt(progress.normalize(spec()), unavailable)
+
+
+def _utc(value):
+    from datetime import datetime
+    stamp = datetime.fromisoformat(value)
+    assert stamp.tzinfo is not None
+    return stamp
+
+
+def test_fault_record_carries_utc_beside_issued_and_deadline():
+    from livetest.progress import normalize, at_fault
+    clock = Clock(); values = iter([3, 3, 4]); records = []
+    at_fault(normalize(spec()), lambda left: next(values), lambda: None, record=records.append,
+             cycle=1, now=clock.now, sleep=clock.sleep)
+    row = records[-1]["actual"]["rows"][0]
+    issued, deadline = _utc(row["issuedUtc"]), _utc(row["deadlineUtc"])
+    # the deadline is one trigger timeout (1s) after the wait began, at t=0; issued at t=0
+    assert (deadline - issued).total_seconds() == pytest.approx(1.0, abs=0.05)
+
+
+def test_timed_fault_record_has_issued_utc_and_no_deadline():
+    from livetest.progress import at_fault
+    records = []
+    at_fault(None, lambda left: "RUNNING", lambda: None, record=records.append, cycle=1)
+    row = records[-1]["actual"]["rows"][0]
+    _utc(row["issuedUtc"])
+    assert row["deadline"] is None and row["deadlineUtc"] is None
+
+
+def test_refused_fault_record_carries_deadline_utc():
+    from livetest.progress import normalize, at_fault, ProgressError
+    clock = Clock(); records = []
+    with pytest.raises(ProgressError):
+        at_fault(normalize(spec()), lambda left: 0, lambda: pytest.fail("issued"),
+                 record=records.append, cycle=1, now=clock.now, sleep=clock.sleep)
+    row = records[-1]["actual"]["rows"][0]
+    _utc(row["deadlineUtc"])
+    assert row["issuedAt"] is None and row["issuedUtc"] is None

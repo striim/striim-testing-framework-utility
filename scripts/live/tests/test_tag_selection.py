@@ -57,11 +57,12 @@ def test_tag_filters(collect_tags, args, expected):
 
 
 def test_tags_are_item_local_and_registered(collect_tags):
+    # A manifest without depth: runs as regression, so it carries depth_regression too.
     assert collect_tags() == {
-        "alpha": ["live", "tag_p1", "tag_slow_path"],
-        "bravo": ["live", "tag_p10"],
-        "charlie": ["live"],
-        "delta": ["live", "tag_p2"],
+        "alpha": ["depth_regression", "live", "tag_p1", "tag_slow_path"],
+        "bravo": ["depth_regression", "live", "tag_p10"],
+        "charlie": ["depth_regression", "live"],
+        "delta": ["depth_regression", "live", "tag_p2"],
     }
 
 
@@ -84,7 +85,8 @@ def test_collection_parses_manifest_once(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from livetest import plugin
     path = tmp_path / 'test.yaml'
-    path.write_text('requires: [postgres]\ndepth: smoke\ntags: [P1]\n')
+    # Collection loads the manifest (a refused one is a collection error), so it must be loadable.
+    path.write_text('name: t\ntql: app.tql\nassert: {smoke: true}\nrequires: [postgres]\ndepth: smoke\ntags: [P1]\n')
     loads = []
     load = plugin.yaml.safe_load
     monkeypatch.setattr(plugin.yaml, 'safe_load', lambda text: (loads.append(text), load(text))[1])
@@ -99,6 +101,6 @@ def test_collection_parses_manifest_once(tmp_path, monkeypatch):
 def test_tag_marker_preserves_case(collect_tags, tmp_path):
     path = tmp_path / 'alpha' / 'test.yaml'
     path.write_text(path.read_text().replace('"p1"', '"P1"'))
-    assert collect_tags()['alpha'] == ['live', 'tag_P1', 'tag_slow_path']
+    assert collect_tags()['alpha'] == ['depth_regression', 'live', 'tag_P1', 'tag_slow_path']
     assert set(collect_tags('-k', 'p1')) == {'alpha', 'bravo'}
     assert set(collect_tags('-m', 'tag_P1')) == {'alpha'}

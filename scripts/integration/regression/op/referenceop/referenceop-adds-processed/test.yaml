@@ -1,0 +1,8 @@
+name: referenceop-adds-processed
+purpose: every event is copied unchanged, with userdata.processed set to true
+op:
+  jar: samples/code/op/java/OpenProcessors/ReferenceOp
+assert:
+  data:
+    - input: input/events.json
+      match: expected/events.json

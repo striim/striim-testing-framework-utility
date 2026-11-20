@@ -1,0 +1,3 @@
+[{"metadata": {"TableName": "SRC.ITEMS", "OperationName": "INSERT"},
+  "data": {"values": [1, "apple"], "present": [true, true]},
+  "userdata": {}}]

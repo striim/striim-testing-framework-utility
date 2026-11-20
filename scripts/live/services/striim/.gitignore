@@ -4,3 +4,5 @@
 images/striim/files/slt-installer-identity.json
 # Written by ensure_image: digests of the optional jars the build copies; never committed.
 images/striim/files/slt-optional-jars.json
+# Written by the deps check: each dependency's stat when it last matched its digest; never committed.
+.slt-sha256-verified.json

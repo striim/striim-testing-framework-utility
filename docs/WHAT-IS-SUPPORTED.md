@@ -35,7 +35,7 @@ What differs in native mode:
 | `op:` / `udf:` jars | copied into the cluster | `STRIIM_HOME` must be the running server's own install, on this machine: the jars are copied into `$STRIIM_HOME/UploadedFiles`. `striim-test doctor --case` checks it |
 | Named-node faults and `placement` | yes, framework cluster and published survivor API | named-node recovery skips; no framework Docker role mapping |
 | `recover: {mode: kill}` | yes | **not supported**: there is no container to kill. The test is skipped, never downgraded to `stop` |
-| `expect_halt_contains` on a halt while running | checked against the server log | the test passes without the check, and its record says `halt reason not checked (native mode)` |
+| `expect_halt_contains` on a halt while running | checked against the server log; a log that cannot be read, or has nothing since the case deployed, fails the test | the test passes without the check, and its record says `halt reason not checked (native mode)` |
 | `assert.jmx` | yes | **not supported**: it fails at once, since there are no exporters to read |
 | `topology: cluster` | two nodes and an agent | needs a server with at least two nodes in `default` and an agent in `Agents`; otherwise the test is skipped |
 | how Striim reaches the databases | `host.docker.internal` | `localhost`, or `SLT_<SERVICE>_VIEW_HOST` |
@@ -79,16 +79,21 @@ licence ([SERVICES.md](SERVICES.md), "Teradata"). Point it at your instance the 
 `.env` or the shell:
 
 ```
-SLT_TERADATA_HOST=td.example.com
-SLT_TERADATA_PORT=1025            # default 1025
-SLT_TERADATA_USER=dbc             # the admin; default dbc
-SLT_TERADATA_PASSWORD=...
-SLT_TERADATA_SOURCE_USER=qasource   # default qasource; SOURCE_PASSWORD, SOURCE_SCHEMA likewise
-SLT_TERADATA_TARGET_USER=qatarget   # default qatarget; TARGET_PASSWORD, TARGET_SCHEMA likewise
+SLT_TERADATA_HOST=td.example.com      # required; unset, Teradata tests skip
+SLT_TERADATA_PORT=1025                # default 1025
+SLT_TERADATA_USER=dbc                 # required: the admin
+SLT_TERADATA_PASSWORD=...             # required
+SLT_TERADATA_SOURCE_USER=qasource     # required
+SLT_TERADATA_SOURCE_PASSWORD=...      # required
+SLT_TERADATA_SOURCE_SCHEMA=qasource   # default qasource
+SLT_TERADATA_TARGET_USER=qatarget     # required
+SLT_TERADATA_TARGET_PASSWORD=...      # required
+SLT_TERADATA_TARGET_SCHEMA=qatarget   # default qatarget
 ```
 
-- The admin user creates the source and target users when they cannot log in. In Teradata a user
-  is also a database, so each schema defaults to its user's name.
+- The six user and password settings have no default; a run that needs Teradata stops and names
+  any that are unset. The admin user creates the source and target users when they cannot log in.
+  In Teradata a user is also a database, so set each schema to its user's name.
 - `SLT_TERADATA_VIEW_HOST` sets the host Striim reaches it by, when that differs.
 - The integration tier reads the same settings with the `INT_TERADATA_` prefix (`INT_TERADATA_HOST`,
   `INT_TERADATA_ADMIN_USER` and so on).
@@ -115,7 +120,7 @@ ServiceNow.
 | `teradata` | **none: bring your own instance.** The framework ships no Teradata container; its definition holds only the connection settings | not applicable | 1025 (`SLT_TERADATA_PORT`) | `SLT_TERADATA_HOST` and `SLT_TERADATA_*`, in `.env` or the shell (below) | **supported, not exercised here**. With `SLT_TERADATA_HOST` unset, its tests skip, naming the setting. A service of your own named `teradata` with a container (`servicesRoots`, [YOUR-OWN-SERVICES.md](YOUR-OWN-SERVICES.md)) replaces the definition |
 | `servicenow` | **none: bring your own instance.** ServiceNow is hosted: no container runs an instance. Its definition holds only the connection settings | not applicable | 443 (`SLT_SERVICENOW_PORT`) | `SLT_SERVICENOW_HOST` and `SLT_SERVICENOW_*`, in `.env` or the shell | **supported, not exercised here**. With `SLT_SERVICENOW_HOST` unset, its tests skip, naming the setting. The framework does not read or write ServiceNow: assert on where a reader's data lands, or on Striim's own figures ([SERVICENOW.md](SERVICENOW.md)) |
 | `bigquery` | user-supplied qualified emulator image (`SLT_BIGQUERY_IMAGE`), plus a dedicated fake token server | bounded REST streaming / CSV batch | 9050, 9051 token | `SLT_BIGQUERY_HOST` and `SLT_BIGQUERY_*` | **tested**: Linux x86-64 API/query bootstrap, two isolated stacks, local OAuth refresh and independent integer/text readback. Striim 5.4.2 legacy streaming and bounded direct CSV batch fixtures pass with scalar exact assertions and finite initial-load counts. The installed Java 2.59.0 exact-chunk boundary is excluded. Unicode CSV requires the documented UTF-8 JVM setting. The qualified image has amd64 and arm64 variants; native ARM, Storage Write, recovery and cloud equivalence remain unqualified |
-| `bigtable` | stock: Google's `google-cloud-cli` image, by index digest (arm64 and amd64 builds of one release), running the Cloud Bigtable emulator (`cbtemulator`) | no: change streams are not supported | 9470 (`SLT_BIGTABLE_GRPC_HOST_PORT`) | `SLT_BIGTABLE_HOST` and `SLT_BIGTABLE_*` (another emulator) | **the round trip is exercised on arm64 (`test_bigtable_live.py`); `setup: bigtable:` and `assert.target` (integration) and `assert: bigtable:` (live) are in**. No BigtableWriter or reader case, no real Bigtable, credentials or IAM. Development runs natively on arm64; x86 is not yet qualified |
+| `bigtable` | stock: Google's `google-cloud-cli` image, by index digest (arm64 and amd64 builds of one release), running the Cloud Bigtable emulator (`cbtemulator`) | no: change streams are not supported | 9470 (`SLT_BIGTABLE_GRPC_HOST_PORT`) | `SLT_BIGTABLE_HOST` and `SLT_BIGTABLE_*` (another emulator) | **the round trip is exercised on arm64 (`test_bigtable_live.py`); `setup: bigtable:` and `assert.target` (integration) and `assert: bigtable:` (live) are in**. No BigtableApiWriter or reader case, no real Bigtable, credentials or IAM. Development runs natively on arm64; x86 is not yet qualified |
 
 "Recipe" means the framework builds the image from a public base; "stock" means it uses a public image
 as it is. Any service can move to another host port through the variable shown, when the default is
@@ -129,7 +134,7 @@ real instance.
 
 The integration tier (`scripts/integration`) tests an Open Processor or UDF against databases without a
 whole Striim app. It uses its own containers, on other ports, so it can run beside the live tier.
-This repo ships no integration cases (`SLT_INT_CASES` points at yours).
+This repo ships one integration case, `scripts/integration/regression/op/referenceop/referenceop-adds-processed`; `SLT_INT_CASES` points at yours.
 
 | Service | Image | Host port | Your own instance | Status |
 |---|---|---|---|---|
@@ -205,7 +210,7 @@ tier, and in the integration tier stops the run at collection. `striim-test doct
 | `server_files:` | **supported, not exercised here** (`framework-server-files`) |
 | `action:` `capture`, `alter_recompile`; `drop_recreate_app` `capture` / `stopped_seed` / `tokens` | **supported, not run on a cluster yet**; hermetic tests only |
 | `server_files:` `load:` from outside the test dir (absolute, `${...}`, `gs://`) | **supported, not run on a cluster yet**; hermetic tests only (`gs://` with a fake download) |
-| `op:` / `udf:` (your jars, built with Maven) | **tested**: `samples/code/op` and `samples/code/udf`, both modes, on the Linux host |
+| `op:` / `udf:` (your jars, built with Maven) | **tested**: `samples/code/op` and `samples/code/udf`, on the Linux host. The two samples run in Docker mode only (their file check is under `${OWNED_DIR}`); `op:`/`udf:` itself has no Docker requirement |
 | `tokens:`, `kafka_cleanup_topics:`, `generate:` (GoldenGate trail files) | **supported, not exercised here** |
 | `topology: cluster` | **supported, not exercised here** |
 
@@ -240,7 +245,7 @@ tier, and in the integration tier stops the run at collection. `striim-test doct
 | `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
 | Snapshot rows/bytes | 100000 rows and 64 MiB by default; at most 1000000 and 512 MiB | Row budget covers all tables; byte budget applies per table |
 | `snapshot_observer.max_snapshots` | 10000 by default; at most 100000 | Exhaustion fails instead of truncating history |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` | `striim-test doctor --case` reports them. `assert:` tier names are checked too (above) |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `ddl:` / `seed:` / `server_files:` / `generate:` / `action:` (with `concurrent:`) / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` / `setup: bigtable:` and every `data` / `diff` / `file` / `gcs` / `json` / `bigtable` assertion spec | `striim-test doctor --case` reports them. `assert:` tier names are checked too (above) |
 
 ## Check routes
 

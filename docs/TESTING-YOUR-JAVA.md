@@ -26,7 +26,9 @@ own, event in and event out without a Striim server, use the integration tier
 | [`samples/code/udf`](../samples/code/udf/README.md) | a UDF library, `ReferenceUdf` | `referenceudf-mark-processed` |
 
 Both copy Postgres rows from a source table to a target table and stamp `userdata.processed=true`
-on every event. Run them from the clone root:
+on every event. They run in Docker mode only, because their file check writes under the
+framework's `${OWNED_DIR}` ([samples/code/README.md](../samples/code/README.md)). Run them from the
+clone root:
 
 ```
 striim-test run samples/code        # or samples/code/udf, samples/code/op
@@ -66,8 +68,22 @@ udf:
 Jar filenames normally end in the Striim series, such as `ReferenceOpV1-5.4.jar`. When
 configured releases share that series, both engines use the shortest unique version prefix:
 5.4.2 and 5.4.4.0 use `-5.4.2.jar` and `-5.4.4.jar`; 5.4.4.0 and 5.4.4.1 need all four parts.
-The existing `STRIIM_BUILD_<version>` build matrix and the selected `STRIIM_HOME` supply the
-release set automatically; other installs beside `STRIIM_HOME` do not count, so one matrix gives
+The release set is the selected `STRIIM_HOME`'s release plus the build matrix: one
+`STRIIM_BUILD_<version>` line per release you build for, in the shell or in the matrix file. The
+matrix file is `.env` in the project root unless `SLT_BUILD_MATRIX_ENV` names another file (a
+relative path is taken from the project root); `FTC_PUBLISHER_RELEASES_ENV`, its deprecated older
+name, is still read when `SLT_BUILD_MATRIX_ENV` is unset. Only `STRIIM_BUILD_` lines are read from
+it, so the matrix can share your `.env`:
+
+```
+STRIIM_BUILD_5_4_2=/opt/striim-5.4.2
+STRIIM_BUILD_5_4_4=/opt/striim-5.4.4.0
+```
+
+The key's version, with `_` for `.`, is a label: when the install path holds one
+`lib/Platform-<version>.jar`, that version is the one counted (5.4.4.0 here). A relative install
+path is taken from the matrix file's folder, and a line with no install path is ignored. A shell
+value wins over the file's. Other installs beside `STRIIM_HOME` do not count, so one matrix gives
 the same names on every machine. If the set cannot be determined, naming stays at the series.
 Builds on machines with multiple known releases keep separate Maven output directories, so
 building or cleaning one release preserves the others' jars, including across different series.
@@ -98,8 +114,9 @@ artifact … Platform-5.4.0.6.jar".
 ```bash
 export STRIIM_HOME=/path/to/striim
 ver=$(basename "$STRIIM_HOME"/lib/Platform-*.jar .jar); ver=${ver#Platform-}
+series=$(echo "$ver" | cut -d. -f1,2)
 cd samples/code/udf/java/UserDefinedFunctions/ReferenceUdf
-mvn package -DSTRIIM_VERSION=$ver -DSTRIIM_SERIES=${ver%.*} -DJAVA_RELEASE=17
+mvn package -DSTRIIM_VERSION=$ver -DSTRIIM_SERIES=$series -DJAVA_RELEASE=17
 ```
 
 An editor started from a desktop launcher does not inherit your shell's environment, so export
@@ -120,20 +137,23 @@ that file on each release of the series.
 
 The first one set wins, in that order. Set them in the shell; `.env` does not hold them.
 
+A jar you name and the run cannot use, for any reason below, fails the case, live, integration
+or perf alike: you asked for that jar, so the case cannot pass without it.
+
 - **A folder**, which any of the three may name, must hold exactly one jar for the module named
   `<module>[V<version>]-<series>.jar` (for example `ReferenceOpV1-5.4.jar`) or named for the
   release's suffix selected above (`ReferenceOpV1-5.4.2.jar`), in it or below it. No match, or
-  more than one (a release-named jar beside a series-named one included), is an error and the case
-  does not run; another module's jar is never used.
+  more than one (a release-named jar beside a series-named one included), is an error; another
+  module's jar is never used.
 - **A named file** must end in `-<series>.jar` or the release's selected suffix (for example
-  `ReferenceOpV1-5.4.jar` or `ReferenceOpV1-5.4.2.jar`); otherwise the case does not run.
+  `ReferenceOpV1-5.4.jar` or `ReferenceOpV1-5.4.2.jar`).
 - **A shared named file** selected by `SLT_PREBUILT_JAR` is refused if its `Striim-Module-Name`
   manifest entry names another module. The entry must match the module folder's name, optionally
   followed by `V<version>`, ignoring case. A jar without the entry (every UDF jar) must instead be
   named for the module, as in a folder. These checks do not apply to `SLT_PREBUILT_JAR_<MODULE>` or
   `SLT_PREBUILT_DIR`; folder lookup already selects only this module's jar.
 - **Before using it**, the run checks that the file is a readable jar and that its classes target
-  the release's Java level (17 for Striim 5.4, 11 for 5.0 and 5.2). If not, the case does not run.
+  the release's Java level (17 for Striim 5.4, 11 for 5.0 and 5.2).
 - **The run reports** the file and its SHA-256 (`using prebuilt jar …`) and loads those exact
   bytes; an Open Processor's upload name carries a tag of that digest.
 

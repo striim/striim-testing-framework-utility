@@ -249,7 +249,7 @@ def test_default_compose_up_passes_enriched_env_to_subprocess(tmp_path, monkeypa
         captured["env"] = kw.get("env")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(services_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(services_mod.dockercmd, "run", fake_run)
     services_mod._default_compose_up(load_service("postgres"))   # any service — wiring is generic
 
     env = captured["env"]

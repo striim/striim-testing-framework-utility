@@ -2,8 +2,8 @@
 (docs/INTEGRATION-TESTS.md).
 
 Covers release detection, jar-name derivation, MANIFEST fingerprint parsing, and the
-mtime staleness guard -- including the SPEC §8 "build-staleness gotcha" extension that
-folds OpenProcessorCommon's source tree into every op's staleness check. Nothing here
+mtime staleness guard -- including the SPEC §8 "build-staleness gotcha": a shared root the
+op's pom add-sources (OpenProcessorCommon) is part of its staleness check. Nothing here
 shells out to `mvn` or touches STRIIM_HOME/java on disk beyond a fake fixture tree; the
 real end-to-end build lives in test_opartifacts_build.py (gated on STRIIM_HOME).
 """
@@ -193,16 +193,16 @@ def test_assert_jar_java_version_mismatch_raises(tmp_path):
 
 
 # --------------------------------------------------------------------------------
-# opartifacts._stale_trigger -- including the OpenProcessorCommon fold (SPEC §8)
+# opartifacts._stale_trigger -- including add-sourced OpenProcessorCommon (SPEC §8)
 # --------------------------------------------------------------------------------
 
 @pytest.fixture
 def op_and_common(tmp_path, monkeypatch):
-    """A fake op module + a fake OpenProcessorCommon dir, wired so _stale_trigger
-    consults the fake Common tree instead of the real repo's."""
+    """A fake op module whose pom add-sources a fake OpenProcessorCommon dir beside it."""
     module_dir = tmp_path / "SomeOp"
     (module_dir / "src" / "main" / "java").mkdir(parents=True)
-    (module_dir / "pom.xml").write_text("<project/>")
+    (module_dir / "pom.xml").write_text(
+        "<project><source>${project.basedir}/../OpenProcessorCommon/src/main/java</source></project>")
     op_src_file = module_dir / "src" / "main" / "java" / "Processor.java"
     op_src_file.write_text("class Processor {}")
 
@@ -210,8 +210,6 @@ def op_and_common(tmp_path, monkeypatch):
     (common_dir / "src" / "main" / "java").mkdir(parents=True)
     common_src_file = common_dir / "src" / "main" / "java" / "Logger.java"
     common_src_file.write_text("class Logger {}")
-
-    monkeypatch.setattr(opartifacts, "_common_dir", lambda: common_dir)
 
     target = module_dir / "target"
     target.mkdir()
@@ -274,14 +272,12 @@ def test_stale_trigger_missing_jar_returns_jar_path(op_and_common):
 
 
 def test_stale_trigger_common_itself_not_double_folded(tmp_path, monkeypatch):
-    # When module_dir IS OpenProcessorCommon, its own tree is already covered by the
-    # "module's own src/" scan -- the fold-in must not run twice (harmless either way,
-    # but keep the exemption honest: no crash, correct answer).
+    # When module_dir IS OpenProcessorCommon, its own tree is covered by the
+    # "module's own src/" scan.
     common_dir = tmp_path / "OpenProcessorCommon"
     (common_dir / "src" / "main" / "java").mkdir(parents=True)
     src_file = common_dir / "src" / "main" / "java" / "Logger.java"
     src_file.write_text("class Logger {}")
-    monkeypatch.setattr(opartifacts, "_common_dir", lambda: common_dir)
 
     jar = common_dir / "target" / "OpenProcessorCommon-5.4.jar"
     jar.parent.mkdir(parents=True)
@@ -339,10 +335,8 @@ def _mk(path, when, data=b"x"):
 def _hermetic_build_env(tmp_path, monkeypatch):
     # Keep build_jar's environment probing out of these hermetic tests: JAVA_HOME
     # resolution shells out to `java`/`java_home`, the STRIIM_HOME<->STRIIM_VERSION
-    # guard hits the real filesystem, and _stale_trigger's Common fold must consult a
-    # fake OpenProcessorCommon under tmp_path, not the real repo's.
+    # guard hits the real filesystem.
     monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
-    monkeypatch.setattr(opartifacts, "_common_dir", lambda: tmp_path / "java" / "OpenProcessors" / "OpenProcessorCommon")
     monkeypatch.setattr(opartifacts, "resolve_build_java_home", lambda *a, **k: None)
     monkeypatch.setattr(opartifacts, "_verify_striim_home", lambda *a, **k: None)
 
@@ -387,8 +381,9 @@ def test_build_jar_still_raises_if_ambiguous_after_the_clean_rebuild(tmp_path, m
 
 
 def test_build_jar_fails_when_the_clean_rebuild_itself_fails(tmp_path, monkeypatch):
-    # A version bump plus a compile error: the incremental build passes on stale classes and
-    # leaves two jars, then the clean rebuild fails. That is a broken module, not an environment.
+    # A version bump plus a compile error: the source edit forces a clean rebuild from the
+    # start (an incremental one would pass on stale classes), and its failure is a broken
+    # module, not an environment.
     _hermetic_build_env(tmp_path, monkeypatch)
     mod = tmp_path / MODULE
     _mk(mod / "src" / "main" / "java" / "X.java", 2000)      # newer than the jar -> rebuild
@@ -405,9 +400,9 @@ def test_build_jar_fails_when_the_clean_rebuild_itself_fails(tmp_path, monkeypat
             return types.SimpleNamespace(returncode=1, stdout="", stderr="javac error")
         _jar(mod / "target" / "ReferenceOpV1B-5.4.jar", fp=_fp(RELEASE_54), major=61)
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-    with pytest.raises(opartifacts.OpBuildFailed, match="mvn clean package failed"):
+    with pytest.raises(opartifacts.OpBuildFailed, match="mvn package failed"):
         opartifacts.build_jar(MODULE, RELEASE_54, run=fake_run)
-    assert len(goals) == 2 and "clean" not in goals[0], "the incremental build ran first"
+    assert len(goals) == 1 and "clean" in goals[0], "no incremental build ran first"
 
 
 def test_build_jar_clean_rebuilds_a_corrupt_jar(tmp_path, monkeypatch):

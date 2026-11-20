@@ -3,6 +3,7 @@ exactly what is wrong. Probes (Striim auth, TCP, Postgres login, docker) are inj
 here reaches a network service or Docker, except the two CLI runs, which run under the trap."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -508,6 +509,51 @@ def test_case_manifest_error_is_config_and_names_the_key(tmp_path):
     assert "unknown manifest key(s) ['timout']" in c.message
 
 
+def test_case_manifest_with_a_broken_assert_spec_fails(tmp_path):
+    # An incomplete or misspelt data/diff/file/gcs/json spec used to pass this check and fail
+    # only after the run had provisioned and deployed.
+    for name, spec, why in (("incomplete", "{target: t}", "needs one of min_rows/rows/match"),
+                            ("typo", "{target: t, min_rows: 1, macth: g.csv}", "unknown key(s) ['macth']")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "test.yaml").write_text(f"name: {name}\ntql: app.tql\nassert:\n  data:\n    - {spec}\n")
+        c = one_fail(doctor.check_manifests([d / "test.yaml"]))
+        assert c.subject == f"case {name}" and c.code == CONFIG
+        assert "assert.data[0]" in c.message and why in c.message
+
+
+def test_an_integration_case_with_a_misspelt_top_level_key_fails(tmp_path):
+    # A misspelt `matrix:` used to load, and the case ran once for permutations that never ran.
+    d = tmp_path / "int-typo"
+    d.mkdir()
+    for f in ("in.json", "out.json"):
+        (d / f).write_text("[]")
+    (d / "test.yaml").write_text("name: int-typo\nop: {jar: java/OpenProcessors/X}\n"
+                                 "matrx: {A: ['1', '2']}\n"
+                                 "assert:\n  data: [{input: in.json, match: out.json}]\n")
+    c = one_fail(doctor.check_manifests([d / "test.yaml"], lambda f: "integration"))
+    assert c.subject == "case int-typo" and c.code == CONFIG
+    assert "unknown top-level key(s) ['matrx']" in c.message
+
+
+def test_case_manifest_with_an_incomplete_typed_or_nothing_spec_fails(tmp_path):
+    # A typed exact spec with no target, and a json spec whose typo hid behind nothing:, used to
+    # report "test.yaml loads".
+    for name, body, why in (
+            ("typed", "exact: {version: 1}\nassert:\n  data:\n"
+                      "    - {target_db: postgres-target, match: g.csv, exact: true}\n", "needs ['target']"),
+            ("nothing", "assert:\n  json:\n    - {target: t, db: spanner-google, key: id, column: c, "
+                        "match: g.json, unorderd: [a], nothing: {window: 5s, where: {id: 1}}}\n",
+             "unknown key(s) ['nothing', 'unorderd']")):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "g.csv").write_text("id\n1\n")
+        (d / "test.yaml").write_text(f"name: {name}\ntql: app.tql\n{body}")
+        c = one_fail(doctor.check_manifests([d / "test.yaml"]))
+        assert c.subject == f"case {name}" and c.code == CONFIG
+        assert why in c.message
+
+
 def test_case_manifests_load_with_their_own_tiers_loader(project):
     # review D1: an integration or perf case has no `tql:`, so the live loader failed it
     from striim_test import project_io
@@ -544,6 +590,43 @@ def test_a_case_outside_every_case_root_is_not_checked(project, tmp_path):
     c, = doctor.check_manifests([d / "test.yaml"], doctor.case_tiers(project_io.load(project)))
     assert c.status == doctor.WARN and c.subject == "case stray"
     assert c.message.startswith("not checked: outside every case root (")
+
+
+def test_a_set_only_match_loads_with_a_warning(tmp_path):
+    # A plain match: compares distinct sets, so a duplicated row passes it; the load warns and
+    # doctor shows the warning beside the ok line rather than leaving it in a pytest summary.
+    d = tmp_path / "setonly"
+    d.mkdir()
+    (d / "test.yaml").write_text("name: s\ntql: app.tql\nassert:\n  data:\n"
+                                 "    - {target: s.t, match: expected/rows.csv}\n")
+    checks = doctor.check_manifests([d / "test.yaml"])
+    assert [c.status for c in checks] == [doctor.OK_, doctor.WARN], [c.line() for c in checks]
+    assert checks[1].subject == "case setonly"
+    assert checks[1].message.startswith("assert.data[0] ")
+    assert "distinct" in checks[1].message and str(d) not in checks[1].message
+
+
+def test_a_deprecated_manifest_loads_with_a_warning(tmp_path):
+    # A bare expect_halt: true loads, deprecated; doctor shows the deprecation beside the ok line.
+    d = tmp_path / "bare"
+    d.mkdir()
+    (d / "test.yaml").write_text("name: b\ntql: app.tql\nexpect_halt: true\n")
+    checks = doctor.check_manifests([d / "test.yaml"])
+    assert [c.status for c in checks] == [doctor.OK_, doctor.WARN], [c.line() for c in checks]
+    assert checks[1].subject == "case bare"
+    assert "expect_halt_contains" in checks[1].message and str(d) not in checks[1].message
+
+
+def test_a_non_finite_stable_seconds_fails_the_case(tmp_path):
+    # `.inf` would hold the window open forever and `.nan` would skip it; neither is OK.
+    for value in (".inf", ".nan"):
+        d = tmp_path / ("win" + value.strip("."))
+        d.mkdir()
+        (d / "test.yaml").write_text("name: s\ntql: app.tql\nassert:\n  data:\n"
+                                     f"    - {{target: s.t, rows: 1, stable_seconds: {value}}}\n")
+        checks = doctor.check_manifests([d / "test.yaml"])
+        assert [c.status for c in checks] == [doctor.FAIL], [c.line() for c in checks]
+        assert "stable_seconds" in checks[0].message
 
 
 def test_case_manifest_checks_exact_and_lifecycle(tmp_path):
@@ -682,9 +765,11 @@ def test_opt_in_service_warns_until_opted_in(tmp_path, monkeypatch):
     for opted in ({"SLT_EMULATORS": "1"}, {"SLT_EMU": "1"}):
         c, = services({"emu": ["s1"]}, opted)
         assert c.line() == "[ ok ] service emu: Docker (slt-emu) at localhost:9010"
-    for off in ({"SLT_EMULATORS": "0"}, {"SLT_EMU": "false"}):     # set, but off: still opt-in
+    for off in ({"SLT_EMULATORS": "0"}, {"SLT_EMU": "0"}):         # set, but off: still opt-in
         c, = services({"emu": ["s1"]}, off)
         assert c.line().startswith("[warn] service emu: opt-in:")
+    c, = services({"emu": ["s1"]}, {"SLT_EMU": "false"})            # neither 1 nor 0: refused
+    assert c.status == doctor.FAIL and "SLT_EMU='false'" in c.line()
 
 
 def test_absent_directory_mount_is_a_warning_and_a_file_like_one_a_failure(tmp_path, monkeypatch):
@@ -945,7 +1030,7 @@ def test_doctor_command_names_each_problem(clone, trap, elsewhere):
         "SLT_INFRA_OWNERSHIP=shared (with SLT_KEEP_SERVICES=1) to reuse a kept stack, or "
         "SLT_INFRA_OWNERSHIP=exclusive for a stack this run owns",
         "[ ok ] ledgers: no leftover ownership ledgers",
-        "[ ok ] lock dir: /tmp/slt-locks is writable",
+        f"[ ok ] lock dir: {os.environ['SLT_LOCK_DIR']} is writable",  # the run's own (tests/conftest.py)
         "[warn] release: STRIIM_HOME is unset, so the run assumes Striim 5.4.2; export "
         "STRIIM_HOME=<the Striim install to test>",
         f"[FAIL] striim: STRIIM_URL='striim.example.com:9080' has no scheme; write it as "
@@ -991,7 +1076,7 @@ def test_doctor_command_clean(clone, elsewhere, tmp_path):
         f"for direct pytest); SLT_KEEP_SERVICES=1 (set in {clone / '.env'}; striim-test only, export for "
         f"direct pytest)",
         "[ ok ] ledgers: no leftover ownership ledgers",
-        "[ ok ] lock dir: /tmp/slt-locks is writable",
+        f"[ ok ] lock dir: {os.environ['SLT_LOCK_DIR']} is writable",  # the run's own (tests/conftest.py)
         "[warn] release: STRIIM_HOME is unset, so the run assumes Striim 5.4.2; export "
         "STRIIM_HOME=<the Striim install to test>",
         f"[ ok ] striim: {url} authenticated as 'admin'",
@@ -1070,8 +1155,52 @@ def test_a_dotenv_tryout_setting_reaches_the_tier_child(proj):
         "both:/j/Platform-1.0.0-SNAPSHOT.jar"
 
 
+def test_a_dotenv_shared_provision_setting_reaches_the_tier_child(proj):
+    # A lane writes SLT_SHARED_PROVISION=0 into its .env; the engines read it from their environment.
+    from striim_test import dispatch
+    (proj / ".env").write_text("SLT_SHARED_PROVISION=0\n")
+    assert dispatch.service_env({"SLT_PROJECT_ROOT": str(proj)})["SLT_SHARED_PROVISION"] == "0"
+
+
 def test_doctor_runs_the_tryout_check(proj):
     checks = doctor.run_checks({"SLT_PROJECT_ROOT": str(proj), "STRIIM_URL": "http://s:9080",
                                 "SLT_STRIIM_TRYOUT_JARS": "Platform.jar"}, REPO, probe=AUTH_OK)
     (bad,) = [c for c in checks if c.subject == "tryout"]
     assert bad.status == "FAIL" and doctor.exit_code(checks) == CONFIG
+
+
+# --- switches -------------------------------------------------------------------------------
+
+def test_switches_set_to_1_or_0_pass(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    assert doctor.check_switches({"SLT_PROJECT_ROOT": str(proj), "SLT_RUN_DISABLED": "0",
+                                  "SLT_KEEP_RESOURCES": "1"}) == []
+
+
+def test_a_switch_set_to_anything_else_is_a_settings_mistake(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".env").write_text("SLT_KEEP_SERVICES=yes\n")
+    checks = doctor.check_switches({"SLT_PROJECT_ROOT": str(proj), "SLT_RUN_DISABLED": "true"})
+    assert [c.code for c in checks] == [CONFIG, CONFIG]
+    text = " ".join(c.line() for c in checks)
+    assert "SLT_RUN_DISABLED='true'" in text and "SLT_KEEP_SERVICES='yes'" in text
+
+
+def test_a_declared_opt_in_gate_is_checked_with_the_switches(tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "svc" / "myemu").mkdir(parents=True)
+    (proj / "svc" / "myemu" / "service.yaml").write_text("name: myemu\nopt_in_env: SLT_MY_EMULATOR\n")
+    (proj / ".env").write_text("SLT_MY_EMULATOR=true\n")
+    env = {"SLT_PROJECT_ROOT": str(proj), "SLT_SERVICES_DIR": str(proj / "svc")}
+    checks = doctor.check_switches(env)
+    assert [c.code for c in checks] == [CONFIG]
+    assert "SLT_MY_EMULATOR='true'" in checks[0].line()
+    (proj / ".env").write_text("SLT_MY_EMULATOR=1\n")
+    assert doctor.check_switches(env) == []
+
+
+def test_a_bad_switch_reads_as_off_in_the_checks_that_depend_on_it():
+    assert doctor._switch("SLT_ENABLE_NODE_FAULTS", {"SLT_ENABLE_NODE_FAULTS": "true"}) is False
+    assert doctor._switch("SLT_ENABLE_NODE_FAULTS", {"SLT_ENABLE_NODE_FAULTS": "1"}) is True

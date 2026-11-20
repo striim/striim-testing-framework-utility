@@ -378,6 +378,9 @@ def resolve_service(infra, svc, env, started, resolve_fn, progress=None):
         return _real.resolve_service(infra, svc, env, started, resolve_fn, progress=progress)
     if SC.get("service_fail"):
         raise RuntimeError("service setup failed: slt-postgres exited before accepting connections")
+    if SC.get("docker_absent"):                          # no Docker daemon to start the service in
+        from livetest.services import DockerUnavailable
+        raise DockerUnavailable("Cannot connect to the Docker daemon at unix:///nonexistent")
     for rel in SC.get("rewrite_on_resolve", []):         # A case file changed after the input snapshot
         Path(rel).write_text("id\n9\n")
     started.add(f"slt-{svc}")
@@ -385,7 +388,8 @@ def resolve_service(infra, svc, env, started, resolve_fn, progress=None):
         infra.services.append({"name": svc, "container": f"slt-{svc}", "status": "reused"})
     return SimpleNamespace(name=svc, mode="live" if svc in SC.get("live_services", ()) else "docker", started=True, base={
         "host": "localhost", "port": 5432, "dbname": "sltdb", "admin_user": "postgres", "admin_password": "striim",
-        "source_user": "qasource", "source_password": "striim", "target_user": "qatarget", "target_password": "striim"})
+        "source_user": "qasource", "source_password": "striim", "target_user": "qatarget", "target_password": "striim",
+        **SC.get("base_extra", {})})
 
 
 def deploy(client, tql, ns, name):
@@ -405,7 +409,7 @@ def deploy(client, tql, ns, name):
         log("delivered", table=table.replace("<TID>", TID), ids=ids)
 
 
-def read_files(ctx, path, run=None):
+def read_files(ctx, path, run=None, read_timeout=None):
     return "".join(v for k, v in sorted(FILES.items()) if k.startswith(path))
 
 
@@ -561,6 +565,12 @@ elif SC.get("op_build"):                                   # the module build fa
     def _failing_build(m, release, report=None):
         raise _build_error(_build_message)
     P.build_modules = _failing_build
+if SC.get("service_unavailable"):                          # a service's prerequisites are missing here
+    P._prestart.prepare_selected = lambda defn, env, mode="docker", **kw: SC["service_unavailable"]
+if SC.get("service_jar_missing"):                          # a service's driver jar is missing here
+    _jar_missing = SC["service_jar_missing"]               # one reason for every service, or {service: reason}
+    P._sp.missing_service_jar = lambda service, mode, run=None: (
+        _jar_missing.get(service) if isinstance(_jar_missing, dict) else _jar_missing)
 if SC.get("op_poison"):
     P._node_log_tail = lambda ctx: "java.util.zip.ZipException: invalid LOC header (bad signature)"
     P._node_log_since = lambda ctx, marks, run=None: "java.util.zip.ZipException: invalid LOC header (bad signature)"
@@ -592,10 +602,45 @@ if SC.get("op_poison"):
 
     P.opregistry.in_use = lambda **kw: traced_lock("shared", _real_in_use(**kw))
     P.opregistry.exclusive_reload = lambda: traced_lock("exclusive", _real_exclusive_reload())
-P._sp.cluster_down = lambda *a, **k: log("cluster_down")
+def cluster_down(*a, **k):
+    log("cluster_down")
+    if SC.get("cluster_down_fail"):
+        raise RuntimeError("docker compose down failed: the node container is restarting")
+
+
+P._sp.cluster_down = cluster_down
+if SC.get("unowned_teardown_fail"):                        # a block-less case's best-effort teardown raises
+    def _failing_teardown_unowned(*a, **k):
+        log("teardown_unowned")
+        raise RuntimeError("DROP TABLE refused: permission denied for schema qatarget")
+    P.teardown_unowned = _failing_teardown_unowned
+if SC.get("tx_close_fail"):                                # a transactions: pool whose close() raises
+    import livetest.transactions as _T
+
+    class _FailingPool:
+        def __init__(self, *a, **k):
+            log("tx_pool")
+
+        def run_phase(self, steps, when):
+            log("tx_phase", when=when)
+
+        def close(self):
+            log("tx_close")
+            raise RuntimeError("transaction session s1 could not be closed: connection reset")
+    _T.Pool = _FailingPool
 I.resolve_service = resolve_service
 L._pg_connect = lambda **kw: FakeConn(kw["user"])
 L.status_bounded = lambda client, app, remaining: client.current_status(app)
+if not SC.get("hang_probe"):
+    # A fake statement returns at once, but a lifecycle wait's last pass before its deadline can
+    # hand the probe a few hundredths of a second; on a loaded host the probe thread starts later
+    # than that, the statement "completes after the deadline", and the outcome is cancel-failed
+    # instead of deadline. Only a hanging probe needs the real budget: every other one gets at
+    # least PROBE_FLOOR_S. The deadline itself is unchanged, so the outcome still is.
+    PROBE_FLOOR_S = 10.0
+    _real_probe_call = L.PgProbe._call
+    L.PgProbe._call = lambda self, sql, params, remaining, fetch, read=None: _real_probe_call(
+        self, sql, params, max(float(remaining), PROBE_FLOOR_S), fetch, read)
 O._docker = docker
 O._nodes = lambda: ("slt-striim",)
 '''

@@ -282,6 +282,10 @@ def _reset_once(manifest, tokens: dict, gcs_prune_prefix: str | None = None) -> 
         dbroutes_mod.run_sql_file(spec.db, spec.path, tokens)
     for spec in manifest.seed:
         dbroutes_mod.run_sql_file(spec.db, spec.path, tokens)
+    # A Bigtable table is (re)created on each reset: setup_bigtable drops it first, then seeds it.
+    for spec in manifest.bigtable_setup:
+        dbroutes_mod.setup_bigtable(tokens_mod.render(spec.table, tokens), spec.families, gc_rules=spec.gc_rules,
+                                    seed=spec.seed, route=spec.db, tokens=tokens)
 
     return tokens
 
@@ -568,7 +572,7 @@ def jvm_args(jvm) -> list[str]:
 
 def launch_and_measure(*, java_bin: str, harness_jar: Path, op_jar: Path, request: dict,
                         request_file: Path, result_file: Path, cwd: Path, jvm, timeout: int,
-                        sample: bool = True) -> dict:
+                        sample: bool = True, env: dict | None = None) -> dict:
     """Launches `java <jvm args> -cp harness_jar:op_jar
     com.striim.testing.inttest.PerformanceProcessor request_file` (PERF_SPEC.md §14
     "Operator subprocess"), `cwd` = `manifest.dir` (the perf `test.yaml`'s own
@@ -599,7 +603,7 @@ def launch_and_measure(*, java_bin: str, harness_jar: Path, op_jar: Path, reques
     classpath = os.pathsep.join([str(harness_jar), str(op_jar), *_extra_jars()])
     argv = [java_bin, *jvm_args(jvm), "-cp", classpath, "com.striim.testing.inttest.PerformanceProcessor", str(request_file)]
 
-    proc = subprocess.Popen(argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.Popen(argv, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 
     samples: list = []
     stop = threading.Event()
@@ -743,9 +747,42 @@ def _read_result(text: str) -> dict:
     return result
 
 
+def _target_evidence_gap(perf_result: dict, measured_input: int) -> str | None:
+    """Why a target iteration's result shows no write, or None. "Accepted and flushed without
+    throwing" is all the other checks prove for a writer: one whose table mapping matched
+    nothing, or that dropped every event, reported a throughput and passed.
+
+    PROCESSED is cumulative, so the window's evidence is `measuredProcessed`, its rise from a read
+    after the warmup's flush to one after the window's; `publishedProcessed` counts warmup writes
+    too. The acknowledgment count is the evidence only for a writer that publishes no PROCESSED."""
+    # Missing keys fail rather than default, like `perReplayOutputEventsStable`: a harness that
+    # predates the fields must not pass every target iteration unchecked.
+    for key in ("measuredAckedEvents", "publishedProcessed", "measuredProcessed"):
+        if key not in perf_result:
+            return f"result is missing required field {key!r} for a target case"
+    acked = perf_result["measuredAckedEvents"]
+    processed = perf_result["publishedProcessed"]
+    rise = perf_result["measuredProcessed"]
+    if acked is not None and acked <= 0:
+        return (f"the writer acknowledged none of the {measured_input} events of the measured "
+                f"window: nothing shows that anything was written")
+    if rise is not None and rise <= 0:
+        return (f"the writer's PROCESSED rose by {rise} across a measured window of "
+                f"{measured_input} events (published {processed} after it): nothing shows that "
+                f"the window wrote anything")
+    if rise is None and processed is not None:
+        return (f"the writer published PROCESSED {processed} but the result has no "
+                f"measuredProcessed for the window: its rise across the window is unknown")
+    if acked is None and rise is None:
+        return ("no evidence that the writer wrote anything: it does not acknowledge events (no "
+                "Acknowledgeable marker) and publishes no PROCESSED count")
+    return None
+
+
 def check_correctness(perf_result: dict, events_in_file: int, run_size: int, correctness_mode: str,
                        sample_indices: list | None, expected_events: list | None,
-                       returncode: int = 0, stderr: str = "") -> CorrectnessOutcome:
+                       returncode: int = 0, stderr: str = "", *,
+                       target: bool = False) -> CorrectnessOutcome:
     """The §6 mandatory checks (every mode, every measured iteration) plus the
     mode-specific record comparison. `perf_result` is the Java driver's parsed
     `PerfResult` JSON for this iteration. `returncode` is the operator subprocess's
@@ -757,7 +794,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
     `mode`/`records_compared` on the returned outcome are for reporting:
     `records_compared` is `len(sample_indices)` for 'sampled', `len(expected_events)`
     for 'full', `0` for 'disabled', and `None` when the run failed before a
-    comparison was attempted."""
+    comparison was attempted.
+
+    `target` (a `target:` case) adds the writer-evidence check: a writer emits nothing, so a
+    non-empty window must show that it wrote something -- acknowledged events, and a published
+    PROCESSED that rose across the window -- or the iteration fails."""
     if returncode != 0:
         # ⚠ WITH THE SUBPROCESS'S OWN LAST WORDS. This used to report the exit code ALONE, so a
         # JVM that failed to start, threw in init, or could not reach the database all looked
@@ -768,6 +809,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
         # the FIRST line and frames after it, so a tail slice shows twelve `at ...` lines and hides
         # the one sentence that says what went wrong. Learned by printing the tail first.
         detail = "\n    ".join(lines[:15]) if lines else "(the subprocess wrote nothing to stderr)"
+        # The CAUSE, too: a wrapper such as "X.receive threw" puts the real exception on a `Caused by:` line
+        # after the frames, past the head. Without it the message names the wrapper and not the failure.
+        causes = [ln.strip() for ln in lines if ln.strip().startswith("Caused by:")]
+        if causes:
+            detail += "\n    " + "\n    ".join(causes[:5])
         return CorrectnessOutcome(
             False, f"operator subprocess exited {returncode}:\n    {detail}",
             mode=correctness_mode)
@@ -793,6 +839,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
         idx = perf_result.get("firstUnstableReplayIndex")
         return CorrectnessOutcome(
             False, f"emission-count instability first detected at replay index {idx}", mode=correctness_mode)
+
+    if target and expected_measured_input > 0:
+        missing = _target_evidence_gap(perf_result, expected_measured_input)
+        if missing:
+            return CorrectnessOutcome(False, missing, mode=correctness_mode)
 
     if correctness_mode == "disabled":
         return CorrectnessOutcome(True, None, mode=correctness_mode, records_compared=0)
@@ -957,10 +1008,17 @@ def run_measured_iteration(
             target=manifest.target,
         )
 
+        # A case that requires bigtable reaches the emulator only through BIGTABLE_EMULATOR_HOST, which the
+        # regression tier sets for its driver JVM (plugin._export_bigtable_emulator). The perf JVM is a
+        # separate process, so it gets the same variable here, from the run's own tokens.
+        proc_env = None
+        if "bigtable" in (manifest.requires or []):
+            proc_env = dict(os.environ)
+            proc_env["BIGTABLE_EMULATOR_HOST"] = f"{updated_tokens['BIGTABLE_HOST']}:{updated_tokens['BIGTABLE_GRPC_PORT']}"
         launch = launch_and_measure(
             java_bin=java_bin, harness_jar=harness_jar, op_jar=op_jar, request=request,
             request_file=request_file, result_file=result_file, cwd=manifest.dir,
-            jvm=performance.jvm, timeout=performance.timeout, sample=capture_metrics,
+            jvm=performance.jvm, timeout=performance.timeout, sample=capture_metrics, env=proc_env,
         )
     finally:
         # launch_and_measure has already parsed result_file into memory (launch["result"])
@@ -1018,7 +1076,7 @@ def run_measured_iteration(
         correctness = check_correctness(
             perf_result, preflight_result.events_in_file, run_size.value, performance.correctness.mode,
             preflight_result.sample_indices, preflight_result.expected_events, launch["returncode"],
-            launch.get("stderr", ""),
+            launch.get("stderr", ""), target=manifest.target is not None,
         )
 
         duration_seconds = (
