@@ -59,11 +59,105 @@ def _clear_popups(page) -> None:
         page.wait_for_timeout(250)
 
 
+def _collapse_navbar(page) -> None:
+    """Collapse the fixed left navbar and component palette drawer so they do not cover canvas nodes."""
+    if page.locator("[data-testid=striim-navbar-expanded]:visible").count():
+        toggle = page.locator("[data-testid=toggle-navbar]:visible")
+        if toggle.count():
+            toggle.first.click(timeout=5000)
+            page.wait_for_timeout(400)
+    # The drawer's close button carries data-testid=close-subcategory and no title (5.4.2 and
+    # 5.4.4.0 Flow Designer, leftSidebar CategoryContent); a release without the drawer has none.
+    panel_close = page.locator("[data-test-id=left-panel] [data-testid=close-subcategory]:visible")
+    if panel_close.count():
+        panel_close.first.click(timeout=5000)
+        page.wait_for_timeout(400)
+
+
+def _canvas_bounds(page) -> tuple[float, float, float, float] | None:
+    """Unobstructed (min_x, min_y, max_x, max_y) viewport bounds for clicking a canvas node."""
+    viewport = page.viewport_size
+    if not viewport:
+        return None
+    vw, vh = float(viewport["width"]), float(viewport["height"])
+    left = 0.0
+    for selector in ("#striim-navbar:visible", "[data-test-id=left-panel]:visible"):
+        panel = page.locator(selector)
+        if panel.count():
+            panel_box = panel.first.bounding_box(timeout=5000)
+            if panel_box:
+                left = max(left, panel_box["x"] + panel_box["width"])
+    min_x, max_x = left + 24.0, vw - 24.0
+    min_y, max_y = 80.0, vh - 80.0
+    if max_x <= min_x:
+        min_x, max_x = left, vw
+    if max_y <= min_y:
+        min_y, max_y = 0.0, vh
+    return min_x, min_y, max_x, max_y
+
+
+def _in_bounds(box: dict, bounds: tuple[float, float, float, float]) -> bool:
+    min_x, min_y, max_x, max_y = bounds
+    return (box["x"] >= min_x and box["x"] + box["width"] <= max_x
+            and box["y"] >= min_y and box["y"] + box["height"] <= max_y)
+
+
+def _on_screen(box: dict | None, viewport: dict) -> bool:
+    """True when any part of `box` lies inside the viewport, so a click can reach it."""
+    return bool(box) and (box["x"] + box["width"] > 0 and box["x"] < viewport["width"]
+                          and box["y"] + box["height"] > 0 and box["y"] < viewport["height"])
+
+
+def _focus_node(page, selector: str, name: str | None = None) -> bool:
+    """Pan the canvas so `selector` sits inside the unobstructed viewport; return True if panned.
+    Raises UiFormError naming the node when panning and the scroll fallback both leave it entirely
+    off screen, rather than letting the click time out without saying why."""
+    bounds = _canvas_bounds(page)
+    if bounds is None:
+        return False
+    node = page.locator(selector).first
+    box = node.bounding_box(timeout=5000)
+    if not box or _in_bounds(box, bounds):
+        return False
+    min_x, min_y, max_x, max_y = bounds
+    target_x, target_y = (min_x + max_x) / 2, (min_y + max_y) / 2
+    panned = False
+    try:
+        for _ in range(12):
+            cx = box["x"] + box["width"] / 2
+            cy = box["y"] + box["height"] / 2
+            dx = max(-2400.0, min(2400.0, cx - target_x))
+            dy = max(-2400.0, min(2400.0, cy - target_y))
+            page.mouse.move(target_x, target_y)
+            page.mouse.wheel(dx, dy)
+            panned = True
+            page.wait_for_timeout(100)
+            next_box = node.bounding_box(timeout=5000)
+            if not next_box or _in_bounds(next_box, bounds):
+                return True
+            if abs(next_box["x"] - box["x"]) < 1.0 and abs(next_box["y"] - box["y"]) < 1.0:
+                node.scroll_into_view_if_needed(timeout=5000)
+                box = node.bounding_box(timeout=5000)
+                break
+            box = next_box
+    finally:
+        if panned:
+            page.mouse.move(0, 0)
+    if box and not _on_screen(box, page.viewport_size):
+        raise UiFormError(f"{name or selector}: could not be brought into view "
+                          f"(node box {box}, clickable area {bounds})")
+    return panned
+
+
 def _save_one(page, frames: list, name: str) -> tuple[dict, str]:
     """Save component `name`; the UPDATE it sent and the property touched to enable Save."""
     _close_editor(page)
+    _collapse_navbar(page)
     _clear_popups(page)
-    page.click(f"[data-test-id=node_container_{name}]")
+    selector = f"[data-test-id=node_container_{name}]"
+    if _focus_node(page, selector, name):
+        _clear_popups(page)
+    page.click(selector)
     page.wait_for_selector("[data-test-id=submit-btn]", timeout=TIMEOUT_MS)
     page.wait_for_timeout(1500)
     for _ in range(10):
