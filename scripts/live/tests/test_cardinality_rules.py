@@ -139,6 +139,14 @@ def test_at_least_once_is_refused_where_it_would_mean_nothing_or_contradict(tmp_
         load_manifest(_case(tmp_path, {"data": [spec]}))
 
 
+def test_a_typed_exact_spec_refuses_at_least_once_at_load(tmp_path):
+    # The typed exact: path never runs parse_data_specs; canon refuses the combination itself.
+    path = _case(tmp_path, {"data": [_match(at_least_once=True, exact={})]}, exact={"version": 1},
+                 recover={"mode": "kill"})
+    with pytest.raises(ManifestError, match="at_least_once"):
+        load_manifest(path)
+
+
 @pytest.mark.parametrize("extra,named", [
     ({"exact": True}, "'exact'"),
     ({"ordered": True, "project": "kafka_record", "keys": ["value.id"], "target_db": "kafka"}, "'ordered'"),
