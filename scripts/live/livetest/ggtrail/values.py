@@ -72,7 +72,7 @@ def generate_value(dtype: str, rng: random.Random):
         return str(uuid.UUID(bytes=rng.randbytes(16), version=4))
     if base == "date":
         return _moment(rng).strftime("%Y-%m-%d")
-    if base == "timestamp":
+    if base in ("timestamp", "datetime"):
         return _moment(rng).strftime("%Y-%m-%d %H:%M:%S")
     raise ValueError(
         f"no value generator for logical type {dtype!r}"
@@ -134,7 +134,7 @@ def _perturb(dtype: str, old):
     if base == "date":
         d = datetime.datetime.strptime(old, "%Y-%m-%d") if old else _EPOCH
         return (d + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-    if base == "timestamp":
+    if base in ("timestamp", "datetime"):
         d = datetime.datetime.strptime(old, "%Y-%m-%d %H:%M:%S") if old else _EPOCH
         return (d + datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
     raise ValueError(f"no perturbation for logical type {dtype!r}")  # pragma: no cover
