@@ -616,3 +616,35 @@ def test_concurrent_route_check_reports_an_invalid_family(tmp_path, family_servi
     conc = "    concurrent:\n      - {db: postgres-source, file: loop.sql}\n"
     with pytest.raises(ManifestError, match="'family' must be a non-empty string"):
         _load(tmp_path, "  - type: stop_start_cycle\n" + conc, base=base)
+
+
+def test_signal_pause_parses(tmp_path):
+    m = _load(tmp_path, "  - type: service_outage\n    service: postgres\n    signal: PAUSE\n")
+    assert m.action_specs[0]["signal"] == "PAUSE"
+
+
+def test_cycle_pause_unpauses_after_the_wait():
+    run = FakeRun(inspect=("true", "healthy|true"))
+    outage.cycle("c1", "PAUSE", 0.0, 0.0, wait=lambda _s: None, run=run)
+    verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
+    assert verbs == ["pause", "unpause"]
+
+
+def test_cycle_pause_failure_after_pausing_unpauses_and_keeps_the_error():
+    run = FakeRun(inspect=("true", "true", "healthy|true"))
+
+    def wait(_s):
+        raise RuntimeError("wait broke")
+    with pytest.raises(RuntimeError, match="wait broke"):
+        outage.cycle("c1", "PAUSE", 5.0, 0.0, wait=wait, run=run)
+    verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
+    assert verbs == ["pause", "unpause"]
+
+
+def test_cycle_pause_that_failed_leaves_a_running_container_alone():
+    # docker pause exits non-zero; the container is neither paused nor stopped: no unpause, no start.
+    run = FakeRun(inspect=("false", "true"), returncode=1)
+    with pytest.raises(OutageError):
+        outage.cycle("c1", "PAUSE", 5.0, 0.0, wait=lambda _s: None, run=run)
+    verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
+    assert verbs == ["pause"]

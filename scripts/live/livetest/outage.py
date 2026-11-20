@@ -260,7 +260,7 @@ def restore(container: str, run=None, ready_timeout: float = 120.0, poll: float 
             time.sleep(5.0)
             return
         if time.monotonic() >= deadline:
-            raise OutageError(f"{container} not ready {ready_timeout:.0f}s after docker start "
+            raise OutageError(f"{container} not ready {ready_timeout:.0f}s after docker {verb} "
                               f"(last status {last})")
         time.sleep(poll)
 
@@ -290,9 +290,12 @@ def cycle(container: str, signal: str, down_for: float, ready_timeout: float, wa
     except BaseException as e:
         if not restoring:
             try:
-                restore(container, run=run, ready_timeout=ready_timeout, report=report,
-                        progress=progress,
-                        paused=signal == "PAUSE")
+                # docker start is idempotent; docker unpause is not. After a PAUSE that failed,
+                # unpause only a paused container, start a stopped one, and leave a running one.
+                paused = signal == "PAUSE" and _paused(container, run)
+                if signal != "PAUSE" or paused or not _running(container, run):
+                    restore(container, run=run, ready_timeout=ready_timeout, report=report,
+                            progress=progress, paused=paused)
             except Exception as e2:
                 msg = f"service_outage: restore after the failure also failed: {e2}"
                 _say(report, msg)

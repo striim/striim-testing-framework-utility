@@ -566,7 +566,7 @@ assert:
   ([internals/PERF_SPEC.md](internals/PERF_SPEC.md) §9, Database reset). The table is dropped at teardown, unless the case fails or
   `--slt-keep-resources`/`INT_KEEP_RESOURCES` keeps it. Needs `requires: [bigtable]`. A case with
   `variants:` refuses it for now: a variant's DDL goes through the variant's own route, and a
-  Bigtable table is not yet part of that. The perf tier does not accept `setup:`.
+  Bigtable table is not yet part of that.
 - **`match` is a list of rows**, each a list of column values, in the shape `dbroutes.query_rows`
   returns. Values are normalised losslessly: `Decimal` → string (never a float — a writer that
   refuses a value not fitting a column's scale is asserting about exact digits), temporals → ISO
