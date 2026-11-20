@@ -69,6 +69,9 @@ class Page:
         self.calls = []
         self.mouse = SimpleNamespace(move=lambda x, y: None)
         self.keyboard = SimpleNamespace(press=lambda key: None)
+        # As a Playwright Page opened without a viewport: _focus_node then has no canvas to pan
+        # and leaves the click as it was (#130 reads page.viewport_size before panning).
+        self.viewport_size = None
 
     def locator(self, selector):
         if selector == FIELDS:
