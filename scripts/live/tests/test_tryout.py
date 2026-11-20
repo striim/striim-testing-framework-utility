@@ -441,7 +441,7 @@ def test_a_failed_verification_is_reported_and_records_nothing(tmp_path, monkeyp
 
 def test_running_version_keeps_the_tryout_tag_for_the_redeploy_decision(monkeypatch):
     from livetest import plugin
-    monkeypatch.setattr(plugin.subprocess, "run", lambda *a, **k: _ns(stdout=f"slt-striim:{V}-tryout-0123456789ab\n"))
+    monkeypatch.setattr(plugin.dockercmd, "run", lambda *a, **k: _ns(stdout=f"slt-striim:{V}-tryout-0123456789ab\n"))
     assert plugin._running_striim_version() == f"{V}-tryout-0123456789ab"
 
 

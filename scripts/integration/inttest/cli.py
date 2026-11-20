@@ -10,11 +10,13 @@ service. Without it `start postgres` hands you an empty database.
 """
 
 import argparse
+import os
+import sys
 
 from filelock import FileLock
 
-from inttest.services import (compose_up, compose_down, is_connection_only, run_pre_up,
-                              surviving_containers, unavailable)
+from inttest.services import (StackPrefixError, compose_up, compose_down, is_connection_only, run_pre_up,
+                              stack_prefix, surviving_containers, unavailable)
 
 # Bring-up order for the services we have an opinion about (postgres first, then oracle,
 # then spanner, then gcs -- gcs has no dependency on the others, so it goes last).
@@ -46,10 +48,20 @@ def _services() -> list:
 
 
 def _lock_file():
-    # The compose lock lives in coordination state (SLT_STATE_DIR, else scripts/integration),
-    # resolved per call; same filename as before.
-    from inttest import resources as _resources
-    return _resources.state_root() / ".int-compose.lock"
+    # The compose lock is machine-wide (SLT_LOCK_DIR), resolved per call, and scoped by
+    # INT_STACK_PREFIX exactly as a session's is (plugin._compose_lock_path; main() takes the .env
+    # layers into the environment as a session does), so `start`/`stop` serialise with a run on the
+    # same stack from any checkout.
+    from livetest import stack
+    from inttest import services as _services
+    return stack.host_lock_path(_services.state_name(".int-compose.lock"))
+
+
+def _compose_lock() -> FileLock:
+    # In the machine-wide lock dir, so with its file mode: another user's `start`, `stop` or session on this
+    # stack opens the same file.
+    from livetest import lockdir
+    return FileLock(str(_lock_file()), mode=lockdir.file_mode())
 
 
 def _resolve_services(targets: list) -> list:
@@ -91,7 +103,7 @@ def _postgres_setup() -> None:
 
 def cmd_up(targets: list) -> int:
     """Bring up the resolved services (idempotent)."""
-    with FileLock(str(_lock_file())):
+    with _compose_lock():
         services = _resolve_services(targets)
         for service in services:
             try:
@@ -105,7 +117,7 @@ def cmd_up(targets: list) -> int:
                         raise RuntimeError(f"{service}: {why}")
                     print(f"{service}: {why} -- skipping")
                     continue
-                compose_up(service, FileLock(str(_lock_file())))
+                compose_up(service, _compose_lock())
             except Exception as e:
                 print(f"ERROR: Failed to start {service}: {e}")
                 return 1
@@ -127,10 +139,10 @@ def cmd_down(targets: list) -> int:
     running because gcs or spanner refused. Every failure is reported and the command still
     exits non-zero (mirrors livetest.preflight._take_down_services)."""
     failed = []
-    with FileLock(str(_lock_file())):
+    with _compose_lock():
         for service in reversed(_resolve_services(targets)):
             try:
-                compose_down(service, FileLock(str(_lock_file())))
+                compose_down(service, _compose_lock())
                 # `down` is project-scoped, so containers of the same name owned by a
                 # DIFFERENT project survive it and it still exits 0. Real case: the projects
                 # were renamed (`gcs` -> `int-gcs`), so anything started before that rename is
@@ -149,6 +161,17 @@ def cmd_down(targets: list) -> int:
 
 
 def main() -> int:
+    # The settings a session runs with: plugin.pytest_configure puts the .env layers into its environment
+    # before anything reads them. Without the same here, an INT_STACK_PREFIX set only in .env named the
+    # compose containers (compose_up resolves .env) but not the compose lock (services.state_name reads
+    # the environment), so `start` and a session on that stack ran `compose up` on one project at once.
+    from inttest import paths
+    os.environ.update(paths.effective_env(os.environ))
+    try:
+        stack_prefix(os.environ)               # it names every lock, state file and container
+    except StackPrefixError as e:
+        print(f"inttest.cli: {e}", file=sys.stderr)
+        return 2
     p = argparse.ArgumentParser(prog="python -m inttest.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
 

@@ -16,17 +16,17 @@ from livetest import opartifacts, plugin as _plugin
 # ---- _running_striim_version (strict: reused cluster must match the built version) --------
 
 def test_running_striim_version_parses_image_tag(monkeypatch):
-    monkeypatch.setattr(_plugin.subprocess, "run",
+    monkeypatch.setattr(_plugin.dockercmd, "run",
                         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="slt-striim:5.4.0.6C\n"))
     assert _running_striim_version() == "5.4.0.6C"
 
 def test_running_striim_version_none_when_no_tag(monkeypatch):
-    monkeypatch.setattr(_plugin.subprocess, "run",
+    monkeypatch.setattr(_plugin.dockercmd, "run",
                         lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="slt-striim\n"))
     assert _running_striim_version() is None
 
 def test_running_striim_version_none_on_docker_error(monkeypatch):
-    monkeypatch.setattr(_plugin.subprocess, "run",
+    monkeypatch.setattr(_plugin.dockercmd, "run",
                         lambda *a, **k: types.SimpleNamespace(returncode=1, stdout=""))
     assert _running_striim_version() is None
 

@@ -147,13 +147,14 @@ def test_manifest_without_state_dir_keeps_the_integration_state_default(clone, p
     (consumer / "cases" / "integration" / "conftest.py").write_text(_INT_DUMP)
     dump = tmp_path / "env.json"
     r = run_cli(["list", "--tier", "integration", "--targets", project], cwd=elsewhere,
-                env=_env(clone, XTR_ENV_DUMP=dump))
+                env=_env(clone, XTR_ENV_DUMP=dump, SLT_LOCK_DIR=tmp_path / "locks"))
     assert r.rc == 0, r.stderr
     seen = json.loads(dump.read_text())
     integ = clone / "scripts" / "integration"
+    # the session lock is machine-wide (SLT_LOCK_DIR), not in the state root
     assert seen == {"SLT_STATE_DIR": None, "state_root": str(integ),
                     "started": str(integ / ".int-services-up.json"),
-                    "session_lock": str(integ / ".int-session.lock")}
+                    "session_lock": str(tmp_path / "locks" / ".int-session.lock")}
     assert r.run_dir.parent == clone / "scripts" / "live" / "runs"     # the parent's run dir is unchanged
 
 

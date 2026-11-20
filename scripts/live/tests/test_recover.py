@@ -544,7 +544,9 @@ def test_restore_waits_rather_than_starting_a_self_healing_status():
     c = StubClient(statuses=["NOT_ENOUGH_SERVERS", "NOT_ENOUGH_SERVERS", "RUNNING"])
     recovery.restore(c, Ctx("docker"), "NS.App", "kill", timeout=5, poll=0.01,
                      expect_running=True) if False else None
-    c2 = StubClient(statuses=["NOT_ENOUGH_SERVERS"])
+    # The stub's await_running returns at once; the real one returns only on RUNNING, which the
+    # read after it (the settle's checked read) now has to show.
+    c2 = StubClient(statuses=["NOT_ENOUGH_SERVERS", "RUNNING"])
     recovery.restore(c2, Ctx("native"), "NS.App", "stop", timeout=5, poll=0.01)
     assert c2.started == [], "a self-healing status must not be STARTed"
 
@@ -569,3 +571,206 @@ def test_restore_starts_the_app_from_every_restartable_status(left_in):
     recovery.restore(c, Ctx("native"), "NS.App", "stop", timeout=5, poll=0.01)
     assert c.started == ["NS.App"], f"{left_in} is restartable, so it must be STARTed"
 
+
+
+# --- a STOP or QUIESCE must settle on its own stopped status ------------------------------
+# CRASH and HALT are restartable because a SIGKILLed app returns as one of them. Under `stop` or
+# `quiesce` they mean the command broke the app instead of interrupting it, and a QUIESCE whose
+# flush crashed is no longer the drain arm of the stop/quiesce pair.
+
+@pytest.mark.parametrize("mode,settled", [
+    ("stop", "DEPLOYED"), ("stop", "STOPPED"), ("stop", "CREATED"), ("quiesce", "QUIESCED")])
+def test_interrupt_returns_the_status_it_settled_on(mode, settled):
+    c = StubClient(statuses=["RUNNING", "STOPPING", settled])
+    assert recovery.interrupt(c, Ctx("native"), "NS.App", mode, verify_timeout=5, poll=0) == settled
+
+
+@pytest.mark.parametrize("mode", ["stop", "quiesce"])
+@pytest.mark.parametrize("left_in", ["CRASH", "HALT", "TERMINATED"])
+def test_a_stop_or_quiesce_that_leaves_the_app_terminal_is_not_an_interruption(mode, left_in):
+    said = []
+    c = StubClient(statuses=["STOPPING", left_in])
+    with pytest.raises(RecoveryError, match=left_in) as e:
+        recovery.interrupt(c, Ctx("native"), "NS.App", mode, report=said.append, verify_timeout=5, poll=0)
+    assert e.value.status == left_in
+    assert c.started == [] and c.awaited == []                 # nothing restarted it
+    assert not any(f"app is {left_in}" in s for s in said)    # not reported as an interruption
+
+
+@pytest.mark.parametrize("mode,left_in", [("quiesce", "DEPLOYED"), ("quiesce", "STOPPED"),
+                                          ("stop", "QUIESCED"), ("stop", "COMPLETED")])
+def test_each_mode_accepts_only_its_own_stopped_statuses(mode, left_in):
+    c = StubClient(statuses=[left_in])
+    with pytest.raises(RecoveryError, match=left_in):
+        recovery.interrupt(c, Ctx("native"), "NS.App", mode, verify_timeout=5, poll=0)
+
+
+def test_still_running_after_the_verify_timeout_carries_the_status():
+    c = StubClient(statuses=["RUNNING"])
+    with pytest.raises(RecoveryError, match="not interrupted") as e:
+        recovery.interrupt(c, Ctx("native"), "NS.App", "stop", verify_timeout=0, poll=0)
+    assert e.value.status == "RUNNING"
+
+
+def test_the_fault_record_carries_the_settled_status():
+    from livetest import progress
+    recs = []
+    progress.at_fault(None, lambda left: "RUNNING", lambda: "DEPLOYED", record=recs.append, cycle=1)
+    assert recs[0]["status"] == "passed" and recs[0]["actual"]["rows"][0]["settledStatus"] == "DEPLOYED"
+
+    def crashed():
+        raise recovery.InterruptionNotSettled("NS.App is CRASH after STOP", "CRASH")
+    recs.clear()
+    with pytest.raises(RecoveryError):
+        progress.at_fault(None, lambda left: "RUNNING", crashed, record=recs.append, cycle=1)
+    assert recs[0]["status"] == "failed" and recs[0]["actual"]["rows"][0]["settledStatus"] == "CRASH"
+
+
+# --- stop_start_cycle: one STOP per cycle, verified and recorded ---------------------------
+
+def test_stop_cycle_waits_for_the_stop_and_records_the_settled_status():
+    recs = []
+    c = StubClient(statuses=["RUNNING", "STOPPING", "DEPLOYED"])
+    assert recovery.stop_cycle(c, "NS.App", cycle=3, timeout=5, record=recs.append, poll=0) == "DEPLOYED"
+    assert c.stopped == ["NS.App"] and c.started == []
+    [r] = recs
+    assert r["type"] == "recovery" and r["status"] == "passed"
+    assert r["spec"] == {"action": "stop_start_cycle", "cycle": 3}
+    assert r["actual"]["rows"][0]["status"] == "DEPLOYED"
+
+
+@pytest.mark.parametrize("left_in,match", [("RUNNING", "not interrupted"), ("CRASH", "CRASH")])
+def test_stop_cycle_fails_and_records_a_stop_that_did_not_stop_the_app(left_in, match):
+    recs = []
+    c = StubClient(statuses=[left_in])
+    with pytest.raises(RecoveryError, match=match):
+        recovery.stop_cycle(c, "NS.App", cycle=1, timeout=0, record=recs.append, poll=0)
+    [r] = recs
+    assert r["status"] == "failed" and r["actual"]["rows"][0]["status"] == left_in
+
+
+def _utc(value):
+    from datetime import datetime, timezone
+    parsed = datetime.fromisoformat(value)
+    assert parsed.utcoffset() is not None and parsed.utcoffset().total_seconds() == 0
+    assert abs((datetime.now(timezone.utc) - parsed).total_seconds()) < 60
+    return parsed
+
+
+def test_stop_cycle_records_utc_twins_of_its_monotonic_times():
+    # The monotonic issuedAt/settledAt mean nothing outside this process; the UTC twins are what
+    # lines the cycle up with server logs and other evidence.
+    recs = []
+    c = StubClient(statuses=["RUNNING", "STOPPING", "DEPLOYED"])
+    recovery.stop_cycle(c, "NS.App", cycle=1, timeout=5, record=recs.append, poll=0)
+    row = recs[0]["actual"]["rows"][0]
+    assert isinstance(row["issuedAt"], float) and isinstance(row["settledAt"], float)
+    assert _utc(row["issuedUtc"]) <= _utc(row["settledUtc"])
+
+
+def test_a_failed_stop_cycle_records_when_it_issued_and_no_settled_time():
+    recs = []
+    c = StubClient(statuses=["CRASH"])
+    with pytest.raises(RecoveryError):
+        recovery.stop_cycle(c, "NS.App", cycle=1, timeout=0, record=recs.append, poll=0)
+    row = recs[0]["actual"]["rows"][0]
+    _utc(row["issuedUtc"])
+    assert row["settledAt"] is None and row["settledUtc"] is None
+
+
+def test_verify_timeout_is_half_the_manifest_timeout_floored_at_two_minutes():
+    assert recovery.verify_timeout(60) == 120.0
+    assert recovery.verify_timeout(600) == 300.0
+
+
+def test_the_stop_start_cycle_action_verifies_its_stop():
+    # Inverted pin: the branch used to call stop_app and start_app with no status read between.
+    import livetest
+    src = (Path(livetest.__file__).parent / "plugin.py").read_text()
+    block = src[src.index('action_spec["type"] == "stop_start_cycle"'):
+                src.index('action_spec["type"] == "drop_recreate_app"')]
+    assert "client.stop_app(app)" not in block
+    assert block.index("recovery.stop_cycle(") < block.index("client.start_app(app)")
+
+
+# --- expect_running: false verifies the app stayed stopped (it used to verify nothing) -------
+
+@pytest.mark.parametrize("status", ["RUNNING", "CRASH", "HALT", "TERMINATED", "NOT_ENOUGH_SERVERS"])
+def test_restore_expect_running_false_refuses_running_terminal_and_unsettled(status):
+    records = []
+    c = StubClient(statuses=[status])
+    with pytest.raises(RecoveryError, match=status):
+        recovery.restore(c, Ctx("native"), "NS.App", "stop", timeout=0.05, settle=0,
+                         expect_running=False, poll=0.01, record=records.append)
+    assert c.started == [] and c.awaited == []
+    assert [r["status"] for r in records] == ["failed"]
+    assert records[0]["type"] == "recovery"
+    assert records[0]["actual"]["rows"][0]["status"] == status
+
+
+def test_restore_expect_running_false_waits_out_a_transition_and_records_the_status():
+    records = []
+    c = StubClient(statuses=["STOPPING", "DEPLOYED"])
+    status = recovery.restore(c, Ctx("native"), "NS.App", "stop", timeout=30, settle=0,
+                              expect_running=False, poll=0, record=records.append)
+    assert status == "DEPLOYED" and c.started == []
+    assert [r["status"] for r in records] == ["passed"]
+    row = records[0]["actual"]["rows"][0]
+    assert row["status"] == "DEPLOYED" and row["expectRunning"] is False
+    from datetime import datetime
+    assert datetime.fromisoformat(row["observedUtc"]).tzinfo is not None
+
+
+# --- the settle checks its last read, not only the reads before each sleep --------------------
+
+def test_restore_checks_the_status_it_returns_when_settle_is_zero():
+    # STOPPED -> START -> RUNNING; the read restore() returns is HALT. It used to be returned
+    # unchecked, so a non-last cycle (settle 0) handed a HALTed app to the next interruption.
+    c = StubClient(statuses=["STOPPED", "RUNNING", "HALT"])
+    with pytest.raises(RecoveryError, match="HALT"):
+        recovery.restore(c, Ctx("native"), "NS.App", "stop", timeout=30, settle=0, poll=0)
+
+
+def test_watched_settle_checks_a_read_taken_at_the_deadline():
+    clock = {"t": 0.0}
+    reads = iter(["RUNNING", "RUNNING", "CRASH"])
+
+    def sleep(s):
+        clock["t"] += s
+    with pytest.raises(RecoveryError, match="CRASH"):
+        recovery.watched_settle(lambda: next(reads), 4.0, app="NS.App", poll=2.0,
+                                now=lambda: clock["t"], sleep=sleep)
+    assert clock["t"] == 4.0
+
+
+def test_watched_settle_accepts_completed_and_stops_waiting():
+    slept = []
+    assert recovery.watched_settle(lambda: "COMPLETED", 10.0, app="NS.App",
+                                   sleep=slept.append) == "COMPLETED"
+    assert slept == []
+
+
+# --- an action's own STOP/QUIESCE that crashes a RUNNING app is not an interruption ----------
+
+@pytest.mark.parametrize("mode,after", [("stop", "CRASH"), ("stop", "HALT"), ("quiesce", "CRASH"),
+                                        ("quiesce", "DEPLOYED")])
+def test_action_interrupt_of_a_running_app_requires_the_settled_status(mode, after):
+    c = StubClient(statuses=["STOPPING", after])
+    with pytest.raises(recovery.InterruptionNotSettled) as e:
+        recovery.await_action_interrupted(c, "NS.App", mode, "RUNNING", timeout=5, poll=0)
+    assert e.value.status == after
+
+
+@pytest.mark.parametrize("mode,after", [("stop", "DEPLOYED"), ("stop", "STOPPED"),
+                                        ("stop", "CREATED"), ("quiesce", "QUIESCED")])
+def test_action_interrupt_of_a_running_app_returns_the_settled_status(mode, after):
+    c = StubClient(statuses=["STOPPING", after])
+    assert recovery.await_action_interrupted(c, "NS.App", mode, "RUNNING", timeout=5, poll=0) == after
+
+
+@pytest.mark.parametrize("before", ["HALT", "CRASH", "QUIESCED", "DEPLOYED"])
+def test_action_interrupt_of_an_app_not_running_before_keeps_its_status(before):
+    # The STOP did not take the app out of RUNNING, so its status is not the STOP's doing: an
+    # in-place upgrade of a HALTed app, or a drop of a QUIESCED one, proceeds as before.
+    c = StubClient(statuses=[before])
+    assert recovery.await_action_interrupted(c, "NS.App", "stop", before, timeout=5, poll=0) == before

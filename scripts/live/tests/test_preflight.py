@@ -179,7 +179,7 @@ def test_provision_jar_replacement(monkeypatch, tmp_path, capsys, kind,
         load_jar=lambda jar: events.append(("register", jar)),
         load_open_processor_idempotent=lambda jar, tag=None, before_unload=None: events.append(("register", jar)))
     monkeypatch.setattr(preflight, "manifests_for", lambda ids: [_mani("a", modules=modules)])
-    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: types.SimpleNamespace(release=lambda: None))
     monkeypatch.setattr(preflight, "clear_provision_registry", lambda *a: None)
     monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: {})
     monkeypatch.setattr(preflight, "_resolve_striim", lambda cfg: ctx)
@@ -210,6 +210,7 @@ def test_provision_jar_replacement(monkeypatch, tmp_path, capsys, kind,
 
     import subprocess
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(preflight.dockercmd, "run", run)
 
     def restart(c):
         assert c is client
@@ -260,6 +261,7 @@ def test_udf_replacement_requires_loaded_evidence(monkeypatch, tmp_path, loaded,
         return types.SimpleNamespace(returncode=0, stdout=hashlib.sha256(data).hexdigest())
 
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(preflight.dockercmd, "run", run)
     monkeypatch.setattr(preflight, "_loaded_jar_probe",
                         lambda *a, **kw: lambda: loaded)
     assert preflight._replaced_loaded_jars(types.SimpleNamespace(mode="docker"), object(),
@@ -284,7 +286,7 @@ def replacement_preflight(monkeypatch, tmp_path):
     monkeypatch.setattr(preflight.stack, "_LOCK_DIR", tmp_path / "locks")
     monkeypatch.setattr(preflight, "manifests_for", lambda ids: [
         _mani("a", modules=[_mod("java/Udf", "udf")])])
-    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: types.SimpleNamespace(release=lambda: None))
     monkeypatch.setattr(preflight, "clear_provision_registry", lambda *a: None)
     monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: {})
     monkeypatch.setattr(preflight, "_resolve_striim", lambda cfg: ctx)
@@ -324,6 +326,7 @@ def replacement_preflight(monkeypatch, tmp_path):
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(preflight.dockercmd, "run", run)
     state.jar = built.name
     state.marker = preflight.stack.lock_path(".slt-jar-restart-pending")
     return state
@@ -436,8 +439,11 @@ def test_op_jars_never_count_as_replaced(monkeypatch, tmp_path):
     built = preflight.opartifacts.BuiltArtifact(path, path.name, "FooOp")
     monkeypatch.setattr(preflight.stack, "app_nodes", lambda: ["lane-striim", "lane-node"])
     calls = []
-    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv) or
-                        types.SimpleNamespace(returncode=0, stdout="0" * 64 + "  x\n"))
+    def run(argv, **kw):
+        calls.append(argv)
+        return types.SimpleNamespace(returncode=0, stdout="0" * 64 + "  x\n")
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(preflight.dockercmd, "run", run)
     assert preflight._replaced_loaded_jars(types.SimpleNamespace(mode="docker"), object(),
                                           [(_mod("java/FooOp", "op"), built)]) == []
     assert calls == []
@@ -467,7 +473,7 @@ def test_preflight_registers_the_prebuilt_jar_its_preloaded_children_use(monkeyp
     monkeypatch.setattr(plugin.stack, "_LOCK_DIR", tmp_path / "locks")
     ctx = types.SimpleNamespace(mode="docker", url="fake", user="fake", password="fake")
     monkeypatch.setattr(preflight, "manifests_for", lambda ids: [_mani("a", modules=[mod])])
-    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: types.SimpleNamespace(release=lambda: None))
     monkeypatch.setattr(preflight, "clear_provision_registry", lambda *a: None)
     monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: release)
     monkeypatch.setattr(preflight, "_resolve_striim", lambda cfg: ctx)
@@ -517,7 +523,7 @@ def test_preflight_loads_the_prebuilt_bytes_not_an_older_equivalent_copy(monkeyp
     monkeypatch.setattr(plugin.stack, "_LOCK_DIR", tmp_path / "locks")
     ctx = types.SimpleNamespace(mode="docker", url="fake", user="fake", password="fake")
     monkeypatch.setattr(preflight, "manifests_for", lambda ids: [_mani("a", modules=[mod])])
-    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(preflight._slt_infra, "declare_or_log", lambda *a: types.SimpleNamespace(release=lambda: None))
     monkeypatch.setattr(preflight, "clear_provision_registry", lambda *a: None)
     monkeypatch.setattr(preflight, "_resolve_release", lambda cfg: release)
     monkeypatch.setattr(preflight, "_resolve_striim", lambda cfg: ctx)

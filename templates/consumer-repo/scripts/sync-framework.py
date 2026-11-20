@@ -15,8 +15,8 @@ its pyproject.toml); a venv with an older Python is refused. When .env is missin
     python3 scripts/sync-framework.py --find-links DIR   # install from a local wheelhouse, no index
     python3 scripts/sync-framework.py --python PATH      # make .venv with this Python
 
-Exit codes: 0 done, 1 --check found a difference (or local changes), 2 a bad pin or setting, or no
-suitable Python, 3 refused (the folder is not a framework checkout, or it has local changes), 4 git
+Exit codes: 0 done, 1 --check found a difference (or local changes), 2 a bad pin or setting, no
+suitable Python, or this folder is still inside the framework checkout and no --home was given, 3 refused (the folder is not a framework checkout, or it has local changes), 4 git
 or network failure, 5 install failure.
 Standard library only.
 """
@@ -73,6 +73,12 @@ def read_pin(path: Path) -> str:
 
 def is_checkout(home: Path) -> bool:
     return (home / ".git").exists()
+
+
+def framework_above() -> Path | None:
+    """The framework checkout this repo sits inside (the folder holding scripts/live/livetest), or
+    None. The template and the example ship inside the framework and are meant to be copied out."""
+    return next((p for p in REPO.parents if (p / "scripts" / "live" / "livetest").is_dir()), None)
 
 
 def check_folder(home: Path) -> None:
@@ -289,7 +295,7 @@ def install(home: Path, commit: str, run=subprocess.run, find_links: Path | None
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--pin", type=Path, default=REPO / "framework.pin", help="the pin file")
-    p.add_argument("--home", type=Path, default=Path(os.environ.get("FRAMEWORK_CHECKOUT") or DEFAULT_HOME),
+    p.add_argument("--home", type=Path, default=None,
                    help="the framework checkout (default: next to this repo, or $FRAMEWORK_CHECKOUT)")
     p.add_argument("--remote", default=os.environ.get("FRAMEWORK_REMOTE") or DEFAULT_REMOTE,
                    help="where to clone the framework from (or $FRAMEWORK_REMOTE)")
@@ -305,9 +311,16 @@ def main(argv=None) -> int:
                    help="the Python to make .venv with, when there is no venv yet (default: the first "
                         "one found that the pinned framework supports)")
     args = p.parse_args(argv)
-    home = args.home.expanduser().absolute()
+    chosen = args.home or (Path(os.environ["FRAMEWORK_CHECKOUT"]) if os.environ.get("FRAMEWORK_CHECKOUT") else None)
+    home = (chosen or DEFAULT_HOME).expanduser().absolute()
     venv = this_venv() or REPO / ".venv"
     try:
+        inside = framework_above()
+        if inside is not None and chosen is None:
+            raise SyncError(f"{REPO} is inside the framework checkout {inside}: run here, this would clone "
+                            f"a second framework into {home} and make .venv and .env in this folder. "
+                            "copy the folder out of the framework first (see its README), or pass --home "
+                            "<a framework checkout> to use one deliberately", 2)
         pin = read_pin(args.pin)
         if args.check:
             commit = resolve(home, pin, fetch=False) if is_checkout(home) else None

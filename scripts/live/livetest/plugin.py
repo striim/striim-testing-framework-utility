@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 import yaml
-from filelock import FileLock
+from filelock import FileLock, Timeout as _LockTimeout
 
-from livetest import lockdir, uiform
+from livetest import dockercmd, lockdir, uiform
 from livetest.manifest import load_manifest, TestManifest, ManifestError, VALID_DEPTHS, xfail_for_release, upload_name_ok
 from livetest.substitute import render
 from livetest.striim import StriimClient, probe_reachable, TERMINAL_STATUSES, POLL_TIMEOUT
@@ -37,7 +37,8 @@ from livetest.assertions.checkpoint_history import (
     parse_checkpoint_history_spec,
 )
 from livetest.assertions.jmx import JmxSpecError, assert_jmx, parse_jmx_specs, render_row_keys
-from livetest.assertions.halt import assert_halt, accept_expected_halt, skipped_by_startup_halt
+from livetest.assertions.halt import (NODE_LOG_BOUNDARY, assert_halt, accept_expected_halt,
+                                     skipped_by_startup_halt)
 from livetest import recovery
 from livetest import outage
 from livetest import appactions
@@ -199,8 +200,13 @@ def _cluster_provision_lock() -> Path:
 
 
 def _restore_then_post_recover(restore, run_files, seeds, settle, last,
-                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None, after_restore=None):
-    """Restore one recovery cycle and seed after the last restore when configured."""
+                                sleep=time.sleep, now=time.monotonic, hb=None, report=None, post_restore=None, after_restore=None,
+                                status=None, app="the app"):
+    """Restore one recovery cycle and seed after the last restore when configured.
+
+    `status`, a reader of the app's current status, watches the settle that follows post-recover
+    inputs the way restore() watches its own (recovery.watched_settle): a crash during it fails
+    here. None (`expect_running: false`, where the app is meant to stay stopped) waits blind."""
     _post_rec = seeds if last else []
     restore(0.0 if (_post_rec or not last or post_restore or after_restore) else settle)
     if after_restore is not None:
@@ -223,10 +229,34 @@ def _restore_then_post_recover(restore, run_files, seeds, settle, last,
             sleep(max(0.0, min(2.0, _after - (now() - _pr0))))
         run_files([(_db, _f)])
     _hb_s = hb("recover: settling after the post-recover seed")
+    if status is not None:
+        recovery.watched_settle(status, settle, app=app, report=report, heartbeat=_hb_s,
+                                now=now, sleep=sleep)
+        return
     _st0 = now()
     while now() - _st0 < settle:
         _hb_s(now() - _st0, settle)
         sleep(max(0.0, min(2.0, settle - (now() - _st0))))
+
+
+def _wait_before_interrupt(wait, *, status=None, hb=None, sleep=time.sleep, now=time.monotonic,
+                           app="the app"):
+    """The pause before a recovery interruption. Cycles 2..N pass `status`: the app the previous
+    cycle restored is watched through the gap (recovery.watched_settle), so a crash in it fails
+    the case rather than going unseen when the platform restarts the app before the next
+    boundary read. The first cycle's `after` is a plain timed wait."""
+    hb = hb or (lambda _elapsed, _total: None)
+    if status is not None:
+        recovery.watched_settle(status, wait, app=app, heartbeat=hb,
+                                what="the wait before the next interruption", now=now, sleep=sleep)
+        return
+    t0 = now()
+    while True:
+        elapsed = now() - t0
+        if elapsed >= wait:
+            break
+        hb(elapsed, wait)
+        sleep(min(2.0, wait - elapsed))
 
 
 # Collection is driven by pytest's own testpaths + pytest_collect_file (LiveYamlFile) below,
@@ -311,10 +341,22 @@ def _activate_project() -> None:
 
 
 def pytest_configure(config):
+    # Every depth_* marker a LiveItem can carry (a manifest without depth: is depth_regression), so a
+    # project run with --strict-markers collects without registering them itself. (A hermetic
+    # caller's stand-in config has no marker table; a real pytest Config always does.)
+    register = getattr(config, "addinivalue_line", None)
+    for depth in sorted(VALID_DEPTHS) if callable(register) else ():
+        register("markers", f"depth_{depth}: live case whose manifest depth is {depth}")
     _activate_project()
     _collect_every_case_root(config)
     from livetest import paths
     os.environ.update(paths.effective_env(os.environ))
+    # A switch set to anything but 1 or 0 is a settings mistake: refuse the run before anything
+    # reads it (paths.flag). A service's declared opt-in gate is a switch too.
+    from livetest import service_env
+    problems = service_env.switch_problems(os.environ)
+    if problems:
+        raise pytest.UsageError("livetest: " + "\n".join(problems))
     # Serial guard. The live suite runs SERIALLY unless SLT_PARALLEL=1: tests share
     # fixed-name DB objects (Oracle QASOURCE.*, MSSQL dbo.*, one Spanner instance) and one
     # shared Striim cluster. Phase-1 tokenized every per-test object name
@@ -325,7 +367,7 @@ def pytest_configure(config):
     # set without the opt-in.
     nprocs = getattr(config.option, "numprocesses", None)
     dist = getattr(config.option, "dist", None)
-    if (nprocs or (dist and dist != "no")) and not os.environ.get("SLT_PARALLEL"):
+    if (nprocs or (dist and dist != "no")) and not paths.flag("SLT_PARALLEL"):
         raise pytest.UsageError(
             "the live-test suite runs SERIALLY by default — it shares one Striim cluster "
             "and shared DB service containers. Per-test object names are now tokenized "
@@ -378,7 +420,7 @@ def pytest_configure(config):
         # (livetest.preflight) OWNS the coordination registries — it clears them once up front
         # and populates them; each fan-out subprocess ALSO matches this branch (it is its own
         # xdist-less controller), so it must NOT wipe what pre-flight registered.
-        if not os.environ.get("SLT_OPS_PRELOADED"):
+        if not paths.flag("SLT_OPS_PRELOADED"):
             os.environ.setdefault("SLT_RUN_EPOCH", uuid.uuid4().hex[:12])
             clear_provision_registry(_STATE_DIR)
     # the xdist controller collects no live item, so a distributed live run
@@ -428,8 +470,7 @@ def striim_url_tokens(ctx) -> dict:
     return {"STRIIM_WEB_URL": striim_web_url(ctx)}
 
 def _striim5_running() -> bool:
-    r = subprocess.run(["docker", "ps", "--filter", f"name=^{stack.striim_container()}$", "-q"],
-                       capture_output=True, text=True)
+    r = dockercmd.run(["docker", "ps", "--filter", f"name=^{stack.striim_container()}$", "-q"])
     return bool(r.stdout.strip())
 
 def _running_striim_version() -> str | None:
@@ -437,9 +478,7 @@ def _running_striim_version() -> str | None:
     # the stack prefix (`<prefix>-slt-striim:<version>`, striim_provision.image_ref) so two
     # checkouts cannot overwrite each other's; rsplit(":", 1) below takes the version whether or
     # not a prefix is present. None if not inspectable.
-    r = subprocess.run(["docker", "inspect", stack.striim_container(),
-                        "--format", "{{.Config.Image}}"],
-                       capture_output=True, text=True)
+    r = dockercmd.run(["docker", "inspect", stack.striim_container(), "--format", "{{.Config.Image}}"])
     img = r.stdout.strip()
     if r.returncode != 0 or ":" not in img:
         return None
@@ -516,14 +555,18 @@ def _slt_infra_guard(session, exitstatus):
     makes every green claim ever sourced from this tier unfalsifiable, because nobody can tell
     afterwards which runs executed anything.
 
-    Fires only when BOTH hold: at least one live item was skipped for an infrastructure reason
-    (``LiveItem.runtest`` sets ``_slt_infra_skip`` at the three sites that mean "we could not
-    test this"), and **no live item executed**. A partial run keeps its exit status -- that is an
-    ordinary skip, and failing it would train people to ignore this, which is how a guard stops
-    working. Per-case skips (``disabled:``, an opt-in service gate, a topology mismatch) are not
+    Fires when at least one live item was skipped for a marked reason (``LiveItem.runtest`` sets
+    ``_slt_infra_skip`` at the sites that mean "we could not test this": ``cluster``, ``docker``,
+    ``service``, ``build``) and either **no live item executed**, or one of the skips is a
+    ``build`` skip. A partial run with only absent infrastructure keeps its exit status -- that is
+    an ordinary skip, and failing it would train people to ignore this, which is how a guard stops
+    working. A module that could not be built is different: the cases that load it were never
+    tested, and the cases that did run cannot vouch for them, so it fails the run whatever else
+    ran. Per-case skips (``disabled:``, an opt-in service gate, a topology mismatch) are not
     marked and never fire it.
 
-    ``SLT_ALLOW_NO_CLUSTER=1`` opts out, for deliberately probing without a stack.
+    ``SLT_ALLOW_NO_CLUSTER=1`` opts out for absent infrastructure, for deliberately probing
+    without a stack; never for a build skip.
     """
     tr = session.config.pluginmanager.get_plugin("terminalreporter")
     if tr is None:                       # no reporter at all (-p no:terminal, an embedding host)
@@ -543,13 +586,21 @@ def _slt_infra_guard(session, exitstatus):
     # earlier version tested the variable before the causes were known, so a developer who had
     # exported it during a cluster outage -- on this banner's own advice -- kept a green run
     # afterwards when their `mvn package` broke. You cannot declare a compile error absent.
-    if os.environ.get("SLT_ALLOW_NO_CLUSTER") and not causes & {"build"}:
+    if paths.flag("SLT_ALLOW_NO_CLUSTER") and not causes & {"build"}:
         return exitstatus
 
     # "error" as well as "failed": an item that dies in setup or teardown lands there, and it
-    # still executed.
-    if _live("passed") or _live("failed") or _live("error"):
-        return exitstatus
+    # still executed. So did an xfail'd case: pytest files it under "xpassed" or "xfailed".
+    if any(_live(k) for k in ("passed", "failed", "error", "xpassed", "xfailed")):
+        unbuilt = [r for r in blocked if getattr(r, "_slt_infra_skip", "") == "build"]
+        if not unbuilt:
+            return exitstatus
+        print("")
+        print("[slt] %d live case(s) were skipped because a module they load could not be built; "
+              "they were never tested, so the run FAILS." % len(unbuilt))
+        for r in unbuilt:
+            print("[slt]   %s: %s" % (getattr(r, "nodeid", "?"), _slt_skip_reason(r)))
+        return 1 if exitstatus == 0 else exitstatus
 
     first = blocked[0]
     print("")
@@ -566,6 +617,9 @@ def _slt_infra_guard(session, exitstatus):
     if not causes & {"build"}:
         if "cluster" in causes:
             print("[slt] Set SLT_ALLOW_NO_CLUSTER=1 if you meant to run without a cluster.")
+        elif causes == {"service"}:
+            print("[slt] A service this run requires was unavailable here; "
+                  "SLT_ALLOW_NO_CLUSTER=1 opts out of this check.")
         else:
             print("[slt] Docker was unavailable; SLT_ALLOW_NO_CLUSTER=1 opts out of this check.")
     return 1 if exitstatus == 0 else exitstatus
@@ -641,10 +695,16 @@ def _resolve_striim(config):
         try:
             _sp.ensure_deps(_STRIIM_DIR, rel, progress=report)
             _sp.ensure_image(_STRIIM_DIR, rel, progress=report)
-            _sp.cluster_up(_STRIIM_DIR, rel, progress=report)
-            # Record that WE started the cluster as soon as it's up, so it is torn down at
-            # session end even if a later step below returns via _fail().
+            # Record that WE started the cluster before `compose up` starts, so it is torn down at
+            # session end even if a later step below returns via _fail(), or Ctrl-C stops the up
+            # itself with containers already created. A failed up is not recorded.
+            _was_provisioned = getattr(config, "_slt_striim_provisioned", False)
             config._slt_striim_provisioned = True
+            try:
+                _sp.cluster_up(_STRIIM_DIR, rel, progress=report)
+            except Exception:
+                config._slt_striim_provisioned = _was_provisioned
+                raise
         except _tryout.TryoutError as e:
             _clear_progress(); _hard_fail(f"could not provision Docker cluster: {e}"); return False
         except Exception as e:
@@ -683,11 +743,17 @@ def _resolve_striim(config):
                                                     lambda: probe_reachable(url, user, pw), _port_open)
     if _slt_why:
         return _fail(_slt_why)
-    native_only = paths.setting("SLT_STRIIM_NATIVE_ONLY") == "1"
+    native_only = paths.parse_flag("SLT_STRIIM_NATIVE_ONLY", paths.setting("SLT_STRIIM_NATIVE_ONLY"))
     if native_only and tryouts:
         return _hard_fail(f"{_tryout.TRYOUT_ENV} needs the Docker cluster, and SLT_STRIIM_NATIVE_ONLY=1 uses "
                           f"only the Striim at STRIIM_URL")
-    with FileLock(str(_cluster_provision_lock()), mode=lockdir.file_mode()):
+    _cluster_lock = FileLock(str(_cluster_provision_lock()), mode=lockdir.file_mode(), timeout=dockercmd.LOCK_WAIT_S)
+    try:
+        _cluster_held = _cluster_lock.acquire()     # its context releases it once, as `with FileLock` did
+    except _LockTimeout:
+        return _fail(f"cluster provisioning lock {_cluster_provision_lock()} not acquired within "
+                     f"{dockercmd.LOCK_WAIT_S:.0f}s: another process is still provisioning the Striim cluster")
+    with _cluster_held:
         if _probe_retry():
             if not native_only and _striim5_running():
                 mode = "docker"
@@ -954,7 +1020,7 @@ def _node_log_marks(ctx, run=None) -> dict:
     """
     if getattr(ctx, "mode", None) != "docker":
         return {}
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     marks = {}
     for node in stack.app_nodes():
         try:
@@ -968,20 +1034,25 @@ def _node_log_marks(ctx, run=None) -> dict:
     return marks
 
 
-def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000) -> str:
+def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000, errors: list | None = None) -> str:
     """Each app node's server log from `marks` onward.
 
     A node without a mark is not read: its tail would include earlier cases' text. Falls back
     to the fixed tail when the log is now SHORTER than the mark -- it rotated or was truncated
-    mid-test, so everything in it was written after the mark.
+    mid-test, so everything in it was written after the mark. A node that could not be read
+    contributes nothing; when `errors` is given, why is appended to it, one entry per node.
+    Nodes are joined by NODE_LOG_BOUNDARY, so a log record never runs from one node's text into
+    the next.
     """
     if getattr(ctx, "mode", None) != "docker":
         return ""
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     out = []
     for node in stack.app_nodes():
         mark = marks.get(node)
         if mark is None:
+            if errors is not None:
+                errors.append(f"{node}: no start mark (its log size could not be read when the case deployed)")
             continue
         try:
             # +N is 1-based, so mark+1 starts at the first byte written after the mark.
@@ -989,10 +1060,30 @@ def _node_log_since(ctx, marks: dict, run=None, nbytes: int = 20000) -> str:
                      f"if [ $(wc -c < {_NODE_LOG}) -ge {mark} ]; "
                      f"then tail -c +{mark + 1} {_NODE_LOG}; "
                      f"else tail -c {nbytes} {_NODE_LOG}; fi"])
+            rc = getattr(r, "returncode", 0)
+            if rc != 0 and errors is not None:
+                errors.append(f"{node}: docker exec exited {rc}: {(getattr(r, 'stderr', '') or '').strip()[:300]}")
             out.append(getattr(r, "stdout", "") or "")
-        except Exception:
-            pass
-    return "\n".join(out)
+        except Exception as e:
+            if errors is not None:
+                errors.append(f"{node}: {e}")
+    return NODE_LOG_BOUNDARY.join(out)
+
+
+def _halt_log_tail(ctx, marks: dict, run=None) -> str:
+    """The node-log slice `expect_halt_contains` is checked against.
+
+    `_node_log_since` reads an unreadable node as empty, which suits the OP-poison scan. Here
+    an empty result could pass a halt unverified, so when no node's slice has any text and a
+    node could not be read, this raises with why; `assert_halt` fails the halt in docker mode.
+    A node that could be read is enough: the case may have stopped the other one. The reads go
+    through `dockercmd.run` under its query bound, as every other node-log read does.
+    """
+    errors: list = []
+    text = _node_log_since(ctx, marks, run=run, errors=errors)
+    if errors and not text.strip():
+        raise RuntimeError("; ".join(errors))
+    return text
 
 
 def _op_poison_restart_refusal(config) -> str | None:
@@ -1013,7 +1104,7 @@ def _node_log_tail(ctx, run=None, nbytes: int = 20000) -> str:
     # Striim returns "" (the loader-poisoning cascade is a cluster phenomenon).
     if getattr(ctx, "mode", None) != "docker":
         return ""
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     out = []
     for node in stack.app_nodes():
         try:
@@ -1192,9 +1283,7 @@ def _make_fake_gcp_key(token_uri: str, project_id: str = "test-project") -> str:
     # so we point it at the services/gcs fake token server (which returns a dummy
     # bearer token the emulator ignores). Never a real credential.
     import json, subprocess
-    r = subprocess.run(
-        ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"],
-        capture_output=True, text=True)
+    r = dockercmd.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"])
     pem = r.stdout
     if r.returncode != 0 or not pem.strip():
         # An empty PEM yields a structurally-invalid key JSON whose failure surfaces deep
@@ -1242,8 +1331,8 @@ def ensure_fake_gcp_key(config, ctx, *, key_name: str = _FAKE_KEY_NAME,
             # The single-topology apps deploy on the `default` group (primary + node).
             for node in stack.app_nodes():
                 try:
-                    subprocess.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{key_name}"],
-                                   capture_output=True, text=True, check=True)
+                    dockercmd.run(["docker", "cp", path, f"{node}:/opt/striim/UploadedFiles/{key_name}"],
+                                  check=True)
                 except subprocess.CalledProcessError as exc:
                     raise RuntimeError(f"fake key upload to {node} ({key_name}) failed: {exc.stderr}") from exc
         else:  # native Striim
@@ -1294,7 +1383,7 @@ def _gcs_endpoint_ip(ctx, run=None) -> str:
     # container reaches host.docker.internal by; native Striim reaches it at 127.0.0.1.
     if ctx.mode != "docker":
         return "127.0.0.1"
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     # `getent ahostsv4` (IPv4-only): plain `getent hosts` can return an IPv6 ULA
     # (e.g. fdc4:...), which yields an unbracketed IPv6 endpoint the GCS client's
     # StorageOptions mangles into an opaque "storage-http" StorageException. The GCS
@@ -1485,8 +1574,14 @@ def teardown_file_outputs(file_spec, tokens: dict, clear) -> None:
         except Exception:
             pass
 
+
+_DEFERRED_POLL_S = 0.05                  # how often teardown_unowned looks for a deferred call's admin to free
+
+
 def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: list, kafka_cleanup: list,
-                     file_spec, clear_files, upload_names: list, delete_uploads, *, oracle_observer_failed=False) -> dict:
+                     file_spec, clear_files, upload_names: list, delete_uploads, *, oracle_observer_failed=False,
+                     op_s: float = _slt_ownership.CLEANUP_OP_S,
+                     deadline_s: float = _slt_ownership.CLEANUP_DEADLINE_S) -> dict:
     """The best-effort teardown of a case without a `lifecycle:` block, after the ledger cleanup.
 
     The ownership ledger deletes Postgres objects, the namespace, slots and exact file claims; the
@@ -1495,15 +1590,58 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
     GCS buckets and Kafka topics (incl. `kafka_cleanup_topics:`), the per-test op.upload files and
     the rolled FileWriter parts (<path>*). Never raises; returns what it attempted and what failed,
     as {"attempted": ["<kind> <name>", ...], "failed": {"<kind> <name>": "<error>"}}, the subjects
-    the ledger's verification gaps use (kind: engine-tables, bucket, topic, upload, file-output)."""
-    out = {"attempted": [], "failed": {}}
+    the ledger's verification gaps use (kind: engine-tables, bucket, topic, upload, file-output), and
+    "running": the subjects whose call was still running when the teardown returned.
 
-    def attempt(subject, fn, *args):
-        out["attempted"].append(subject)
+    It runs after the ledger's cleanup and outside its deadline, so it carries the ledger's bounds itself:
+    each call gets ``op_s`` (``CLEANUP_OP_S``) and the whole teardown ``deadline_s``
+    (``CLEANUP_DEADLINE_S``): no call starts after the deadline, and one started before it gets its whole
+    ``op_s``, so the teardown ends within ``deadline_s + op_s``. A call that outlives its bound is
+    recorded as failed, and the calls on other admins go on. It is not left running past the case: a
+    later call on the same admin is deferred until the other calls are done and then runs once that admin
+    is free, whatever another admin's call is still doing (one admin's client is never used from two
+    threads), and the teardown waits for it before returning, both while the deadline lasts, so the case
+    keeps its in-use lock, and its database connections, until its deletes have ended. Once the deadline
+    has passed, the calls left are recorded as not attempted, and a call still running is listed under
+    "running": the caller stops the run (``stop_if_teardown_running``)."""
+    out = {"attempted": [], "failed": {}, "running": []}
+    deadline = _slt_lifecycle.Deadline(deadline_s)
+    abandoned = []                      # (subjects, owner, thread) of each call left running at its bound
+
+    def wait_for(threads) -> bool:
+        for t in threads:
+            t.join(max(0.0, deadline.remaining()))
+        return not any(t.is_alive() for t in threads)
+
+    deferred = []                       # calls on an admin whose earlier call was still running
+
+    def busy(owner):
+        return [t for _s, o, t in abandoned if owner is not None and o is owner and t.is_alive()]
+
+    def call(subjects, fn, *args, owner=None):
+        out["attempted"] += subjects
+        if busy(owner):
+            deferred.append((subjects, fn, args, owner))
+        else:
+            run_call(subjects, fn, args, owner)
+
+    def run_call(subjects, fn, args, owner):
+        if deadline.expired():
+            out["failed"].update({s: "cleanup-deadline: not attempted" for s in subjects})
+            return
+        # A call started before the deadline gets its whole bound: one started with little of the
+        # deadline left is not cut short and reported as still running when it is only slow.
+        bound = op_s
         try:
-            fn(*args)
+            _slt_lifecycle.bounded(lambda: fn(*args), bound)
+        except _slt_lifecycle.ProbeHung as hung:
+            out["failed"].update({s: f"did not finish within {bound:.1f}s" for s in subjects})
+            abandoned.append((subjects, owner, hung.thread))
         except Exception as e:          # noqa: BLE001 - best-effort; recorded, never raised
-            out["failed"][subject] = repr(e)
+            out["failed"].update({s: repr(e) for s in subjects})
+
+    def attempt(subject, fn, *args, owner=None):
+        call([subject], fn, *args, owner=owner)
 
     seen = set()
     for db, _f in ddl_files:
@@ -1520,18 +1658,13 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
             out["failed"][subject] = "tables preserved because Oracle observer teardown failed"
             continue
         token = _DDL_TEARDOWN_PREFIX_TOKENS.get(db.split("-", 1)[0], "TID")
-        attempt(f"engine-tables {db}", drop, tokens.get(token, ""))
+        attempt(f"engine-tables {db}", drop, tokens.get(token, ""), owner=entry["admin"])
     for admin, bucket in gcs_cleanup:
-        attempt(f"bucket {bucket}", admin.delete_bucket, bucket)
+        attempt(f"bucket {bucket}", admin.delete_bucket, bucket, owner=admin)
     for admin, topic in kafka_cleanup:
-        attempt(f"topic {topic}", admin.delete_topic, topic)
-    if upload_names:
-        subjects = [f"upload {n}" for n in upload_names]
-        out["attempted"] += subjects
-        try:
-            delete_uploads(upload_names)
-        except Exception as e:          # noqa: BLE001 - one call deletes them all; each is recorded
-            out["failed"].update({s: repr(e) for s in subjects})
+        attempt(f"topic {topic}", admin.delete_topic, topic, owner=admin)
+    if upload_names:                    # one call deletes them all; each is recorded
+        call([f"upload {n}" for n in upload_names], delete_uploads, upload_names)
     if file_spec:
         try:
             specs = parse_file_specs(file_spec)
@@ -1542,10 +1675,40 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
                 path = render(fs["path"], tokens)
             except Exception:
                 continue
-            attempt(f"file-output {path}*", clear_files, path)
+            attempt(f"file-output {path}*", clear_files, path, owner=clear_files)
+    # Each deferred call runs as soon as its own admin is free, in the order it was made on that admin:
+    # an admin whose call still hangs does not hold back another admin's.
+    while deferred:
+        ready = next((d for d in deferred if not busy(d[3])), None)
+        if ready is not None:
+            deferred.remove(ready)
+            run_call(*ready)
+        elif deadline.expired():
+            break
+        else:
+            time.sleep(min(_DEFERRED_POLL_S, deadline.remaining()))
+    for subjects, _fn, _args, _owner in deferred:
+        out["failed"].update({s: "not attempted: an earlier delete on the same admin was still running "
+                                 "at the teardown deadline" for s in subjects})
+    wait_for([t for _s, _o, t in abandoned])
+    for subjects, _o, t in abandoned:
+        if t.is_alive():
+            out["running"] += subjects
+            for s in subjects:
+                out["failed"][s] += "; still running at the teardown deadline"
     for subject, err in out["failed"].items():
         print(f"[slt] WARNING: post-test cleanup failed for {subject}: {err}")
     return out
+
+
+def stop_if_teardown_running(session, name: str, outcome: dict) -> None:
+    """Stop the run after this case when a delete of its teardown is still running (`teardown_unowned`'s
+    "running"): it would otherwise go on beside the next case, on the database or client that case uses.
+    The case itself has already failed on it; this keeps the next one from starting."""
+    if outcome.get("running"):
+        session.shouldfail = (f"{name}: a teardown delete is still running at the teardown deadline "
+                              f"({', '.join(outcome['running'])}); the run stops so that it does not run "
+                              f"on beside the next case")
 
 
 def note_unowned_teardown(resources: dict, outcome: dict) -> dict:
@@ -1573,6 +1736,18 @@ def note_unowned_teardown(resources: dict, outcome: dict) -> dict:
         foreign.append(item)
     return {**resources, "verificationGaps": gaps, "foreign": foreign}
 
+def fold_unowned_teardown(cleanup, failed: dict) -> None:
+    """A failed delete of an unowned kind fails the cleanup, as a failed Oracle-observer or postgres-admin
+    reset does: each `"<kind> <name>"` subject of `teardown_unowned`'s `failed` becomes one failure."""
+    if not failed:
+        return
+    cleanup.status, cleanup.verified = "failed", False
+    cleanup.detail = "; ".join(filter(None, (cleanup.detail, "unowned-teardown-failed: " + "; ".join(
+        f"{subject}: {error}" for subject, error in failed.items()))))
+    for subject, error in failed.items():
+        kind, _, name = subject.partition(" ")
+        cleanup.failures.append({"kind": kind, "name": name, "error": error})
+
 def should_keep_resources(env: dict, deploy_attempted: bool, succeeded: bool) -> bool:
     """True when the test's resources should be left standing for manual inspection.
 
@@ -1585,9 +1760,9 @@ def should_keep_resources(env: dict, deploy_attempted: bool, succeeded: bool) ->
     status, logs) -- exactly what the flag exists to preserve. A failure BEFORE any
     deploy attempt (service resolution, DDL, seeding) still tears down: no app-side
     state exists yet."""
-    if env.get("SLT_KEEP_RESOURCES"):
+    if paths.flag("SLT_KEEP_RESOURCES", env):
         return True
-    return bool(env.get("SLT_KEEP_RESOURCES_ON_ERROR")) and deploy_attempted and not succeeded
+    return paths.flag("SLT_KEEP_RESOURCES_ON_ERROR", env) and deploy_attempted and not succeeded
 
 def _ended_as_expected(config, m, exc) -> bool:
     """True when `exc` ends the case as a skip or an expected xfail: not a failure to keep resources for."""
@@ -1604,7 +1779,7 @@ def _skip_shared_teardown(env: dict) -> bool:
     teardown is the operator's / next serial run's job, never a worker's — a worker finishing
     first would otherwise `compose down` the cluster + service containers out from under its
     still-running siblings (spec §C.4)."""
-    return bool(env.get("PYTEST_XDIST_WORKER") or env.get("SLT_KEEP_SERVICES"))
+    return bool(env.get("PYTEST_XDIST_WORKER") or paths.flag("SLT_KEEP_SERVICES", env))
 
 def _parallel(env: dict) -> bool:
     """True when tests execute CONCURRENTLY against the shared cluster, in EITHER model:
@@ -1615,14 +1790,15 @@ def _parallel(env: dict) -> bool:
     register-once) must engage in BOTH — Phase 2 keyed them on the xdist worker var alone, which
     the console's separate-subprocess model does not set. Serial (neither var) is unchanged; the
     xdist worker case is unchanged (the var is still present)."""
-    return bool(env.get("PYTEST_XDIST_WORKER") or env.get("SLT_PARALLEL"))
+    return bool(env.get("PYTEST_XDIST_WORKER") or paths.flag("SLT_PARALLEL", env))
 
 def build_modules(m: TestManifest, release: dict, report=None) -> list:
     """Build every op:/udf: module's jar (opartifacts.build_jar) against `release`.
     Returns [(module_dict, BuiltArtifact), ...] in module order (see
     manifest._normalize_modules — op: entries first, then udf: entries). Raises
-    opartifacts.OpBuildFailed on a build failure (the caller fails the case) and
-    OpArtifactError on a missing prerequisite (the caller skips); kept as a caller-side
+    opartifacts.OpBuildFailed on a build failure and OpJarRejected on an unusable prebuilt jar
+    (the caller fails the case), and OpArtifactError on a missing prerequisite (the caller
+    skips, and the infra guard fails the run); kept as a caller-side
     try/except, not swallowed here, so an upload failure below is NOT accidentally skipped too.
 
     `report` (optional, a `(label, phase)` progress reporter like the run-level `_report`)
@@ -2176,7 +2352,7 @@ def pytest_collect_file(parent, file_path):
     return LiveYamlFile.from_parent(parent, path=file_path)
 
 def _collection_manifest(path):
-    """Read once for collection; invalid manifests still get their error at run time."""
+    """A raw read for the _declared_* helpers (callers that must not fail on a bad manifest); collection itself loads the manifest."""
     try:
         raw = yaml.safe_load(path.read_text())
     except (OSError, yaml.YAMLError):
@@ -2193,9 +2369,10 @@ def _declared_services(path, raw=None) -> list:
 
 
 def _declared_depth(path, raw=None):
-    """Missing or invalid depth gets no marker; lint owns validation."""
+    """The declared depth; a missing one is ``regression``, as load_manifest defaults it. An invalid
+    one is refused at collection (LiveYamlFile.collect), never left without a marker."""
     raw = _collection_manifest(path) if raw is None else raw
-    depth = raw.get("depth")
+    depth = raw.get("depth", "regression")
     return depth if isinstance(depth, str) else None
 
 
@@ -2208,11 +2385,18 @@ def _declared_tags(path, raw=None):
 
 class LiveYamlFile(pytest.File):
     def collect(self):
-        raw = _collection_manifest(self.path)
+        # A manifest the loader refuses is a collection error, reported whatever -m selects: before,
+        # a misspelt depth got no depth_* marker, the tier filter deselected the case, and the
+        # loader that would have named the typo never ran.
+        # The markers come from that one load, so the manifest is parsed once.
+        try:
+            m = load_manifest(self.path)
+        except ManifestError as e:
+            raise self.CollectError(str(e)) from None
         yield LiveItem.from_parent(self, name=self.path.parent.name, manifest_path=self.path,
-                                   services=_declared_services(self.path, raw),
-                                   depth=_declared_depth(self.path, raw),
-                                   tags=_declared_tags(self.path, raw))
+                                   services=[s for s in m.requires if isinstance(s, str)],
+                                   depth=m.depth,
+                                   tags=[t for t in m.tags if isinstance(t, str)])
 
 def _prepare_service(defn, env, mode):
     why = _prestart.prepare_selected(defn, env, mode)
@@ -2265,13 +2449,13 @@ class LiveItem(pytest.Item):
         m = load_manifest(self.manifest_path)
         self._slt_topology = m.topology            # effective topology (Phase A: the manifest's)
         self._slt_services = list(m.requires)
-        if m.disabled and not os.environ.get("SLT_RUN_DISABLED"):  # known-bug/quarantine: skip before
+        if m.disabled and not paths.flag("SLT_RUN_DISABLED"):  # known-bug/quarantine: skip before
             pytest.skip(f"disabled: {m.disabled if isinstance(m.disabled, str) else 'disabled'}"  # provisioning
                         " (set SLT_RUN_DISABLED=1 to force-run)")
-        if m.disabled_parallel and _parallel(os.environ) and not os.environ.get("SLT_RUN_DISABLED"):
+        if m.disabled_parallel and _parallel(os.environ) and not paths.flag("SLT_RUN_DISABLED"):
             pytest.skip(f"disabled_parallel: {m.disabled_parallel if isinstance(m.disabled_parallel, str) else 'disabled_parallel'}"
                         " (set SLT_RUN_DISABLED=1 to force-run)")
-        if getattr(m, "recover", None) and m.recover.get("node") and os.environ.get("SLT_ENABLE_NODE_FAULTS") != "1":
+        if getattr(m, "recover", None) and m.recover.get("node") and not paths.flag("SLT_ENABLE_NODE_FAULTS"):
             pytest.skip("node faults require SLT_ENABLE_NODE_FAULTS=1 on a dedicated disposable stack")
         # C8.3: every referenced input is read once, after the disabled skips and
         # before any provisioning; exact assertions parse these bytes and never re-read a golden.
@@ -2395,7 +2579,7 @@ class LiveItem(pytest.Item):
         # assertion ran" guard, then report the test as skipped. Independent of
         # SLT_KEEP_RESOURCES (whether the started app is kept) and SLT_RUN_DISABLED
         # (whether a disabled test runs at all) — this flag governs verification only.
-        skip_verify = bool(os.environ.get("SLT_SKIP_VERIFY"))
+        skip_verify = paths.flag("SLT_SKIP_VERIFY")
         # Run-level progress reporter, live for the WHOLE test (not just service provisioning) so
         # the console log shows what the long, otherwise-silent deploy→wait→assert phase is doing.
         # `_report(label, phase)` streams one newline-terminated line via capture-suspend (deduped
@@ -2415,10 +2599,14 @@ class LiveItem(pytest.Item):
                     _prepare_service(defn, os.environ, ctx.mode)
                 except _prestart.PreUpError as e:
                     pytest.fail(f"service {svc}: {e}", pytrace=False)
+                except pytest.skip.Exception:
+                    self._slt_infra_skip = "service"   # a prerequisite of the service is missing here
+                    raise
                 _why = _sp.missing_service_jar(svc, ctx.mode)
                 if _why:
                     if getattr(defn, "unavailable_policy", "skip") == "fail":
                         pytest.fail(f"service {svc} unavailable: {_why}", pytrace=False)
+                    self._slt_infra_skip = "service"
                     pytest.skip(f"service {svc} unavailable: {_why}")
                 try:
                     resolved = _slt_infra.resolve_service(  # shared-service adapter
@@ -2757,7 +2945,7 @@ class LiveItem(pytest.Item):
                     # What the case loaded, for its run record (livetest.caserecord).
                     # Under SLT_OPS_PRELOADED the console pre-flight built and loaded the jars; this
                     # build only names them, so the bytes the server runs are not these.
-                    preloaded_run = bool(os.environ.get("SLT_OPS_PRELOADED"))
+                    preloaded_run = paths.flag("SLT_OPS_PRELOADED")
                     self._slt_case_jars = [{"module": mod["jar"], "path": str(getattr(b, "path", "")),
                                             "sha256": getattr(b, "record_sha256", "") or None,
                                             "origin": "preloaded" if preloaded_run else getattr(b, "origin", "")}
@@ -2768,10 +2956,10 @@ class LiveItem(pytest.Item):
                 except opartifacts.OpArtifactError as e:
                     # A missing build prerequisite (JDK, mvn, STRIIM_HOME). "build", not an
                     # infrastructure fault: the banner must not blame the cluster or offer
-                    # SLT_ALLOW_NO_CLUSTER.
+                    # SLT_ALLOW_NO_CLUSTER, and the guard fails the run whatever else ran.
                     self._slt_infra_skip = "build"
                     pytest.skip(f"{m.name}: {e}")
-                preloaded = bool(os.environ.get("SLT_OPS_PRELOADED"))
+                preloaded = paths.flag("SLT_OPS_PRELOADED")
                 if preloaded:
                     # Console pre-flight (Phase 3) already built+uploaded+registered the OP
                     # union. Derive the ${*_JAR}/${*_NAME} tokens from the cache-hit build
@@ -3027,7 +3215,7 @@ class LiveItem(pytest.Item):
                                          progress=_hb("waiting for app RUNNING"))
                 except Exception as e:
                     if _sp.op_loader_poisoned(_node_log_since(ctx, poison_marks)):
-                        if os.environ.get("SLT_PARALLEL"):
+                        if paths.flag("SLT_PARALLEL"):
                             # Parallel (spec §C.5): do NOT restart_app_nodes here — it restarts
                             # the SHARED app nodes and would kill every other worker's running
                             # apps. Drop a marker beside the junit for the orchestrator (console
@@ -3134,7 +3322,7 @@ class LiveItem(pytest.Item):
                 smoke_spec = m.assert_.get("smoke")
                 smoke_apps = [f"{app}{suffix}" for suffix in smoke_spec] if isinstance(smoke_spec, list) else [app]
 
-                def _terminal_probe():
+                def _terminal_probe(after_last=False):
                     # Under expect_halt the halt is the EXPECTED end state, and a data/diff
                     # assertion is then a question about what the target holds after it --
                     # "did a fragment of the failed transaction land?" -- so the poll must
@@ -3145,7 +3333,8 @@ class LiveItem(pytest.Item):
                     for a in smoke_apps:
                         st = client.current_status(a)
                         if st in TERMINAL_STATUSES:
-                            raise AssertionError(f"{m.name}: {a} entered terminal status {st!r} during assertion polling")
+                            when = "after the last assertion" if after_last else "during assertion polling"
+                            raise AssertionError(f"{m.name}: {a} entered terminal status {st!r} {when}")
 
                 ran = False
 
@@ -3348,14 +3537,10 @@ class LiveItem(pytest.Item):
                             _last = (_i == _rc["times"] - 1)
                             _tag = "" if _rc["times"] == 1 else f" [{_i + 1}/{_rc['times']}]"
                             if _wait:
-                                _hb_r = _hb(f"waiting to {_rc['mode']} the app{_tag}")
-                                _rt0 = time.monotonic()
-                                while True:
-                                    _el = time.monotonic() - _rt0
-                                    if _el >= _wait:
-                                        break
-                                    _hb_r(_el, _wait)
-                                    time.sleep(min(2.0, _wait - _el))
+                                # Cycles 2..N watch the app the previous cycle restored.
+                                _wait_before_interrupt(
+                                    _wait, status=(lambda: client.current_status(_rc_app)) if _i else None,
+                                    hb=_hb(f"waiting to {_rc['mode']} the app{_tag}"), app=_rc_app)
                             _report(m.name, f"recover: interrupting {'app' if _rc_app == app else _rc_app} ({_rc['mode']}){_tag}")
                             # verify_timeout tracks the manifest's own timeout instead of
                             # recovery.interrupt's 120s default: on an 80 000-event pipeline a
@@ -3391,7 +3576,7 @@ class LiveItem(pytest.Item):
                                 if _fault_target is not None:
                                     return _fault_target.interrupt(_rc["mode"])
                                 return recovery.interrupt(client, ctx, _rc_app, _rc["mode"],
-                                    verify_timeout=max(120.0, float(m.timeout) / 2.0),
+                                    verify_timeout=recovery.verify_timeout(m.timeout),
                                     report=lambda msg: _report(m.name, msg))
                             _progress_observed = _fault_progress.at_fault(
                                 _rc.get("trigger"), _read_at_fault, _issue_interrupt,
@@ -3412,6 +3597,7 @@ class LiveItem(pytest.Item):
                                     client, ctx, _rc_app, _rc["mode"], timeout=m.timeout,
                                     settle=_settle,
                                     expect_running=_rc["expect_running"],
+                                    record=self._slt_records.append,
                                     report=lambda msg: _report(m.name, msg),
                                     progress=_hb(f"recover: waiting for app RUNNING{_tag}"),
                                     at_running=(lambda: _cp_witness.capture("restored"))
@@ -3434,6 +3620,8 @@ class LiveItem(pytest.Item):
                                 settle=_rc["settle"],
                                 last=_last,
                                 hb=_hb,
+                                status=(lambda: client.current_status(_rc_app)) if _rc["expect_running"] else None,
+                                app=_rc_app,
                                 report=lambda msg: _report(m.name, msg))
                         # The outage and the post_recover inputs are not lag: the diff's clock
                         # restarts when the last of them landed.
@@ -3567,7 +3755,15 @@ class LiveItem(pytest.Item):
                                                 time.sleep(min(2.0, delay - _elapsed))
 
                                         _report(m.name, f"action: stopping app{_tag}")
-                                        client.stop_app(app)
+                                        # Wait until the STOP has taken (DEPLOYED/STOPPED/CREATED)
+                                        # and record it: a rejected STOP, or one that crashed the
+                                        # app, fails the case here instead of passing as an
+                                        # undisturbed run. stop_duration counts from the settle.
+                                        _settled = recovery.stop_cycle(
+                                            client, app, cycle=cycle,
+                                            timeout=recovery.verify_timeout(m.timeout),
+                                            record=self._slt_records.append)
+                                        _report(m.name, f"action: app {_settled}{_tag}")
 
                                         if duration:
                                             _hb_sleep = _hb(f"action: app stopped, waiting to restart{_tag}")
@@ -3606,6 +3802,10 @@ class LiveItem(pytest.Item):
                                             break
                                         _hb_d1(_elapsed, _dr_delay)
                                         time.sleep(min(2.0, _dr_delay - _elapsed))
+                                # Read before the STOP: a CRASH/HALT after it is refused only when
+                                # the STOP put it there (recovery.await_action_interrupted).
+                                _dr_before = (client.current_status(_dr_app)
+                                              if action_spec["capture"] or action_spec["stopped_seed"] else None)
                                 try:
                                     client.stop_app(_dr_app)
                                     _report(m.name, f"action: {_dr_app} stopped")
@@ -3615,7 +3815,8 @@ class LiveItem(pytest.Item):
                                 if action_spec["capture"] or action_spec["stopped_seed"]:
                                     # What is read or written "while stopped" must not race a
                                     # STOP that has been accepted and not yet taken effect.
-                                    recovery.await_left_running(client, _dr_app, timeout=min(300, m.timeout))
+                                    recovery.await_action_interrupted(
+                                        client, _dr_app, "stop", _dr_before, timeout=min(300, m.timeout))
                                     appactions.run_captures(
                                         client, action_spec["capture"], ns, tokens, m.timeout,
                                         report=lambda msg: _report(m.name, msg))
@@ -3695,12 +3896,16 @@ class LiveItem(pytest.Item):
                                 _report(m.name, f"action: alter_recompile ({_ar_app})")
                                 _wait_hb(action_spec["delay_before_stop"],
                                          f"action: waiting to stop {_ar_app}")
-                                if action_spec.get("interrupt", "stop") == "quiesce":
+                                _ar_mode = action_spec.get("interrupt", "stop")
+                                # A RUNNING app the STOP/QUIESCE leaves CRASH or HALT fails here,
+                                # before captures, stopped seeds and the ALTER run against it.
+                                _ar_before = client.current_status(_ar_app)
+                                if _ar_mode == "quiesce":
                                     client.quiesce_app(_ar_app)
                                 else:
                                     client.stop_app(_ar_app)
-                                _ar_status = recovery.await_left_running(
-                                    client, _ar_app, timeout=min(300, m.timeout))
+                                _ar_status = recovery.await_action_interrupted(
+                                    client, _ar_app, _ar_mode, _ar_before, timeout=min(300, m.timeout))
                                 _report(m.name, f"action: {_ar_app} {_ar_status.lower()}")
                                 appactions.run_captures(
                                     client, action_spec["capture"], ns, tokens, m.timeout,
@@ -3799,8 +4004,8 @@ class LiveItem(pytest.Item):
                         records = assert_halt(
                             client, smoke_apps, timeout=m.timeout,
                             progress=_hb("expect_halt: waiting for terminal HALT"),
-                            contains=m.expect_halt_contains,
-                            log_tail=lambda: _node_log_since(ctx, log_marks))
+                            contains=m.expect_halt_contains, mode=ctx.mode,
+                            log_tail=lambda: _halt_log_tail(ctx, log_marks))
                         self._slt_records += records
                         for rec in records:
                             if rec.get("status") == "passed" and m.expect_halt_contains:
@@ -3897,7 +4102,8 @@ class LiveItem(pytest.Item):
                         for _fs in fspecs:
                             _fs["path"] = render(_fs["path"], tokens)
                         self._slt_records += assert_file(
-                            lambda p: read_server_files(ctx, p), fspecs, m.dir, timeout=m.timeout,
+                            lambda p: read_server_files(ctx, p, read_timeout=dockercmd.QUERY_TIMEOUT_S),
+                            fspecs, m.dir, timeout=m.timeout,
                             status_probe=_terminal_probe, progress=_hb("asserting file"), tokens=tokens)
                         ran = True
                     if m.assert_.get("gcs"):
@@ -3972,6 +4178,11 @@ class LiveItem(pytest.Item):
                             xspecs, ns, timeout=m.timeout, status_probe=_terminal_probe,
                             progress=_hb("asserting jmx"))
                         ran = True
+                    # A polling tier reads the status only before each read, and smoke only through
+                    # its settle: an app that dies after the last passing read would pass. One read
+                    # after the last tier closes that window (skipped under expect_halt).
+                    if ran:
+                        _terminal_probe(after_last=True)
                 except AssertionFailed as e:
                     self._slt_records.extend(e.records)
                     raise
@@ -4012,7 +4223,7 @@ class LiveItem(pytest.Item):
             if should_keep_resources(os.environ, deploy_attempted, succeeded or _ended_as_expected(
                     self.config, m, sys.exc_info()[1])):
                 self.config._slt_keep_resources = True   # keep provisioned services at session end
-                _slt_keep_reason = ("SLT_KEEP_RESOURCES is set" if os.environ.get("SLT_KEEP_RESOURCES")
+                _slt_keep_reason = ("SLT_KEEP_RESOURCES is set" if paths.flag("SLT_KEEP_RESOURCES")
                                     else f"{m.name} failed and SLT_KEEP_RESOURCES_ON_ERROR is set")
                 note = (" [SLT_SKIP_VERIFY: app started + seeded, output NOT verified]"
                         if skip_verify else "")
@@ -4053,7 +4264,7 @@ class LiveItem(pytest.Item):
                 gcs_cleanup=gcs_cleanup, kafka_cleanup=kafka_cleanup, upload_names=_slt_upload_names(),
                 file_globs=_slt_file_globs(),
                 checkpoint_ns=ident.ns if m.modules else None, keep_reason=_slt_keep_reason,
-                keep_slots=bool(os.environ.get("SLT_KEEP_RESOURCES")))
+                keep_slots=paths.flag("SLT_KEEP_RESOURCES"))
             if _pg_reset_error is not None:
                 cleanup.status, cleanup.verified = "failed", False
                 cleanup.detail = "; ".join(filter(None, (
@@ -4070,7 +4281,7 @@ class LiveItem(pytest.Item):
                 cleanup.failures.extend({"kind": "oracle-observer", "name": subject, "error": error}
                                         for subject, error in _observers["failed"].items())
             if _slt_keep_reason:
-                if os.environ.get("SLT_KEEP_RESOURCES"):
+                if paths.flag("SLT_KEEP_RESOURCES"):
                     print("[slt] PostgreSQL replication slots and app state kept for exploration.")
                 else:
                     print(f"[slt] STOP sent to apps: {', '.join(cleanup.stopped_apps)}; "
@@ -4086,17 +4297,27 @@ class LiveItem(pytest.Item):
             self._slt_cleanup = cleanup.record()
             self._slt_resources = cleanup.resources()
             if m.lifecycle is None and _slt_keep_reason is None:
-                # the kinds the ledger never deletes keep their pre-ledger teardown (no behaviour change
-                # for a case without the block)
+                # the kinds the ledger never deletes keep their pre-ledger teardown
+                _unowned_failed = {}
                 try:
                     _unowned = teardown_unowned(admins, m.ddl_files, tokens, gcs_cleanup, kafka_cleanup,
                                                 m.assert_.get("file"), lambda _p: clear_server_files(ctx, _p),
                                                 _run_scoped_uploads(_slt_upload_names(), tokens),
                                                 lambda _n: opartifacts.delete_artifacts(ctx, _n),
                                                 oracle_observer_failed=bool(_observers["failed"]))
+                    _unowned_failed = dict(_unowned["failed"])
+                    stop_if_teardown_running(self.session, m.name, _unowned)
                     self._slt_resources = note_unowned_teardown(self._slt_resources, _unowned)
                 except Exception as _e:         # noqa: BLE001 - never replace the case's own outcome
                     print(f"[slt] WARNING: {m.name}: best-effort teardown failed: {_e!r}")
+                    _unowned_failed[f"unowned-teardown {m.name}"] = repr(_e)
+                # A leftover table, topic, bucket, upload or output part is a cleanup failure, not
+                # only a gap line: it fails a case that had nothing else in flight (below).
+                fold_unowned_teardown(cleanup, _unowned_failed)
+                self._slt_cleanup = cleanup.record()
+                self._slt_resources = {**self._slt_resources,
+                                       "cleanupVerified": bool(self._slt_resources.get("cleanupVerified"))
+                                       and cleanup.verified}
 
             # Release the shared in-use lock LAST, after teardown has finished.
             #
@@ -4267,7 +4488,7 @@ def _slt_adopt_exclusive_stack(config, run=None) -> None:
     prefix = stack.prefix()
     if not prefix:
         return
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     try:
         r = run(["docker", "ps", "-a", "--filter", f"name=^{prefix}-slt-", "--format", "{{.Names}}"])
         if getattr(r, "returncode", 1):
@@ -4300,7 +4521,10 @@ def _slt_exclusive_stack_unaccounted(config, exitstatus) -> bool:
     ready = getattr(config, "_slt_nodes_ready", set())
     return bool(getattr(config, "_slt_unreported_worker", False)
                 or ready - getattr(config, "_slt_nodes_reported", set())
-                or (exitstatus == pytest.ExitCode.INTERRUPTED and (ready or getattr(config, "_slt_distributed", False))))
+                or (exitstatus == pytest.ExitCode.INTERRUPTED and (ready or getattr(config, "_slt_distributed", False)))
+                # A serial run records a service only once its bring-up starts, and a Ctrl-C or an internal
+                # error can stop it anywhere: whatever the run did not finish cleanly is found by its prefix.
+                or exitstatus not in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED))
 
 
 def _slt_node_id(node):
@@ -4388,6 +4612,10 @@ def _slt_collect_report(config, item, report):
     outcome = getattr(report, "outcome", "passed")
     if when == "call":
         status = {"passed": "passed", "failed": "failed", "skipped": "skipped"}.get(outcome, "error")
+        if hasattr(report, "wasxfail") and outcome in ("passed", "skipped"):
+            # pytest's xfail: an expected failure reports skipped and a non-strict XPASS passed,
+            # each with `wasxfail`. Neither is the plain outcome it borrows.
+            status = "xpassed" if outcome == "passed" else "xfailed"
     elif when == "setup":
         if outcome == "skipped":
             status = "skipped"
@@ -4408,7 +4636,8 @@ def _slt_collect_report(config, item, report):
         "topology": getattr(item, "_slt_topology", "single"),
         "services": list(getattr(item, "_slt_services", [])),
         "duration": max(0.0, float(getattr(report, "duration", 0.0) or 0.0)),
-        "skip_reason": _slt_skip_reason(report) if status == "skipped" else None,
+        "skip_reason": (_slt_skip_reason(report) if status == "skipped"
+                        else str(report.wasxfail) if status == "xfailed" else None),
         "assertions": list(getattr(item, "_slt_records", [])),
     }
     results[item.nodeid] = tr
@@ -4418,6 +4647,24 @@ def _slt_collect_report(config, item, report):
     props = getattr(item, "user_properties", None)
     if path is not None and props is not None and not any(k == "slt_result_json" for k, _ in props):
         props.append(("slt_result_json", str(path)))
+
+
+def _slt_report_xpasses(terminalreporter) -> None:
+    """Name every live case whose xfail did not fail. A non-strict XPASS exits 0, so without this the
+    one sign that a known bug is fixed, or that its assertion stopped checking, is a count."""
+    xpassed = [r for r in (getattr(terminalreporter, "stats", {}) or {}).get("xpassed", [])
+               if getattr(r, "_slt_live", False)]
+    if not xpassed:
+        return
+    terminalreporter.write_sep("=", f"XPASS: {len(xpassed)} live case(s) passed despite xfail")
+    for r in xpassed:
+        terminalreporter.write_line(f"XPASS {r.nodeid}: {getattr(r, 'wasxfail', '') or 'xfail'}")
+    terminalreporter.write_line("The declared failure did not happen: remove the xfail if the bug is fixed, "
+                                "or set xfail.strict: true so an XPASS fails the run.")
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    _slt_report_xpasses(terminalreporter)
 
 
 def _slt_write_sidecar(config):
@@ -4475,7 +4722,7 @@ def pytest_runtest_makereport(item, call):
         # literal and its own strip, and three separate review rounds each found the marker
         # leaking into one more of them. A flag that is not a string cannot leak.
         rep._slt_live = True
-        # "" when the item was not blocked; otherwise the CAUSE ("cluster"/"docker"/"build").
+        # "" when the item was not blocked; otherwise the CAUSE ("cluster"/"docker"/"service"/"build").
         rep._slt_infra_skip = getattr(item, "_slt_infra_skip", "")
         _slt_collect_report(item.config, item, rep)
         _slt_evidence.finalize_from_report(item, rep)   # C7.4: one envelope per outcome
@@ -4515,7 +4762,7 @@ def pytest_sessionfinish(session, exitstatus):
     # operator / next serial run, or, in an exclusive run, to the controller (from the workers' reports).
     _slt_report_worker_teardown(config)
     unaccounted = not _skip_shared_teardown(os.environ) and _slt_exclusive_stack_unaccounted(config, exitstatus)
-    if unaccounted and (os.environ.get("SLT_KEEP_RESOURCES") or os.environ.get("SLT_KEEP_RESOURCES_ON_ERROR")):
+    if unaccounted and (paths.flag("SLT_KEEP_RESOURCES") or paths.flag("SLT_KEEP_RESOURCES_ON_ERROR")):
         # A crash or an interrupt is a failure, so either keep setting keeps the stack.
         config._slt_keep_resources = True
         print(f"[slt] keeping exclusive stack {stack.prefix()} (SLT_KEEP_RESOURCES*); stop it with: "

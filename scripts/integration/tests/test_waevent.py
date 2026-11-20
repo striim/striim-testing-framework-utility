@@ -230,6 +230,32 @@ def test_an_ignored_index_still_has_its_PRESENCE_compared():
         waevent.compare(emitted, expected, ignore_fields=["metadata.ReadTime", "data[2]"])
 
 
+def test_an_ignored_map_key_still_has_its_PRESENCE_compared():
+    # The same decision for metadata/userdata keys: ignoring a volatile key's VALUE must not
+    # let an operator stop stamping it. Reachability needs the key on one emitted event only,
+    # so before this the key could vanish from every other event and the case stayed green.
+    def stamped(txn):
+        return lambda e: e["metadata"].update(TxnID=txn)
+
+    expected = _events(stamped("a"), stamped("b"), stamped("c"))
+    emitted = _events(stamped("zzz"), None, None)
+    with pytest.raises(waevent.WAEventMismatch, match=r"event 1: metadata is missing key 'TxnID'"):
+        waevent.compare(emitted, expected, ignore_fields=["metadata.TxnID"])
+
+
+def test_an_ignored_map_key_the_fixture_omits_is_still_unexpected():
+    expected = _events(None)
+    emitted = _events(lambda e: e["userdata"].update(Stamp="12:00"))
+    with pytest.raises(waevent.WAEventMismatch, match=r"userdata has unexpected key 'Stamp'"):
+        waevent.compare(emitted, expected, ignore_fields=["userdata.Stamp"])
+
+
+def test_an_ignored_map_key_present_on_both_sides_compares_no_value():
+    expected = _events(lambda e: e["metadata"].update(TxnID="a"))
+    emitted = _events(lambda e: e["metadata"].update(TxnID="zzz"))
+    assert waevent.compare(emitted, expected, ignore_fields=["metadata.TxnID"]) is None
+
+
 def test_a_path_matching_nothing_is_an_error_not_a_noop():
     # Without this, a renamed field leaves the case green while asserting less than its
     # author believes -- silently ignored assertion options.
@@ -349,4 +375,23 @@ def test_a_plain_compare_still_catches_a_section_length_change():
     emitted = [{"data": {"values": [1, 2], "present": [True, True]}}]
     expected = [{"data": {"values": [1], "present": [True]}}]
     with pytest.raises(waevent.WAEventMismatch, match="length mismatch"):
+        waevent.compare(emitted, expected)
+
+
+# --- surplus output: what the operator emits beyond the golden is a mismatch ------------------
+
+def test_an_extra_emitted_event_is_a_count_mismatch():
+    emitted = _events(None, None)
+    expected = _events(None)
+    with pytest.raises(waevent.WAEventMismatch, match=r"event count mismatch: expected 1 event\(s\), got 2"):
+        waevent.compare(emitted, expected)
+
+
+@pytest.mark.parametrize("section", ["metadata", "userdata"])
+def test_an_unexpected_emitted_key_is_a_mismatch(section):
+    def leak(e):
+        e[section]["Leaked"] = "x"
+    emitted = _events(leak)
+    expected = _events(None)
+    with pytest.raises(waevent.WAEventMismatch, match=rf"event 0: {section} has unexpected key 'Leaked'"):
         waevent.compare(emitted, expected)

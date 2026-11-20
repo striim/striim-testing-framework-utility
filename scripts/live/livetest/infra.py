@@ -30,7 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
+import re
 import sys
 import time
 import uuid
@@ -40,14 +40,18 @@ from urllib.parse import urlparse
 
 from filelock import FileLock, Timeout
 
-from livetest import lockdir, stack
+from livetest import dockercmd, lockdir, paths, stack
 
 OWNERSHIP_ENV = "SLT_INFRA_OWNERSHIP"
 MODES = ("exclusive", "shared")
 # An undeclared live run is refused.
 DEFAULT_INFRA_OWNERSHIP = None
-SHARED_PROVISION_LOCK = ".slt-shared-provision.lock"
 SHARED_LOCK_TIMEOUT_S = 600.0
+# SLT_SHARED_PROVISION=0 (a lane's .env): a shared run never starts a missing service, it names the start command.
+SHARED_PROVISION_ENV = "SLT_SHARED_PROVISION"
+# A shared marker's process start time is compared within this slack: a reused pid starts long after the
+# marker was written, while two reads of one process's start time can differ by a clock adjustment.
+_START_SLACK_S = 2.0
 # An xdist worker of the run that holds the exclusive lease joins it; the holder writes the
 # owner record right after acquiring, so a worker waits this long for it before refusing.
 _OWNER_WAIT_S = 5.0
@@ -69,15 +73,15 @@ def _lock_dir() -> Path:
 
 def striim_endpoint(env) -> tuple[str, str, int]:
     """(url, host, port) of the Striim endpoint, resolved exactly as ``plugin._resolve_striim``
-    resolves it."""
-    url = (env.get("STRIIM_URL") or "").strip()
+    resolves it: ``env`` first, then the .env layers. A session has .env merged into its environment
+    by then; `livetest.cli` and the pre-flight entry point do not, and a stop that read ``env`` alone
+    would check another port's sessions than the one a session on .env's STRIIM_URL declared on."""
+    url = (paths.setting("STRIIM_URL", env) or "").strip()
+    svc_host = (paths.setting("SLT_SERVICES_HOST", env) or "").strip()
     if not url:
-        svc_host = (env.get("SLT_SERVICES_HOST") or "").strip() or "localhost"
-        url = f"http://{svc_host}:9080"
-    else:
-        svc_host = (env.get("SLT_SERVICES_HOST") or "").strip()
-        if svc_host and "localhost" in url:
-            url = url.replace("localhost", svc_host)
+        url = f"http://{svc_host or 'localhost'}:9080"
+    elif svc_host and "localhost" in url:
+        url = url.replace("localhost", svc_host)
     parsed = urlparse(url if "://" in url else "http://" + url)
     return url, parsed.hostname or "localhost", parsed.port or 9080
 
@@ -92,8 +96,17 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _process_start(pid: int):
+    """The process's start time (seconds since the epoch), or None when it cannot be read."""
+    try:
+        import psutil
+        return psutil.Process(pid).create_time()
+    except Exception:                   # noqa: BLE001 - no such process, access denied, no psutil
+        return None
+
+
 def _docker_ps(argv):
-    return subprocess.run(argv, capture_output=True, text=True)
+    return dockercmd.run(argv)
 
 
 @dataclass
@@ -223,8 +236,58 @@ def _shared_dir(lock_dir: Path, port: int) -> Path:
     return lock_dir / f".slt-endpoint-{port}.shared"
 
 
+def _marker_live(path: Path, pid: int, pid_alive) -> bool:
+    """A shared marker names a live session only while its pid is alive AND is still the process that wrote it.
+
+    A marker records its process's start time (``started``); a pid whose process started at another time is a
+    reused pid. A marker without one (written before markers recorded it, or not a marker record at all) is
+    judged by its file time instead: the process that wrote it was already running then, so a process that
+    started after the marker was written (a reused pid, or any process after a reboot) is not its writer.
+    When the start time cannot be read, the pid alone decides."""
+    if not pid_alive(pid):
+        return False
+    began = _process_start(pid)
+    if began is None:
+        return True
+    record = _read_owner(path)
+    started = record.get("started") if isinstance(record, dict) else None
+    if isinstance(started, (int, float)) and not isinstance(started, bool):
+        return abs(began - started) <= _START_SLACK_S
+    try:
+        written = path.stat().st_mtime
+    except OSError:
+        return False
+    return began <= written + _START_SLACK_S
+
+
 def _live_shared_markers(lock_dir: Path, port: int, pid_alive) -> list[int]:
-    d = _shared_dir(lock_dir, port)
+    """Live shared sessions on the port. Callers hold the port's registry lock: a marker that names no live
+    session (a dead or reused pid) is removed here, so a marker never outlives its process for long and a
+    later process given the same pid cannot pass for the session that wrote it."""
+    return _live_markers(_shared_dir(lock_dir, port), pid_alive)
+
+
+def _stopping_dir(lock_dir: Path, port: int) -> Path:
+    return lock_dir / f".slt-endpoint-{port}.stopping"
+
+
+def _live_stoppers(lock_dir: Path, port: int, pid_alive) -> list[int]:
+    """Other live processes stopping or restarting the stack on the port (``reserve_stop``). Callers hold the
+    port's registry lock; the records of dead and reused pids are removed as shared markers are."""
+    return [pid for pid in _live_markers(_stopping_dir(lock_dir, port), pid_alive) if pid != os.getpid()]
+
+
+def _refuse_while_stopping(lock_dir: Path, port: int, pid_alive, who: str) -> None:
+    """A declaration is never admitted while another process stops or restarts the stack: it would start
+    using what that stop is removing. Called under the registry lock, as one step with the marker write."""
+    stopping = _live_stoppers(lock_dir, port, pid_alive)
+    if stopping:
+        raise InfraOwnershipError(
+            f"{who} refused: a stop or restart of the stack on Striim port {port} is in progress (pids "
+            f"{stopping}, {_stopping_dir(lock_dir, port)}); start again once it has finished")
+
+
+def _live_markers(d: Path, pid_alive) -> list[int]:
     if not d.is_dir():
         return []
     alive = []
@@ -233,8 +296,13 @@ def _live_shared_markers(lock_dir: Path, port: int, pid_alive) -> list[int]:
             pid = int(p.name)
         except ValueError:
             continue
-        if pid_alive(pid):
+        if _marker_live(p, pid, pid_alive):
             alive.append(pid)
+            continue
+        try:
+            p.unlink()
+        except OSError:                 # another user's marker in the shared sticky dir: still not live
+            pass
     return sorted(alive)
 
 
@@ -292,6 +360,128 @@ def _read_owner(path: Path):
         return None
 
 
+def _stop_users(env, lock_dir: Path, port: int) -> str | None:
+    """Why a stop of the stack on this endpoint must not run now, or None. Callers hold the port's registry lock.
+
+    Read after the markers of dead and reused pids are pruned: a live shared session other than this process,
+    or a live exclusive run other than this process's own run (its lease is held, or its owner or a member is
+    alive). An exclusive run's leftover (no live holder or member) does not refuse."""
+    shared = [pid for pid in _live_shared_markers(lock_dir, port, _pid_alive) if pid != os.getpid()]
+    lease_path = _exclusive_lease_path(lock_dir, port)
+    owner = _read_owner(Path(str(lease_path) + ".owner")) or {}
+    run_id = owner.get("runId") or ""
+    exclusive, held = [], False
+    if not run_id or run_id != (env.get("SLT_RUN_EPOCH") or ""):
+        exclusive = _live_members(lease_path, run_id, _pid_alive)
+        pid = owner.get("pid")
+        if isinstance(pid, int) and pid != os.getpid() and pid not in exclusive and _pid_alive(pid):
+            exclusive.append(pid)
+        held = _exclusive_lease_held(lock_dir, port)
+    users = []
+    if shared:
+        users.append(f"shared session pids {shared}")
+    if exclusive or held:
+        users.append(f"exclusive run {run_id or 'unknown'} (pids {sorted(exclusive) or 'unknown'})")
+    if not users:
+        return None
+    return f"other live sessions use the stack on Striim port {port}: {'; '.join(users)}"
+
+
+# (lock dir, port) -> how many reservations this process holds there: the halves of one `livetest.cli stop`
+# reserve again inside the command's own reservation, and only the outermost release removes the record.
+_stops_held: dict = {}
+
+
+class StopReservation:
+    """This process is stopping or restarting the stack on a port. While its record exists and this process is
+    alive, no declaration on the port is admitted (they refuse, naming this pid). ``release`` it in a
+    ``finally`` once the destructive operation is over; a process that dies holding it leaves a record of a
+    dead pid, which the next check removes. ``path`` None: a forced stop that could not reserve."""
+
+    def __init__(self, lock_dir: Path, port: int, path: Path | None):
+        self.lock_dir, self.port, self.path = lock_dir, port, path
+
+    def release(self) -> None:
+        if self.path is None:
+            return
+        key = (str(self.lock_dir), self.port)
+        depth = _stops_held.get(key, 1) - 1
+        if depth > 0:
+            _stops_held[key] = depth
+        else:
+            _stops_held.pop(key, None)
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+        self.path = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+def _reserve(lock_dir: Path, port: int) -> StopReservation:
+    """Record this process as stopping the stack on ``port``. Callers hold the port's registry lock, and have
+    just found nobody else using the stack in the same hold."""
+    key = (str(lock_dir), port)
+    d = _stopping_dir(lock_dir, port)
+    path = d / str(os.getpid())
+    if key not in _stops_held:
+        lockdir.ensure_dir(d)
+        lockdir.write_text(path, json.dumps({"pid": os.getpid(), "started": _process_start(os.getpid())}))
+    _stops_held[key] = _stops_held.get(key, 0) + 1
+    return StopReservation(lock_dir, port, path)
+
+
+def reserve_stop(env, force: bool = False):
+    """Reserve a stop of the stack on this endpoint: ``(reservation, None)``, or ``(None, why)`` when refused.
+
+    The check that no other live session uses the stack (``_stop_users``) and the record that this process is
+    stopping it are one step under the port's registry lock, and every declaration reads that record under the
+    same lock, so no session can be admitted between the check and the `down -v` that follows: until the
+    reservation is released, a declaration on the port refuses. A registry lock that cannot be taken refuses:
+    nothing was checked. ``force`` skips the check but still reserves, so no new session joins a stack being
+    removed; a forced stop whose reservation cannot be made goes ahead without one."""
+    _url, _host, port = striim_endpoint(env)
+    lock_dir = _lock_dir()
+    try:
+        registry = _registry(lock_dir, port)
+    except InfraOwnershipError as e:
+        if force:
+            return StopReservation(lock_dir, port, None), None
+        return None, f"the ownership registry for Striim port {port} could not be read ({e})"
+    try:
+        why = None if force else _stop_users(env, lock_dir, port)
+        if why is not None:
+            return None, why
+        try:
+            return _reserve(lock_dir, port), None
+        except OSError as e:
+            if force:
+                return StopReservation(lock_dir, port, None), None
+            return None, f"the stop of the stack on Striim port {port} could not be recorded ({e})"
+    finally:
+        registry.release()
+
+
+def reserve_restart(infra: "Infra"):
+    """``reserve_stop`` for the app-node restart of a shared declaration: ``(reservation, [])``, or
+    ``(None, pids)`` when other live shared sessions use the cluster. Any other declaration needs none."""
+    if not isinstance(infra, Infra) or infra.ownership != "shared":
+        return StopReservation(Path(), 0, None), []
+    registry = _registry(infra.lock_dir, infra.port)
+    try:
+        others = [pid for pid in _live_shared_markers(infra.lock_dir, infra.port, _pid_alive) if pid != os.getpid()]
+        if others:
+            return None, others
+        return _reserve(infra.lock_dir, infra.port), []
+    finally:
+        registry.release()
+
+
 def declare(env=None, *, run=None, pid_alive=None) -> Infra:
     """Declare this process's infrastructure ownership, or raise ``InfraOwnershipError``.
 
@@ -317,7 +507,7 @@ def declare(env=None, *, run=None, pid_alive=None) -> Infra:
 
 
 def _declare_shared(env, port: int, lock_dir: Path) -> Infra:
-    if not env.get("SLT_KEEP_SERVICES"):
+    if not paths.flag("SLT_KEEP_SERVICES", env):
         raise InfraOwnershipError(
             f"{OWNERSHIP_ENV}=shared requires SLT_KEEP_SERVICES=1: without it service bring-up "
             f"wipes volumes and session end tears the shared stack down")
@@ -329,10 +519,13 @@ def _declare_shared(env, port: int, lock_dir: Path) -> Infra:
             raise InfraOwnershipError(
                 f"{OWNERSHIP_ENV}=shared refused: an exclusive run holds the endpoint lease for port "
                 f"{port} ({_exclusive_lease_path(lock_dir, port)}; run {owner.get('runId', 'unknown')})")
+        _refuse_while_stopping(lock_dir, port, _pid_alive, f"{OWNERSHIP_ENV}=shared")
+        _live_shared_markers(lock_dir, port, _pid_alive)    # prunes markers of dead and reused pids
         d = _shared_dir(lock_dir, port)
         lockdir.ensure_dir(d)
         marker = d / str(os.getpid())
-        lockdir.write_text(marker, json.dumps({"pid": os.getpid(), "runId": env.get("SLT_RUN_EPOCH", "")}))
+        lockdir.write_text(marker, json.dumps({"pid": os.getpid(), "runId": env.get("SLT_RUN_EPOCH", ""),
+                                               "started": _process_start(os.getpid())}))
     finally:
         registry.release()
     return Infra("shared", port, lock_dir, run_id=env.get("SLT_RUN_EPOCH", ""),
@@ -354,9 +547,15 @@ def _declare_exclusive(env, port: int, lock_dir: Path, run, pid_alive) -> Infra:
     owner_path = Path(str(lease_path) + ".owner")
     # r1 F4: each attempt either holds the lease or joins it; a joiner that finds the lease released meanwhile
     # decides again from the top, so every outcome is checked against the endpoint's current registry.
+    leftover = None             # the allocated prefix's containers, read outside the registry lock
     for _attempt in range(_DECLARE_ATTEMPTS):
-        held = _hold_exclusive(env, port, lock_dir, run, pid_alive, run_id, allocated, lease_path, owner_path)
+        held = _hold_exclusive(env, port, lock_dir, run, pid_alive, run_id, allocated, lease_path, owner_path,
+                               leftover)
+        if held is _SCAN:
+            leftover = _leftover_containers(run, allocated)
+            continue
         if held is not None:
+            _report_orphaned_stacks(run, lock_dir, allocated, pid_alive)
             return held
         joined = _join_exclusive(env, port, lock_dir, run_id, allocated, lease_path, owner_path, pid_alive)
         if joined is not None:
@@ -366,9 +565,73 @@ def _declare_exclusive(env, port: int, lock_dir: Path, run, pid_alive) -> Infra:
         f"{_DECLARE_ATTEMPTS} times while this process declared")
 
 
-def _hold_exclusive(env, port, lock_dir, run, pid_alive, run_id, allocated, lease_path, owner_path) -> Infra | None:
+_SCAN = object()
+_EXCLUSIVE_NAME = re.compile(r"^(x[0-9a-f]{8})-slt-")
+
+
+def _leftover_containers(run, allocated: str) -> str:
+    """The allocated prefix's containers, as `docker ps` lists them. A listing that failed or timed out
+    (``dockercmd.TIMED_OUT``, empty stdout) has listed nothing, so it refuses rather than reading as none."""
+    out = run(["docker", "ps", "-a", "--filter", f"name=^{allocated}-slt-", "-q"])
+    if out.returncode:
+        raise InfraOwnershipError(
+            f"{OWNERSHIP_ENV}=exclusive refused: the containers of the allocated prefix {allocated!r} could not "
+            f"be listed, so a leftover stack cannot be ruled out (`docker ps` exit status {out.returncode}: "
+            f"{(getattr(out, 'stderr', '') or '').strip() or 'no output'})")
+    return (getattr(out, "stdout", "") or "").strip()
+
+
+def _live_exclusive_prefixes(lock_dir: Path, pid_alive) -> set:
+    """The stack prefixes of exclusive runs that still have a live holder or member, on any port."""
+    live = set()
+    for owner_path in lock_dir.glob(".slt-endpoint-*.exclusive.owner"):
+        owner = _read_owner(owner_path) or {}
+        run_id = owner.get("runId")
+        if not run_id:
+            continue
+        lease_path = Path(str(owner_path)[:-len(".owner")])
+        pid = owner.get("pid")
+        if (isinstance(pid, int) and pid_alive(pid)) or _live_members(lease_path, run_id, pid_alive):
+            live.add("x" + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:8])
+    return live
+
+
+def _report_orphaned_stacks(run, lock_dir: Path, allocated: str, pid_alive) -> None:
+    """Name the containers of earlier exclusive runs that no live process owns. Each run allocates a new
+    prefix, so nothing else would look for them again, and they keep their host ports. Reported on stderr,
+    never removed; a failed listing reports nothing."""
+    try:
+        out = run(["docker", "ps", "-a", "--filter", "name=^x", "--format", "{{.Names}}"])
+    except Exception:                   # noqa: BLE001 - a report, never a reason to refuse
+        return
+    if getattr(out, "returncode", 0):
+        return
+    stacks: dict = {}
+    for name in (getattr(out, "stdout", "") or "").split():
+        m = _EXCLUSIVE_NAME.match(name)
+        if m and m.group(1) != allocated:
+            stacks.setdefault(m.group(1), []).append(name)
+    if not stacks:
+        return
+    live = _live_exclusive_prefixes(lock_dir, pid_alive)
+    for prefix, names in sorted(stacks.items()):
+        if prefix in live:
+            continue
+        try:
+            sys.stderr.write(f"WARNING: containers of an earlier exclusive run are still on this machine and keep "
+                             f"their host ports: {', '.join(sorted(names))}; stop them with: "
+                             f"{_STOP_HINT.format(prefix=prefix)}\n")
+        except (OSError, ValueError):
+            pass
+
+
+def _hold_exclusive(env, port, lock_dir, run, pid_alive, run_id, allocated, lease_path, owner_path,
+                    leftover=None):
     """Acquire the free lease and run every check up to the owner/member write under the registry lock
-    (4.1 fix r2). ``None``: another process holds the lease (the registry lock is released again)."""
+    (4.1 fix r2). ``None``: another process holds the lease (the registry lock is released again).
+    ``_SCAN``: the lease was free but the allocated prefix's containers have not been listed yet; the lease is
+    released and the caller lists them outside the registry lock (``leftover``), then decides again. A
+    `docker ps` inside the lock made a hung Docker daemon time out every other declaration on the port."""
     lease = FileLock(str(lease_path), mode=lockdir.file_mode())
     registry = _registry(lock_dir, port)
     try:
@@ -389,9 +652,12 @@ def _hold_exclusive(env, port, lock_dir, run, pid_alive, run_id, allocated, leas
             raise InfraOwnershipError(
                 f"{OWNERSHIP_ENV}=exclusive refused: shared run(s) are registered on port {port} "
                 f"(pids {alive}, {_shared_dir(lock_dir, port)})")
+        _refuse_while_stopping(lock_dir, port, pid_alive, f"{OWNERSHIP_ENV}=exclusive")
         if not still:   # a same-run takeover keeps the run's own stack; anything else must find none
-            out = run(["docker", "ps", "-a", "--filter", f"name=^{allocated}-slt-", "-q"])
-            if (getattr(out, "stdout", "") or "").strip():
+            if leftover is None:
+                lease.release()
+                return _SCAN
+            if leftover:
                 raise InfraOwnershipError(
                     f"{OWNERSHIP_ENV}=exclusive refused: containers of the allocated prefix "
                     f"{allocated!r} already exist (a leftover stack); stop them first: "
@@ -438,6 +704,7 @@ def _join_exclusive(env, port, lock_dir, run_id, allocated, lease_path, owner_pa
                     raise InfraOwnershipError(
                         f"{OWNERSHIP_ENV}=exclusive refused: shared run(s) are registered on port {port} "
                         f"(pids {alive}, {_shared_dir(lock_dir, port)})")
+                _refuse_while_stopping(lock_dir, port, pid_alive, f"{OWNERSHIP_ENV}=exclusive")
                 member = _add_member(lease_path, run_id)
                 break
         finally:
@@ -649,14 +916,33 @@ def teardown_failed(config, what: str, exc: BaseException) -> None:
         infra.teardown = {"status": "failed", "failures": list(failures)}
 
 
+def shared_provision_lock(container: str) -> str:
+    """The shared provisioning lock of one service container, in the machine-wide lock dir. One lock per
+    container, so a Postgres bring-up never waits behind a cold Oracle start."""
+    return f".slt-shared-provision-{container}.lock"
+
+
+def _shared_provision_allowed(env) -> bool:
+    """``SLT_SHARED_PROVISION``: unset or 1 starts a missing shared service (the default); 0 refuses.
+    A switch like the others (livetest.paths.flag): any other value is refused."""
+    from livetest import paths
+    try:
+        return paths.flag(SHARED_PROVISION_ENV, env)
+    except paths.FlagError as e:
+        raise InfraOwnershipError(str(e)) from None
+
+
 def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, load=None,
-                    container_running=None, lock_timeout=SHARED_LOCK_TIMEOUT_S, acquire_lock=None):
+                    container_running=None, lock_timeout=SHARED_LOCK_TIMEOUT_S, acquire_lock=None,
+                    forget=None):
     """The one service adapter for serial and parallel callers (C7.1, N3).
 
-    Undeclared and exclusive: ``resolve_fn`` unchanged. Shared: under the machine-wide shared
-    provisioning lock (bounded), recheck the prefixed container inside the lock; a running one is
+    Undeclared and exclusive: ``resolve_fn`` unchanged. Shared: under the container's machine-wide
+    shared provisioning lock (bounded), recheck the prefixed container inside the lock; a running one is
     pre-registered in ``started`` (``resolve`` then sees ``first == False``) and recorded
-    ``reused``; otherwise ``resolve_fn`` provisions it and it is recorded ``provisioned-and-kept``.
+    ``reused``; otherwise its provision records are forgotten (a record outliving its container made the
+    bring-up a no-op) and ``resolve_fn`` provisions it, recorded ``provisioned-and-kept``. Under
+    ``SLT_SHARED_PROVISION=0`` a missing container is refused instead, naming the start command.
     ``ensure_provisioned_once`` (parallel branch) uses a different lock file, so nothing is
     acquired recursively. ``acquire_lock(lock)``, when given, replaces the bounded acquire."""
     if infra is None:
@@ -677,7 +963,9 @@ def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, loa
         return resolved
     if container in started:
         return resolve_fn(name, env, started, progress=progress)
-    lock = FileLock(str(_lock_dir() / SHARED_PROVISION_LOCK), mode=lockdir.file_mode())
+    allowed = _shared_provision_allowed(env)
+    lock_path = _lock_dir() / shared_provision_lock(container)
+    lock = FileLock(str(lock_path), mode=lockdir.file_mode())
     try:
         if acquire_lock is not None:
             acquire_lock(lock)
@@ -685,13 +973,32 @@ def resolve_service(infra, name, env, started, resolve_fn, progress=None, *, loa
             lock.acquire(timeout=lock_timeout)
     except Timeout:
         raise InfraOwnershipError(
-            f"lock-timeout: {_lock_dir() / SHARED_PROVISION_LOCK} not acquired within "
+            f"lock-timeout: {lock_path} not acquired within "
             f"{lock_timeout:.0f}s while resolving shared service {name}") from None
     try:
         if container_running(container):
             started.add(container)
             status = "reused"
         else:
+            if not allowed:
+                prefix = stack.prefix(env)
+                # The start command opts in for itself: it runs in the same shell or lane `.env`, which sets 0.
+                raise InfraOwnershipError(
+                    f"shared service {name} ({container}) is not running, and {SHARED_PROVISION_ENV}=0 forbids "
+                    f"starting it here; start it with: {SHARED_PROVISION_ENV}=1 "
+                    f"{f'SLT_STACK_PREFIX={prefix} ' if prefix else ''}python -m livetest.cli start {name}")
+            if forget is None:
+                from livetest.services import forget_provisioned as forget
+            try:
+                # Only where `resolve` consults the provision registry (its parallel branch): a serial
+                # run never reads it, and needs no state dir for it.
+                from livetest import paths
+                if env.get("PYTEST_XDIST_WORKER") or paths.flag("SLT_PARALLEL", env):
+                    forget([container, f"{name}-setup"], timeout=dockercmd.LOCK_WAIT_S)
+            except Timeout:
+                raise InfraOwnershipError(
+                    f"lock-timeout: the provision registry was not available within "
+                    f"{dockercmd.LOCK_WAIT_S:.0f}s while resolving shared service {name}") from None
             status = "provisioned-and-kept"
         resolved = resolve_fn(name, env, started, progress=progress)
     finally:
@@ -707,19 +1014,20 @@ DOCKER_INSPECT_TIMEOUT_S = 10.0
 
 
 def _docker_inspect(argv):
-    import subprocess
     from types import SimpleNamespace
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=DOCKER_INSPECT_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        return SimpleNamespace(returncode=124, stdout="", stderr=f"timed out after {DOCKER_INSPECT_TIMEOUT_S:.0f}s")
+        r = dockercmd.run(argv, timeout=DOCKER_INSPECT_TIMEOUT_S)
     except OSError as e:
         return SimpleNamespace(returncode=127, stdout="", stderr=str(e))
+    if r.returncode == dockercmd.TIMED_OUT:
+        return SimpleNamespace(returncode=124, stdout="", stderr=f"timed out after {DOCKER_INSPECT_TIMEOUT_S:.0f}s")
+    return r
 
 
 def strip_userinfo(url):
-    import re
-    return re.sub(r"(?P<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@", r"\g<s>", url) if isinstance(url, str) else url
+    """``url`` without its credentials: up to the last ``@`` of the authority (``evidence._USERINFO``)."""
+    from livetest.evidence import _USERINFO
+    return _USERINFO.sub(r"\g<s>", url) if isinstance(url, str) else url
 
 
 def inspect_image(container: str) -> dict:

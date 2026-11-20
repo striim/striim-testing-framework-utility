@@ -70,9 +70,26 @@ def parse_owner(text, status=0):
     raise Refused('missing or conflicting ZooKeeper stat evidence')
 
 
+# A credential-named key, an optional closing quote and its delimiter ("password": "x", PWD=x), then the value:
+# a quoted string, or everything to the next whitespace.
+_KEYED_SECRET = re.compile(r'''(?i)(password|passwd|pwd|secret|token|licen[cs]e_key|product_key)(["']?\s*[=:]\s*)'''
+                           r'''("[^"]*"|'[^']*'|\S+)''')
+_IDENTIFIED_BY = re.compile(r'''(?i)(\bIDENTIFIED\s+BY\s+)("[^"]*"|'[^']*'|\S+)''')
+
+
+def _masked(m):
+    value = m.group(m.lastindex)
+    quote = value[0] if value[:1] in ('"', "'") else ''
+    return m.group(0)[:m.start(m.lastindex) - m.start(0)] + f'{quote}[redacted]{quote}'
+
+
 def _redact(text, limit=4096):
-    return re.sub(r'(?i)(password|secret|token|licen[cs]e_key|product_key)(\s*[=:]\s*)\S+',
-                  r'\1\2[redacted]', str(text))[:limit]
+    """A pre-flight reason as the outcomes file and the log may show it: the evidence redactor's known
+    secret values and URL credentials, then credential-named keys and ``IDENTIFIED BY`` clauses."""
+    from livetest import evidence
+    text = evidence.redact_text(str(text), evidence.known_secrets(), home='', hostname='')
+    text = _KEYED_SECRET.sub(_masked, text)
+    return _IDENTIFIED_BY.sub(_masked, text)[:limit]
 
 
 @dataclass

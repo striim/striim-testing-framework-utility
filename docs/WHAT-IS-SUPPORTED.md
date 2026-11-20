@@ -35,7 +35,7 @@ What differs in native mode:
 | `op:` / `udf:` jars | copied into the cluster | `STRIIM_HOME` must be the running server's own install, on this machine: the jars are copied into `$STRIIM_HOME/UploadedFiles`. `striim-test doctor --case` checks it |
 | Named-node faults and `placement` | yes, framework cluster and published survivor API | named-node recovery skips; no framework Docker role mapping |
 | `recover: {mode: kill}` | yes | **not supported**: there is no container to kill. The test is skipped, never downgraded to `stop` |
-| `expect_halt_contains` on a halt while running | checked against the server log | the test passes without the check, and its record says `halt reason not checked (native mode)` |
+| `expect_halt_contains` on a halt while running | checked against the server log; a log that cannot be read, or has nothing since the case deployed, fails the test | the test passes without the check, and its record says `halt reason not checked (native mode)` |
 | `assert.jmx` | yes | **not supported**: it fails at once, since there are no exporters to read |
 | `topology: cluster` | two nodes and an agent | needs a server with at least two nodes in `default` and an agent in `Agents`; otherwise the test is skipped |
 | how Striim reaches the databases | `host.docker.internal` | `localhost`, or `SLT_<SERVICE>_VIEW_HOST` |
@@ -79,16 +79,21 @@ licence ([SERVICES.md](SERVICES.md), "Teradata"). Point it at your instance the 
 `.env` or the shell:
 
 ```
-SLT_TERADATA_HOST=td.example.com
-SLT_TERADATA_PORT=1025            # default 1025
-SLT_TERADATA_USER=dbc             # the admin; default dbc
-SLT_TERADATA_PASSWORD=...
-SLT_TERADATA_SOURCE_USER=qasource   # default qasource; SOURCE_PASSWORD, SOURCE_SCHEMA likewise
-SLT_TERADATA_TARGET_USER=qatarget   # default qatarget; TARGET_PASSWORD, TARGET_SCHEMA likewise
+SLT_TERADATA_HOST=td.example.com      # required; unset, Teradata tests skip
+SLT_TERADATA_PORT=1025                # default 1025
+SLT_TERADATA_USER=dbc                 # required: the admin
+SLT_TERADATA_PASSWORD=...             # required
+SLT_TERADATA_SOURCE_USER=qasource     # required
+SLT_TERADATA_SOURCE_PASSWORD=...      # required
+SLT_TERADATA_SOURCE_SCHEMA=qasource   # default qasource
+SLT_TERADATA_TARGET_USER=qatarget     # required
+SLT_TERADATA_TARGET_PASSWORD=...      # required
+SLT_TERADATA_TARGET_SCHEMA=qatarget   # default qatarget
 ```
 
-- The admin user creates the source and target users when they cannot log in. In Teradata a user
-  is also a database, so each schema defaults to its user's name.
+- The six user and password settings have no default; a run that needs Teradata stops and names
+  any that are unset. The admin user creates the source and target users when they cannot log in.
+  In Teradata a user is also a database, so set each schema to its user's name.
 - `SLT_TERADATA_VIEW_HOST` sets the host Striim reaches it by, when that differs.
 - The integration tier reads the same settings with the `INT_TERADATA_` prefix (`INT_TERADATA_HOST`,
   `INT_TERADATA_ADMIN_USER` and so on).
@@ -129,7 +134,7 @@ real instance.
 
 The integration tier (`scripts/integration`) tests an Open Processor or UDF against databases without a
 whole Striim app. It uses its own containers, on other ports, so it can run beside the live tier.
-This repo ships no integration cases (`SLT_INT_CASES` points at yours).
+This repo ships one integration case, `scripts/integration/regression/op/referenceop/referenceop-adds-processed`; `SLT_INT_CASES` points at yours.
 
 | Service | Image | Host port | Your own instance | Status |
 |---|---|---|---|---|
@@ -205,7 +210,7 @@ tier, and in the integration tier stops the run at collection. `striim-test doct
 | `server_files:` | **supported, not exercised here** (`framework-server-files`) |
 | `action:` `capture`, `alter_recompile`; `drop_recreate_app` `capture` / `stopped_seed` / `tokens` | **supported, not run on a cluster yet**; hermetic tests only |
 | `server_files:` `load:` from outside the test dir (absolute, `${...}`, `gs://`) | **supported, not run on a cluster yet**; hermetic tests only (`gs://` with a fake download) |
-| `op:` / `udf:` (your jars, built with Maven) | **tested**: `samples/code/op` and `samples/code/udf`, both modes, on the Linux host |
+| `op:` / `udf:` (your jars, built with Maven) | **tested**: `samples/code/op` and `samples/code/udf`, on the Linux host. The two samples run in Docker mode only (their file check is under `${OWNED_DIR}`); `op:`/`udf:` itself has no Docker requirement |
 | `tokens:`, `kafka_cleanup_topics:`, `generate:` (GoldenGate trail files) | **supported, not exercised here** |
 | `topology: cluster` | **supported, not exercised here** |
 
@@ -240,7 +245,7 @@ tier, and in the integration tier stops the run at collection. `striim-test doct
 | `nothing.read_timeout` | 5s by default; positive duration | One failed or over-budget probe fails the absence check |
 | Snapshot rows/bytes | 100000 rows and 64 MiB by default; at most 1000000 and 512 MiB | Row budget covers all tables; byte budget applies per table |
 | `snapshot_observer.max_snapshots` | 10000 by default; at most 100000 | Exhaustion fails instead of truncating history |
-| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` | `striim-test doctor --case` reports them. `assert:` tier names are checked too (above) |
+| unknown `test.yaml` keys | refused at load, top level and inside `op:` / `udf:` / `ddl:` / `seed:` / `server_files:` / `generate:` / `action:` (with `concurrent:`) / `exact:` / `lifecycle:` / `recover:` / `xfail:` / `raw:` / `nothing:` / `transactions:` / `snapshot_observer:` / `audit:` / `setup: bigtable:` and every `data` / `diff` / `file` / `gcs` / `json` / `bigtable` assertion spec | `striim-test doctor --case` reports them. `assert:` tier names are checked too (above) |
 
 ## Check routes
 

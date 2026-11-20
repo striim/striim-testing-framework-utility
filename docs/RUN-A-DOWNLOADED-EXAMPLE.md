@@ -8,8 +8,9 @@ Each bundle holds one case. Its publisher tells you its location and module name
 
 ## What you need
 
-- This framework, installed in its own virtual environment, at the commit the bundle names (step 2).
-- Python 3.12.
+- A clone of this framework, installed in its own virtual environment (step 1), then moved to the
+  commit the bundle names (step 2).
+- Python 3.12 or later.
 - A Striim server of your own **on this machine**, started from its install folder, at the release
   the bundle was built for (5.4.0 means 5.4.0.6). The test copies the jar into that install's
   `UploadedFiles` folder, so a server on another host does not work.
@@ -19,9 +20,13 @@ Each bundle holds one case. Its publisher tells you its location and module name
 
 ## 1. Fetch the bundle
 
+Install the framework clone once, then fetch:
+
 ```bash
 export FW=/path/to/striim-testing-framework-utility
 export SLT_FRAMEWORK_HOME="$FW"
+python3.12 -m venv "$FW/.venv"           # Python 3.12 or later; skip if the clone already has one
+"$FW/.venv/bin/python" -m pip install -e "$FW"
 "$FW/.venv/bin/striim-test" fetch --gcs-prefix gs://<bucket>/<Module>/5.4.2 --destination ./downloaded
 ```
 
@@ -41,11 +46,10 @@ that fails for any other reason (network, `gcloud` sign-in, emulator unreachable
 
 ## 2. Use the framework at that commit
 
-Check out the printed commit in your framework clone and install it:
+Check out the printed commit in your framework clone and reinstall it into the same environment:
 
 ```bash
 git -C "$FW" checkout --detach <commit>
-python3.12 -m venv "$FW/.venv"
 "$FW/.venv/bin/python" -m pip install -e "$FW"
 ```
 

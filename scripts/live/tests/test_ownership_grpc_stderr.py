@@ -21,7 +21,7 @@ def test_a_grpc_fork_line_does_not_make_a_listing_unreadable(monkeypatch):
     def fake_run(argv, **kwargs):
         return SimpleNamespace(returncode=0, stdout=f"{ownership._LS_DONE}\n",
                                stderr=f"{GRPC_LINE}\nls: cannot access '/opt/x*': No such file or directory\n")
-    monkeypatch.setattr(ownership.subprocess, "run", fake_run)
+    monkeypatch.setattr(ownership.dockercmd, "run", fake_run)
     assert ownership.docker_ls("/opt/x*", nodes=["n1"]) == []
 
 
@@ -29,7 +29,7 @@ def test_any_other_stderr_still_makes_a_listing_unreadable(monkeypatch):
     def fake_run(argv, **kwargs):
         return SimpleNamespace(returncode=0, stdout=f"{ownership._LS_DONE}\n",
                                stderr="ls: /opt: Permission denied\n")
-    monkeypatch.setattr(ownership.subprocess, "run", fake_run)
+    monkeypatch.setattr(ownership.dockercmd, "run", fake_run)
     try:
         ownership.docker_ls("/opt/x*", nodes=["n1"])
     except ownership.InventoryError as e:

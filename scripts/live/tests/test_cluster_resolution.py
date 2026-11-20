@@ -1,6 +1,7 @@
 """A joined cluster must still have full membership when its topology is cached."""
 from types import SimpleNamespace
 import pytest
+from filelock import FileLock
 from livetest import plugin, striim_provision as sp
 from livetest.topology import topology_satisfies
 
@@ -18,7 +19,7 @@ class Clock:
 
 
 def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reachable=True, probes=None,
-            running="5.4.2", before=None):
+            running="5.4.2", before=None, config=None):
     clock, calls, progress = Clock(), [], []
     class Client:
         api = SimpleNamespace(post_tungsten_line=lambda *args, **kwargs: None)
@@ -43,7 +44,7 @@ def resolve(monkeypatch, tmp_path, responses, *, docker=True, xmlpath=None, reac
     monkeypatch.setattr(sp, "verify_current_inputs", lambda *args: None)
     if before:
         before()
-    config = SimpleNamespace(option=SimpleNamespace(xmlpath=xmlpath))
+    config = config or SimpleNamespace(option=SimpleNamespace(xmlpath=xmlpath))
     return plugin._resolve_striim(config), config, clock, calls, progress
 
 
@@ -179,3 +180,98 @@ def test_a_booting_cluster_on_the_stock_image_is_reused_as_before(monkeypatch, t
     ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)], probes=[False, False, False, True],
                               before=wire)
     assert ctx is not None and events == [] and config._slt_striim_provisioned is False
+
+
+def _cold(monkeypatch, cluster_up):
+    import socket
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: (_ for _ in ()).throw(OSError("closed")))
+    monkeypatch.setattr(sp, "ensure_deps", lambda *a, **k: None)
+    monkeypatch.setattr(sp, "ensure_image", lambda *a, **k: None)
+    monkeypatch.setattr(sp, "cluster_up", cluster_up)
+
+
+def test_an_interrupted_cluster_up_leaves_the_cluster_queued_for_teardown(monkeypatch, tmp_path):
+    # Ctrl-C inside `docker compose up`: the containers it created must still be torn down at session end.
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+    _cold(monkeypatch, interrupted)
+    config = SimpleNamespace(option=SimpleNamespace(xmlpath=None))
+    with pytest.raises(KeyboardInterrupt):
+        resolve(monkeypatch, tmp_path, [groups(True)], docker=False, reachable=False, config=config)
+    assert config._slt_striim_provisioned is True
+
+
+def test_a_failed_cluster_up_is_not_recorded_as_provisioned(monkeypatch, tmp_path):
+    def refused(*a, **k):
+        raise RuntimeError("compose up failed")
+    _cold(monkeypatch, refused)
+    ctx, config, *_ = resolve(monkeypatch, tmp_path, [groups(True)], docker=False, reachable=False)
+    assert ctx is None and "compose up failed" in config._slt_striim_reason
+    assert getattr(config, "_slt_striim_provisioned", False) is False
+
+
+def test_a_waiter_for_the_cluster_provisioning_lock_gives_up_naming_it(monkeypatch, tmp_path):
+    from livetest import dockercmd
+    monkeypatch.setattr(dockercmd, "LOCK_WAIT_S", 0.3)
+    _cold(monkeypatch, lambda *a, **k: pytest.fail("provisioned without the lock"))
+    stop = _held_elsewhere(tmp_path / "cluster.lock")
+    try:
+        box = _waits_at_most(lambda: resolve(monkeypatch, tmp_path, [groups(True)], docker=False, reachable=False))
+    finally:
+        stop()
+    assert "error" not in box, box
+    ctx, config, *_ = box["value"]
+    assert ctx is None and "cluster.lock" in config._slt_striim_reason
+    assert "not acquired within 0s" in config._slt_striim_reason
+
+
+def _held_elsewhere(path):
+    """Hold ``path``'s lock from another thread (a real contending holder) until the returned stop() runs."""
+    import threading
+    got, done = threading.Event(), threading.Event()
+
+    def hold():
+        lock = FileLock(str(path))
+        lock.acquire()
+        got.set()
+        done.wait(60)
+        lock.release()
+
+    t = threading.Thread(target=hold, daemon=True)
+    t.start()
+    assert got.wait(10)
+
+    def stop():
+        done.set()
+        t.join(10)
+    return stop
+
+
+def _waits_at_most(fn, seconds=10):
+    """Run ``fn`` in a thread; fail if it is still waiting after ``seconds`` (an unbounded wait)."""
+    import threading
+    box = {}
+
+    def call():
+        try:
+            box["value"] = fn()
+        except BaseException as e:      # noqa: BLE001 - handed back to the test
+            box["error"] = e
+
+    t = threading.Thread(target=call, daemon=True)
+    t.start()
+    t.join(seconds)
+    assert not t.is_alive(), f"still waiting for the lock after {seconds}s"
+    return box
+
+
+@pytest.mark.parametrize("budget", ["12", "40"])
+def test_own_cluster_that_never_authenticates_is_waited_for_slt_striim_boot_wait(monkeypatch, tmp_path, budget):
+    """SLT_STRIIM_BOOT_WAIT (default 300s): how long our own booting Docker cluster may take to
+    authenticate before the run gives up on it."""
+    monkeypatch.setenv("SLT_STRIIM_BOOT_WAIT", budget)
+    monkeypatch.setattr(plugin.stack, "striim_container", lambda: "slt-striim")
+    ctx, config, clock, calls, progress = resolve(monkeypatch, tmp_path, [groups(False)], reachable=False)
+    assert ctx is None and calls == []
+    assert f"slt-striim is running but did not authenticate within {budget}s" in config._slt_striim_reason
+    assert int(budget) <= clock.now < 300, "waited its own budget, not the 300s default"

@@ -22,6 +22,7 @@ assert:
     - target: ${PG_TARGET_SCHEMA}.${TID}customer
       target_db: postgres-target
       match: expected/customer.csv
+      rows: 3                       # source_oracle_seed.sql inserts 3 rows
 
 timeout: 180
 tags: [regression, self-contained, oracle, postgres]

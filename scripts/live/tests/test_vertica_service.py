@@ -159,7 +159,7 @@ def test_init_sql_creates_the_service_accounts_and_schemas():
 
 def test_published_port_matches_service_defaults():
     port = _defaults()["port"]
-    assert f"${{SLT_VERTICA_HOST_PORT:-{port}}}:5433" in _compose_service()["ports"]
+    assert f"${{SLT_BIND_ADDRESS:-0.0.0.0}}:${{SLT_VERTICA_HOST_PORT:-{port}}}:5433" in _compose_service()["ports"]
 
 
 def test_both_tiers_declare_the_required_open_file_limit():

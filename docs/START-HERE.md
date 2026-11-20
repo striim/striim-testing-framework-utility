@@ -42,7 +42,7 @@ create tables → seed data → deploy and start the app → wait until it is re
 |---|---|---|
 | How | set `STRIIM_URL`, `STRIIM_USER`, `STRIIM_PASS` | leave `STRIIM_URL` unset |
 | First run | immediate | downloads 6.3 GB, builds a 22 GB image, starts a two-node cluster and an agent |
-| Needs | a user that can create and drop apps | Docker with 35 GB free, and your own Striim license |
+| Needs | a user that can create and drop apps | Docker with 35 GB free, memory for three Striim JVMs (a 16 GB heap each by default, `SLT_STRIIM_MEM_MAX`), and your own Striim license |
 | Cannot | read files on the Striim nodes, kill a node, read JMX | — |
 
 Both run the same tests. [WHAT-IS-SUPPORTED.md](WHAT-IS-SUPPORTED.md) has the details.
@@ -50,7 +50,7 @@ Both run the same tests. [WHAT-IS-SUPPORTED.md](WHAT-IS-SUPPORTED.md) has the de
 ## Services
 
 A test lists the databases and systems it needs under `requires:` (`postgres`, `oracle`, `mssql`,
-`mysql`, `vertica`, `kafka`, `spanner`, `gcs`, `bigquery`). The framework starts each one in Docker with
+`mysql`, `vertica`, `kafka`, `spanner`, `gcs`, `bigquery`, `bigtable`). The framework starts each one in Docker with
 test-only accounts, or reuses it if it is running. Set a service's host and it uses your instance
 instead. Teradata and ServiceNow are always your own instance. [SERVICES.md](SERVICES.md).
 
@@ -96,7 +96,7 @@ Browse the [documentation catalog](CATALOG.md) for every guide, grouped by audie
 - **Golden**: the expected result, a CSV (or JSON) file under `expected/`.
 - **Token**: a `${NAME}` the framework fills in for each run: hosts, users, names.
 - **`${TID}`**: a per-test prefix for every object name, so two tests, or two runs, never collide.
-  Empty in a serial run.
+  In a live case it is never empty; in an integration case run serially it is empty.
 - **Route**: which database and account a `ddl:`, `seed:` or assertion uses, such as
   `postgres-source` (the `qasource` schema) or `postgres-target` (`qatarget`).
 - **Run directory**: where a run writes its logs, JUnit XML and evidence, printed as `run-dir:`.

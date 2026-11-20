@@ -6,11 +6,12 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-from livetest import docker_disk, stack
+from livetest import docker_disk, dockercmd, stack
 from livetest.topology import parse_deployment_groups, Topology
 
 _DEFAULT_STRIIM_VERSION = "5.4.2"
@@ -44,6 +45,18 @@ DEPS_MANIFEST_SCHEMA_VERSION = 1
 _DEPS_MANIFEST_KEYS = frozenset({"schemaVersion", "directory", "sha256"})
 # The verified installer identity, recorded in the recipe's files/ (-> /slt-build-inputs).
 INSTALLER_IDENTITY_FILE = "slt-installer-identity.json"
+# Checkout mode: the SHA-256 of each third-party file download-dependencies.sh fetches, shipped with
+# the framework (`<sha256>  <filename>` lines; the script reads the same file). Striim publishes no
+# checksums for its .debs, so a file the list does not name is pinned the first time this machine
+# sees it, in DEPS_PINS_FILE beside it in deps/, and must match that pin on every later build.
+SHIPPED_DEP_DIGESTS = Path(__file__).resolve().parents[1] / "services" / "striim" / "deps.sha256"
+DEPS_PINS_FILE = ".slt-sha256-pins.json"
+# Each checked file's size, mtime and ctime when it last matched its digest: a file whose stat is
+# unchanged is not read again (the striim-node .deb alone is ~3.3 GB). Only a cache -- an unreadable
+# or unwritable one means hashing again -- while the pins stay the record that is refused, not
+# replaced. Kept in the recipe folder, outside the image's build context: the Dockerfile bind-mounts
+# deps/, so a file that changed there would invalidate the cached install layers.
+DEPS_VERIFIED_FILE = ".slt-sha256-verified.json"
 
 # Teradata's JDBC driver is under Teradata's licence (use only with a licensed Teradata platform),
 # so it is never a required input: download-dependencies.sh fetches it only on this opt-in, and the
@@ -59,10 +72,10 @@ SERVICE_JARS = {"teradata": (TERADATA_JDBC_JAR, TERADATA_JDBC_ENV)}
 
 def teradata_jdbc_opted_in(env=None) -> bool:
     """SLT_TERADATA_JDBC=1 in ``env``, or by default the environment then ``.env``."""
-    if env is not None:
-        return (env.get(TERADATA_JDBC_ENV) or "").strip() == "1"
     from livetest import paths
-    return (paths.setting(TERADATA_JDBC_ENV) or "").strip() == "1"
+    if env is not None:
+        return paths.flag(TERADATA_JDBC_ENV, env)
+    return paths.parse_flag(TERADATA_JDBC_ENV, paths.setting(TERADATA_JDBC_ENV))
 
 
 class StriimDepsError(Exception):
@@ -151,6 +164,142 @@ def load_striim_deps_manifest(path=None, env=None) -> tuple:
                 f"Striim deps manifest {mpath}: sha256 value for {name} is not a 64-hex digest")
         expected[name] = digest.lower()
     return ddir, expected
+
+
+def shipped_dep_digests(path=None) -> dict:
+    """{filename: sha256} from the shipped third-party digest list (SHIPPED_DEP_DIGESTS)."""
+    path = Path(path or SHIPPED_DEP_DIGESTS)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StriimDepsError(
+            f"cannot read the shipped dependency digests {path}: {exc.__class__.__name__}") from exc
+    digests = {}
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) != 2 or not _is_hex64(parts[0]):
+            raise StriimDepsError(f"{path}:{number}: expected `<sha256>  <filename>`")
+        digests[parts[1]] = parts[0].lower()
+    return digests
+
+
+def _read_dep_pins(path: Path) -> dict:
+    """{filename: sha256} recorded on first sight; {} when nothing is recorded yet. An unreadable
+    record is refused rather than replaced: rewriting it would trust whatever is present now."""
+    if path.is_symlink():
+        raise StriimDepsError(
+            f"{path} is a symlink; the dependency pin record is never read or written through one")
+    if not path.exists():
+        return {}
+    fix = "delete it to pin the files present now again"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise StriimDepsError(
+            f"cannot read the dependency pin record {path} ({exc.__class__.__name__}); {fix}") from exc
+    pins = data.get("sha256") if isinstance(data, dict) and data.get("schemaVersion") == 1 else None
+    if not isinstance(pins, dict) or not all(isinstance(k, str) and _is_hex64(v) for k, v in pins.items()):
+        raise StriimDepsError(
+            f"the dependency pin record {path} is not a schemaVersion 1 record of SHA-256 digests; {fix}")
+    return {k: v.lower() for k, v in pins.items()}
+
+
+def _read_dep_verified(path: Path) -> dict:
+    """{filename: {"stat": [size, mtime_ns, ctime_ns], "sha256": digest}} from DEPS_VERIFIED_FILE,
+    or {} when it is missing, a symlink or not a record this code wrote."""
+    try:
+        if path.is_symlink():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    files = data.get("files") if isinstance(data, dict) and data.get("schemaVersion") == 1 else None
+    if not isinstance(files, dict):
+        return {}
+    return {name: entry for name, entry in files.items()
+            if isinstance(entry, dict) and _is_hex64(entry.get("sha256"))
+            and isinstance(entry.get("stat"), list) and len(entry["stat"]) == 3
+            and all(type(v) is int for v in entry["stat"])}
+
+
+def _dep_stat(path: Path) -> list:
+    st = path.stat()
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns]
+
+
+def _write_dep_pins(path: Path, pins: dict) -> None:
+    _write_dep_record(path, {"schemaVersion": 1, "sha256": dict(sorted(pins.items()))})
+
+
+def _write_dep_record(path: Path, record: dict) -> None:
+    data = json.dumps(record, indent=1) + "\n"
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        raise
+
+
+def verify_checkout_deps(striim_dir: Path, version: str = _DEFAULT_STRIIM_VERSION) -> None:
+    """Checkout mode, after any download: every required file, and the Teradata driver when deps/
+    holds it, must match its shipped SHA-256 or, for a file the list does not name (the Striim
+    .debs), the digest recorded the first time this machine saw it. A file that is merely present
+    and non-empty is never trusted: it is hashed unless its size, mtime and ctime are what they were
+    when it last matched the digest it must match now (DEPS_VERIFIED_FILE). Raises StriimDepsError
+    naming the first file that does not match; first-sight pins and the verified stats are recorded
+    only when all match."""
+    d = _deps_dir(striim_dir)
+    shipped = shipped_dep_digests()
+    pins_path = d / DEPS_PINS_FILE
+    pins = _read_dep_pins(pins_path)
+    verified_path = Path(striim_dir) / DEPS_VERIFIED_FILE
+    verified = _read_dep_verified(verified_path)
+    names = list(_required_deps(version))
+    if (d / TERADATA_JDBC_JAR).is_file():
+        names.append(TERADATA_JDBC_JAR)
+    new, seen = {}, {}
+    for name in names:
+        path = d / name
+        if not path.is_file():
+            raise StriimDepsError(f"missing Striim build dependency: {name}")
+        # Stat before hashing: a file that changes while it is read gets a stat that no longer
+        # matches, so it is hashed again next time.
+        stat = _dep_stat(path)
+        expected = shipped.get(name) or pins.get(name)
+        if expected and verified.get(name) == {"stat": stat, "sha256": expected}:
+            seen[name] = verified[name]
+            continue
+        got = _sha256_of(path)
+        seen[name] = {"stat": stat, "sha256": got}
+        if name in shipped:
+            if got != shipped[name]:
+                raise StriimDepsError(
+                    f"digest mismatch for Striim build dependency: {name} does not match the SHA-256 "
+                    f"the framework ships in {Path(SHIPPED_DEP_DIGESTS).name}; delete {path} and run "
+                    f"again to download it again")
+        elif name in pins:
+            if got != pins[name]:
+                raise StriimDepsError(
+                    f"digest mismatch for Striim build dependency: {name} differs from the SHA-256 "
+                    f"recorded when this machine first saw it ({DEPS_PINS_FILE} in {d}); if Striim "
+                    f"republished the file, delete it and its entry there, then run again")
+        else:
+            new[name] = got
+    if new:
+        _write_dep_pins(pins_path, {**pins, **new})
+    if seen != verified:
+        try:
+            _write_dep_record(verified_path, {"schemaVersion": 1, "files": dict(sorted(seen.items()))})
+        except OSError:
+            pass      # a cache: every file is simply hashed again next time
 
 
 def _staged_ok(final: Path, digest: str) -> bool:
@@ -345,7 +494,7 @@ def running_image_reason(container: str, version: str, run=None):
     running container must run that exact image. Returns a redeploy reason when the container's
     immutable image ID differs from the tag's image ID, or when either ID is unavailable (never a match); None when they are the same image."""
     from livetest import tryout
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     try:
         want = cluster_image_ref(version)     # the tryout image when SLT_STRIIM_TRYOUT_JARS is set
     except tryout.TryoutError as e:
@@ -389,10 +538,24 @@ def _gate_striim_deps(striim_dir: Path, version: str) -> None:
             "consumer-supplied installer-input manifest")
 
 def _stream(argv, cwd=None):
-    # inherit stdout/stderr so download/build progress shows live
+    # The installer download and the image build only: inherit stdout/stderr so their progress shows
+    # live, unbounded (the user watches them and can stop them). Cluster up/down use _bounded_stream.
     r = subprocess.run(argv, cwd=cwd)
     if r.returncode != 0:
         raise RuntimeError(f"command failed ({r.returncode}): {' '.join(argv)}")
+
+def _bounded_stream(argv, cwd=None, *, timeout):
+    """The cluster's `docker compose up`/`down`: output still reaches the terminal as it comes, but the
+    command and its children are stopped at ``timeout``, which raises like a failed command (bring-up
+    reports it as a failed provision, teardown records a teardown failure)."""
+    def echo(line):
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    code = dockercmd.stream(argv, echo, timeout=timeout, cwd=cwd)
+    if code == dockercmd.TIMED_OUT:
+        raise RuntimeError(dockercmd.timed_out_message(argv, timeout))
+    if code != 0:
+        raise RuntimeError(f"command failed ({code}): {' '.join(argv)}")
 
 @contextlib.contextmanager
 def _env_override(extra: dict):
@@ -519,13 +682,15 @@ def ensure_deps(striim_dir: Path, release: dict | None = None, run=None, progres
         _gate_striim_deps(striim_dir, version)   # raises, naming SLT_STRIIM_DEPS_MANIFEST
     teradata_missing = (teradata_jdbc_opted_in()
                         and not (_deps_dir(striim_dir) / TERADATA_JDBC_JAR).is_file())
-    if deps_present(_deps_dir(striim_dir), version) and not teradata_missing:
-        return
-    if progress: progress("cluster", "downloading dependencies (one-time)")
-    print(f"[striim] downloading build dependencies for {version} (one-time)…")
-    with _env_override({"STRIIM_VERSION": version,
-                        TERADATA_JDBC_ENV: "1" if teradata_jdbc_opted_in() else None}):
-        run(["./download-dependencies.sh"], cwd=str(striim_dir))
+    if not (deps_present(_deps_dir(striim_dir), version) and not teradata_missing):
+        if progress: progress("cluster", "downloading dependencies (one-time)")
+        print(f"[striim] downloading build dependencies for {version} (one-time)…")
+        with _env_override({"STRIIM_VERSION": version,
+                            TERADATA_JDBC_ENV: "1" if teradata_jdbc_opted_in() else None}):
+            run(["./download-dependencies.sh"], cwd=str(striim_dir))
+    # Present is not verified: check the bytes, downloaded just now or long ago (FW-57).
+    if progress: progress("cluster", "verifying dependency digests")
+    verify_checkout_deps(striim_dir, version)
 
 def image_ref(version: str = _DEFAULT_STRIIM_VERSION, env=None) -> str:
     """The image tag for THIS stack: ``ec`` + ``slt-striim:5.4.0.6C`` -> ``ec-slt-striim:5.4.0.6C``.
@@ -570,7 +735,7 @@ def tryout_stock_check(run=None) -> tuple:
 
 
 def image_present(version: str = _DEFAULT_STRIIM_VERSION, run=None) -> bool:
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     out = run(["docker", "images", "-q", image_ref(version)])
     return bool((getattr(out, "stdout", "") or "").strip())
 
@@ -605,6 +770,40 @@ def _local_build_inputs(striim_dir: Path) -> dict:
     return out
 
 
+_PROBE_PREFIX = "slt-image-probe-"
+_PROBE_NAME = re.compile(r"slt-image-probe-([0-9]+)")
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                 # another user's live process
+    return True
+
+
+def _clear_leaked_probes(run) -> None:
+    """Remove every ``slt-image-probe-<pid>`` container whose pid is no longer alive: a probe leaked by a
+    run interrupted between ``create`` and ``rm``. A live pid's probe is left alone (a concurrent check,
+    or a reused pid, which only delays the cleanup). A failed listing removes nothing."""
+    try:
+        out = run(["docker", "ps", "-a", "--filter", f"name=^{_PROBE_PREFIX}", "--format", "{{.Names}}"])
+    except OSError:
+        return
+    if getattr(out, "returncode", 1) != 0:
+        return
+    for name in (getattr(out, "stdout", "") or "").split():
+        m = _PROBE_NAME.fullmatch(name)
+        if not m or int(m.group(1)) == os.getpid() or _pid_alive(int(m.group(1))):
+            continue                # the current pid's probe is removed by name just after
+        try:
+            run(["docker", "rm", "-f", name])
+        except OSError:
+            pass
+
+
 def image_inputs_match(version: str, striim_dir: Path, run=None) -> bool:
     """True iff the image's embedded build inputs equal the checkout's, byte for byte.
 
@@ -617,7 +816,7 @@ def image_inputs_match(version: str, striim_dir: Path, run=None) -> bool:
     next successful check. A failed `cp` is different and reads as STALE -- that is how an image
     built before /slt-build-inputs existed announces itself, and it is indistinguishable from a
     transient cp error, so the safe reading is the one that rebuilds."""
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     # Absent locally: `docker create` would try to PULL (there is no registry for this image),
     # which fails after a network timeout -- inside the provisioning FileLock, on what is
     # supposed to be the fast reuse path. Nothing to compare either way; ensure_image handles
@@ -627,7 +826,8 @@ def image_inputs_match(version: str, striim_dir: Path, run=None) -> bool:
     # a SIGINT between create and rm is invisible to `docker ps` and to `--remove-orphans` --
     # it belongs to no compose project -- yet it pins the 21 GB image, so `docker rmi` then
     # fails with a confusing reference error. Named, it is greppable
-    # (`docker ps -a --filter name=slt-image-probe`) and the next run clears it.
+    # (`docker ps -a --filter name=slt-image-probe`) and the next run clears it: the pre-clean
+    # removes every probe whose pid is no longer alive (_clear_leaked_probes), then its own name.
     # In candidate mode an image whose build inputs cannot be read has an
     # unverifiable installer identity, so a failed inspection is a non-match (rebuild).
     strict = candidate_mode()
@@ -636,6 +836,7 @@ def image_inputs_match(version: str, striim_dir: Path, run=None) -> bool:
     try:
         if not image_present(version, run=run):
             return True          # nothing to compare; ensure_image handles absence by building
+        _clear_leaked_probes(run)
         try:
             run(["docker", "rm", "-f", probe])       # clear a leak from an interrupted run
         except OSError:
@@ -718,7 +919,7 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
     # ask it. Build args (STRIIM_VERSION, JDK_VERSION) come from the process env via
     # _env_override -- compose.yaml declares them as build.args.
     run = run or _stream
-    query = query_run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    query = query_run or dockercmd.run
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
     java_release = (release or {}).get("JAVA_RELEASE")
     manifest_mode = bool((os.environ.get(DEPS_MANIFEST_ENV) or "").strip())
@@ -755,10 +956,24 @@ def ensure_image(striim_dir: Path, release: dict | None = None, run=None, progre
 # Bigtable tests self-provisioning like GCS/Kafka. They stay out of the base compose so a plain
 # `docker compose up` still targets real Spanner and Bigtable.
 def _compose_files():
+    from livetest import paths
     files = list(_COMPOSE_FILES)
-    if os.environ.get("SLT_ENABLE_NODE_FAULTS") == "1":
+    if paths.flag("SLT_ENABLE_NODE_FAULTS"):
         files += ["-f", "compose.node-fault.yaml"]
+    if _debug_enabled():
+        files += ["-f", DEBUG_COMPOSE_FILE]
     return files
+
+
+# SLT_STRIIM_DEBUG=1 runs the primary's JDWP debugger, published on the host's 127.0.0.1 only
+# (compose.debug.yaml). Off otherwise: JDWP has no authentication.
+DEBUG_ENV = "SLT_STRIIM_DEBUG"
+DEBUG_COMPOSE_FILE = "compose.debug.yaml"
+
+
+def _debug_enabled() -> bool:
+    from livetest import paths
+    return paths.flag(DEBUG_ENV, paths.effective_env(os.environ))
 
 
 _COMPOSE_FILES = ["-f", "compose.yaml", "-f", "compose.spanner-emulator.yaml",
@@ -773,7 +988,7 @@ def compose_files(striim_dir: Path) -> list[Path]:
 def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress=None,
                query_run=None) -> None:
     if progress: progress("cluster", "starting containers")
-    run = run or _stream
+    run = run or (lambda argv, cwd=None: _bounded_stream(argv, cwd, timeout=dockercmd.COMPOSE_UP_TIMEOUT_S))
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
     # Fill the cluster/license config from the STRIIM_HOME install (conf/startUp.properties)
     # so a bare live run "just works" without the operator exporting
@@ -785,10 +1000,12 @@ def cluster_up(striim_dir: Path, release: dict | None = None, run=None, progress
     derived = {v: enriched[v] for v in _LICENSE_VARS if sources[v] == "derived"}
     if progress and derived:
         progress("cluster", f"license config derived from STRIIM_HOME: {', '.join(sorted(derived))}")
-    from livetest import tryout
+    from livetest import bindaddr, paths, tryout
     tryouts = tryout.configured()
-    with _env_override({"STRIIM_VERSION": version, **derived}), _tryout_override(tryouts, version, query_run) \
-            as (files, up_flags):
+    # Where the published ports bind (SLT_BIND_ADDRESS; this machine and its containers by default).
+    bind = bindaddr.compose_env(paths.effective_env(os.environ), run=query_run)
+    with _env_override({"STRIIM_VERSION": version, **derived, **bind}), \
+            _tryout_override(tryouts, version, query_run) as (files, up_flags):
         # --remove-orphans: renaming a compose SERVICE strands its container exactly as
         # renaming the project does -- compose stops managing the old one but leaves it
         # RUNNING. Upgrading past the slt-striim-node -> slt-node rename would otherwise
@@ -834,15 +1051,14 @@ def cluster_has_containers(striim_dir: Path, release: dict | None = None) -> boo
     runner here would silently read as "no containers"."""
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
     with _env_override({"STRIIM_VERSION": version}):
-        r = subprocess.run(["docker", "compose", *_compose_files(), "ps", "-aq"],
-                           cwd=str(striim_dir), capture_output=True, text=True)
+        r = dockercmd.run(["docker", "compose", *_compose_files(), "ps", "-aq"], cwd=str(striim_dir))
     if r.returncode:
         raise RuntimeError(f"could not ask Docker what the Striim project owns: "
                            f"{(r.stderr or r.stdout).strip()[-300:]}")
     return bool(r.stdout.strip())
 
 def cluster_down(striim_dir: Path, release: dict | None = None, run=None) -> None:
-    run = run or _stream
+    run = run or (lambda argv, cwd=None: _bounded_stream(argv, cwd, timeout=dockercmd.COMPOSE_DOWN_TIMEOUT_S))
     version = (release or {}).get("STRIIM_VERSION", _DEFAULT_STRIIM_VERSION)
     with _env_override({"STRIIM_VERSION": version}):
         # -v so teardown removes volumes (full reset semantics).
@@ -938,7 +1154,7 @@ def app_nodes_generation(run=None) -> str:
     Best-effort by design: any failure yields "", which simply means records are not
     generation-scoped on that setup rather than that they are all discarded.
     """
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     stamps = []
     for node in stack.app_nodes():
         try:

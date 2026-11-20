@@ -15,6 +15,7 @@ assert:
   file:
     - path: /tmp/${NS}-out
       match: expected/events.csv   # DSVParser without a typed output stream keys columns positionally (0,1,...); golden headers match
+      events: 3                     # input.csv holds 3 data rows (header: true skips the header)
       project: data
 
 timeout: 180

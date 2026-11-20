@@ -2,24 +2,16 @@ from __future__ import annotations
 import os
 import pytest
 from pathlib import Path
-from livetest import project
 from livetest.ggtrail import harness
 
 # Striim's own GGTrailParser TestData, which lives in the product repo, not this one. There is
 # no default: set GGTRAIL_TESTDATA to its TestData/data directory to run these tests.
 _TESTDATA = os.environ.get("GGTRAIL_TESTDATA", "").strip()
 FIXTURES = Path(_TESTDATA) if _TESTDATA else None
-# Second, in-repo ground truth (spec §9.5): a real GG-produced trail shipped with the
-# repo. Its endianness and Defgen version (cust.def is 4.0, not the 2.0 grammar we emit)
-# are unconfirmed, so its test is xfail-not-strict until someone runs it on the Mac.
-# Under the project root (SLT_PROJECT_ROOT; default this clone), where a test repo ships it.
-REPO_FIXTURES = project.example_root() / "tools" / "scripts" / "database" / "gg_trail_file"
-
-pytestmark = pytest.mark.skipif(not os.environ.get("STRIIM_HOME"), reason="requires STRIIM_HOME for the Java oracle")
-# The Java oracle is tools/ggtrail-harness in your test repo: without it, skip, even with STRIIM_HOME set.
+# The Java oracle needs STRIIM_HOME and tools/ggtrail-harness from your test repo; the skip says how to run it.
 from livetest.ggtrail import harness as _ggtrail_harness  # noqa: E402
-_NO_HARNESS = _ggtrail_harness.missing_reason()
-pytestmark = [pytestmark, pytest.mark.skipif(_NO_HARNESS is not None, reason=_NO_HARNESS or "")]
+_NO_ORACLE = _ggtrail_harness.oracle_skip_reason()
+pytestmark = pytest.mark.skipif(_NO_ORACLE is not None, reason=_NO_ORACLE or "")
 
 
 @pytest.mark.skipif(FIXTURES is None or not FIXTURES.exists(), reason=f"GGTrailParser TestData not at {FIXTURES} -- set GGTRAIL_TESTDATA to its TestData/data directory")
@@ -38,13 +30,3 @@ def test_decodes_known_posauthorizations_row():
         "if this is 'ANY 1' the ASCII_V decode truncates and column values need a "
         "4-byte pad prefix on the wire, not just [colIndex][colLen][value]"
     )
-
-
-@pytest.mark.xfail(strict=False, reason="dm000003 endianness/def-version unconfirmed")
-@pytest.mark.skipif(not REPO_FIXTURES.exists(), reason="in-repo gg_trail_file fixture missing")
-def test_decodes_in_repo_dm000003_fixture():
-    # Free corroboration against a second real GG trail (spec §9.5). cust.def is Defgen
-    # 4.0 and the trail's byte order is unverified, so a failure here is informative,
-    # not a regression -- hence xfail(strict=False).
-    records = harness.decode_dir(REPO_FIXTURES, REPO_FIXTURES / "cust.def", wildcard="dm*")
-    assert records, "expected at least one decoded record from tools/scripts/database/gg_trail_file/dm000003"

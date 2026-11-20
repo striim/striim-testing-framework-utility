@@ -36,11 +36,23 @@ P.opartifacts.upload_artifacts = _upload
 def _stop_app(self, app):
     log("stop_app", app=app)
     STATE["running"] = False
+    STATE["stops"] = STATE.get("stops", 0) + 1
+    # crash_on_stop: n -- the n-th STOP leaves the app CRASH instead of stopped
+    STATE["stopped_as"] = "CRASH" if STATE["stops"] == SC.get("crash_on_stop") else "CREATED"
 
 
 def _quiesce_app(self, app):
     log("quiesce_app", app=app)
     STATE["running"] = False
+    STATE["stopped_as"] = "QUIESCED"
+
+
+_harness_status = FakeClient.current_status
+
+
+def _current_status(self, app):
+    status = _harness_status(self, app)
+    return STATE.get("stopped_as", status) if status != "RUNNING" else status
 
 
 def _describe(self, name):
@@ -75,6 +87,7 @@ def _force_drop(self, app):
 
 
 FakeClient.stop_app = _stop_app
+FakeClient.current_status = _current_status
 FakeClient.quiesce_app = _quiesce_app
 FakeClient.describe = _describe
 FakeClient.mon = _mon
@@ -210,3 +223,25 @@ def test_the_alter_fragment_gets_the_op_upload_rename(run_case, monkeypatch):
     ns = alter["tql"].split(";", 1)[0][len("USE "):]
     assert f"ConfigFile: 'UploadedFiles/{ns}_cfg.json'" in alter["tql"]
     assert "UploadedFiles/cfg.json" not in alter["tql"]
+
+
+def test_alter_recompile_refuses_a_stop_that_crashed_the_running_app(run_actions):
+    run = run_actions(GOOD, crash_on_stop=1)
+    env = _agree(run, "failed")
+    assert "CRASH after STOP" in run.junit()[2]
+    ev = run.events()
+    stop = _at(ev, lambda e: e["event"] == "stop_app")
+    # nothing the stopped phase does ran against the crashed app: no capture, seed or ALTER
+    assert not any(e["event"] == "describe" for e in ev[stop:])
+    assert not any(e["event"] == "insert" and e["ids"] == [2] for e in ev)
+    assert not any(e["event"] == "deploy_tql" and "RECOMPILE" in e["tql"] for e in ev)
+    assert env["lifecycle"]["cleanup"]["status"] == "ok"
+
+
+def test_drop_recreate_stopped_seed_refuses_a_stop_that_crashed_the_running_app(run_actions):
+    run = run_actions(GOOD, crash_on_stop=2)            # the alter's STOP is clean; the drop's crashes
+    env = _agree(run, "failed")
+    assert "CRASH after STOP" in run.junit()[2]
+    assert not any(e["event"] == "insert" and e["ids"] == [4] for e in run.events())
+    assert "force_drop" not in run.names()
+    assert env["lifecycle"]["cleanup"]["status"] == "ok"

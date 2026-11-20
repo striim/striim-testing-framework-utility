@@ -11,7 +11,9 @@ _TOKEN_CHARS = r"A-Za-z0-9_.\-/@"
 _ASSIGNMENT = r"(?P<pre>(?i:[A-Za-z0-9_.\-]*(?:PASS|PWD|SECRET|TOKEN|KEY|CREDENTIAL|AUTH)[A-Za-z0-9_.\-]*)[\"']?\s*[=:]\s*[\"']?)"
 _SECRET_NAME = re.compile(r"(?i)(PASS|PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|AUTH|COMPANY_NAME|CLUSTER_NAME)")
 _CREDENTIAL_KEY = re.compile(r"(?i)(PASS|SECRET|KEY|TOKEN|COMPANY_NAME|CLUSTER_NAME)")
-_USERINFO = re.compile(r"(?P<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+# A URL's credentials: everything up to the LAST "@" of the authority, which ends at the first "/", "?" or
+# "#" (RFC 3986). Up to the first "@", a password containing one ("p@ss") kept its tail.
+_USERINFO = re.compile(r"(?P<s>[A-Za-z][A-Za-z0-9+.-]*://)[^/?#\s\"']+@")
 PUBLIC_NAMES = frozenset({"striim"})
 _LICENCE_NAME = re.compile(r"(?i)(?:[A-Za-z0-9_]*_)?(?:COMPANY|CLUSTER)_NAME")
 

@@ -13,8 +13,12 @@ services:
       GOMEMLIMIT: ${SLT_BIGQUERY_GOMEMLIMIT:-640MiB}
       BIGQUERY_PROJECT: ${SLT_BIGQUERY_PROJECT:-test-project}
       BIGQUERY_DATASET: ${SLT_BIGQUERY_DATASET:-slt}
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
-      - "${SLT_BIGQUERY_REST_HOST_PORT:-9050}:9050"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_BIGQUERY_REST_HOST_PORT:-9050}:9050"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_BIGQUERY_REST_HOST_PORT:-9050}:9050"
     networks: [slt-bigquery-net]
   slt-bigquery-token:
     image: ${SLT_BIGQUERY_TOKEN_IMAGE:-python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1}
@@ -25,7 +29,8 @@ services:
     volumes:
       - ./faketoken.py:/srv/faketoken.py:ro
     ports:
-      - "${SLT_BIGQUERY_TOKEN_HOST_PORT:-9051}:9051"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_BIGQUERY_TOKEN_HOST_PORT:-9051}:9051"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_BIGQUERY_TOKEN_HOST_PORT:-9051}:9051"
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9051/token', timeout=2)"]
       interval: 2s

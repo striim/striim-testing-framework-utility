@@ -1,4 +1,5 @@
 from __future__ import annotations
+import copy
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -79,6 +80,13 @@ _DROP_RECREATE_KEYS = {"type", "app", "delay_before_stop", "recreate_wait", "see
                        "capture", "stopped_seed", "tokens"}
 _ALTER_RECOMPILE_KEYS = {"type", "app", "file", "delay_before_stop", "interrupt", "capture",
                          "stopped_seed", "server_files", "seed"}
+# The keys each block entry's parser reads; anything else is refused at load, naming the key.
+# `source_db`/`target_db` are the deprecated ddl/seed route keys, still read (with a warning).
+_FILE_ENTRY_KEYS = {"file", "db", "source_db", "target_db", "local"}
+_SERVER_FILE_KEYS = {"file", "dest", "when", "load"}
+_GENERATE_KEYS = {"kind", "workload", "dest", "when"}
+_CONCURRENT_KEYS = {"db", "file", "loop_interval"}
+_STOP_START_CYCLE_KEYS = {"type", "cycles", "delay_before_stop", "stop_duration", "concurrent"}
 # How alter_recompile takes the app down before the swap: STOP (no flush) or QUIESCE (the drain).
 _ALTER_RECOMPILE_INTERRUPTS = ("stop", "quiesce")
 # Statements alter_recompile writes itself around the fragment. A fragment carrying one would
@@ -112,8 +120,122 @@ def _deployment_groups(raw, path):
     return raw
 
 
+class CardinalityWarning(UserWarning):
+    """A `match:` compares distinct sets and nothing in its spec pins how many rows or events
+    there are, so a writer that duplicates on retry passes it. Raised at load (collection), and
+    shown by `striim-test doctor`."""
+
+
+#: The keys that make a `match:` count what it compares, per tier (`exact:` is the typed compare).
+_CARDINALITY_PINS = {"data": "rows: N, ordered: true or exact:",
+                     "file": "events: N, multiset: true or exact:"}
+
+
+def _match_is_counted(kind: str, spec: dict) -> bool:
+    if "exact" in spec:     # data and file `exact:` is always the typed, counted compare
+        return True
+    if kind == "data":
+        return "rows" in spec or spec.get("ordered") is True
+    return "events" in spec or spec.get("multiset") is True
+
+
+def _data_route(spec: dict) -> str:
+    # The route plugin._spec_route gives a data spec: one assert_data call runs per route, so only
+    # specs on the same route are read in the same poll.
+    return spec.get("source_db") or spec.get("target_db") or spec.get("db") or "postgres-source"
+
+
+def _int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None     # refused by parse_data_specs when the tier runs
+
+
+def _check_counted_specs(raw: dict, assert_, path, recover, expect_halt: bool) -> None:
+    """Load-time rules for data/file/diff specs whose compare cannot see a duplicate or a late row.
+
+    * A `match:` with no cardinality pin compares distinct sets: warned, and refused under
+      `recover:`, whose point is what an interruption and retry left behind.
+    * `rows: 0` passes at the first poll that reads the target empty, which is also what an app
+      that has not written yet looks like. It is refused unless something proves the app got that
+      far: a positive spec on the same route (read in the same poll; a typed `exact:` spec runs to
+      completion before it), a `lifecycle:` block, or `expect_halt: true` (the data tiers run
+      after the terminal halt).
+    * `stable_seconds` on a typed `exact:` data or diff spec would be ignored by the typed path.
+    """
+    if not isinstance(assert_, dict):
+        return
+    block = raw.get("exact")
+    for kind in ("data", "file"):
+        specs = assert_.get(kind)
+        for i, spec in enumerate(specs if isinstance(specs, list) else []):
+            if (not isinstance(spec, dict) or "match" not in spec or "nothing" in spec
+                    or "raw" in spec or _match_is_counted(kind, spec)):
+                continue
+            why = (f"assert.{kind}[{i}] 'match:' compares distinct sets, so a row written twice passes"
+                   f" it; pin the count with {_CARDINALITY_PINS[kind]}")
+            if recover:
+                raise ManifestError(
+                    f"{path}: {why} -- a 'recover:' case must, since what a retry duplicated is what"
+                    f" it tests")
+            warnings.warn(f"{path}: {why}", CardinalityWarning, stacklevel=3)
+    for kind in ("data", "diff"):
+        specs = assert_.get(kind)
+        for i, spec in enumerate(specs if isinstance(specs, list) else []):
+            if not isinstance(spec, dict) or "stable_seconds" not in spec or "exact" not in spec:
+                continue
+            legacy = kind == "diff" and isinstance(spec["exact"], bool) and (block is None or not spec["exact"])
+            if not legacy:
+                raise ManifestError(
+                    f"{path}: assert.{kind}[{i}] 'stable_seconds' is not supported with a typed 'exact:'"
+                    f" spec, which would ignore it; use 'lifecycle:' to prove completion")
+    if raw.get("lifecycle") is not None or expect_halt:
+        return
+    data = [(i, s) for i, s in enumerate(assert_.get("data") or [])
+            if isinstance(s, dict) and "nothing" not in s]
+    for i, spec in data:
+        if "rows" not in spec or _int_or_none(spec["rows"]) != 0:
+            continue
+        route = _data_route(spec)
+        if any(j != i and _data_route(t) == route and (
+                "match" in t or "min_rows" in t or (_int_or_none(t.get("rows")) or 0) > 0)
+               for j, t in data):
+            continue
+        raise ManifestError(
+            f"{path}: assert.data[{i}] 'rows: 0' passes at the first poll that reads "
+            f"{spec.get('target')!r} empty, which is also what an app that has not written yet looks"
+            f" like -- add a positive spec (min_rows, rows: N or match) on the same route ({route}),"
+            f" a 'lifecycle:' block, or 'expect_halt: true' if the app is meant to halt")
+
+
+def _check_stable_windows(assert_, path) -> None:
+    """A `stable_seconds` on a data, diff, json or file spec is a finite number of seconds from 0
+    to the bound: `.inf` holds the window open forever and `.nan` silently skips it. Checked at
+    load, so `striim-test doctor` refuses it, and again by each tier's spec parser."""
+    if not isinstance(assert_, dict):
+        return
+    from livetest.assertions.data import check_stable_seconds
+    for kind in ("data", "diff", "json", "file"):
+        specs = assert_.get(kind)
+        for i, spec in enumerate(specs if isinstance(specs, list) else []):
+            if isinstance(spec, dict) and "stable_seconds" in spec:
+                check_stable_seconds(spec["stable_seconds"], f"{path}: assert.{kind}[{i}]", ManifestError)
+
+
 class ManifestError(Exception):
     pass
+
+
+def _timeout(raw: dict, path) -> int:
+    """`timeout` is ``int()`` of the value, as documented in TEST-YAML.md: a fraction keeps its whole
+    seconds and the range is not checked. A value ``int()`` cannot read, such as the duration string
+    `90s` other keys take, is a ManifestError naming the file rather than a bare ValueError."""
+    value = raw.get("timeout", 120)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise ManifestError(f"{path}: 'timeout' must be a number of seconds, got {value!r}") from None
 
 
 def _diff_poll(raw: dict, path) -> float:
@@ -244,6 +366,12 @@ def _normalize_file_specs(raw, field_name: str, path=None, allow_when: bool = Fa
                 raise ManifestError(
                     f"'{field_name}' list items need a 'file' (plus an optional 'db' "
                     f"route): {item!r}")
+            unknown = sorted(str(k) for k in item if k not in _FILE_ENTRY_KEYS | {"when", "after"})
+            if unknown:
+                allowed = _FILE_ENTRY_KEYS | ({"when", "after"} if allow_when else set())
+                raise ManifestError(
+                    f"{path}: '{field_name}' entry has unknown key(s) {unknown} -- allowed: "
+                    f"{sorted(allowed)}: {item!r}")
             if refs_out is not None:
                 refs_out.append((item["file"], _parse_local(item, field_name, path)))
             # A ddl/seed file routes to ONE admin; default to the source route.
@@ -358,6 +486,11 @@ def _normalize_server_files(raw, path=None) -> list:
         raise ManifestError("'server_files' must be a list of {file, dest, when, load} entries")
     out = []
     for item in raw:
+        if isinstance(item, dict) and set(item) - _SERVER_FILE_KEYS:
+            raise ManifestError(
+                f"{path}: 'server_files' item has unknown key(s) "
+                f"{sorted(str(k) for k in item if k not in _SERVER_FILE_KEYS)} -- allowed: "
+                f"{sorted(_SERVER_FILE_KEYS)}: {item!r}")
         if not isinstance(item, dict) or not item.get("file") or not item.get("dest"):
             raise ManifestError(f"'server_files' item needs 'file' and 'dest': {item!r}")
         when = item.get("when", "pre_deploy")
@@ -436,6 +569,11 @@ def _normalize_generate(raw, source_dir, path) -> list:
     for item in raw:
         if not isinstance(item, dict):
             raise ManifestError(f"{path}: 'generate' entries must be mappings: {item!r}")
+        if set(item) - _GENERATE_KEYS:
+            raise ManifestError(
+                f"{path}: 'generate' entry has unknown key(s) "
+                f"{sorted(str(k) for k in item if k not in _GENERATE_KEYS)} -- allowed: "
+                f"{sorted(_GENERATE_KEYS)}: {item!r}")
         kind = item.get("kind")
         if not isinstance(kind, str) or not kind.strip():
             raise ManifestError(
@@ -575,6 +713,11 @@ def _parse_concurrent(action: dict, i: int, path, requires) -> list:
             if not isinstance(op, dict):
                 raise ManifestError(
                     f"{path}: action[{i}] concurrent[{j}] must be a dict, got {op!r}")
+            if set(op) - _CONCURRENT_KEYS:
+                raise ManifestError(
+                    f"{path}: action[{i}] concurrent[{j}] has unknown key(s) "
+                    f"{sorted(str(k) for k in op if k not in _CONCURRENT_KEYS)} -- allowed: "
+                    f"{sorted(_CONCURRENT_KEYS)}")
             op_db = op.get("db")
             if not op_db:
                 raise ManifestError(
@@ -1096,6 +1239,61 @@ def _fixture_timeout(raw, path):
     return value
 
 
+# The fields livetest.exactdata's typed readers index for each tier.
+_TYPED_ENDPOINTS = {"data": ("target",), "file": ("path",), "diff": ("source", "target")}
+
+
+def _check_assert_specs(assert_, path) -> None:
+    """Parse every data/diff/file/gcs/json spec at load, as the run would after deploy, so an
+    incomplete spec or a key no assertion reads is refused before anything is provisioned.
+
+    Each spec is parsed on its own copy: the parsers normalize in place (a json `key` string
+    becomes a list) and the run parses again. `nothing:` on data/file and `raw:` on file are
+    validated by livetest.nothing and livetest.rawfile; on any other tier `nothing:` is an
+    unknown key. A typed spec (`exact:` on data or file, a mapping `exact:` on diff) has its
+    keys and the endpoint its reader indexes (data `target`, file `path`, diff `source` and
+    `target`) checked here: canon validates the rest, as the run does.
+    """
+    from livetest.assertions import refuse_unknown_keys
+    from livetest.assertions.data import DATA_SPEC_KEYS, DataSpecError, parse_data_specs
+    from livetest.assertions.diff import DIFF_SPEC_KEYS, DiffSpecError, parse_diff_specs
+    from livetest.assertions.file import FILE_SPEC_KEYS, FileSpecError, parse_file_specs
+    from livetest.assertions.gcs import GCS_SPEC_KEYS, GcsSpecError, parse_gcs_specs
+    from livetest.assertions.json import JSON_SPEC_KEYS, JsonSpecError, parse_json_specs
+    if not isinstance(assert_, dict):
+        return
+    for tier, parse, error, keys in (("data", parse_data_specs, DataSpecError, DATA_SPEC_KEYS),
+                                     ("diff", parse_diff_specs, DiffSpecError, DIFF_SPEC_KEYS),
+                                     ("file", parse_file_specs, FileSpecError, FILE_SPEC_KEYS),
+                                     ("gcs", parse_gcs_specs, GcsSpecError, GCS_SPEC_KEYS),
+                                     ("json", parse_json_specs, JsonSpecError, JSON_SPEC_KEYS)):
+        specs = assert_.get(tier)
+        if specs is None:
+            continue
+        if not isinstance(specs, list):
+            if tier in ("data", "diff", "file"):
+                continue            # canon refuses the shape (invalid-assert-shape)
+            try:
+                parse(specs)
+            except error as e:
+                raise ManifestError(f"{path}: {e}") from None
+        for i, spec in enumerate(specs):
+            try:
+                if isinstance(spec, dict) and tier in ("data", "file") and (
+                        "nothing" in spec or (tier == "file" and "raw" in spec)):
+                    continue
+                if isinstance(spec, dict) and "exact" in spec and (
+                        tier in ("data", "file") or isinstance(spec["exact"], dict)):
+                    refuse_unknown_keys(spec, keys, f"{tier} spec", error)
+                    missing = [k for k in _TYPED_ENDPOINTS[tier] if not spec.get(k)]
+                    if missing:
+                        raise error(f"{tier} spec with exact needs {missing}")
+                    continue
+                parse([copy.deepcopy(spec)])
+            except error as e:
+                raise ManifestError(f"{path}: assert.{tier}[{i}]: {e}") from None
+
+
 def load_manifest(path: Path) -> TestManifest:
     path = Path(path)
     try:
@@ -1176,6 +1374,11 @@ def load_manifest(path: Path) -> TestManifest:
         raise ManifestError(
             f"{path}: 'expect_halt_contains' requires 'expect_halt: true' -- it is only "
             f"checked on the halt path, so without it the key would be a silent no-op")
+    if expect_halt and not expect_halt_contains:
+        _deprecated(path, "'expect_halt: true' without 'expect_halt_contains' accepts any terminal "
+                          "status for any reason, a startup failure included; set "
+                          "expect_halt_contains to the halt reason. This becomes an error in a "
+                          "later release.")
 
     recover = _normalize_recover(raw.get("recover"), path)
     # `when: post_recover` seeds run after the (last) recover: restore reaches RUNNING, before
@@ -1209,6 +1412,7 @@ def load_manifest(path: Path) -> TestManifest:
         raise ManifestError(
             f"{path}: 'assert' has unknown tier(s) {sorted(set(assert_) - VALID_ASSERT_TIERS)} -- "
             f"allowed: {sorted(VALID_ASSERT_TIERS)}")
+    _check_assert_specs(assert_, path)
     # T4-MON. Validated at load so a clock is refused before any stack boots for it.
     if assert_ and assert_.get("monitor") is not None:
         from livetest.assertions.monitor import MonitorSpecError, parse_monitor_specs
@@ -1266,6 +1470,8 @@ def load_manifest(path: Path) -> TestManifest:
         raise ManifestError(
             f"{path}: 'recover' requires an assertion beyond 'smoke' -- the point of the "
             f"phase is what survived the interruption, and smoke only re-checks RUNNING")
+    _check_counted_specs(raw, assert_, path, recover, expect_halt)
+    _check_stable_windows(assert_, path)
 
     # Option C: `example:` points at the shipped OP example dir (repo-relative). When
     # set, tql/ddl/seed/upload files are read from THERE (the certified shipped files);
@@ -1415,6 +1621,11 @@ def load_manifest(path: Path) -> TestManifest:
             if not action_type:
                 raise ManifestError(f"{path}: action[{i}] must have a 'type' key")
             if action_type == "stop_start_cycle":
+                unknown = sorted(str(k) for k in action if k not in _STOP_START_CYCLE_KEYS)
+                if unknown:
+                    raise ManifestError(
+                        f"{path}: action[{i}] 'stop_start_cycle' has unknown key(s) {unknown} -- "
+                        f"allowed: {sorted(_STOP_START_CYCLE_KEYS - {'type'})}")
                 cycles = action.get("cycles", 1)
                 if not isinstance(cycles, int) or cycles < 1:
                     raise ManifestError(
@@ -1657,7 +1868,7 @@ def load_manifest(path: Path) -> TestManifest:
         bigtable_setup=bigtable_setup,
         action_specs=action_specs,
         assert_=dict(raw.get("assert", {})),
-        timeout=int(raw.get("timeout", 120)),
+        timeout=_timeout(raw, path),
         fixture_timeout=_fixture_timeout(raw, path),
         diff_poll=_diff_poll(raw, path),
         tags=list(tags),

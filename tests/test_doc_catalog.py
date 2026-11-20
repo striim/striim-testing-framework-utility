@@ -9,6 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.git_checkout
 def test_committed_catalog_is_current():
     result = subprocess.run(
         [sys.executable, str(ROOT / "tools/doc_catalog.py"), "--check"],

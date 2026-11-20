@@ -264,6 +264,35 @@ log("released")
 """
 
 
+# A third run's exclusive declaration, made in a process of its own like the run's two members. Made inside
+# the test process it ran in an xdist worker, beside that worker's module state and its other tests.
+_THIRD_RUN = r"""
+import json
+from types import SimpleNamespace
+from livetest import infra
+try:
+    decl = infra.declare({"SLT_INFRA_OWNERSHIP": "exclusive", "SLT_RUN_EPOCH": "run-c"},
+                         run=lambda argv: SimpleNamespace(stdout="", returncode=0))
+except infra.InfraOwnershipError as e:
+    print(json.dumps({"refused": str(e)}))
+else:
+    decl.release()
+    print(json.dumps({"refused": None, "lease": decl.lease_kind}))
+"""
+
+
+def _third_run(env) -> dict:
+    r = subprocess.run([sys.executable, "-c", _THIRD_RUN], env=env, capture_output=True, text=True, timeout=90)
+    assert r.returncode == 0 and r.stdout.strip(), r.stdout[-800:] + r.stderr[-800:]
+    return json.loads(r.stdout.splitlines()[-1])
+
+
+def _lock_records(lock_dir: Path) -> dict:
+    """What a declaration reads, for a failure message: the owner record and each member record."""
+    return {str(p.relative_to(lock_dir)): p.read_text()[:200] for p in sorted(lock_dir.rglob("*"))
+            if p.is_file() and (p.name.endswith(".owner") or p.parent.name.endswith(".members"))}
+
+
 def test_exclusive_joining_worker_binds_to_its_runs_cluster_and_the_run_outlives_an_early_holder(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
@@ -293,9 +322,8 @@ def test_exclusive_joining_worker_binds_to_its_runs_cluster_and_the_run_outlives
     (work / "a-exited").write_text("")
     wait_for("b-alive", b)
     try:
-        with pytest.raises(infra.InfraOwnershipError, match="still active"):
-            infra.declare({"SLT_INFRA_OWNERSHIP": "exclusive", "SLT_RUN_EPOCH": "run-c"},
-                          run=lambda argv: SimpleNamespace(stdout="", returncode=0))
+        third = _third_run(env)
+        assert "still active" in (third["refused"] or ""), (third, b.poll(), _lock_records(tmp_path / "locks"))
     finally:
         (work / "c-checked").write_text("")
     out_b, err_b = b.communicate(timeout=90)
@@ -307,7 +335,5 @@ def test_exclusive_joining_worker_binds_to_its_runs_cluster_and_the_run_outlives
     events = (work / "events.log").read_text().splitlines()
     assert "a declared held" in events and "b declared joined" in events
     assert [e for e in events if e.endswith("cluster_up")] == ["a cluster_up"] and not [e for e in events if "cluster_down" in e]
-    after = infra.declare({"SLT_INFRA_OWNERSHIP": "exclusive", "SLT_RUN_EPOCH": "run-c"},
-                          run=lambda argv: SimpleNamespace(stdout="", returncode=0))
-    assert after.lease_kind == "held"                    # free once the run's last member released
-    after.release()
+    after = _third_run(env)
+    assert after == {"refused": None, "lease": "held"}, after    # free once the run's last member released

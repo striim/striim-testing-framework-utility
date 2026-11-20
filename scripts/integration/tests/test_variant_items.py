@@ -89,8 +89,19 @@ def test_a_failure_fails_only_its_item(pytester, monkeypatch, tmp_path):
 
 
 def test_int_variant_narrows_to_one_item(pytester, monkeypatch, tmp_path):
-    _, cases, _ = run(pytester, monkeypatch, tmp_path, case(THREE), env={"INT_VARIANT": "ora"})
+    result, cases, _ = run(pytester, monkeypatch, tmp_path, case(THREE), env={"INT_VARIANT": "ora"})
     assert cases == {"fan[ora]": "passed"}
+    assert "INT_VARIANT=ora: running only that variant of 1 case(s)" in result.stdout.str()
+
+
+def test_int_variant_naming_no_variant_is_a_usage_error(pytester, monkeypatch, tmp_path):
+    """A typo used to drop every variants case and exit 0, naming nothing."""
+    result, cases, _ = run(pytester, monkeypatch, tmp_path, case(THREE),
+                           env={"INT_VARIANT": "postgress"})
+    assert result.ret == 4, result.stdout.str() + result.stderr.str()   # pytest's usage error
+    err = result.stderr.str()
+    assert "INT_VARIANT=postgress names no variant" in err and "mss, ora, pg" in err, err
+    assert cases == {}
 
 
 def test_items_off_is_one_item_for_the_case(pytester, monkeypatch, tmp_path):

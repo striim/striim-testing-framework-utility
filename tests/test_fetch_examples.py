@@ -24,7 +24,7 @@ BASE = f"cases/{CASE}/"
 def _objects(change=None, extra=None):
     test = {"name": CASE, "tql": "app.tql", "requires": ["postgres"],
             "ddl": [{"file": "ddl.sql", "db": "postgres-source"}],
-            "assert": {"smoke": True, "data": [{"match": "expected/out.csv"}]},
+            "assert": {"smoke": True, "data": [{"target": "t", "match": "expected/out.csv"}]},
             "server_files": [{"file": "example.jar", "dest": "example.jar", "when": "pre_deploy", "load": "udf"}]}
     files = {"gold-targets.yaml": b"schemaVersion: 1\ntargets: []\nsuites:\n  live: cases\nstateDir: .state\n",
              BASE + "test.yaml": yaml.safe_dump(test).encode(), BASE + "example.jar": b"published jar",

@@ -23,7 +23,6 @@ import math
 import posixpath
 import re
 import secrets
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -83,6 +82,7 @@ class LifecycleError(AssertionFailed):
 
 class ProbeHung(Exception):
     reason = "probe-hung"
+    thread = None           # from ``bounded``: the abandoned call's thread, still running
 
 
 class ProbeCancelled(Exception):
@@ -457,7 +457,8 @@ class State:
 
 def bounded(fn, remaining: float):
     """Run ``fn`` in a daemon thread joined for ``remaining`` seconds; ``ProbeHung`` if it has not
-    returned (the thread is abandoned, never joined again)."""
+    returned. The thread is then abandoned here; the error's ``thread`` is it, for a caller that must
+    not let the call run on past a point of its own."""
     box = {}
 
     def run():
@@ -470,7 +471,9 @@ def bounded(fn, remaining: float):
     t.start()
     t.join(max(0.0, float(remaining)))
     if t.is_alive():
-        raise ProbeHung(f"probe did not return within {remaining:.1f}s")
+        hung = ProbeHung(f"probe did not return within {remaining:.1f}s")
+        hung.thread = t
+        raise hung
     if "error" in box:
         raise box["error"]
     return box.get("value")
@@ -720,17 +723,18 @@ def _lines(text: str) -> int:
 
 def timed_run(remaining: float):
     """A ``run`` callable for server file reads: every command it starts is killed when the remaining
-    time is spent (``subprocess.run`` terminates the child on timeout), so no reader outlives the wait."""
+    time is spent, with every process it started (``dockercmd.run``), so no reader outlives the wait."""
+    from livetest import dockercmd
     end = time.monotonic() + max(0.05, float(remaining))
 
     def run(argv):
         left = end - time.monotonic()
         if left <= 0:
             raise ProbeHung("file read did not finish within the deadline")
-        try:
-            return subprocess.run(argv, capture_output=True, text=True, timeout=left)
-        except subprocess.TimeoutExpired:
-            raise ProbeHung(f"file read killed after {remaining:.1f}s") from None
+        r = dockercmd.run(argv, timeout=left)
+        if r.returncode == dockercmd.TIMED_OUT and time.monotonic() >= end:
+            raise ProbeHung(f"file read killed after {remaining:.1f}s")
+        return r
     return run
 
 
@@ -858,8 +862,11 @@ def _wait(watch: Watch, observe, satisfied, terminal=None) -> tuple[str, object]
         clock.sleep(min(_poll_s(deadline), deadline.remaining()))
 
 
-def _hold(spec: LifecycleSpec, clock, observe, satisfied) -> tuple[dict, bool]:
-    """Stability: the satisfied condition must still hold after ``spec.stability_s``."""
+def _hold(spec: LifecycleSpec, clock, observe, satisfied, terminal) -> tuple[dict, str]:
+    """Stability: the satisfied condition must still hold after ``spec.stability_s``, and no app may
+    have reached a terminal status meanwhile (the status is read after the witness, the last read
+    before the assertions). Returns the record and ``satisfied``, ``stability-lost`` or
+    ``terminal-status:<status> (<app>)``; a status that cannot be read is ``stability-lost``."""
     started = clock.monotonic()
     if spec.stability_s > 0:
         clock.sleep(spec.stability_s)
@@ -868,8 +875,16 @@ def _hold(spec: LifecycleSpec, clock, observe, satisfied) -> tuple[dict, bool]:
     except Exception as e:              # noqa: BLE001
         value = {"error": str(e)}
     ok = not (isinstance(value, dict) and "error" in value) and satisfied(value)
-    return {"seconds": spec.stability_s, "measuredS": round(clock.monotonic() - started, 3),
-            "heldAt": clock.wall(), "value": value, "held": ok}, ok
+    record = {"seconds": spec.stability_s, "status": None}
+    try:
+        record["status"] = terminal(max(1.0, spec.stability_s))
+    except Exception as e:              # noqa: BLE001 - an unreadable status does not prove the app is up
+        record["statusError"] = f"{type(e).__name__}: {e}"
+    reason = ("stability-lost" if not ok or "statusError" in record
+              else f"terminal-status:{record['status']}" if record["status"] else "satisfied")
+    record.update({"measuredS": round(clock.monotonic() - started, 3), "heldAt": clock.wall(), "value": value,
+                   "held": reason == "satisfied"})
+    return record, reason
 
 
 def _statuses(client, apps, remaining: float) -> dict:
@@ -1110,8 +1125,7 @@ def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, 
         reason, value = _wait(watch, observe, lambda v: v == want, terminal)
         witness = f"sink observed the positive source baseline {want}"
         if reason == "satisfied":
-            state.stability, held = _hold(spec, clock, observe, lambda v: v == want)
-            reason = reason if held else "stability-lost"
+            state.stability, reason = _hold(spec, clock, observe, lambda v: v == want, terminal)
     elif kind == "source-progress":
         probe = make_probe(_admin(admins, spec.readiness["db"]))
         slot = tokens.get("PG_SLOT", "")
@@ -1124,8 +1138,7 @@ def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, 
         reason, value = _wait(watch, observe, lambda v: v is True, terminal)
         witness = f"replication slot {slot} active"
         if reason == "satisfied":
-            state.stability, held = _hold(spec, clock, observe, lambda v: v is True)
-            reason = reason if held else "stability-lost"
+            state.stability, reason = _hold(spec, clock, observe, lambda v: v is True, terminal)
     else:
         watch = Watch(kind, "ready sentinel inserted, observed present, deleted, observed absent", deadline)
         ids = getattr(state, "sentinel_ids", None) or {}
@@ -1135,8 +1148,7 @@ def smoke_and_ready(state: State, spec: LifecycleSpec, *, client, apps, admins, 
         reason = sentinel.run(watch, terminal)
         witness = f"ready sentinel {sentinel.id} observed present then absent"
         if reason == "satisfied":
-            state.stability, held = _hold(spec, clock, sentinel.count, lambda n: n == 0)
-            reason = reason if held else "stability-lost"
+            state.stability, reason = _hold(spec, clock, sentinel.count, lambda n: n == 0, terminal)
     state.ready = watch.finish(reason, witness)
     if reason != "satisfied":
         raise LifecycleError(f"lifecycle readiness {kind} failed: {reason}", state.ready, [smoke])
@@ -1204,8 +1216,7 @@ def complete(state: State, spec: LifecycleSpec, *, client, apps, admins, tokens,
         # stability re-reads the done sentinel's own id after the interval: it must still be absent
         observe, satisfied = sentinel.count, (lambda n: n == 0)
     if reason == "satisfied":
-        state.stability, held = _hold(spec, clock, observe, satisfied)
-        reason = reason if held else "stability-lost"
+        state.stability, reason = _hold(spec, clock, observe, satisfied, terminal)
     if reason != "satisfied" and kind == "row-count" and "key" in spec.completion:
         from livetest.diagnostics import read_keys
         diagnostic = {"stage": "completion-failure", "count": value}

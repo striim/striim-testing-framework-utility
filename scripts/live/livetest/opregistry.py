@@ -222,11 +222,6 @@ class RegistrationFailed(RuntimeError):
     """Raised in place of re-running a registration that already failed at these bytes."""
 
 
-def _truthy(value) -> bool:
-    """Env-var truthiness. A bare `bool(os.environ.get(...))` reads "0"/"false" as ON, which
-    for a flag that DISABLES a safety memory is the wrong way to be wrong."""
-    return str(value or "").strip().lower() not in ("", "0", "false", "no", "off")
-
 
 def _current_run(env=None) -> str:
     """The run this process belongs to, for scoping remembered failures.
@@ -335,7 +330,7 @@ def ensure_registered(registry_dir, jar_name: str, fingerprint: str,
             # claiming success.
             state.pop(jar_name, None)
         prior = failed.get(jar_name)
-        forced = retry_failed or _truthy(os.environ.get(_RETRY_ENV))
+        forced = retry_failed or paths.flag(_RETRY_ENV)
         same = (isinstance(prior, dict) and prior.get("fingerprint") == fingerprint
                 and prior.get("run") == _current_run())
         if same and int(prior.get("count") or 0) >= _FAILURES_BEFORE_GIVING_UP and not forced:

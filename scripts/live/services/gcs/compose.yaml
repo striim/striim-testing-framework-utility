@@ -37,12 +37,16 @@ services:
     command: ["-scheme", "http", "-port", "4443",
               "-public-host", "${SLT_GCS_PUBLIC_HOST:-host.docker.internal:${SLT_GCS_HOST_PORT:-4443}}",
               "-external-url", "${SLT_GCS_EXTERNAL_URL:-http://0.0.0.0:${SLT_GCS_HOST_PORT:-4443}}"]
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :4443 is already taken. When
       # overriding, point the framework at it too: SLT_GCS_HOST=localhost
       # SLT_GCS_PORT=<port>, and set SLT_GCS_PUBLIC_HOST to match (see
       # docs/internals/ENGINE.md).
-      - "${SLT_GCS_HOST_PORT:-4443}:4443"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_GCS_HOST_PORT:-4443}:4443"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_GCS_HOST_PORT:-4443}:4443"
     # Without this, `docker compose up -d --wait` returns as soon as the container is
     # RUNNING, and the first test races the emulator's start. Probes the storage API,
     # not just the port, so healthy means actually serving. busybox wget: the image
@@ -70,7 +74,8 @@ services:
     ports:
       # Host port is overridable for machines where :4444 is already taken. The
       # throwaway key's token_uri must then point at the overridden port.
-      - "${SLT_GCS_TOKEN_HOST_PORT:-4444}:4444"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_GCS_TOKEN_HOST_PORT:-4444}:4444"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_GCS_TOKEN_HOST_PORT:-4444}:4444"
     # Striim's GCS reader/writer fetch a token BEFORE talking to storage, so an
     # unready token endpoint fails the pipeline just as an unready emulator does.
     # Without a healthcheck `--wait` reports this container Healthy the moment it is

@@ -112,7 +112,7 @@ def test_skipped_selected_item_is_3(project, elsewhere, trap):
                 cwd=elsewhere, env=trap.env(framework_env()))
     assert r.rc == 3, (r.stdout, r.stderr)
     assert "integration:cases/integration/needs-absent::needs-absent" in r.stderr
-    assert "unsupported service" in r.stderr
+    assert "service 'teradata'" in r.stderr
     # The console names the command that follows the tier's log while it runs.
     assert f"integration: follow it with: tail -f {r.run_dir / 'integration' / 'stdout.log'}" in r.stderr
     assert (r.run_dir / "integration" / "junit.xml").is_file()

@@ -160,6 +160,7 @@ Check its golden against the input yourself (2001 cancelled, 2002 shipped), then
 test, from your repository:
 
 ```bash
+.venv/bin/python scripts/validate-example.py                  # PASS: 4 manifests
 .venv/bin/striim-test list --targets gold-targets.yaml        # the new case is listed
 .venv/bin/striim-test run tests/live/orders-cancel --targets gold-targets.yaml --dry-run
 .venv/bin/striim-test run tests/live/orders-cancel --targets gold-targets.yaml

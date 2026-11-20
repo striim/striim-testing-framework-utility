@@ -1,0 +1,12 @@
+# SHA-256 of the third-party files download-dependencies.sh fetches (`<sha256>  <filename>`).
+# Read by that script and by livetest.striim_provision (checkout mode). Each digest was computed
+# from a fresh download that matched an earlier, independent download of the same URL byte for
+# byte; the Maven Central jars also match Maven Central's published SHA-1. Striim's own .deb
+# files are not listed: Striim publishes no checksums, so they are pinned on first use instead.
+# Changing a version in download-dependencies.sh means replacing its line here.
+30c68db6da355ced397043d60b18c12e7b0bf25f3ea7a5b4f3ed6ba72b64dfe4  sqljdbc_6.0.8112.200_enu.tar.gz
+aef00c9efe8e830ac32f19294ec1e6c7ba30aecc20feef61d91e2ed2b1bd50e4  mysql-connector-java-8.0.30.zip
+f43c4ed61a9639d95214e00c888fd21c4ea283d60ca2ce06c6855a774ff5e583  vertica-jdbc-25.3.0-0.jar
+1c6d4517e9f6b49811dc811516af82c3d2c1b441d5070033434d92f5038f9c57  terajdbc-20.00.00.46.jar
+0ddc6834f854c03d5795305193c1d33132a24fbd406b4b52828602f5bc30777e  jmx_prometheus_javaagent-0.16.1.jar
+5ce931a80992a0a3f95a565ac630698ca718fc8e9e88868f611795acb12ff35c  instantclient-basic-linux.x64-21.6.0.0.0dbru.zip

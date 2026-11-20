@@ -76,7 +76,7 @@ def test_a_named_start_runs_the_hook_then_brings_the_service_up(tdx, monkeypatch
 
 def test_a_test_selection_preflight_runs_the_hook():
     from livetest import preflight
-    calls = [node for node in ast.walk(ast.parse(inspect.getsource(preflight.provision)))
+    calls = [node for node in ast.walk(ast.parse(inspect.getsource(preflight._provision_resolved)))
              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
              and node.func.id == "_bring_up_services"]
     [call] = calls
@@ -201,7 +201,7 @@ def test_a_failed_hook_fails_the_selected_test_and_the_start(tdx, monkeypatch):
     preflight = _preflight(monkeypatch)
     with pytest.raises(prestart.PreUpError):          # provision_services turns this into rc 1
         preflight._bring_up_services(["tdx"], {}, apply_gate=False)
-    assert "except _prestart.PreUpError:\n        return 1" in inspect.getsource(preflight.provision)
+    assert "except _prestart.PreUpError:\n        return 1" in inspect.getsource(preflight._provision_resolved)
 
 
 def test_the_hermetic_suite_switches_hooks_off():
@@ -290,3 +290,15 @@ def test_outer_pytest_topology_gate_obeys_strict_service_policy(monkeypatch, mod
         assert isinstance(exc, pytest.fail.Exception if policy == 'fail' else pytest.skip.Exception)
     else:
         pytest.fail('eligibility unexpectedly passed')
+
+
+def test_the_hook_is_handed_the_framework_python(tdx, monkeypatch):
+    """SLT_FRAMEWORK_PYTHON (SETTINGS.md): a pre_up script runs Python helpers with the framework's
+    own interpreter, whatever `python3` on PATH is."""
+    import sys
+    (tdx / "fetch.sh").write_text("#!/bin/sh\nmkdir -p deps && : > deps/disk1 && "
+                                  "echo \"$SLT_FRAMEWORK_PYTHON\" > python\n")
+    monkeypatch.setenv("SLT_FRAMEWORK_PYTHON", "/not/this/python")
+    preflight = _preflight(monkeypatch)
+    assert list(preflight._bring_up_services(["tdx"], {}, apply_gate=False)) == ["tdx"]
+    assert (tdx / "python").read_text().strip() == sys.executable

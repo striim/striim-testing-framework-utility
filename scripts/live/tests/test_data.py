@@ -429,9 +429,30 @@ class LockedPg(DirtyPg):
         raise NotYetReadable("t1 is locked by a writer")
 
 
-def test_min_rows_against_a_writer_that_never_releases_its_lock_uses_the_dirty_count_at_the_deadline(tmp_path):
-    records = assert_data(LockedPg(9, 0), [{"target": "t1", "min_rows": 5}], tmp_path, timeout=0)
-    assert records[0]["status"] == "passed" and "dirty count" in records[0]["detail"]
+def test_min_rows_against_a_writer_that_never_releases_its_lock_fails_at_the_deadline(tmp_path):
+    # The dirty count of 9 satisfies min_rows: 5, but rows that are later rolled back were counted
+    # in it. Reaching the deadline is no evidence that they committed.
+    with pytest.raises(AssertionFailed) as ei:
+        assert_data(LockedPg(9, 0), [{"target": "t1", "min_rows": 5}], tmp_path, timeout=0)
+    assert "committed count never readable" in str(ei.value)
+    assert "dirty count 9" in str(ei.value)
+    rec = ei.value.records[0]
+    assert rec["status"] == "failed" and "committed count never readable" in rec["detail"]
+
+
+def test_min_rows_against_a_lock_that_is_released_before_the_deadline_passes(tmp_path):
+    class ReleasesLater(DirtyPg):
+        calls = 0
+
+        def count_rows_committed(self, t):
+            from livetest.assertions import NotYetReadable
+            self.calls += 1
+            if self.calls < 3:
+                raise NotYetReadable("t1 is locked by a writer")
+            return 9
+    records = assert_data(ReleasesLater(9, 0), [{"target": "t1", "min_rows": 5}], tmp_path,
+                          timeout=5, poll=0.01)
+    assert records[0]["status"] == "passed" and records[0]["detail"] == "ok"
 
 
 def test_exact_rows_never_falls_back_to_the_dirty_count(tmp_path):
@@ -444,3 +465,125 @@ def test_a_committed_read_error_is_named_not_reported_as_uncommitted(tmp_path):
         def count_rows_committed(self, t): raise PermissionError("SELECT permission denied on t1")
     with pytest.raises(AssertionFailed, match="committed count could not be read: PermissionError"):
         assert_data(Denied(9, 0), [{"target": "t1", "min_rows": 5}], tmp_path, timeout=0)
+
+
+# ---- stable_seconds: hold a passing spec for N seconds ------------------------------------------
+
+class SequencePg:
+    """Each poll reads the next state; the last one repeats. A state is a list of rows, or an
+    exception instance to raise from both reads."""
+    def __init__(self, *states):
+        self.states, self.reads = list(states), 0
+
+    def _next(self):
+        state = self.states[min(self.reads, len(self.states) - 1)]
+        self.reads += 1
+        if isinstance(state, Exception):
+            raise state
+        return state
+
+    def count_rows(self, t):
+        return len(self._next())
+
+    def select_rows(self, t):
+        # assert_data counts before it selects, so this is the state the count just read.
+        return list(self.states[min(self.reads - 1, len(self.states) - 1)])
+
+
+def _golden(tmp_path, text="id\n1\n"):
+    (tmp_path / "g.csv").write_text(text)
+
+
+def test_parse_accepts_stable_seconds():
+    assert parse_data_specs([{"target": "t", "rows": 1, "stable_seconds": 0}])
+    assert parse_data_specs([{"target": "t", "rows": 1, "stable_seconds": 2.5}])
+
+
+@pytest.mark.parametrize("bad", [-1, "5", True, None, [5]])
+def test_parse_refuses_a_bad_stable_seconds(bad):
+    with pytest.raises(DataSpecError, match="stable_seconds"):
+        parse_data_specs([{"target": "t", "rows": 1, "stable_seconds": bad}])
+
+
+def test_without_stable_seconds_a_late_row_is_never_read(tmp_path):
+    # The default is unchanged: the first satisfying poll passes.
+    _golden(tmp_path)
+    pg = SequencePg([{"id": 1}], [{"id": 1}, {"id": 999}])
+    records = assert_data(pg, [{"target": "t", "match": "g.csv"}], tmp_path, timeout=5, poll=0.01)
+    assert records[0]["status"] == "passed"
+
+
+def test_stable_seconds_fails_a_match_when_a_late_wrong_row_lands(tmp_path):
+    _golden(tmp_path)
+    pg = SequencePg([{"id": 1}], [{"id": 1}, {"id": 999}])
+    with pytest.raises(AssertionFailed) as ei:
+        assert_data(pg, [{"target": "t", "match": "g.csv", "stable_seconds": 5}], tmp_path,
+                    timeout=5, poll=0.01)
+    assert "stable_seconds" in str(ei.value) and "999" in str(ei.value)
+    assert ei.value.records[0]["status"] == "failed"
+
+
+def test_stable_seconds_fails_rows_zero_when_a_row_arrives_in_the_window(tmp_path):
+    pg = SequencePg([], [], [{"id": 1}])
+    with pytest.raises(AssertionFailed, match="stable_seconds"):
+        assert_data(pg, [{"target": "t", "rows": 0, "stable_seconds": 5}], tmp_path, timeout=5, poll=0.01)
+
+
+def test_stable_seconds_passes_an_unchanged_target_after_reading_it_through_the_window(tmp_path):
+    import time
+    pg = SequencePg([{"id": 1}])
+    t0 = time.monotonic()
+    records = assert_data(pg, [{"target": "t", "rows": 1, "stable_seconds": 0.3}], tmp_path,
+                          timeout=5, poll=0.05)
+    assert time.monotonic() - t0 >= 0.3
+    assert pg.reads > 2
+    assert records[0]["status"] == "passed"
+    # elapsed_s is when the count was first reached, not when the window closed.
+    assert records[0]["elapsed_s"] < 0.3
+
+
+def test_stable_seconds_is_the_longest_of_the_group(tmp_path):
+    import time
+    t0 = time.monotonic()
+    assert_data(SequencePg([{"id": 1}]), [{"target": "t", "rows": 1, "stable_seconds": 0.3},
+                                          {"target": "t", "min_rows": 1}], tmp_path, timeout=5, poll=0.05)
+    assert time.monotonic() - t0 >= 0.3
+
+
+def test_stable_seconds_runs_past_the_timeout_when_it_must(tmp_path):
+    # As in assert.file: the window starts at the first pass and is held in full.
+    import time
+    t0 = time.monotonic()
+    assert_data(SequencePg([{"id": 1}]), [{"target": "t", "rows": 1, "stable_seconds": 0.3}], tmp_path,
+                timeout=0, poll=0.05)
+    assert time.monotonic() - t0 >= 0.3
+
+
+def test_an_unreadable_poll_in_the_window_neither_passes_nor_fails_it(tmp_path):
+    from livetest.assertions import NotYetReadable
+    pg = SequencePg([{"id": 1}], NotYetReadable("locked"), [{"id": 1}])
+    records = assert_data(pg, [{"target": "t", "rows": 1, "stable_seconds": 0.2}], tmp_path,
+                          timeout=5, poll=0.05)
+    assert records[0]["status"] == "passed"
+
+
+def test_a_window_that_ends_unreadable_fails(tmp_path):
+    from livetest.assertions import NotYetReadable
+    pg = SequencePg([{"id": 1}], NotYetReadable("locked"))
+    with pytest.raises(AssertionFailed, match="could not be read again"):
+        assert_data(pg, [{"target": "t", "rows": 1, "stable_seconds": 0.2}], tmp_path, timeout=0.3, poll=0.05)
+
+
+def test_a_committed_count_locked_in_the_window_is_not_a_change(tmp_path):
+    class LockedLater(DirtyPg):
+        calls = 0
+
+        def count_rows_committed(self, t):
+            from livetest.assertions import NotYetReadable
+            self.calls += 1
+            if self.calls == 2:
+                raise NotYetReadable("locked")
+            return 5
+    records = assert_data(LockedLater(5, 0), [{"target": "t", "rows": 5, "stable_seconds": 0.2}], tmp_path,
+                          timeout=5, poll=0.05)
+    assert records[0]["status"] == "passed"

@@ -41,6 +41,30 @@ interface EventDriver {
     default void endOfWindow() throws Exception {
     }
 
+    /**
+     * True for a driver whose work is a WRITE rather than emitted events: a target. Its perf
+     * iteration emits nothing, so it must report evidence that something was written instead.
+     */
+    default boolean writes() {
+        return false;
+    }
+
+    /**
+     * Events the driven core has acknowledged so far, or {@code -1} when it does not acknowledge
+     * at all (anything but a target carrying the {@code Acknowledgeable} marker).
+     */
+    default long acknowledgedEvents() {
+        return -1;
+    }
+
+    /**
+     * The {@code PROCESSED} value the driven core publishes to the monitor, or {@code null} when it
+     * publishes none. Read after the closing flush, as {@code IntegrationProcessor} reads it.
+     */
+    default String publishedProcessed() throws Exception {
+        return null;
+    }
+
     /** Releases the driven core's resources, if it declared any; a no-op otherwise. */
     void close() throws Exception;
 

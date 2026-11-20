@@ -146,14 +146,16 @@ def test_secondary_api_port_is_opt_in_and_allowed(monkeypatch):
     compose = yaml.safe_load((root / "scripts/live/services/striim/compose.yaml").read_text())
     from livetest import striim_provision as sp
     mapping = "${SLT_STRIIM_NODE_HTTP_HOST_PORT:-9082}:9080"
-    assert mapping not in compose["services"]["slt-node"]["ports"]
+    bound = [f"{b}:{mapping}" for b in ("${SLT_BIND_ADDRESS:-0.0.0.0}",
+                                        "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}")]
+    assert not [p for p in compose["services"]["slt-node"]["ports"] if p.endswith(mapping)]
     recipe = root / "scripts/live/services/striim"
     monkeypatch.delenv("SLT_ENABLE_NODE_FAULTS", raising=False)
     assert "compose.node-fault.yaml" not in sp._compose_files()
     monkeypatch.setenv("SLT_ENABLE_NODE_FAULTS", "1")
     assert "compose.node-fault.yaml" in sp._compose_files()
     overlay = yaml.safe_load((recipe / "compose.node-fault.yaml").read_text())
-    assert overlay["services"]["slt-node"]["ports"] == [mapping]
+    assert overlay["services"]["slt-node"]["ports"] == bound
     assert "SLT_STRIIM_NODE_HTTP_HOST_PORT" in paths.SERVICE_KEYS
 
 
@@ -265,6 +267,11 @@ def test_node_fault_gate_precedes_input_snapshot_and_provision(monkeypatch, opt_
         with pytest.raises(RuntimeError, match="snapshot reached"):
             plugin.LiveItem._runtest(item)
         assert calls == ["snapshot"]
+    elif opt_in == "true":
+        # Only 1 is on; any other value is refused (pytest_configure refuses it before any case).
+        with pytest.raises(plugin.paths.FlagError, match="SLT_ENABLE_NODE_FAULTS='true'"):
+            plugin.LiveItem._runtest(item)
+        assert calls == []
     else:
         with pytest.raises(pytest.skip.Exception, match="SLT_ENABLE_NODE_FAULTS"):
             plugin.LiveItem._runtest(item)
@@ -297,3 +304,152 @@ def test_failure_cleanup_waits_for_rejoin_and_records_outcome(monkeypatch, mode,
     assert records[-1]["spec"]["phase"] == "cleanup-rejoin"
     assert records[-1]["status"] == ("failed" if rejoin_fails else "passed")
     assert target.needs_rejoin is rejoin_fails
+
+
+# --- the last settle read is checked; a role fault records whether the app ran there ---------
+
+class SeqClient(Client):
+    """Statuses in turn (the last repeats), and a STATUS <server> listing per server."""
+    def __init__(self, statuses, listing=None):
+        super().__init__()
+        self.statuses, self.listing, self.status_reads = list(statuses), listing or {}, []
+
+    def current_status(self, app, **kw):
+        return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+
+    def node_status(self, name, timeout=None):
+        self.status_reads.append((name, timeout))
+        value = self.listing[name]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def _role_target(monkeypatch, client, role="secondary", records=None, mode_state="false"):
+    from livetest import node_fault
+    monkeypatch.setattr(node_fault, "_reset_modules", lambda: None)
+    return node_fault.Target(client, SimpleNamespace(mode="docker"), role, app="N.app", nodes=nodes(),
+        run=lambda a: SimpleNamespace(returncode=0, stdout=mode_state, stderr=""),
+        record=(records.append if records is not None else None), timeout=5,
+        wait_cluster=lambda *a, **k: None)
+
+
+@pytest.mark.parametrize("settle,statuses", [(0, ["CRASH"]), (0.05, ["RUNNING", "CRASH"])])
+def test_restore_raises_on_a_terminal_status_from_the_last_settle_read(monkeypatch, settle, statuses):
+    # settle 0: the one read is the returned one; settle > 0: the read after the last sleep is.
+    t = _role_target(monkeypatch, SeqClient(statuses))
+    with pytest.raises(recovery.RecoveryError, match="fault-node-restore-status: CRASH"):
+        t.restore(expect_running=True, settle=settle)
+
+
+def test_restore_returns_running_after_a_clean_settle(monkeypatch):
+    t = _role_target(monkeypatch, SeqClient(["RUNNING"]))
+    assert t.restore(expect_running=True, settle=0.05) == "RUNNING"
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "CRASH"])
+def test_restore_expect_running_false_refuses_running_and_terminal(monkeypatch, status):
+    records = []
+    t = _role_target(monkeypatch, SeqClient([status]), records=records)
+    with pytest.raises(recovery.RecoveryError, match=status):
+        t.restore(expect_running=False)
+    assert records[-1]["status"] == "failed" and records[-1]["actual"]["rows"][0]["status"] == status
+
+
+def test_restore_expect_running_false_records_a_stopped_app(monkeypatch):
+    records = []
+    t = _role_target(monkeypatch, SeqClient(["DEPLOYED"]), records=records)
+    assert t.restore(expect_running=False) == "DEPLOYED"
+    assert records[-1]["status"] == "passed" and records[-1]["actual"]["rows"][0]["status"] == "DEPLOYED"
+
+
+def _listing(server, app, status):
+    return {"server": server, "applications": [{"app": app, "status": status}]}
+
+
+@pytest.mark.parametrize("listing,affected,on_node", [
+    (_listing("server_secondary", "N.app", "RUNNING"), True, "RUNNING"),
+    (_listing("server_secondary", "N.other", "RUNNING"), False, None),
+    (_listing("server_secondary", "N.app", "DEPLOYED"), False, "DEPLOYED"),
+])
+def test_role_fault_records_whether_the_app_runs_on_the_selected_node(monkeypatch, listing, affected, on_node):
+    records = []
+    client = SeqClient(["RUNNING"], listing={"server_secondary": listing})
+    t = _role_target(monkeypatch, client, records=records)
+    t.check_owner(5)
+    t.interrupt("kill")
+    row = records[-1]["actual"]["rows"][0]
+    assert records[-1]["status"] == "passed"          # a role makes no claim about ownership
+    assert row["appAffected"] is affected and row["appStatusOnNode"] == on_node
+    assert client.status_reads and client.status_reads[0][0] == "server_secondary"
+    assert client.status_reads[0][1] is not None and client.status_reads[0][1] <= 5
+
+
+def test_role_fault_with_an_unreadable_listing_records_unknown_not_unaffected(monkeypatch):
+    records = []
+    client = SeqClient(["RUNNING"], listing={"server_agent": RuntimeError("no STATUS for agents")})
+    t = _role_target(monkeypatch, client, role="agent", records=records)
+    t.check_owner(5)
+    t.interrupt("kill")
+    row = records[-1]["actual"]["rows"][0]
+    assert row["appAffected"] is None and "no STATUS for agents" in row["placementError"]
+
+
+def test_hosting_fault_is_affected_by_construction():
+    from livetest import node_fault
+    records = []
+    t = node_fault.Target(Client(), SimpleNamespace(mode="docker"), {"hosting": "N.flow"}, app="N.app",
+        nodes=nodes(), placement=lambda flow, left: {"server_secondary"},
+        run=lambda a: SimpleNamespace(returncode=0, stdout="false", stderr=""),
+        record=records.append, timeout=1)
+    t.check_owner(1)
+    t.interrupt("kill")
+    assert records[-1]["actual"]["rows"][0]["appAffected"] is True
+
+
+# --- evidence rows carry a UTC stamp beside each monotonic reading ---------------------------
+
+def _utc(value):
+    from datetime import datetime
+    stamp = datetime.fromisoformat(value)
+    assert stamp.tzinfo is not None
+    return stamp
+
+
+def test_interrupt_row_carries_a_utc_stamp(monkeypatch):
+    records = []
+    t = _role_target(monkeypatch, SeqClient(["RUNNING"], listing={
+        "server_secondary": _listing("server_secondary", "N.app", "RUNNING")}), records=records)
+    t.check_owner(5)
+    t.interrupt("kill")
+    row = records[-1]["actual"]["rows"][0]
+    assert isinstance(row["observedAt"], float)
+    _utc(row["observedUtc"])
+
+
+def test_failover_wait_rows_carry_utc_beside_started_and_deadline(monkeypatch):
+    from livetest import node_fault
+    records, owner = [], {"server_secondary"}
+    def run(argv):
+        if argv[1] == "kill": owner.clear(); owner.add("server_primary")
+        return SimpleNamespace(returncode=0, stdout="false", stderr="")
+    monkeypatch.setattr(node_fault, "_reset_modules", lambda: None)
+    t = node_fault.Target(Client(), SimpleNamespace(mode="docker"), {"hosting": "N.flow"}, app="N.app",
+        nodes=nodes(), placement=lambda flow, left: set(owner), run=run, record=records.append,
+        timeout=1, wait_cluster=lambda *a, **k: None)
+    t.interrupt("kill"); t.restore(expect_running=True)
+    wait = next(r for r in records if r["actual"]["rows"][0].get("phase") == "failover-wait")
+    row = wait["actual"]["rows"][0]
+    _utc(row["deadlineUtc"])
+    _utc(row["observations"][0]["startedUtc"])
+    _utc(row["observations"][0]["observedUtc"])
+
+
+def test_initial_placement_row_carries_utc_beside_deadline_and_observed():
+    from livetest import node_fault
+    records = []
+    node_fault.initial_placement(client=None, flow="N.flow", servers={"S1"}, timeout=5,
+        record=records.append, read=lambda f, left: {"S1"})
+    row = records[0]["actual"]["rows"][0]
+    deadline, observed = _utc(row["deadlineUtc"]), _utc(row["observedUtc"])
+    assert 4 <= (deadline - observed).total_seconds() <= 5

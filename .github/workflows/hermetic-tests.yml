@@ -1,0 +1,64 @@
+# The three hermetic suites, on every pull request and every push to main. No Docker, no Striim,
+# no secrets: the same commands as CONTRIBUTING.md and tools/release.py (tests/test_ci_workflow.py
+# keeps the three lists equal). Each suite's skips are listed and counted against its budget.
+name: hermetic tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermetic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hermetic:
+    name: hermetic (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # max-skips: the most skips the suite may report. Raise it in the pull request that adds
+          # a skip, and say why; tools/check_skips.py lists each skip and its reason.
+          - name: root
+            directory: "."
+            markers: "not live and not docker"
+            max-skips: 3
+          - name: live
+            directory: scripts/live
+            markers: "not live"
+            max-skips: 40
+          - name: integration
+            directory: scripts/integration
+            markers: "not integration and not docker"
+            max-skips: 3
+    env:
+      DOCKER_HOST: unix:///nonexistent
+      PYTHONNOUSERSITE: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0            # tags and history: some root tests resolve the template pin
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Create the test environment from the repo's lock
+        run: PYTHON="$(command -v python)" bash tools/make-test-venv.sh
+      - name: Run the ${{ matrix.name }} suite
+        working-directory: ${{ matrix.directory }}
+        run: |
+          source "$GITHUB_WORKSPACE/.venv-test/bin/activate"
+          unset STRIIM_HOME PYTHONPATH PYTHONHOME
+          python -m pytest -q -p no:cacheprovider -rs -m "${{ matrix.markers }}" tests --junitxml="$RUNNER_TEMP/junit.xml"
+      - name: Count the ${{ matrix.name }} suite's skips
+        if: success() || failure()
+        run: python tools/check_skips.py "$RUNNER_TEMP/junit.xml" --max ${{ matrix.max-skips }}

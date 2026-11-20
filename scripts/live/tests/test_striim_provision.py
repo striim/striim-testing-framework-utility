@@ -19,12 +19,14 @@ def test_deps_present_true_when_all_there(tmp_path):
         (tmp_path / n).write_text("x")
     assert sp.deps_present(tmp_path) is True
 
-def test_ensure_deps_runs_script_when_missing(tmp_path):
+def test_ensure_deps_runs_script_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     calls = []
     sp.ensure_deps(tmp_path, run=lambda argv, cwd=None: calls.append((argv, cwd)))
     assert calls and "download-dependencies.sh" in " ".join(calls[0][0])
 
-def test_ensure_deps_skips_when_present(tmp_path):
+def test_ensure_deps_skips_when_present(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     for n in sp.REQUIRED_DEPS:
         (tmp_path / "images" / "striim" / "deps").mkdir(parents=True, exist_ok=True)
         (tmp_path / "images" / "striim" / "deps" / n).write_text("x")
@@ -127,6 +129,7 @@ def test_deps_present_checks_the_release_specific_filenames(tmp_path):
     assert sp.deps_present(tmp_path, "5.4.0.6") is False   # different version's debs absent
 
 def test_ensure_deps_passes_release_version_through_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "verify_checkout_deps", lambda *a, **k: None)   # digests: test_deps_digests.py
     seen = {}
     def fake_run(argv, cwd=None):
         seen["STRIIM_VERSION"] = os.environ.get("STRIIM_VERSION")
@@ -386,9 +389,12 @@ def test_ensure_image_touches_no_real_docker_when_runners_are_injected(tmp_path,
     # un-forwarded seam and could untag a developer's actual 21 GB image.
     d = _checkout(tmp_path)
     escaped = []
-    monkeypatch.setattr(sp.subprocess, "run",
-                        lambda argv, **k: escaped.append(argv) or types.SimpleNamespace(
-                            stdout="", returncode=0, stderr=""))
+
+    def escape(argv, **k):
+        escaped.append(argv)
+        return types.SimpleNamespace(stdout="", returncode=0, stderr="")
+    monkeypatch.setattr(sp.subprocess, "run", escape)
+    monkeypatch.setattr(sp.dockercmd, "run", escape)
     sp.ensure_image(d, {"STRIIM_VERSION": "5.4.0.6", "JAVA_RELEASE": "17"},
                     run=lambda argv, cwd=None: None,
                     query_run=lambda argv: types.SimpleNamespace(stdout="", returncode=1))

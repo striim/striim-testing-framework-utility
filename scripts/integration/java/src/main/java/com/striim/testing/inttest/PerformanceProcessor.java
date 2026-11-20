@@ -120,6 +120,23 @@ public final class PerformanceProcessor {
         public Integer errorReplayIndex;
         /** The record index (within one replay) at which {@link #errorMessage} occurred. */
         public Integer errorRecordIndex;
+        /**
+         * A target only: events the writer acknowledged during the measured window, after its
+         * closing flush; {@code null} for any other driver and for a writer without the
+         * {@code Acknowledgeable} marker. A writer emits nothing, so this and
+         * {@link #publishedProcessed} are the evidence that the window wrote anything.
+         */
+        public Long measuredAckedEvents;
+        /** A target only: the {@code PROCESSED} value it publishes after the closing flush, or {@code null}. */
+        public String publishedProcessed;
+        /**
+         * A target only: how far its published {@code PROCESSED} rose across the measured window,
+         * from a read after the warmup's flush to one after the window's closing flush, both
+         * outside the timed region; {@code null} when it publishes no {@code PROCESSED}.
+         * {@code PROCESSED} is cumulative, so {@link #publishedProcessed} alone counts warmup
+         * writes too.
+         */
+        public Long measuredProcessed;
     }
 
     public static void main(String[] args) {
@@ -318,6 +335,24 @@ public final class PerformanceProcessor {
         // an already-established assumption of this framework, not a new one here.
         List<WAEvent> retainedReplay0 = new ArrayList<>();
 
+        // Read before the clock starts: the warmup's own acks are not the window's.
+        long ackedBefore = core.writes() ? core.acknowledgedEvents() : -1;
+        // So is the warmup's share of PROCESSED, which a writer accumulates and publishes as a
+        // running total: a writer that wrote its warmup and none of the window still publishes a
+        // positive value after it. A read that throws or does not parse fails the iteration before
+        // the window runs, attributed to its first replay with no record index.
+        Long processedBefore = null;
+        if (core.writes()) {
+            try {
+                processedBefore = processedCount(core.publishedProcessed());
+            } catch (Exception e) {
+                result.errorMessage = describeError(e);
+                result.errorReplayIndex = 0;
+                result.errorRecordIndex = null;
+                return e;
+            }
+        }
+
         long startNanos = System.nanoTime();
         long startEpoch = System.currentTimeMillis();
 
@@ -383,6 +418,32 @@ public final class PerformanceProcessor {
         result.measuredDurationNanos = endNanos - startNanos;
         result.comparedReplayOutputEvents = comparedReplayOutputEvents;
 
+        // A writer's evidence that the window wrote something, read after the closing flush and
+        // outside the timed region. A monitor read that throws or does not parse fails the
+        // iteration, as a failed flush does; the runner decides what a zero means.
+        if (failure == null && core.writes()) {
+            long ackedAfter = core.acknowledgedEvents();
+            if (ackedBefore >= 0 && ackedAfter >= 0) {
+                result.measuredAckedEvents = ackedAfter - ackedBefore;
+            }
+            try {
+                result.publishedProcessed = core.publishedProcessed();
+                Long processedAfter = processedCount(result.publishedProcessed);
+                if (processedAfter != null) {
+                    // Published only once something was counted reads as a rise from zero.
+                    result.measuredProcessed = processedAfter - (processedBefore == null ? 0 : processedBefore);
+                } else if (processedBefore != null) {
+                    throw new IllegalStateException("the target published PROCESSED " + processedBefore
+                            + " before the measured window and none after its closing flush");
+                }
+            } catch (Exception e) {
+                result.errorMessage = describeError(e);
+                result.errorReplayIndex = request.runSize - 1;
+                result.errorRecordIndex = null;
+                failure = e;
+            }
+        }
+
         // Safe to build the ObjectNode tree now, outside the timed window (§5).
         for (WAEvent out : retainedReplay0) {
             result.comparedRecords.add(WAEventJsonFactory.writeEvent(out));
@@ -397,6 +458,19 @@ public final class PerformanceProcessor {
             case "sampled" -> sampleIndexSet != null && sampleIndexSet.contains((int) absoluteOutputIndex);
             default -> false; // "disabled"
         };
+    }
+
+    /** A published {@code PROCESSED} as a count, {@code null} when none is published; throws when it is not a whole number. */
+    private static Long processedCount(String published) {
+        if (published == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(published.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalStateException("the target published PROCESSED '" + published
+                    + "', which is not a whole number");
+        }
     }
 
     private static String describeError(Exception e) {

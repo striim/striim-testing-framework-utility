@@ -49,6 +49,25 @@ def test_a_partial_run_keeps_its_exit_status():
     assert _int_all_skipped_guard(s, 0) == 0
 
 
+def test_a_build_skip_fails_the_run_whatever_else_ran(capsys):
+    s = _Session({"skipped": [_Rep(A, "cannot build operator jar 'x': needs JDK 17", cause="build")],
+                  "passed": [_Rep(B)]})
+    assert _int_all_skipped_guard(s, 0) == 1
+    out = capsys.readouterr().out
+    assert "could not be built" in out and A in out and "needs JDK 17" in out
+
+
+def test_a_build_skip_beside_a_failure_keeps_the_failing_status():
+    s = _Session({"skipped": [_Rep(A, "cannot build", cause="build")], "failed": [_Rep(B)]})
+    assert _int_all_skipped_guard(s, 1) == 1
+
+
+def test_the_opt_out_never_covers_a_build_skip_in_a_partial_run(monkeypatch):
+    monkeypatch.setenv("INT_ALLOW_ALL_SKIPPED", "1")
+    s = _Session({"skipped": [_Rep(A, "cannot build", cause="build")], "passed": [_Rep(B)]})
+    assert _int_all_skipped_guard(s, 0) == 1
+
+
 def test_declared_skips_do_not_fire_it():
     s = _Session({"skipped": [_Rep(A, "disabled (known bug)"), _Rep(B, "set INT_X=1")]})
     assert _int_all_skipped_guard(s, 0) == 0
@@ -85,8 +104,9 @@ def test_an_env_skip_is_a_pytest_skip_carrying_its_cause():
 
 
 def test_the_host_skip_sites_raise_env_skips(monkeypatch):
-    # STRIIM_HOME unset: the module build is a host prerequisite, not a declared skip.
+    # STRIIM_HOME unset: the module build is a host prerequisite, not a declared skip. Its cause
+    # is "build": the module was never built, so the case was never tested.
     monkeypatch.delenv("STRIIM_HOME", raising=False)
     with pytest.raises(EnvSkip) as e:
         plugin._build_operator_jar("case", "op/X")
-    assert e.value.cause == "env"
+    assert e.value.cause == "build"

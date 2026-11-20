@@ -137,3 +137,63 @@ def test_unqualified_bigquery_writer_fails_before_provisioning(run_case, tmp_pat
     assert reason in run.text
     log = run.root / 'fake.log'
     assert not log.exists() or 'deploy' not in log.read_text()
+
+
+# SLT_BIGQUERY_WRITER_ENDPOINT / SLT_BIGQUERY_TOKEN_URI: the writer endpoint and the token URI a
+# bigquery-family case is given, explicit or derived from the emulator's address and ports.
+_BQ_EDGES = '''
+P.ensure_fake_gcp_key = lambda config, ctx, **kw: log("fake_key", token_uri=kw["token_uri"],
+                                                      key_name=kw["key_name"], project=kw["project_id"])
+P._gcs_endpoint_ip = lambda ctx, run=None: log("endpoint_ip") or "10.9.8.7"
+P._rendered_tql = lambda m, tokens, renames: log("bq_tokens", endpoint=tokens.get("BIGQUERY_ENDPOINT")) or "tql"
+'''
+_BQ_BASE = {"base_extra": {"project": "test-project", "token_port": 4455}}
+
+
+def _bigquery_case(tmp_path):
+    fixtures = _fixtures(tmp_path, seed=False)
+    case = fixtures / 'driver-flow'
+    manifest = case / 'test.yaml'
+    manifest.write_text(manifest.read_text().replace('requires: [extdb]', 'requires: [bigquery]'))
+    (case / 'app.tql').write_text(
+        "CREATE TARGET t USING Global.BigQueryWriter (StreamingUpload:false, "
+        "PrivateServiceConnectEndpoint:'${BIGQUERY_ENDPOINT}');")
+    return fixtures
+
+
+def _bq_prepare(root, name):
+    conftest = root / "conftest.py"
+    conftest.write_text(conftest.read_text() + _BQ_EDGES)
+
+
+def _bq_events(run):
+    return {e["event"]: e for e in run.events()}
+
+
+def test_explicit_bigquery_endpoints_reach_the_writer_and_the_key(run_case, tmp_path):
+    run = run_case('driver-flow', _BQ_BASE, fixtures=_bigquery_case(tmp_path), prepare=_bq_prepare,
+                   env={"SLT_BIGQUERY_WRITER_ENDPOINT": "http://127.0.0.1:9050",
+                        "SLT_BIGQUERY_TOKEN_URI": "http://127.0.0.1:4466/token"})
+    assert run.ret == 0, run.text[-3000:]
+    events = _bq_events(run)
+    assert events["bq_tokens"]["endpoint"] == "http://127.0.0.1:9050"
+    assert events["fake_key"] == {"event": "fake_key", "token_uri": "http://127.0.0.1:4466/token",
+                                  "key_name": "fake-bigquery-key.json", "project": "test-project"}
+    assert "endpoint_ip" not in events, "explicit endpoints need no emulator address"
+
+
+def test_bigquery_endpoints_default_to_the_emulator_address_and_ports(run_case, tmp_path):
+    run = run_case('driver-flow', _BQ_BASE, fixtures=_bigquery_case(tmp_path), prepare=_bq_prepare)
+    assert run.ret == 0, run.text[-3000:]
+    events = _bq_events(run)
+    assert events["bq_tokens"]["endpoint"] == "http://10.9.8.7:5432"
+    assert events["fake_key"]["token_uri"] == "http://10.9.8.7:4455/token"
+
+
+def test_a_bigquery_token_uri_off_the_token_path_fails_the_case(run_case, tmp_path):
+    run = run_case('driver-flow', _BQ_BASE, fixtures=_bigquery_case(tmp_path), prepare=_bq_prepare,
+                   env={"SLT_BIGQUERY_WRITER_ENDPOINT": "http://127.0.0.1:9050",
+                        "SLT_BIGQUERY_TOKEN_URI": "http://127.0.0.1:4466/oauth"})
+    assert run.ret == 1, run.text[-3000:]
+    assert "SLT_BIGQUERY_TOKEN_URI must use the dedicated /token path" in run.text
+    assert "fake_key" not in _bq_events(run) and "deploy" not in run.names()

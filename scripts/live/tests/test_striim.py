@@ -254,6 +254,35 @@ def test_checkpoint_history_normalizes_the_not_available_yet_failure_to_an_empty
     c = StriimClient.__new__(StriimClient); c.api = Api()
     assert c.checkpoint_history("NS.App") == []
 
+# Only "not available yet" means nothing is recorded. Any other answer is a history that could not be
+# read, and reading it as [] would let `checkpoint_history: empty` pass on it.
+@pytest.mark.parametrize("resp", [
+    [{"executionStatus": "Failure", "failureMessage": "Syntax error at CHECKPOINT"}],
+    [{"executionStatus": "Failure", "failureMessage": "application NS.nosuch does not exist"}],
+    [{"executionStatus": "Failure"}],
+    {"message": "Unauthorized"},                          # an HTTP 401 body
+    [{"executionStatus": "Success", "output": "not a list"}],
+    [{"executionStatus": "Success"}],
+    ["not an object"],
+    [],
+    None,
+], ids=["syntax-error", "does-not-exist", "no-message", "401-body", "odd-output", "no-output", "odd-result",
+        "empty-response", "no-response"])
+def test_checkpoint_history_raises_on_any_other_answer(resp):
+    class Api:
+        def post_tungsten_line(self, line, timeout=None):
+            return resp
+    c = StriimClient.__new__(StriimClient); c.api = Api()
+    with pytest.raises(StriimError, match="SHOW NS.App CHECKPOINT HISTORY"):
+        c.checkpoint_history("NS.App")
+
+def test_checkpoint_history_returns_an_empty_success_list():
+    class Api:
+        def post_tungsten_line(self, line, timeout=None):
+            return [{"command": line, "executionStatus": "Success", "output": []}]
+    c = StriimClient.__new__(StriimClient); c.api = Api()
+    assert c.checkpoint_history("NS.App") == []
+
 def test_checkpoint_history_raises_on_a_transport_failure():
     class Api:
         def post_tungsten_line(self, line, timeout=None):

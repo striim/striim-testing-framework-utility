@@ -49,5 +49,4 @@ def test_jar_modules_and_the_ggtrail_harness_resolve_in_the_consumer(consumer):
     from livetest.ggtrail import harness
     assert opartifacts._root() == consumer.resolve()
     assert int_opartifacts._root() == consumer.resolve()
-    assert int_opartifacts._common_dir() == consumer.resolve() / "java" / "OpenProcessors" / "OpenProcessorCommon"
     assert harness._harness_dir() == consumer.resolve() / "tools" / "ggtrail-harness"

@@ -6,7 +6,9 @@ These tests span both tiers, so this puts ``scripts/live`` and ``scripts/integra
 """
 from __future__ import annotations
 
+import functools
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,10 +22,51 @@ for _p in (_REPO / "scripts" / "integration", _REPO / "scripts" / "live"):
         sys.path.insert(0, str(_p))
 
 
+@functools.lru_cache(maxsize=1)
+def _not_a_git_checkout() -> str | None:
+    """Why this tree is not a git checkout of its own (a ``git archive`` export, a copy without
+    ``.git``, or a directory inside some other repository), or None when it is."""
+    try:
+        r = subprocess.run(["git", "-C", str(_REPO), "rev-parse", "--show-toplevel"],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"git cannot run here ({e})"
+    if r.returncode != 0:
+        return f"{_REPO} is not a git checkout (git rev-parse: {r.stderr.strip() or r.returncode})"
+    if Path(r.stdout.strip()).resolve() != _REPO.resolve():
+        return f"{_REPO} is not a git checkout of its own (git rev-parse found {r.stdout.strip()})"
+    return None
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "git_checkout: reads this repository's git history or index; skipped, with the "
+                   "reason, in a tree that is not a git checkout")
+
+
+def pytest_runtest_setup(item):
+    if item.get_closest_marker("git_checkout") is not None:
+        reason = _not_a_git_checkout()
+        if reason:
+            pytest.skip(f"needs a git checkout: {reason}")
+
+
+@pytest.fixture(scope="session")
+def _hermetic_lock_dir(tmp_path_factory):
+    """The machine-wide lock dir (livetest.stack's) for this run alone. The integration session and
+    compose locks live there, so a root test that drives a run, in process or through striim-test,
+    would otherwise take a real stack's lock, and two runs of this suite on one machine would
+    refuse each other."""
+    return tmp_path_factory.mktemp("slt-locks")
+
+
 @pytest.fixture(autouse=True)
-def _hermetic_env(monkeypatch):
+def _hermetic_env(monkeypatch, _hermetic_lock_dir):
     for name in [n for n in os.environ if n.startswith(("SLT_", "INT_"))] + ["STRIIM_URL"]:
         monkeypatch.delenv(name, raising=False)
+    from livetest import stack as _stack
+    monkeypatch.setenv("SLT_LOCK_DIR", str(_hermetic_lock_dir))
+    monkeypatch.setattr(_stack, "_LOCK_DIR", _hermetic_lock_dir)
     # No project manifest carried over from an earlier test (doctor and the CLI activate one in
     # process): example:/jar: roots resolve through the active project at call time.
     from livetest import layout as _layout, project as _project

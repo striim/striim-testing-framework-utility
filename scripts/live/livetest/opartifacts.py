@@ -13,9 +13,9 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from livetest import opjarrelease
+from livetest import jarinputs, opjarrelease
 
-from livetest import paths, stack
+from livetest import dockercmd, paths, stack
 
 # OP artifact provisioning: build an OpenProcessor's (or UDF's) jar AGAINST A GIVEN
 # RELEASE (once per run, if missing/stale) and place it — plus its config JSON(s) —
@@ -46,10 +46,13 @@ class OpArtifactError(Exception):
     pass
 
 class OpBuildFailed(OpArtifactError):
-    """The build ran and failed: the module's code or pom is broken, not the environment."""
+    """The build ran and failed, or produced a jar that does not match the release it was asked
+    for: the module's code or pom is broken, or the release does not reach the build."""
 
 class OpJarRejected(OpArtifactError):
-    """A prebuilt jar (SLT_*_JAR / SLT_PREBUILT_DIR) whose name lacks the expected -<series>.jar suffix."""
+    """A prebuilt jar the run was told to use (SLT_PREBUILT_JAR[_<MODULE>] / SLT_PREBUILT_DIR) that
+    cannot be used: missing, ambiguous, unreadable, another module's, the wrong Java level, or a
+    name without the expected -<series>.jar suffix."""
 
 @dataclass(frozen=True)
 class BuiltArtifact:
@@ -343,69 +346,39 @@ def _prune_store(store: Path, tag: str, keep: Path) -> None:
             pass
 
 
-_ADD_SOURCE_RE = re.compile(r"<source>\s*([^<]+?)\s*</source>")
+# The input set and its record live in jarinputs (byte-identical in both engines), so both decide
+# reuse from the same files: src/main, pom.xml, the parent poms, every add-sourced shared root.
+add_source_roots = jarinputs.add_source_roots
 
 
-def add_source_roots(module_dir: Path) -> list[Path]:
-    """Extra source roots this module's pom pulls in via build-helper `add-source`.
-
-    A shared library (OpenProcessorCommon, SampleCommon) is compiled INTO this module's
-    jar rather than depended on as one, so an edit there changes this artifact exactly
-    like an edit under src/ — and must trigger the same rebuild.
-
-    Read from the pom rather than hardcoded, so a new shared root is covered the moment
-    a module add-sources it, and only for the modules that actually do.
-    """
-    try:
-        text = (module_dir / "pom.xml").read_text()
-    except OSError:
-        return []
-    roots = []
-    for raw in _ADD_SOURCE_RE.findall(text):
-        resolved = raw.replace("${project.basedir}", str(module_dir))
-        if "${" in resolved:
-            # An unresolved property would silently resolve to a non-existent dir and
-            # scan nothing; skipping is equally wrong but at least not silent-by-design.
-            continue
-        path = Path(resolved)
-        if path.is_dir():
-            roots.append(path.resolve())
-    return roots
+def _source_record(jar: Path) -> Path:
+    return jarinputs.record_path(jar)
 
 
-def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
-    # Return the SOURCE that is newest-newer than the built jar (so a rebuild note can name
-    # what changed), or None when the jar is up to date. Rebuild if any source is newer —
-    # otherwise an edit to the OP's Java (without `mvn clean`) is silently ignored and the
-    # live suite uploads the OLD jar, reporting green over a real regression. Covers every
-    # file under src/main (java AND resources), pom.xml (a dependency/version/shade change
-    # alters the artifact), and every add-sourced shared root (see add_source_roots) —
-    # shared code compiles into this jar, so it is this module's source for staleness.
-    #
-    # src/test is deliberately EXCLUDED: tests are compiled but never packaged, so no edit
-    # there can change the jar's bytes, and including it made a test-only edit trigger a
-    # full rebuild that could not alter the artifact. Trade-off: the build's `-DskipTests`
-    # test COMPILE (which catches a Java-16+ construct in a test before it breaks a Java-11
-    # release build) no longer re-runs for a test-only edit — it fires on the next rebuild
-    # from any main/pom change, and in CI.
-    try:
-        jar_mtime = jar.stat().st_mtime
-    except FileNotFoundError:
-        return jar
-    srcs = [p for p in (module_dir / "src" / "main").rglob("*") if p.is_file()]
-    for root in add_source_roots(module_dir):
-        srcs.extend(p for p in root.rglob("*") if p.is_file())
-    pom = module_dir / "pom.xml"
-    if pom.exists():
-        srcs.append(pom)
-    newer = [p for p in srcs if p.stat().st_mtime > jar_mtime]
-    return max(newer, key=lambda p: p.stat().st_mtime) if newer else None
+def _write_source_record(jar: Path, module_dir: Path, recorded: dict[str, str] | None = None) -> None:
+    # The record beside a jar built from module_dir: `recorded`, the digests build_jar took before Maven
+    # ran, or (None) the inputs' digests now, for a jar that is current with the tree.
+    if recorded is None:
+        recorded = jarinputs.digests(module_dir, jarinputs.inputs(module_dir))
+    jarinputs.write_record(jar, recorded)
+
+
+def _stale_trigger(jar: Path, module_dir: Path, srcs: list[Path] | None = None) -> Path | None:
+    # Return the input that makes the jar stale (so a rebuild note can name what changed), or None
+    # when it is up to date. Rebuild on any change -- otherwise an edit (without `mvn clean`) is
+    # silently ignored and the live suite uploads the OLD jar, reporting green over a real
+    # regression. The inputs are what Maven builds the jar from (jarinputs); a deleted input, or one
+    # whose bytes changed behind an old mtime, is seen through the jar's source record (each input
+    # with its content digest), which mtimes cannot do. `srcs` is the build's one walk of them.
+    if srcs is None:
+        srcs = jarinputs.inputs(module_dir)
+    return jarinputs.stale_trigger(jar, module_dir, srcs)
 
 def _running_java_major(run=None) -> str | None:
     # Best-effort major version of whatever `java` the ambient JAVA_HOME/PATH resolves
     # to, so a build that already matches JAVA_RELEASE doesn't need a JAVA_HOME
     # override. Returns None if it can't be determined (java missing / unparseable).
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     java_bin = "java"
     home = os.environ.get("JAVA_HOME")
     if home:
@@ -434,7 +407,7 @@ def resolve_build_java_home(java_release: str, run=None, platform: str | None = 
     if _running_java_major(run=run) == str(java_release):
         return None
     if (platform or os.uname().sysname) == "Darwin":
-        probe = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+        probe = run or dockercmd.run
         r = probe(["/usr/libexec/java_home", "-v", str(java_release)])
         out = (getattr(r, "stdout", "") or "").strip()
         if getattr(r, "returncode", 1) != 0 or not out:
@@ -478,7 +451,7 @@ def _require_platform_home(module_dir: Path, build_env: dict, release: dict) -> 
             f"lib/Platform-{version}.jar; set STRIIM_HOME to the Striim {version} install to build it")
 
 def _default_run(argv, cwd, env):
-    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+    return dockercmd.run(argv, timeout=dockercmd.BUILD_TIMEOUT_S, cwd=cwd, env=env)
 
 def _verify_striim_home(build_env: dict, release: dict) -> None:
     """Fail fast if STRIIM_HOME points at an install that does not contain STRIIM_VERSION.
@@ -649,9 +622,9 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None
         if not matches:
             wanted = (f"series {suffix}" if len(names) == 1
                       else f"release suffix {suffix} or series {series}")
-            raise OpArtifactError(f"{var}: no {mod} jar for {wanted} in {path}")
+            raise OpJarRejected(f"{var}: no {mod} jar for {wanted} in {path}")
         if len(matches) > 1:
-            raise OpArtifactError(f"{var}: multiple candidates for {mod} in {path}: "
+            raise OpJarRejected(f"{var}: multiple candidates for {mod} in {path}: "
                                   f"{[p.name for p in matches]}")
         path = matches[0]
     elif var == "SLT_PREBUILT_JAR" and path.is_file():
@@ -659,17 +632,17 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None
         mod = module_name(module_ref)
         own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?", re.IGNORECASE)
         if mod_id and not own.fullmatch(mod_id):
-            raise OpArtifactError(
+            raise OpJarRejected(
                 f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
         # No entry (UDF jars carry none): the file name must name the module, as in a folder. A
         # name ending in neither suffix is left to op_name_for's error.
         end = next((f"-{n}.jar" for n in names if path.name.endswith(f"-{n}.jar")), None)
         if not mod_id and end and not own.fullmatch(path.name[: -len(end)]):
-            raise OpArtifactError(
+            raise OpJarRejected(
                 f"{var}: {path.name} has no Striim-Module-Name and is not named for module "
                 f"{mod!r}: {path}")
     if not path.is_file():
-        raise OpArtifactError(f"{var}: prebuilt jar not found: {path}")
+        raise OpJarRejected(f"{var}: prebuilt jar not found: {path}")
     return path, var
 
 
@@ -677,7 +650,8 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     """Build module_ref (a repo-relative module dir or its pom.xml) against `release`
     (a dict as returned by livetest.releases.resolve_release / detect_release) and return the resulting
     BuiltArtifact. A matching `*-<SERIES>.jar` is REUSED only when it is newer than every
-    module source AND its fingerprint sidecar records the same release; otherwise it is
+    input it is built from (jarinputs), its source record lists exactly those inputs, AND its
+    fingerprint sidecar records the same release; otherwise it is
     (re)built with the release env merged into the subprocess so each pom's `release-from-env`
     profile activates. A jar whose MANIFEST is stamped for a DIFFERENT release fails fast (asking
     for `mvn clean`); a jar with no stamp (built before the entries existed / by another toolchain)
@@ -705,8 +679,11 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         prebuilt, var = chosen
         corrupt = _jar_unreadable(prebuilt)
         if corrupt is not None:
-            raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
-        _assert_jar_java_version(prebuilt, java_release, module_dir)
+            raise OpJarRejected(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
+        try:
+            _assert_jar_java_version(prebuilt, java_release, module_dir)
+        except OpArtifactError as e:
+            raise OpJarRejected(f"prebuilt jar ({var}) {prebuilt}: {e}") from None
         jar_name = prebuilt.name
         try:
             op_name = op_name_for(jar_name, suffix, series)
@@ -736,6 +713,8 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # died with `ZipException: zip END header not found` at deploy: a test FAILURE where
     # a rebuild (or, if unbuildable, a skip) is the right outcome.
     corrupt = _jar_unreadable(jar) if jar is not None else None
+    # One walk of the inputs serves the staleness check, the rebuild's reason and the record.
+    srcs = jarinputs.inputs(module_dir)
 
     if jar is not None and corrupt is None:
         recorded = _read_manifest_fingerprint(jar)
@@ -750,7 +729,7 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             # agnostic bytecode guard must hold: it catches a wrong Java LEVEL no matter who built the
             # jar (the 5.4/Java17 <-> 5.0/Java11 switch) and a stale-repackage whose manifest lies.
             _assert_jar_java_version(jar, java_release, module_dir)
-            trigger = _stale_trigger(jar, module_dir)
+            trigger = _stale_trigger(jar, module_dir, srcs)
             if trigger is None:
                 return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="reused")
             # Any source change forces `mvn clean` -- this harness never does an
@@ -765,6 +744,13 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             except ValueError:
                 changed = trigger
             reason = f"source changed ({changed} is newer than {jar.name}) -> clean rebuild"
+            if trigger == _source_record(jar):
+                reason = f"no source record for {jar.name} -> clean rebuild"
+            elif jarinputs.is_removed(trigger, module_dir, srcs):
+                reason = f"source removed ({changed} was built into {jar.name}) -> clean rebuild"
+            elif jarinputs.mtime_hides(trigger, jar):
+                reason = (f"source changed ({changed} differs from what {jar.name} was built from, "
+                          f"mtime not newer) -> clean rebuild")
     elif corrupt is not None:
         # The interrupted build that truncated the jar may have left target/classes
         # half-written too, and shade would fold those into a plain `package` -- only
@@ -808,6 +794,9 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # Announce the automatic (re)build and the trigger that caused it, so a long silent
     # `mvn` step in the live console is explained (and a surprise rebuild is visible).
     notify(reason)
+    # The record vouches for what the build read, so it is digested before Maven starts: an input
+    # saved during the build may not be in the jar, and must still read as changed next run.
+    started_from = jarinputs.digests(module_dir, srcs)
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
     try:
         r = run(goals, str(module_dir), build_env)
@@ -839,7 +828,12 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             f"{module_dir / 'target'} (found: {[p.name for p in existing]})")
     jar = existing[0]
     # The MANIFEST stamp is written by the pom during the build, not here; verify what landed.
-    _assert_jar_java_version(jar, java_release, module_dir)
+    # This run built it, so a wrong Java level here is a build that did not produce the release
+    # it was asked for (OpBuildFailed), not a stale jar to clean (the reuse path's OpArtifactError).
+    try:
+        _assert_jar_java_version(jar, java_release, module_dir)
+    except OpArtifactError as e:
+        raise OpBuildFailed(str(e)) from None
     # The clean rebuild is the recovery, not a licence to guess -- same principle as the
     # ambiguity retry above. A release mismatch now triggers a clean rebuild instead of
     # refusing outright, which is the better behaviour, but it is only sound if the
@@ -854,11 +848,12 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # (5.4.0.6 vs 5.4.0.6C) pass it and would slip through.
     landed = _read_manifest_fingerprint(jar)
     if landed is not None and landed != fingerprint:
-        raise OpArtifactError(
+        raise OpBuildFailed(
             f"{jar.name} in {module_dir / 'target'} is still stamped for {landed} after a "
             f"clean rebuild, but this run resolves to {fingerprint}. The build is not "
             f"producing the release it was asked for -- check that STRIIM_RELEASE reaches "
             f"the pom in {module_dir}.")
+    _write_source_record(jar, module_dir, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")
 
 def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = False) -> None:
@@ -885,7 +880,8 @@ def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = Fal
     # Striim loaded; replacing them is what lets an UNLOAD poison its loader (see
     # content_addressed).
     import shutil, stat
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    copy = run or dockercmd.transfer        # a jar of any size; the commands around it are queries
+    run = run or dockercmd.run
 
     if ctx.mode == "docker":
         for f in files:
@@ -907,12 +903,12 @@ def upload_artifacts(ctx, files: list[Path], run=None, keep_existing: bool = Fal
                     source = fetched / name
             try:
                 if fetched is not None:
-                    got = run(["docker", "cp", f"{present[0]}:{final}", str(source)])
+                    got = copy(["docker", "cp", f"{present[0]}:{final}", str(source)])
                     if getattr(got, "returncode", 0) != 0:
                         raise OpArtifactError(
                             f"upload failed: could not copy {name} from {present[0]}: "
                             f"{(got.stderr or '').strip()}")
-                _publish_docker(run, f, name, final, source, keep, missing)
+                _publish_docker(run, copy, f, name, final, source, keep, missing)
             finally:
                 if fetched is not None:
                     shutil.rmtree(fetched, ignore_errors=True)
@@ -959,7 +955,7 @@ def restore_loaded_copy(ctx, name: str, run=None) -> None:
     identical bytes. A node with no copy (nothing loaded there) is left alone."""
     loaded = f"/opt/striim/.striim/OpenProcessor/{name}"
     if ctx.mode == "docker":
-        run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+        run = run or dockercmd.run
         for node in stack.app_nodes():
             tmp = f"{_UPLOADED}/.{name}.restore.{os.getpid()}"
             result = run(["docker", "exec", "-u", "0", node, "sh", "-c",
@@ -994,11 +990,11 @@ def restore_loaded_copy(ctx, name: str, run=None) -> None:
             raise OpArtifactError(f"could not restore the loaded copy of {name}: {e}") from e
 
 
-def _publish_docker(run, f, name: str, final: str, source, keep: bool, missing) -> None:
+def _publish_docker(run, copy, f, name: str, final: str, source, keep: bool, missing) -> None:
     """Publish `source` as `final` on each app node that needs it, atomically: copy to a temp
     name, then move or link it into place. With `keep`, only the `missing` nodes, and without
     clobbering: the hard link fails if a concurrent uploader published the name first, whose
-    bytes then stay."""
+    bytes then stay. `copy` runs the `docker cp`, `run` every other command."""
     want = None
     for node in stack.app_nodes():
         if keep:
@@ -1022,10 +1018,10 @@ def _publish_docker(run, f, name: str, final: str, source, keep: bool, missing) 
                   'ln "$1" "$2" || test -e "$2" || mv -n "$1" "$2"; rm -f "$1"; test -e "$2"',
                   "sh", tmp, final]
                  if keep else ["docker", "exec", node, "mv", "-f", tmp, final])
-        for command in (["docker", "cp", str(source), f"{node}:{tmp}"],
-                        ["docker", "exec", "-u", "0", node, "chmod", "644", tmp],
-                        place):
-            result = run(command)
+        for step, command in ((copy, ["docker", "cp", str(source), f"{node}:{tmp}"]),
+                              (run, ["docker", "exec", "-u", "0", node, "chmod", "644", tmp]),
+                              (run, place)):
+            result = step(command)
             if getattr(result, "returncode", 0) != 0:
                 raise OpArtifactError(
                     f"upload failed on {node} for {name}: "
@@ -1074,7 +1070,8 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
             progress("agent", "skipping agent jar placement: not a dockerized cluster")
         return
 
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    copy = run or dockercmd.transfer        # a jar of any size; the commands around it are queries
+    run = run or dockercmd.run
     agent = stack.agent_container()
 
     if getattr(run(["docker", "inspect", agent]), "returncode", 1) != 0:
@@ -1099,11 +1096,11 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
         # be the agent JVM at startup, which is exactly when a truncated jar becomes
         # "ClassNotFoundException" again -- the symptom this function exists to remove.
         tmp = f"{stack.AGENT_LIB_DIR}/.{name}.tmp.{os.getpid()}"
-        for command in (["docker", "cp", str(f), f"{agent}:{tmp}"],
-                        ["docker", "exec", "-u", "0", agent, "chmod", "644", tmp],
-                        ["docker", "exec", "-u", "0", agent, "mv", "-f", tmp, final]):
-            _agent_step(run, command, f"placing {name} on {agent}",
-                        cleanup=["docker", "exec", "-u", "0", agent, "rm", "-f", tmp])
+        for step, command in ((copy, ["docker", "cp", str(f), f"{agent}:{tmp}"]),
+                              (run, ["docker", "exec", "-u", "0", agent, "chmod", "644", tmp]),
+                              (run, ["docker", "exec", "-u", "0", agent, "mv", "-f", tmp, final])):
+            _agent_step(step, command, f"placing {name} on {agent}",
+                        cleanup=["docker", "exec", "-u", "0", agent, "rm", "-f", tmp], cleanup_run=run)
         placed.append(name)
 
     if not placed:
@@ -1125,11 +1122,11 @@ def place_on_agent(ctx, files: list[Path], client=None, run=None, progress=None,
             progress("agent", "agent re-registered")
 
 
-def _agent_step(run, command, what, cleanup=None) -> None:
+def _agent_step(run, command, what, cleanup=None, cleanup_run=None) -> None:
     result = run(command)
     if getattr(result, "returncode", 1) != 0:
         if cleanup:
-            run(cleanup)
+            (cleanup_run or run)(cleanup)
         raise OpArtifactError(f"{what} failed: {' '.join(command)}: "
                               f"{(getattr(result, 'stderr', '') or '').strip()}")
 
@@ -1143,7 +1140,7 @@ def delete_artifacts(ctx, names: list[str], run=None) -> None:
     bad = [n for n in names if not upload_name_ok(n)]
     if bad:
         raise OpArtifactError(f"refusing to delete upload name(s) outside UploadedFiles/: {bad}")
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     if ctx.mode == "docker":
         for name in names:
             for node in stack.app_nodes():

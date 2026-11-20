@@ -16,7 +16,8 @@ prove the module works inside a running app.
 
 ## Where cases live
 
-This repo ships no integration cases. Yours live in your own repo, one folder per case:
+This repo ships one case, the one under [Your first case](#your-first-case). Yours live in your own
+repo, one folder per case:
 
 ```
 tests/integration/
@@ -36,7 +37,10 @@ striim-test run --targets gold-targets.yaml --tier integration
 ## Your first case
 
 This case drives the sample Open Processor (`samples/code/op`), which copies each event and adds
-`processed=true` to its userdata. One input event, one expected event:
+`processed=true` to its userdata. One input event, one expected event. The framework ships it at
+`scripts/integration/regression/op/referenceop/referenceop-adds-processed/`, the integration
+tier's default case root, so from the framework clone (with Maven, a JDK and `STRIIM_HOME` set)
+`striim-test run --tier integration` runs it:
 
 ```
 referenceop-adds-processed/
@@ -98,7 +102,8 @@ assert:
 
 A perf case is a separate `test.yaml` in a parallel `perf/` tree beside your integration cases,
 with `performance:` in place of `assert:`. It replays the input at increasing sizes and reports
-throughput, CPU and memory; `--perf-json PATH` writes the report as JSON. The full specification is
+throughput, CPU and memory; `--perf-json PATH` writes the report as JSON. A top-level `timeout:` is
+refused there: `performance.timeout` bounds each measured iteration. The full specification is
 [internals/PERF_SPEC.md](internals/PERF_SPEC.md).
 
 # Reference
@@ -132,18 +137,32 @@ assert:                                     # required
 ```
 
 Remaining optional keys: `password_properties:` (names `properties:` keys to wrap in `Password`),
-`requires:` (services: `postgres`, `mysql`, `mariadb`, `oracle`, `sqlserver`, `spanner`, `gcs`, `vertica`, or a
-connection-only `teradata`/`servicenow`; see [SERVICES.md](SERVICES.md)), `ddl:`/`seed:`
+`requires:` (services: `postgres`, `mysql`, `mariadb`, `oracle`, `sqlserver`, `spanner`, `gcs`, `bigtable`, `vertica`, or a
+connection-only `teradata`/`servicenow`; see [SERVICES.md](SERVICES.md); a name no services root
+defines is refused at load), `ddl:`/`seed:`
 (a filename, or a `{file, db}` list — `db` defaults to `postgres-source`; other routes are
 `oracle-source`/`spanner-google`/`spanner-postgres`, …), `types:` (source schemas by `TableName`, for
 `TypeResolver`-consuming ops — see below), `source:` (drive the op as a reader — see below),
 `target:` (drive it as a Striim Target — see below),
 `timeout:` (seconds, default 120), `disabled:` (truthy => skip, use a
 string reason). `assert.smoke: true` substitutes for `assert.data` when the case only proves the
-operator constructs and runs.
+operator constructs and runs. `matrix:` and `variants:` are described below.
 
-**`assert.data` is exact and type-strict.** `true` is not `1`, `5.0` is not `5`, and decimals are
-compared digit for digit, never through a float.
+**Any other top-level key is refused at load** as an unknown top-level key, naming it and listing
+the keys allowed, and `striim-test doctor --case` reports it. A misspelt `matrix:`, `requires:`,
+`timeout:` or `disabled:` is an error, not a case that runs once, without its services, with the
+default timeout or while meant to be disabled. A perf case follows the same rule, with
+`performance:` in place of `assert:` and without `setup:`, which it would not read; it also refuses a top-level `timeout:`,
+which nothing in a perf run reads (`performance.timeout` bounds a measured iteration).
+
+**`assert.data` is exact, and strict about JSON types.** Values compare by JSON category: boolean,
+integer, decimal and string. `true` is not `1`, and `5.0` is not `5`. Decimals compare by exact
+value, never through a float, and scale is ignored, so `1.50` equals `1.5`. The Java numeric width
+is not compared: the harness writes an `Integer`, a `Long` and a `BigInteger` all as a JSON integer,
+and a `Double` and a `BigDecimal` both as a JSON decimal.
+Its `input` must hold at least one event: a case whose input is empty fails, because the operator
+is never fed and an empty `match` would pass on that alone. An empty `match` beside real input is
+legal: it says the operator filtered everything.
 
 **`types:`** declares the source schema for each `metadata.TableName` an operator will see:
 column names, in the order they occupy `data[]`/`before[]`. The harness mints a type UUID per
@@ -189,7 +208,9 @@ assert:
 Three behaviours worth knowing before you use them.
 
 1. **The two keys are not mirror images.** `ignore_fields` says *this field is volatile*: a
-   `data[i]` entry suppresses the **value** check only, and `present[i]` is still compared,
+   `data[i]` entry suppresses the **value** check only, and `present[i]` is still compared; a
+   `metadata.<key>`/`userdata.<key>` entry likewise still requires the key on exactly the events
+   where your fixture has it,
    because a wall-clock column varies in value and never in presence — and the presence bitmap is
    where event-copy bugs show. `project` says *only these fields are deterministic*:
    everything else is out of scope entirely, value **and** presence, since an operator whose other
@@ -246,8 +267,12 @@ assert:
 
 `inttest/plugin.py` collects each `test.yaml` (`pytest_collect_file` → `IntYamlFile`/`IntYamlItem`),
 `mvn package`s the module jar if it is missing, built against a different Striim release, or
-older than its sources (a deleted source counts: the jar's `.sources` record beside it lists what it
-was built from, and a missing record forces a clean rebuild),
+not built from its current sources: its `src/main`, its `pom.xml`, the parent poms it inherits from and every source
+root its pom add-sources, such as `OpenProcessorCommon` or `FieldCommon` (a newer source counts, and so do a
+deleted one and one whose content changed behind an old mtime: the jar's `.sources` record beside it
+lists each input it was built from with a content digest taken as the build starts, so a source
+saved during the build still counts as changed; every such rebuild is a clean one,
+as in the live tier, which decides from the same inputs and record),
 provisions/resets any `requires:` services, then runs the shared Java harness
 (`java/`, `com.striim.testing.inttest.IntegrationProcessor`) as a subprocess. The harness loads the jar
 in a child classloader, reflectively constructs the op's `Processor` via its canonical
@@ -433,8 +458,8 @@ seed SQL and writes `seed.go`.
   from the case's own `timeout:` so the Java side always gives up first and reports the handshake
   rather than letting a generic "timed out" blame the operator. It bounds a *handshake*, never an
   assertion — the tick budget is still the only thing that decides a case's outcome.
-- The **live** tier has a similarly-named `seed_when`, reworked into a per-file `when:` with an
-  `after:` delay. The two tiers are not the same feature: this one is a case-level flag with a
+- The **live** tier had a similarly-named `seed_when`; it was reworked into a per-file `when:` with an
+  `after:` delay, and the live loader now refuses `seed_when`. The two tiers are not the same feature: this one is a case-level flag with a
   blocking handshake, because a subprocess driver has no "app is RUNNING" moment to hang a delay on.
 
 ### `sort_by:` — comparing output that is a SET, not a sequence
@@ -570,7 +595,9 @@ assert:
 - **`match` is a list of rows**, each a list of column values, in the shape `dbroutes.query_rows`
   returns. Values are normalised losslessly: `Decimal` → string (never a float — a writer that
   refuses a value not fitting a column's scale is asserting about exact digits), temporals → ISO
-  8601 keeping any offset, `bytes` → lowercase hex.
+  8601 keeping any offset, `bytes` → lowercase hex. The rows compare as `assert.data` values do:
+  `true` is not `1`, and `5.0` is not `5`, so state each value as the driver returns it (cast a
+  column to text in the query when engines disagree).
 - **To FEED bytes, use `{"$hex": "00ff"}`** in an input fixture's `values`. JSON has no byte type,
   so without it every value a case could feed was a string, a number, a boolean or null — binary
   was inexpressible rather than untested. It must be an object with that reserved key: a bare
@@ -686,12 +713,80 @@ assert:
   failure is reported as *"failed as expected, but not for the stated reason"*, quoting both.
 - **A substring broad enough to match anything is rejected at load** — `Error`, `exception`,
   `failed`. A case that cannot tell the refusal it is testing from the harness failing to start is
-  worse than no case.
+  worse than no case. The text is rendered with the run's tokens, and the same check applies to
+  the rendered text: a variant that leaves a token `expect_error` uses empty, or renders it to one
+  of those words, is refused at load, and any other token that renders it so fails the case before
+  the drive.
 - **It cannot be combined with `data:`, `acked:`, `monitor:`, `restarts:`, `replayed:`,
   `exception_store:` or `jmx:`.** A failed drive writes no run report and emits nothing, so those
   have nothing to read.
+- **An `op:` case without `target:` has no input on this path.** The operator is driven with no
+  events, so only a refusal at construction or start can be asserted; a refusal that needs an
+  event needs a `target:` case.
 - **`target:` is allowed, and is how a rollback is proved.** The database survives the failure:
   query the table and the checkpoint row to show the failing window landed nothing.
+
+### `assert.expect_log:` — what the operator logged
+
+The only assertion that can see a warning on a run that succeeds: `target:` reads the database and
+`expect_error:` needs the drive to fail.
+
+<!-- snippet: shape integration-tier test.yaml keys -->
+```yaml
+assert:
+  target:
+    - query: SELECT CUSTOMER_ID FROM ${POSTGRES_TARGET_SCHEMA}.${TID}customers ORDER BY CUSTOMER_ID
+      match: expected/customers.json
+  expect_log:                       # a substring, or a list of them
+    - 'useBulkCopyForBatchInsert is ignored'
+```
+
+- **Every entry must appear** in what the driver JVM printed (its stdout and stderr) on an
+  `assert.data` or `target:` drive. A miss fails the case and quotes the last 1500 characters of
+  that output.
+- **Refused at load:** an empty list, an entry that is not a non-blank string, and an entry too broad
+  to name a behaviour, since it matches almost any run (`warn`, `warning`, `error`, `info`, `log`,
+  `the`, in any case).
+- **It cannot be the only assertion.** It proves what the operator said, not what it did; pair it
+  with `target:` or `acked:` so the warning is asserted on a run that is also shown to work.
+- **Beside `expect_error:` it is ignored**, with a warning at load: the failure path does not read
+  the log.
+
+### `assert.monitor:` — what a target published to the monitor
+
+<!-- snippet: shape integration-tier test.yaml keys -->
+```yaml
+assert:
+  monitor:
+    PROCESSED: 5                    # compared as text with the published value
+    OPERATION_METRICS: '{"Delete":1,"Insert":3,"Update":1}'
+    ADAPTER_BASIC: {Tuning: {Windows: 2}}   # by subset: only the keys named are compared
+    COMMIT_LAG: ['${V_TABLE}']      # shape: a lag for exactly these tables
+```
+
+Needs a `target:` block: it reads the monitor figures in the writer's run report. A plain value is
+token-rendered and compared as text with the published one. `ADAPTER_BASIC` takes a mapping and
+compares only the keys it names, recursively, so the clocks beside its counts are left out.
+`COMMIT_LAG` takes the list of table names it must report a lag for; the lags themselves are clocks
+and are only required to be non-negative. Clocks (`LAST_COMMIT_TIME`, `LAST_IO_TIME`,
+`COMMIT_LATENCY`, `EXTERNAL_IO_LATENCY`, `LAST_WRITE_AGE`) and names the writer does not publish
+are refused at load, and the error lists the names that are accepted.
+
+### `assert.exception_store:` — the rows a target handed to the exception store
+
+<!-- snippet: shape integration-tier test.yaml keys -->
+```yaml
+assert:
+  target:
+    - query: SELECT CUSTOMER_ID FROM ${POSTGRES_TARGET_SCHEMA}.${TID}customers ORDER BY CUSTOMER_ID
+      match: expected/customers.json
+  exception_store: [[2, 3], [5]]    # two notifications: events 2 and 3, then event 5
+```
+
+Needs a `target:` block. Each inner list is one notification the writer made, naming its events by
+their 1-based position in `target.input` (a skipped row carries every event that folded into it),
+in the order the writer made them. The list must equal what the writer handed over exactly; `[]`
+asserts that nothing reached the store.
 
 ### `variants:` — one case, every database type
 
@@ -742,7 +837,7 @@ assert:
   `fan[pg+pg2]` when variants share a service; a `-` in a variant name is written `~2d`). An item carries only its group's service markers and starts only those
   services, so `-m sqlserver` runs a case's SQL Server variants alone, and under xdist each group
   takes its own worker. A case without variants keeps its plain id. A Spanner group item is marked `spanner`, so a runner keeps Spanner serial with
-  `-m "not spanner" -n N`, then `-m spanner` (gold-cli does); a bare `-n N` runs it beside the others. `INT_VARIANT_ITEMS=0` makes the
+  `-m "not spanner" -n N`, then `-m spanner`; a bare `-n N` runs it beside the others. `INT_VARIANT_ITEMS=0` makes the
   whole case one item again.
 - **Inside one item, runs are serial by default.** With `INT_VARIANT_ITEMS=0`,
   `INT_VARIANT_WORKERS=N` drives up to N variants at once, each in its own worker. Variants that

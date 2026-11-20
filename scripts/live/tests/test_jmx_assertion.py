@@ -292,3 +292,52 @@ def test_row_keys_are_rendered_and_a_collision_is_refused():
     clash = _rows_spec({"CountsByApp": {"${NS}.a": 1, "NS.a": 2}})[0]
     with pytest.raises(JmxSpecError, match="both render to 'NS.a'"):
         render_row_keys(clash, lambda k: k.replace("${NS}", "NS"))
+
+
+# ---- upper bounds and zero hold until the deadline -------------------------------------
+
+def _counting(fetch):
+    calls = []
+
+    def f(url):
+        calls.append(url)
+        return fetch(url)
+    return f, calls
+
+
+def test_a_spec_of_upper_bounds_and_zeros_holds_until_the_deadline():
+    import time
+    fetch, calls = _counting(_fetcher({A: EXPORT}))
+    t0 = time.monotonic()
+    records = assert_jmx(_spec({"Misses": {"max": 2}, "GateRunning": False}), "NS", timeout=0.3,
+                         poll=0.02, endpoints=[A], fetch=fetch)
+    assert time.monotonic() - t0 >= 0.3 and len(calls) > 2
+    assert records[0]["status"] == "passed"
+
+
+def test_an_upper_bound_that_breaks_before_the_deadline_fails_at_once():
+    later = EXPORT.replace('Misses{name="\\"NS.ProductEnrich\\"",} 2.0',
+                           'Misses{name="\\"NS.ProductEnrich\\"",} 5.0')
+    assert later != EXPORT
+    fetch, calls = _counting(_fetcher({A: [EXPORT, EXPORT, later]}))
+    with pytest.raises(AssertionFailed, match="matched, then stopped matching") as e:
+        assert_jmx(_spec({"Misses": {"max": 2}}), "NS", timeout=30, poll=0, endpoints=[A], fetch=fetch)
+    assert len(calls) == 3 and "Misses: shows 5.0" in str(e.value)
+
+
+def test_a_spec_with_a_positive_attribute_passes_on_its_first_match():
+    fetch, calls = _counting(_fetcher({A: EXPORT}))
+    records = assert_jmx(_spec({"Hits": 3, "Misses": {"max": 2}, "GateRunning": False}), "NS",
+                         timeout=30, poll=0, endpoints=[A], fetch=fetch)
+    assert records[0]["status"] == "passed" and len(calls) == 1
+
+
+def test_rows_of_zeros_hold_and_a_positive_row_does_not():
+    fetch, calls = _counting(_fetcher({A: MAP_EXPORT}))
+    assert_jmx(_rows_spec({"CountsByApp": {"NS.billing": {"min": 1}}}), "NS", timeout=30, poll=0,
+               endpoints=[A], fetch=fetch)
+    assert len(calls) == 1
+    fetch, calls = _counting(_fetcher({A: MAP_EXPORT}))
+    assert_jmx(_rows_spec({"CountsByApp": {"NS.billing": {"max": 9}}}), "NS", timeout=0.2,
+               poll=0.02, endpoints=[A], fetch=fetch)
+    assert len(calls) > 2

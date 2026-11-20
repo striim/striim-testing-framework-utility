@@ -103,15 +103,16 @@ _INT_SERVICE_KEYS = (
     "INT_VERTICA_TARGET_SCHEMA", "INT_VERTICA_TARGET_USER",
 )
 # Service knobs no service.yaml names: SLT_PRE_UP=0 turns off every service's pre_up hook
-# (livetest.prestart, inttest.services.run_pre_up).
+# (livetest.prestart, inttest.services.run_pre_up); SLT_SHARED_PROVISION=0 keeps a shared run from
+# starting a missing service (livetest.infra.resolve_service).
 _SERVICE_EXTRA_KEYS = (
-    "SLT_PG_FIXTURE_TIMEOUT",
+    "SLT_PG_FIXTURE_TIMEOUT", "SLT_SHARED_PROVISION",
     "SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "INT_PG_IDLE_TRANSACTION_TIMEOUT_MS",
     "SLT_PRE_UP", "SLT_STACK_PREFIX", "INT_STACK_PREFIX", "SLT_TERADATA_JDBC", "SLT_STRIIM_TRYOUT_JARS",
     "SLT_STRIIM_PRIMARY_CPUS", "SLT_STRIIM_NODE_CPUS", "SLT_STRIIM_MEM_MAX",
     "SLT_STRIIM_MEM_LIMIT", "SLT_STRIIM_JAVA_SYSTEM_PROPERTIES",
     "SLT_ENABLE_NODE_FAULTS", "SLT_STRIIM_HTTP_HOST_PORT", "SLT_STRIIM_HTTPS_HOST_PORT", "SLT_STRIIM_NODE_HTTP_HOST_PORT",
-    "SLT_STRIIM_JMX_HOST_PORT", "SLT_STRIIM_DEBUG_HOST_PORT",
+    "SLT_STRIIM_JMX_HOST_PORT", "SLT_STRIIM_DEBUG_HOST_PORT", "SLT_STRIIM_DEBUG", "SLT_BIND_ADDRESS",
     "SLT_STRIIM_NODE_JMX_HOST_PORT", "SLT_STRIIM_AGENT_JMX_HOST_PORT",
 )
 SERVICE_KEYS = _LIVE_SERVICE_KEYS + _INT_SERVICE_KEYS + _SERVICE_EXTRA_KEYS
@@ -284,6 +285,53 @@ def _path(key, default: Path, env=None, dotenv=None) -> Path:
         raise PathConfigError(f"{key}={value!r} (set in {source}) does not exist: {p}. "
                               f"Fix it, or unset {key} to use the default {default}.")
     return p
+
+
+# Switches: settings that turn something on or off. `1` is on and `0` is off; unset or empty is
+# off, except the _DEFAULT_ON ones; any other value is refused, in both engines and the CLI.
+# Kept in the shared core rather than imported from livetest: inttest.paths must load where livetest
+# is not importable (tests/test_resource_profiles.py runs it so), and inttest.pgclient reads a switch.
+SWITCHES = (
+    "SLT_STRIIM_NATIVE_ONLY", "SLT_KEEP_SERVICES", "SLT_KEEP_RESOURCES", "SLT_KEEP_RESOURCES_ON_ERROR",
+    "SLT_ALLOW_NO_CLUSTER", "SLT_PARALLEL", "SLT_RUN_DISABLED", "SLT_SKIP_VERIFY", "SLT_EMULATORS",
+    "SLT_PRE_UP", "SLT_OP_RETRY_FAILED", "SLT_OPS_PRELOADED", "SLT_TERADATA_JDBC", "SLT_ENABLE_NODE_FAULTS",
+    "INT_KEEP_SERVICES", "INT_KEEP_RESOURCES", "INT_EMULATORS", "INT_EMPTY_SELECTION_OK",
+    "INT_VARIANT_ITEMS", "INT_PG_ALLOW_DESTRUCTIVE_RESET", "INT_ALLOW_CONCURRENT_SESSIONS",
+    "INT_ALLOW_ALL_SKIPPED", "SLT_STRIIM_DEBUG", "SLT_SHARED_PROVISION",
+)
+_DEFAULT_ON = ("SLT_PRE_UP", "INT_VARIANT_ITEMS", "SLT_SHARED_PROVISION")
+
+
+class FlagError(ValueError):
+    """A switch holds something other than 1 or 0. The message names the setting and its value."""
+
+
+def parse_flag(name, raw) -> bool:
+    """The switch `name` set to `raw`: True for `1`, False for `0`, its default when unset or blank.
+    Anything else, `true`, `yes` and ` 1` included, raises FlagError rather than guess."""
+    value = raw or ""
+    if value in ("0", "1"):
+        return value == "1"
+    if not value.strip():
+        return name in _DEFAULT_ON
+    raise FlagError(f"{name}={raw!r}: a switch is 1 (on) or 0 (off), and unset is "
+                    f"{'on' if name in _DEFAULT_ON else 'off'}. Set it to 1 or 0, or unset it.")
+
+
+def flag(name, env=None) -> bool:
+    """The switch `name` in `env` (default: the process environment); see parse_flag."""
+    return parse_flag(name, (os.environ if env is None else env).get(name))
+
+
+def flag_problems(env=None, names=SWITCHES) -> list:
+    """One message per switch in `names` that `env` sets to something other than 1 or 0."""
+    problems = []
+    for name in names:
+        try:
+            flag(name, env)
+        except FlagError as e:
+            problems.append(str(e))
+    return problems
 # --- end core ------------------------------------------------------------------------------
 
 _HERE = Path(__file__).resolve()          # <scripts>/integration/inttest/paths.py

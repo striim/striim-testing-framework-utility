@@ -7,10 +7,10 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from livetest import paths, service_healing, drivers, pgidle
-from livetest import lockdir, stack
+from livetest import bindaddr, dockercmd, lockdir, stack
 from livetest import striim_provision
 from livetest.registry import load_service, ServiceDef
 
@@ -50,7 +50,7 @@ def container_running(container: str, run=None) -> bool:
     the thing it recorded still EXISTS, not whether it is ready to serve. Docker missing or
     the container unknown both read as "not running" rather than raising -- a caller deciding
     whether a record is stale doesn't need to tell those apart."""
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     try:
         out = run(["docker", "container", "inspect", "-f", "{{.State.Running}}", container])
     except OSError:
@@ -69,7 +69,7 @@ def container_exists(container: str, run=None) -> bool:
     # images, volumes and networks, and volumes/networks carry `.Name` -- so a VOLUME named
     # slt-postgres would read as a surviving container, failing `stop live postgres` with a
     # `docker rm -f` that cannot clear it.
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     try:
         out = run(["docker", "container", "inspect", "-f", "{{.Name}}", container])
     except OSError:
@@ -143,14 +143,15 @@ def service_compose_path(defn: ServiceDef):
         return None
     return Path(defn.dir) / defn.compose
 
-def forget_provisioned(keys, state_dir=None) -> None:
+def forget_provisioned(keys, state_dir=None, timeout: float = -1) -> None:
     """Drop `keys` from the provision registry — the de-provision counterpart of
     `ensure_provisioned_once`, for a caller that tears a container down OUTSIDE a session
     boundary. Workers never call this (spec §C.4's asymmetry is about workers); an explicit
     `livetest.cli stop <service>` must, or its record outlives the container and the next
-    bring-up finds the key, skips `docker compose up`, and reports success over nothing."""
+    bring-up finds the key, skips `docker compose up`, and reports success over nothing.
+    ``timeout`` bounds the wait for the registry lock (``filelock.Timeout``); the default waits."""
     reg, lock = _provision_state_paths(state_dir)
-    with FileLock(str(lock), mode=lockdir.file_mode()):
+    with FileLock(str(lock), mode=lockdir.file_mode(), timeout=timeout):
         try:
             state = json.loads(reg.read_text())
         except (FileNotFoundError, ValueError):
@@ -161,6 +162,40 @@ def forget_provisioned(keys, state_dir=None) -> None:
             state.pop(key, None)
         reg.write_text(json.dumps(state))
 
+# How long a short read or update of the provision registry waits for its lock. Nothing holds that lock
+# across a bring-up (ensure_provisioned_once), so a holder is done within moments.
+_REGISTRY_WAIT_S = 60.0
+
+
+def _provision_key_lock(key: str, env=None) -> Path:
+    """The machine-wide lock that one key's provisioning holds (prefix-scoped like the registry lock).
+    Its names have a space of their own, ``.slt-provision-key-*``, which no other lock file uses: a key is a
+    consumer's container name, and ``registry`` would otherwise name the registry's own lock, which the
+    same bring-up takes while it holds this one."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", key)
+    return stack.lock_path(f".slt-provision-key-{safe}.lock", env)
+
+
+def _registry_lock(lock: Path, context=None) -> FileLock:
+    held = FileLock(str(lock), mode=lockdir.file_mode())
+    if context:
+        context.acquire(held, f"provision registry lock {lock}")
+        return held
+    try:
+        held.acquire(timeout=_REGISTRY_WAIT_S)
+    except Timeout:
+        raise ServiceError(f"provision registry lock {lock} not acquired within {_REGISTRY_WAIT_S:.0f}s") from None
+    return held
+
+
+def _recorded(reg: Path) -> dict:
+    try:
+        state = json.loads(reg.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
 def ensure_provisioned_once(container: str, do_provision, state_dir=None) -> bool:
     """Bring a shared service container up exactly once across xdist workers (spec §C.4).
 
@@ -170,26 +205,41 @@ def ensure_provisioned_once(container: str, do_provision, state_dir=None) -> boo
     post_up (e.g. Oracle's archivelog restart) under a sibling's already-running tests. A
     filelock + JSON registry makes the first worker provision while the rest block, then find
     the record and skip. Workers never de-provision (spec §C.4 asymmetry). Returns True if
-    THIS call performed the provisioning."""
+    THIS call performed the provisioning.
+
+    The lock held across ``do_provision`` is the key's own (``_provision_key_lock``), so a cold
+    Oracle start does not hold up a Postgres bring-up. The registry lock guards only the record's
+    read and its read-modify-write afterwards, so two keys recorded at once never lose an update
+    and ``forget_provisioned`` never waits behind a bring-up."""
     reg, lock = _provision_state_paths(state_dir)
+    key_lock = _provision_key_lock(container)
     context = service_healing.current_context()
-    held = FileLock(str(lock), mode=lockdir.file_mode())
+    held = FileLock(str(key_lock), mode=lockdir.file_mode())
     if context:
-        context.acquire(held, f"provisioning lock {lock}")
+        context.acquire(held, f"provisioning lock {key_lock}")
     else:
-        held.acquire()
+        try:
+            held.acquire(timeout=dockercmd.LOCK_WAIT_S)
+        except Timeout:
+            raise ServiceError(f"provisioning lock {key_lock} not acquired within {dockercmd.LOCK_WAIT_S:.0f}s: "
+                               f"another process is still provisioning {container}") from None
     try:
         if context:
             context.check()
+        registry = _registry_lock(lock, context)
         try:
-            state = json.loads(reg.read_text())
-        except (FileNotFoundError, ValueError):
-            state = {}
-        if container in state:
-            return False
+            if container in _recorded(reg):
+                return False
+        finally:
+            registry.release()
         do_provision()
-        state[container] = "1"
-        reg.write_text(json.dumps(state))
+        registry = _registry_lock(lock, context)
+        try:
+            state = _recorded(reg)
+            state[container] = "1"
+            reg.write_text(json.dumps(state))
+        finally:
+            registry.release()
         return True
     finally:
         held.release()
@@ -284,8 +334,8 @@ def _compose_reset(compose) -> None:
     stale volume (Oracle datafiles, Postgres data dir, Kafka logs, a CDC replication
     slot) leaks across runs and quietly poisons the test. A no-op when nothing is up."""
     try:
-        subprocess.run(["docker", "compose", "-f", str(compose), "down", "-v"],
-                       capture_output=True, text=True, env=_compose_env())
+        dockercmd.run(["docker", "compose", "-f", str(compose), "down", "-v"],
+                      timeout=dockercmd.COMPOSE_DOWN_TIMEOUT_S, env=_compose_env())
     except FileNotFoundError as e:
         raise DockerUnavailable(f"docker not found: {e}") from e
 
@@ -301,7 +351,7 @@ def _has_stopped_containers(compose, cenv) -> bool:
     for status in _NOT_RUNNING:
         argv += ["--status", status]
     try:
-        r = subprocess.run(argv, capture_output=True, text=True, env=cenv)
+        r = dockercmd.run(argv, env=cenv)
     except FileNotFoundError as e:
         raise DockerUnavailable(f"docker not found: {e}") from e
     return r.returncode == 0 and bool((r.stdout or "").strip())
@@ -326,7 +376,7 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
     compose = defn.dir / defn.compose
     cenv = _compose_env()   # os.environ + any STRIIM_HOME-derived license vars (striim bring-up)
     idle_sql = pgidle.policy_sql(cenv, "SLT_PG_IDLE_TRANSACTION_TIMEOUT_MS", "sltdb") if defn.name == "postgres" else None
-    if not os.environ.get("SLT_KEEP_SERVICES") and not (context and defn.name == "kafka"):
+    if not paths.flag("SLT_KEEP_SERVICES") and not (context and defn.name == "kafka"):
         # Wipe stale volumes so a fresh bring-up starts from clean state. Under SLT_KEEP_SERVICES
         # (parallel runs / fast re-runs, spec §C.6) we must NOT `down -v` first — that destroys the
         # shared emulator volumes a sibling worker or a prior kept run depends on; reuse them as-is
@@ -351,6 +401,8 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
     # its context carries deps/ (15 GB), so the same no-op check costs ~152s on a cold BuildKit
     # context (1.8s warm, but which you get is not predictable) -- see that module for how
     # staleness is detected there instead.
+    # Where the published ports bind: SLT_BIND_ADDRESS, else this machine and its containers only.
+    cenv.update(bindaddr.compose_env(cenv, run=dockercmd.run))
     argv = ["docker", "compose", "-f", str(compose), "up", "-d", "--wait"]
     build_required = drivers.hook(defn, "build_required")
     if build_required is None or build_required(cenv):
@@ -363,45 +415,46 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
         return
     if progress is None:
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, env=cenv)
+            r = dockercmd.run(argv, timeout=dockercmd.COMPOSE_UP_TIMEOUT_S, env=cenv)
         except FileNotFoundError as e:
             raise DockerUnavailable(f"docker not found: {e}") from e
         if r.returncode != 0:
-            if not os.environ.get("SLT_KEEP_SERVICES"):
+            if not paths.flag("SLT_KEEP_SERVICES"):
                 # Under SLT_KEEP_SERVICES (parallel runs, spec §C.6) a transient up-failure
                 # must NOT `down -v` — that destroys the shared emulator volumes sibling
                 # workers depend on. Leave them standing; the operator/next serial run cleans up.
-                subprocess.run(["docker", "compose", "-f", str(compose), "down", "-v"],
-                               capture_output=True, text=True, env=cenv)
+                dockercmd.run(["docker", "compose", "-f", str(compose), "down", "-v"],
+                              timeout=dockercmd.COMPOSE_DOWN_TIMEOUT_S, env=cenv)
             raise ServiceError(f"docker compose up failed for {defn.name}: {r.stderr.strip()}")
         if idle_sql:
-            pgidle.apply_policy(compose, cenv, "live", idle_sql, subprocess.run)
+            pgidle.apply_policy(compose, cenv, "live", idle_sql, dockercmd.run)
         return
     # Streaming variant: surface live phase feedback while `up --wait` blocks (cold start).
-    try:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1, env=cenv)
-    except FileNotFoundError as e:
-        raise DockerUnavailable(f"docker not found: {e}") from e
-    tail, last = [], None
-    for line in proc.stdout:
+    tail, last = [], [None]
+
+    def on_line(line):
         tail.append(line)
         if len(tail) > 40:
             tail.pop(0)
         phase = _classify_compose_phase(line)
-        if phase and phase != last:
-            last = phase
+        if phase and phase != last[0]:
+            last[0] = phase
             progress(defn.name, phase)
-    proc.wait()
-    if proc.returncode != 0:
-        if not os.environ.get("SLT_KEEP_SERVICES"):
+    try:
+        returncode = dockercmd.stream(argv, on_line, timeout=dockercmd.COMPOSE_UP_TIMEOUT_S, env=cenv)
+    except FileNotFoundError as e:
+        raise DockerUnavailable(f"docker not found: {e}") from e
+    if returncode != 0:
+        if not paths.flag("SLT_KEEP_SERVICES"):
             # See the non-streaming path above: skip the volume-nuking `down -v` cleanup
             # under SLT_KEEP_SERVICES so a worker's up-failure doesn't wipe shared emulators.
-            subprocess.run(["docker", "compose", "-f", str(compose), "down", "-v"],
-                           capture_output=True, text=True, env=cenv)
-        raise ServiceError(f"docker compose up failed for {defn.name}: {''.join(tail).strip()[-500:]}")
+            dockercmd.run(["docker", "compose", "-f", str(compose), "down", "-v"],
+                          timeout=dockercmd.COMPOSE_DOWN_TIMEOUT_S, env=cenv)
+        why = (dockercmd.timed_out_message(argv, dockercmd.COMPOSE_UP_TIMEOUT_S)
+               if returncode == dockercmd.TIMED_OUT else "".join(tail).strip()[-500:])
+        raise ServiceError(f"docker compose up failed for {defn.name}: {why}")
     if idle_sql:
-        pgidle.apply_policy(compose, cenv, "live", idle_sql, subprocess.run)
+        pgidle.apply_policy(compose, cenv, "live", idle_sql, dockercmd.run)
 
 def _run_preflight_compose(argv, env, context, name, progress):
     """Bound the initial Kafka attempt, with the same failure path in both APIs."""
@@ -472,10 +525,8 @@ def _default_post_up(defn: ServiceDef) -> None:
     # Run the service's post-up script inside the (now-healthy) container. Used for
     # steps that are unsafe during container startup — e.g. Oracle's archivelog
     # mount-restart (see services/oracle/postup/enable_archivelog.sh).
-    r = subprocess.run(
-        ["docker", "exec", defn.container, "bash", defn.post_up],
-        capture_output=True, text=True,
-    )
+    r = dockercmd.run(["docker", "exec", defn.container, "bash", defn.post_up],
+                      timeout=dockercmd.COMPOSE_UP_TIMEOUT_S)
     if r.returncode != 0:
         raise ServiceError(
             f"post_up failed for {defn.name} ({defn.post_up}): "
@@ -490,7 +541,8 @@ def compose_down(defn: ServiceDef, compose_run=None) -> None:
     that is still running, and `_take_down_services` goes on to drop its provision record,
     which then lets the next bring-up re-run a disruptive `post_up` (Oracle's archivelog
     restart) against it. That record is exactly what ensure_provisioned_once exists to hold."""
-    run = compose_run or (lambda args: subprocess.run(args, capture_output=True, text=True, env=_compose_env()))
+    run = compose_run or (lambda args: dockercmd.run(args, timeout=dockercmd.COMPOSE_DOWN_TIMEOUT_S,
+                                                     env=_compose_env()))
     compose = defn.dir / defn.compose
     r = run(["docker", "compose", "-f", str(compose), "down", "-v"])
     # A stub compose_run (tests, the console) may return None rather than a CompletedProcess;
@@ -559,14 +611,21 @@ def resolve(name: str, env: dict, started: set, compose_up=None, post_up=None, p
             up(defn)
             if defn.post_up:
                 run_post_up(defn)
-        if env.get("PYTEST_XDIST_WORKER") or env.get("SLT_PARALLEL"):
-            # Parallel run (xdist workers OR the console's N single-test subprocesses, spec
-            # §D.3.2): serialize the one-time bring-up across processes so they don't race
-            # `docker compose up` / re-run post_up on the shared container (spec §C.4). The
-            # console pre-flight populates this registry first, so its subprocesses find the
-            # container already recorded and skip the bring-up.
-            ensure_provisioned_once(defn.container, _do_up)
-        else:
-            _do_up()
+        # In the session's teardown set BEFORE `compose up`: a Ctrl-C there (an Oracle bring-up runs for
+        # minutes) must not leave the containers it already created out of it. Tearing down a project that
+        # was never created is a no-op. An ordinary failure takes it out again, so the next case retries.
         started.add(defn.container)
+        try:
+            if env.get("PYTEST_XDIST_WORKER") or paths.flag("SLT_PARALLEL", env):
+                # Parallel run (xdist workers OR the console's N single-test subprocesses, spec
+                # §D.3.2): serialize the one-time bring-up across processes so they don't race
+                # `docker compose up` / re-run post_up on the shared container (spec §C.4). The
+                # console pre-flight populates this registry first, so its subprocesses find the
+                # container already recorded and skip the bring-up.
+                ensure_provisioned_once(defn.container, _do_up)
+            else:
+                _do_up()
+        except Exception:
+            started.discard(defn.container)
+            raise
     return ResolvedService(name=name, mode="docker", base=base, started=first)

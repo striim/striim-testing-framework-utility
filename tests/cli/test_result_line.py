@@ -91,3 +91,31 @@ def test_the_generated_configuration_lists_every_depth_marker():
 
     listed = {m.split(":", 1)[0] for m in dispatch.MARKERS["live"]}
     assert {f"depth_{d}" for d in VALID_DEPTHS} <= listed
+
+
+def _empty_tier(tmp_path, monkeypatch, script: str):
+    monkeypatch.setattr(dispatch, "build_pytest_argv",
+                        lambda *a, **k: ([sys.executable, "-c", script], {"SLT_RUN_EPOCH": "e",
+                                                                           "SLT_INVOCATION_ID": "i",
+                                                                           "SLT_RUN_IDENTITY": "r"}))
+    return dispatch.run_tier(SimpleNamespace(run=tmp_path), "integration", tmp_path,
+                             label="integration", collect_only=False)
+
+
+def test_a_tier_that_collected_nothing_says_so(tmp_path, monkeypatch, capsys):
+    """Beside a passing tier the run still exits 0 (errors.aggregate), so this line is the only
+    sign that a whole tier ran nothing."""
+    out = _empty_tier(tmp_path, monkeypatch, "raise SystemExit(5)")
+    assert (out.code, out.reason) == (dispatch.NO_TESTS, "no-tests-collected")
+    err = capsys.readouterr().err
+    assert (f"striim-test: integration: no tests selected (no-tests-collected) "
+            f"[logs: {tmp_path / 'integration'}]\n") in err
+
+
+def test_a_tier_whose_selection_is_empty_says_so(tmp_path, monkeypatch, capsys):
+    script = ("import pathlib\n"
+              "pathlib.Path('selection.json').write_text('{\"selected\": []}')\n"
+              "raise SystemExit(5)\n")
+    out = _empty_tier(tmp_path, monkeypatch, script)
+    assert (out.code, out.reason) == (dispatch.NO_TESTS, "no-tests-selected")
+    assert "striim-test: integration: no tests selected (no-tests-selected)" in capsys.readouterr().err

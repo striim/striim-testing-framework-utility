@@ -91,6 +91,7 @@ def _tracked(tier: str) -> dict:
     return tracked
 
 
+@pytest.mark.git_checkout
 @pytest.mark.parametrize("tier", ["live", "integration"])
 def test_every_shipped_profile_selects_and_passes_preflight(tier, monkeypatch):
     monkeypatch.setattr(subprocess, "run", _REAL_RUN)        # one read-only `git ls-files`
@@ -432,7 +433,6 @@ def test_integration_plugin_ensure_up_preflight(tmp_path, monkeypatch):
     from inttest import plugin as int_plugin
     _write(tmp_path / "services", _NO_INIT)
     _int_root(monkeypatch, tmp_path)
-    monkeypatch.delenv("INT_SHARED_SERVICES", raising=False)
     with pytest.raises(resources.ResourceError, match="missing bind-mount source sql/init.sql"):
         int_plugin._ensure_up("demo", FileLock(str(tmp_path / "compose.lock")))
 
@@ -487,8 +487,11 @@ def test_integration_tokens_follow_call_time_root(tmp_path, monkeypatch):
 
 
 def test_integration_cli_and_state_follow_call_time_root(tmp_path, monkeypatch):
+    # The session and compose locks are machine-wide (the lock dir), never under a state root.
+    from livetest import stack
+    monkeypatch.setattr(stack, "_LOCK_DIR", tmp_path / "locks")
     # nothing set: today's layout
-    assert cli._lock_file() == REPO / "scripts/integration/.int-compose.lock"
+    assert cli._lock_file() == tmp_path / "locks" / ".int-compose.lock"
     assert int_services.started_registry_path().parent == REPO / "scripts/integration"
     _write(tmp_path / "services", {
         "mysql/service.yaml": "name: mysql\nisolation: none\n",
@@ -500,12 +503,12 @@ def test_integration_cli_and_state_follow_call_time_root(tmp_path, monkeypatch):
     state.mkdir()
     monkeypatch.setenv("SLT_STATE_DIR", str(state))
     from inttest import plugin as int_plugin
-    assert cli._lock_file() == state.resolve() / ".int-compose.lock"
+    assert cli._lock_file() == tmp_path / "locks" / ".int-compose.lock"
     assert int_services._provision_registry_path().parent == state.resolve()
     assert int_services.started_registry_path().parent == state.resolve()
     assert int_plugin._started_registry() == int_services.started_registry_path()
-    assert int_plugin._compose_lock_path().parent == state.resolve()
-    assert int_plugin._session_lock_path().parent == state.resolve()
+    assert int_plugin._compose_lock_path() == cli._lock_file()
+    assert int_plugin._session_lock_path() == tmp_path / "locks" / ".int-session.lock"
 
 
 # ---------------------------------------------------------------------------
@@ -535,11 +538,7 @@ def test_missing_compose_is_a_named_error_on_every_lifecycle_route(tmp_path, mon
         _not_skipped(lambda: int_services.ensure_up("postgres", lock))
     with pytest.raises(resources.ResourceError, match=match):             # YAML pipeline route
         _not_skipped(lambda: int_plugin._provision_requires("case", ["postgres"], lock))
-    monkeypatch.delenv("INT_SHARED_SERVICES", raising=False)
     with pytest.raises(resources.ResourceError, match=match):             # fixture route
-        _not_skipped(lambda: int_plugin._ensure_up("postgres", lock))
-    monkeypatch.setenv("INT_SHARED_SERVICES", "1")
-    with pytest.raises(resources.ResourceError, match=match):             # broker early return
         _not_skipped(lambda: int_plugin._ensure_up("postgres", lock))
 
 
@@ -550,7 +549,7 @@ def test_unavailable_docker_still_skips_a_complete_profile(tmp_path, monkeypatch
     def no_docker(*args, **kwargs):
         raise FileNotFoundError("docker")
 
-    monkeypatch.setattr(int_services.subprocess, "run", no_docker)
+    monkeypatch.setattr(int_services.dockercmd, "run", no_docker)
     with pytest.raises(pytest.skip.Exception, match="cannot bring up service 'postgres'"):
         int_plugin._provision_requires("case", ["postgres"], FileLock(str(tmp_path / "compose.lock")))
 
@@ -616,7 +615,7 @@ def _fixture_checkout(tmp_path, drop):
 
 def _run_fixture_only(pytester, monkeypatch, root):
     _int_root(monkeypatch, root)
-    for name in ("INT_SHARED_SERVICES", "POSTGRES_PORT", "POSTGRES_DB", "ORACLE_PORT",
+    for name in ("POSTGRES_PORT", "POSTGRES_DB", "ORACLE_PORT",
                  "INT_PG_HOST_PORT", "INT_ORA_HOST_PORT"):
         monkeypatch.delenv(name, raising=False)
     pytester.makepyfile(test_fixture_only=_FIXTURE_ONLY)

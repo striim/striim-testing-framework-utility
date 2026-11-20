@@ -36,10 +36,19 @@ and misses a test that reaches Spanner from a folder not named after it.
 
 ## A skipped run
 
-Every live case skips when the cluster is not fully formed, and pytest reports that as `N skipped`
-with exit status 0. `striim-test run` treats a selection where nothing executed as a failure (exit
-3), and so does the live tier unless `SLT_ALLOW_NO_CLUSTER=1` is set. With direct pytest, read the
+Every live case skips when the cluster is not fully formed. Plain pytest would report that as
+`N skipped` with exit status 0; the live tier instead exits 1 when every live case skipped for
+missing infrastructure and none executed, unless `SLT_ALLOW_NO_CLUSTER=1` is set (which never
+excuses a build failure). `striim-test run` reports a selection where nothing executed as exit 3.
+A run where some cases executed keeps pytest's exit status, so with direct pytest read the
 executed count from the JUnit XML, not the exit code.
+
+The live tier also fails a run in which any case skipped because a module it loads could not be
+built (no `mvn`, no JDK for the release, no `STRIIM_HOME`), even when other cases passed: those
+cases were never tested. `SLT_ALLOW_NO_CLUSTER=1` does not cover that skip. A required service that
+is unavailable here (a missing prerequisite or driver jar) counts as missing infrastructure, like
+Docker. A live case fails rather than skips when the jar the run builds is still stamped for
+another release or Java level, or when a jar named by `SLT_PREBUILT_*` cannot be used.
 
 A container that is up is not a server that is up: a Striim node can shut itself down (its log ends
 `Striim Server Beginning Shutdown`) while `docker ps` still shows the container running. When a run
@@ -85,6 +94,9 @@ Database tokens resolve to the host Striim reaches a service by: `localhost` for
 Server settings are `STRIIM_*`; framework settings are `SLT_*` (integration: `INT_*`).
 [SETTINGS.md](../SETTINGS.md) lists every one, where it can be set and its default.
 
+A `=1` below is a switch: `1` is on, `0` or unset is off, and any other value stops the run with
+exit 2 (`livetest.paths.flag`, shared with the integration engine).
+
 | Variable | Purpose |
 |---|---|
 | `STRIIM_URL`, `STRIIM_USER`, `STRIIM_PASS` (alias `STRIIM_PASSWORD`) | the Striim to test. Default `http://localhost:9080`, `admin`; the Docker cluster's password is `striim` |
@@ -123,13 +135,17 @@ let a test repo drive the engine.
 | `SLT_STATE_DIR` | `scripts/live` | run directories and coordination files |
 | `SLT_INT_CASES`, `SLT_INT_SERVICES_DIR` | `scripts/integration/...` | the integration tier's ([INTEGRATION-ENGINE.md](INTEGRATION-ENGINE.md)) |
 
-**Precedence, per key:** the process environment, then `<project root>/.env`, then the default.
-Settings shared by several checkouts can also come from a machine file
-(`${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env`, or `SLT_MACHINE_ENV`), below `.env`.
+**Precedence, per key:** the process environment, then `<project root>/.env`, then the clone's
+`.env`, then the machine file (`${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env`, or
+`SLT_MACHINE_ENV`), then the default (`livetest/service_env.py`, `values`). Without
+`SLT_PROJECT_ROOT` the project root is the clone, so the two `.env` layers are one file.
 
 **`.env` rules:**
-- It is read from `SLT_PROJECT_ROOT` as set in the environment, else from the clone. An
-  `SLT_PROJECT_ROOT` line inside `.env` moves modules but not the `.env` itself.
+- The project's `.env` is read from `SLT_PROJECT_ROOT` as set in the environment, else from the
+  clone. An `SLT_PROJECT_ROOT` line inside `.env` moves modules but not the `.env` itself.
+- The clone's `.env` is read under a project root too, below the project's: a value left in the
+  framework checkout's `.env`, such as `SLT_PG_HOST`, reaches a consumer's run unless the project's
+  `.env` or the environment sets it.
 - The clone's `.env` is the file `SLT_FRAMEWORK_DOTENV` names, when that is set in the
   environment (never from a `.env` or the machine file); otherwise the framework checkout's own.
   A file that does not exist reads as empty, as for `SLT_MACHINE_ENV`, so a mistyped path
@@ -151,7 +167,7 @@ exactly as before.
 - The first root is the primary root: the default collection path, and what a single-root caller sees.
 - A run that collects the whole primary root (pytest's `regression`, `striim-test run` or `list` with
   no path, `-k <name>`) collects every root. A run naming a case or folder collects only that.
-- Depth and service markers, `--depth`/`-m` filtering, pre-flight's service and OP/UDF unions and
+- Depth and service markers, `-m` filtering, pre-flight's service and OP/UDF unions and
   `known_test_ids` cover every root.
 - Ids stay unambiguous: a manifest `name:` must be unique across all roots (collection refuses a
   duplicate, as within one root). A case under the project root keeps its project-relative
@@ -176,11 +192,17 @@ The suite runs serially by default: it shares one Striim cluster and one set of 
 containers. `striim-test run --parallel` (or `SLT_PARALLEL=1 python -m pytest -n N`) runs tests at
 once:
 
-- **Names.** `${TID}` and `${TID_ORACLE}` are empty in a serial run and a per-test prefix in a
-  parallel one: `"t"` plus 9 hex digits of a hash of the test name, with a trailing underscore
-  (`t1a2b3c4d_users`, `T1A2B3C4D_USERS`). Templates carry no separator of their own.
+- **Names.** `${TID}` and `${TID_ORACLE}` are never empty, serial runs included: `"t"` plus 9 hex
+  digits of a sha256 of the run id, the worker and the case name, with a trailing underscore
+  (`t1a2b3c4d_users`, `T1A2B3C4D_USERS`), so neither a parallel worker nor a second run shares a
+  name. Templates carry no separator of their own. Integration cases differ: their `${TID}` is
+  empty in a serial run ([TEST-YAML.md](../TEST-YAML.md), "Parallel-safety rules").
 - **Provisioning happens once.** The first worker to need the cluster or a service provisions it
-  under a lock while the others wait, then reuse it.
+  under a lock while the others wait, then reuse it. The record of what was provisioned lives in
+  the state directory and is cleared when a session starts. The engine's own hermetic suite (a `-m`
+  expression that can select no `live` item, such as `-m 'not live'`) leaves it alone:
+  `scripts/live/conftest.py` gives that session a temporary state directory and drops
+  `SLT_FRAMEWORK_HOME` and `SLT_STACK_PREFIX` before the plugin's `pytest_configure` runs.
 - **Open Processor and UDF jars load once** per cluster, across workers, checkouts and worktrees:
   the record lives in the machine-wide lock directory, keyed by the cluster, and is checked against
   `LIST LIBRARIES`. A jar whose contents did not change is not reloaded; in docker mode a changed
@@ -271,7 +293,7 @@ The live engine modules `progress` implement this check. Manifest loading valida
 
 ### Prove the fault was issued while its precondition held
 
-The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [15-fault-evidence fixture](../../samples/live/15-fault-evidence/README.md).
+The live engine modules `progress` implement this check. Manifest loading validates the declared shape before runtime; ownership checks bind reads to the current attempt. See [TEST-YAML.md](../TEST-YAML.md) and the [14-progress-recovery fixture](../../samples/live/14-progress-recovery/README.md).
 
 ### Prove the route transports a fresh marker after recovery
 

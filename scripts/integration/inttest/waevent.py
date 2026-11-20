@@ -106,8 +106,6 @@ def _compare_map(event_idx: int, section: str, emitted: dict | None, expected: d
     emitted = emitted or {}
     expected = expected or {}
     for key in sorted(set(emitted) | set(expected)):
-        if key in ignored:
-            continue
         if projected is not None and key not in projected:
             continue
         if key not in expected:
@@ -117,6 +115,8 @@ def _compare_map(event_idx: int, section: str, emitted: dict | None, expected: d
         if key not in emitted:
             raise WAEventMismatch(
                 f"event {event_idx}: {section} is missing key {key!r} (expected {_describe(expected[key])})")
+        if key in ignored:
+            continue    # value suppressed; presence above still compared, as for data[i]
         if not _same(emitted[key], expected[key]):
             raise WAEventMismatch(
                 f"event {event_idx}: {section}[{key!r}]: expected {_describe(expected[key])}, "
@@ -246,7 +246,7 @@ def _resolve_paths(kind: str, paths, emitted: list[dict], expected: list[dict]) 
     Deliberately checked against the EMITTED side, not "either side". An earlier revision
     accepted a match in either array, which let the worst case through: when an operator
     STOPS emitting a field, a stale fixture still names it, so the path resolved against
-    `expected`, and -- because an ignored key also suppresses the missing-key check -- the
+    `expected`, and -- because an ignored key then also suppressed the missing-key check -- the
     dropped field was reported as nothing at all. Emitted is the live data; a path that
     addresses nothing there is either stale or a typo, and both should fail.
 
@@ -349,7 +349,8 @@ def compare(emitted: list[dict], expected: list[dict], *,
     The two are deliberately NOT mirror images, because they answer different questions:
 
     * `ignore_fields` says "this field is volatile". It suppresses the VALUE check only --
-      `present[i]` is still compared for an ignored index, because a wall-clock column
+      `present[i]` is still compared for an ignored index, and an ignored `metadata`/`userdata`
+      key must still be present exactly where the fixture has it, because a wall-clock field
       varies in value and never in presence, and presence is where this fleet's bitmap bugs
       live. The rest of the event is asserted exactly as normal.
     * `project` says "only these fields are deterministic". Everything else is out of scope

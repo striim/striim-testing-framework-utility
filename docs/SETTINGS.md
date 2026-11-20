@@ -7,13 +7,16 @@ Every setting the framework reads: where you can set it, its default, and what i
 
 ## Where settings come from
 
-Highest first: your shell's environment, then `.env` in your project root (in a framework clone, its root), then the machine file `${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env` (or the file `SLT_MACHINE_ENV` names). The **Where** column says which of them a setting is read from:
+Highest first: your shell's environment, then `.env` in your project root (`SLT_PROJECT_ROOT`), then the framework clone's own `.env` (or the file `SLT_FRAMEWORK_DOTENV` names), then the machine file `${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env` (or the file `SLT_MACHINE_ENV` names). Without `SLT_PROJECT_ROOT` the project is the clone, and its `.env` is read once. The clone's `.env` is read under a project root too, so a value left in it, such as `SLT_PG_HOST`, reaches your project's runs unless your project's `.env` or your shell sets it. The **Where** column says which of them a setting is read from:
 
 - **shell**: only from the environment. In `.env` it is not read.
-- **`.env`**: from the environment or `.env`.
+- **`.env`**: from the environment, the project's `.env` or the clone's `.env`.
 - **machine**: from the machine file too. Paths, ports, the stack prefix and `STRIIM_URL` are never read from it, so two checkouts on one machine stay apart; license keys are read from the shell or the machine file only, never `.env`.
+- **matrix file**: `STRIIM_BUILD_<version>` only, from the environment or the build matrix file: `.env` in your project root, or the file `SLT_BUILD_MATRIX_ENV` names. Only `STRIIM_BUILD_` lines are read from it, so the matrix can share your `.env`.
 
 Start from your repository's `.env.example`. `striim-test doctor` lists the settings that are set and where each came from.
+
+**Switches.** A setting described below as `` `1`: ... `` or `` `0`: ... ``, `SLT_ENABLE_NODE_FAULTS` and a service's `opt_in_env` are switches: `1` is on and `0` is off. Unset is off, except `SLT_PRE_UP` and `INT_VARIANT_ITEMS`, which are on. Any other value, `true` and `yes` included, is a settings mistake: the run stops with exit 2 before any test, and `striim-test doctor` names it.
 
 ## Striim
 
@@ -41,6 +44,7 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 |---|---|---|---|
 | `SLT_INFRA_OWNERSHIP` | shell, `.env`, machine | unset: a run refuses to start | `shared`: reuse what is running, start what is missing, never tear it down (needs `SLT_KEEP_SERVICES=1`). `exclusive`: take a fresh stack, refuse if a Striim already answers, and tear everything down at the end, `--parallel` included. |
 | `SLT_KEEP_SERVICES` | shell, `.env`, machine | unset | `1`: keep the cluster and service containers after the run. Required with `shared`. |
+| `SLT_SHARED_PROVISION` | shell, `.env`, machine | unset (`1`) | Under `shared`, `0`: never start a missing service; the case fails and names `SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>` (`livetest.cli start` reads this setting too). For a lane that must not start shared services. Any value other than `1` or `0` is refused. |
 | `SLT_KEEP_RESOURCES` | shell | unset | `1`: keep each test's app, tables and slots whatever the result (`--keep-resources`). |
 | `SLT_KEEP_RESOURCES_ON_ERROR` | shell | unset | `1`: the same, for failed tests only. Replication slots are dropped; the teardown prints the SQL that recreates them. |
 | `SLT_ALLOW_NO_CLUSTER` | shell | unset | `1`: do not fail a run in which every case skipped for missing infrastructure. |
@@ -53,13 +57,13 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 | `SLT_PROJECT_ROOT` | shell, `.env` | the clone root | The project: case ids, `example:` and `jar:` paths are relative to it, and its `.env` is the one read. Only the shell's value says where that `.env` is. |
 | `SLT_FRAMEWORK_HOME` | shell, `.env` | the clone's `scripts/` | The framework checkout. |
 | `SLT_LIVE_CASES` | shell, `.env` | `scripts/live/regression` | The live case root, or several separated by `:` (`;` on Windows). `striim-test run PATH` runs only cases under it. |
-| `SLT_INT_CASES` | shell, `.env` | the clone's integration cases | The integration case root. |
+| `SLT_INT_CASES` | shell, `.env` | `scripts/integration/regression` | The integration case root. The framework ships one sample case there (`op/referenceop/referenceop-adds-processed`); set it to your own cases. |
 | `SLT_SERVICES_DIR` | shell, `.env` | `scripts/live/services` | Live service definitions. |
 | `SLT_INT_SERVICES_DIR` | shell, `.env` | `scripts/integration/services` | Integration service definitions. |
 | `SLT_STATE_DIR` | shell, `.env` | `scripts/live` | Run directories and coordination files. |
 | `SLT_CASE_RECORDS` | shell | `<project>/.local-evidence/case-records` | Per-case run records (`livetest/caserecord.py`), written by every live and integration run for a consumer's incremental certification; `off` writes none. |
 | `SLT_MACHINE_ENV` | shell | `${XDG_CONFIG_HOME:-$HOME/.config}/striim-test/machine.env` | The machine-wide settings file. |
-| `SLT_FRAMEWORK_DOTENV` | shell | the clone's `.env` | A file to read as the framework clone's `.env`, when `SLT_PROJECT_ROOT` is not set. |
+| `SLT_FRAMEWORK_DOTENV` | shell | the clone's `.env` | A file to read in place of the framework clone's `.env`. That layer is read whether or not `SLT_PROJECT_ROOT` is set, below the project's `.env`; a file that does not exist reads as empty. |
 | `SLT_LOCK_DIR` | shell | `/tmp/slt-locks` | The coordination directory every run on the machine shares (mode 1777). |
 
 ## Running
@@ -74,11 +78,15 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 | `SLT_PRE_UP` | shell, `.env`, machine | unset | `0`: turn off every service's `pre_up` hook. |
 | `SLT_OP_RETRY_FAILED` | shell | unset | `1`: retry loading an Open Processor jar that already failed twice at the same bytes in this run. |
 | `SLT_RECOVER_RESTORE_TIMEOUT` | shell | `600` | Seconds a `recover:` phase allows for its restore. |
-| `SLT_STACK_PREFIX` | shell, `.env` | unset | Run a second, independent stack on the same machine: its containers and cleanup carry this prefix. |
+| `SLT_STACK_PREFIX` | shell, `.env` | unset | Run a second, independent stack on the same machine: its containers and cleanup carry this prefix. Lowercase letters, digits and dashes, starting with a letter or digit. |
 | `SLT_JDK<release>_HOME` | shell | on macOS, the JDK `java_home` finds | The JDK that builds Open Processor and UDF jars for that Java release, for example `SLT_JDK17_HOME`. Off macOS the JDK comes only from here. |
 | `SLT_PREBUILT_JAR_<MODULE>` | shell | unset: build the module | A jar to test in place of building that module, for example `SLT_PREBUILT_JAR_REFERENCEOP` for `ReferenceOp`; a folder is searched for the module's jar. Wins over the next two ([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md)). |
 | `SLT_PREBUILT_JAR` | shell | unset | A jar, or a folder, for every module the run builds. |
 | `SLT_PREBUILT_DIR` | shell | unset | A folder holding one jar per module and series. |
+| `STRIIM_BUILD_<version>` | shell, matrix file | unset | The build matrix: one line per Striim release you build for, the version with `_` for `.` and an install path as the value, for example `STRIIM_BUILD_5_4_2=/opt/striim-5.4.2`. A relative path is taken from the matrix file's folder. The releases it names, with `STRIIM_HOME`'s, decide the version suffix of every jar's file name ([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md)). |
+| `SLT_BUILD_MATRIX_ENV` | shell | `.env` in the project root | The file the build matrix is read from; a relative path is taken from the project root. |
+| `FTC_PUBLISHER_RELEASES_ENV` | shell | unset | Deprecated older name for `SLT_BUILD_MATRIX_ENV`, read only when that is unset; it will be removed in a later release. |
+| `SLT_BIND_ADDRESS` | shell, `.env`, machine | unset: this machine and its containers | The host address every service port the framework starts is published on, for example `0.0.0.0` for every interface. Unset, a framework run publishes on `127.0.0.1` and, on a Linux engine, the Docker bridge gateway that containers reach the host on; nothing is reachable from another machine, so forward a port over SSH. A plain `docker compose up` with it unset publishes on every interface, as before ([SERVICES.md](SERVICES.md)). |
 
 ## The Docker Striim cluster
 
@@ -100,19 +108,20 @@ Start from your repository's `.env.example`. `striim-test doctor` lists the sett
 | `SLT_STRIIM_JMX_HOST_PORT` | shell, `.env` | `7071` | Host port of the primary's JMX Prometheus exporter. |
 | `SLT_STRIIM_NODE_JMX_HOST_PORT` | shell, `.env` | `7075` | Host port of the second node's JMX exporter. |
 | `SLT_STRIIM_AGENT_JMX_HOST_PORT` | shell, `.env` | `7076` | Host port of the agent's JMX exporter. |
-| `SLT_STRIIM_DEBUG_HOST_PORT` | shell, `.env` | `8787` | Host port of the primary's JDWP remote debugger. |
+| `SLT_STRIIM_DEBUG` | shell, `.env`, machine | unset (off) | `1`: run the primary's JDWP remote debugger, published on `127.0.0.1` only. JDWP has no authentication; from another machine, forward the port over SSH. |
+| `SLT_STRIIM_DEBUG_HOST_PORT` | shell, `.env` | `8787` when enabled | Host port of the primary's JDWP remote debugger; published only with `SLT_STRIIM_DEBUG=1`. |
 
 ## Services
 
-To use your own database instead of the container the framework starts, set its host (the first row); the other settings default to the container's values, shown here. [SERVICES.md](SERVICES.md) has each service's accounts, tokens and routes.
+To use your own database instead of the container the framework starts, set its host (the first row); the other settings default to the container's values, shown here. Teradata and ServiceNow have no container: their tests run only against your own instance, and skip while its host is unset. A setting marked **Required** must be set before such a test can connect. [SERVICES.md](SERVICES.md) has each service's accounts, tokens and routes.
 
 ### BigQuery emulator (`bigquery`)
 
 | Setting | Where | Docker default | What it does |
 |---|---|---|---|
+| `SLT_BIGQUERY_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
 | `SLT_BIGQUERY_WRITER_ENDPOINT` | shell, `.env`, machine |  | Your own instance: the writer's local IPv4 HTTP PSC endpoint. |
 | `SLT_BIGQUERY_TOKEN_URI` | shell, `.env`, machine |  | Your own instance: the dedicated local fake OAuth /token URI. |
-| `SLT_BIGQUERY_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
 | `SLT_BIGQUERY_PORT` | shell, `.env`, machine | `9050` | Your own instance: its port. |
 | `SLT_BIGQUERY_TOKEN_HOST_PORT` | shell, `.env` | `9051` | Your own instance: the fake OAuth token server's port. |
 | `SLT_BIGQUERY_PROJECT` | shell, `.env`, machine | `test-project` | Your own instance: the project id. |
@@ -223,9 +232,9 @@ To use your own database instead of the container the framework starts, set its 
 
 | Setting | Where | Docker default | What it does |
 |---|---|---|---|
+| `SLT_ORA_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
 | `SLT_ORA_ADMIN_USER` | shell, `.env`, machine | `system` | Your own instance: the optional observer admin account, owning database logon triggers in the data PDB. |
 | `SLT_ORA_ADMIN_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: the admin account's password. |
-| `SLT_ORA_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
 | `SLT_ORA_PORT` | shell, `.env`, machine | `1521` | Your own instance: its port. |
 | `SLT_ORA_SERVICE` | shell, `.env`, machine | `FREEPDB1` | Your own instance: service name of the pluggable database. |
 | `SLT_ORA_CDB_SERVICE` | shell, `.env`, machine | `FREE` | Your own instance: service name of the container database. |
@@ -266,9 +275,9 @@ To use your own database instead of the container the framework starts, set its 
 
 ### ServiceNow (`servicenow`)
 
-| Setting | Where | Docker default | What it does |
+| Setting | Where | Default | What it does |
 |---|---|---|---|
-| `SLT_SERVICENOW_HOST` | shell, `.env`, machine |  | Your own instance's host: set it to use that instead of the container. |
+| `SLT_SERVICENOW_HOST` | shell, `.env`, machine |  | Your own instance's host. The framework ships no container for this service: with this unset, its tests skip. |
 | `SLT_SERVICENOW_SCHEME` | shell, `.env`, machine | `https` | Your own instance: `http` or `https`. |
 | `SLT_SERVICENOW_PORT` | shell, `.env`, machine | `443` | Your own instance: its port. |
 | `SLT_SERVICENOW_USER` | shell, `.env`, machine |  | Your own instance: the account the tests connect as. |
@@ -296,15 +305,15 @@ To use your own database instead of the container the framework starts, set its 
 
 ### Teradata (`teradata`)
 
-| Setting | Where | Docker default | What it does |
+| Setting | Where | Default | What it does |
 |---|---|---|---|
-| `SLT_TERADATA_USER` | shell, `.env`, machine |  | Your own instance: the account the tests connect as. |
-| `SLT_TERADATA_PASSWORD` | shell, `.env`, machine |  | Your own instance: that account's password. |
-| `SLT_TERADATA_SOURCE_USER` | shell, `.env`, machine |  | Your own instance: the account a test's source side uses. |
-| `SLT_TERADATA_SOURCE_PASSWORD` | shell, `.env`, machine |  | Your own instance: its password. |
-| `SLT_TERADATA_TARGET_USER` | shell, `.env`, machine |  | Your own instance: the account a test's target side uses. |
-| `SLT_TERADATA_TARGET_PASSWORD` | shell, `.env`, machine |  | Your own instance: its password. |
-| `SLT_TERADATA_HOST` | shell, `.env`, machine |  | Your own instance's host: set it to use that instead of the container. |
+| `SLT_TERADATA_HOST` | shell, `.env`, machine |  | Your own instance's host. The framework ships no container for this service: with this unset, its tests skip. |
+| `SLT_TERADATA_USER` | shell, `.env`, machine |  | **Required.** Your own instance: the admin account, which makes the test accounts and schemas and cleans up. |
+| `SLT_TERADATA_PASSWORD` | shell, `.env`, machine |  | **Required.** Your own instance: the admin account's password. |
+| `SLT_TERADATA_SOURCE_USER` | shell, `.env`, machine |  | **Required.** Your own instance: the account a test's source side uses. |
+| `SLT_TERADATA_SOURCE_PASSWORD` | shell, `.env`, machine |  | **Required.** Your own instance: its password. |
+| `SLT_TERADATA_TARGET_USER` | shell, `.env`, machine |  | **Required.** Your own instance: the account a test's target side uses. |
+| `SLT_TERADATA_TARGET_PASSWORD` | shell, `.env`, machine |  | **Required.** Your own instance: its password. |
 | `SLT_TERADATA_PORT` | shell, `.env`, machine | `1025` | Your own instance: its port. |
 | `SLT_TERADATA_SOURCE_SCHEMA` | shell, `.env`, machine | `qasource` | Your own instance: the schema source tables are made in. |
 | `SLT_TERADATA_TARGET_SCHEMA` | shell, `.env`, machine | `qatarget` | Your own instance: the schema target tables are made in. |
@@ -336,19 +345,18 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 
 | Setting | Where | Default | What it does |
 |---|---|---|---|
-| `INT_STACK_PREFIX` | shell, `.env` | unset | Run a second integration stack on the same machine, with its own containers and state. |
+| `INT_STACK_PREFIX` | shell, `.env` | unset | Run a second integration stack on the same machine, with its own containers and state. Lowercase letters, digits and dashes, starting with a letter or digit. |
 | `INT_KEEP_SERVICES` | shell | unset | `1`: leave the service containers running after the session, for fast local iteration. |
 | `INT_KEEP_RESOURCES` | shell | unset | `1`: keep each case's resources after it runs. |
 | `INT_EMULATORS` | shell | unset | `1`: opt in to every integration service that declares `opt_in_env`. |
-| `INT_VARIANT` | shell | unset: every variant | Run only this variant of each case, to iterate on one engine without starting every database. A name no case defines runs nothing. |
+| `INT_VARIANT` | shell | unset: every variant | Run only this variant of each case, to iterate on one engine without starting every database. A name that matches no variant of any collected case is a usage error; otherwise the run prints the narrowing. |
 | `INT_EMPTY_SELECTION_OK` | shell | unset | `1`: a run whose `-m` deselects every item exits 0, not 5 (for a runner's marker-split passes). |
 | `INT_VARIANT_ITEMS` | shell | unset: `1` | `1`: each variant group of a case is its own item (`case[variant]`), marked and provisioned for its services only. `0`: the whole case is one item. |
 | `INT_VARIANT_WORKERS` | shell | unset: `1`, serial | With `INT_VARIANT_ITEMS=0`: how many of a case's variants drive at once. Variants on one service share a worker; Spanner variants run alone, after the others. |
 | `INT_EXTRA_CLASSPATH` | shell | unset | Jars added to the harness classpath, such as a JDBC driver kept elsewhere. |
 | `INT_PG_ALLOW_DESTRUCTIVE_RESET` | shell | unset | `1`: allow the Postgres reset, a cascading drop of the test schemas, on a database other than the sandbox `intdb`. |
 | `INT_ALLOW_CONCURRENT_SESSIONS` | shell | unset | `1`: allow a second integration session on the same stack at the same time. |
-| `INT_ALLOW_ALL_SKIPPED` | shell | unset | `1`: do not fail a run in which every case skipped because a service or Docker was missing. A build prerequisite missing still fails it. |
-| `INT_SHARED_SERVICES` | shell | unset | Reserved: a broker owns the services, and the session does not tear them down. |
+| `INT_ALLOW_ALL_SKIPPED` | shell | unset | `1`: do not fail a run in which every case skipped because a service or Docker was missing. A case skipped because its module could not be built (no `STRIIM_HOME`, `mvn` or JDK) still fails the run, even when other cases passed. |
 
 ### Bigtable emulator, integration (`bigtable`)
 
@@ -452,9 +460,9 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 
 ### ServiceNow, integration (`servicenow`)
 
-| Setting | Where | Docker default | What it does |
+| Setting | Where | Default | What it does |
 |---|---|---|---|
-| `INT_SERVICENOW_HOST` | shell, `.env`, machine |  | Your own instance's host: set it to use that instead of the container. |
+| `INT_SERVICENOW_HOST` | shell, `.env`, machine |  | Your own instance's host. The framework ships no container for this service: with this unset, its tests skip. |
 | `INT_SERVICENOW_SCHEME` | shell, `.env`, machine | `https` | Your own instance: `http` or `https`. |
 | `INT_SERVICENOW_PORT` | shell, `.env`, machine | `443` | Your own instance: its port. |
 | `INT_SERVICENOW_USER` | shell, `.env`, machine |  | Your own instance: the account the tests connect as. |
@@ -500,15 +508,15 @@ The integration engine's own settings ([INTEGRATION-TESTS.md](INTEGRATION-TESTS.
 
 ### Teradata, integration (`teradata`)
 
-| Setting | Where | Docker default | What it does |
+| Setting | Where | Default | What it does |
 |---|---|---|---|
-| `INT_TERADATA_ADMIN_USER` | shell, `.env`, machine |  | Your own instance: the admin account, which makes the test accounts and schemas and cleans up. |
-| `INT_TERADATA_ADMIN_PASSWORD` | shell, `.env`, machine |  | Your own instance: the admin account's password. |
-| `INT_TERADATA_SOURCE_USER` | shell, `.env`, machine |  | Your own instance: the account a test's source side uses. |
-| `INT_TERADATA_SOURCE_PASSWORD` | shell, `.env`, machine |  | Your own instance: its password. |
-| `INT_TERADATA_TARGET_USER` | shell, `.env`, machine |  | Your own instance: the account a test's target side uses. |
-| `INT_TERADATA_TARGET_PASSWORD` | shell, `.env`, machine |  | Your own instance: its password. |
-| `INT_TERADATA_HOST` | shell, `.env`, machine |  | Your own instance's host: set it to use that instead of the container. |
+| `INT_TERADATA_HOST` | shell, `.env`, machine |  | Your own instance's host. The framework ships no container for this service: with this unset, its tests skip. |
+| `INT_TERADATA_ADMIN_USER` | shell, `.env`, machine |  | **Required.** Your own instance: the admin account, which makes the test accounts and schemas and cleans up. |
+| `INT_TERADATA_ADMIN_PASSWORD` | shell, `.env`, machine |  | **Required.** Your own instance: the admin account's password. |
+| `INT_TERADATA_SOURCE_USER` | shell, `.env`, machine |  | **Required.** Your own instance: the account a test's source side uses. |
+| `INT_TERADATA_SOURCE_PASSWORD` | shell, `.env`, machine |  | **Required.** Your own instance: its password. |
+| `INT_TERADATA_TARGET_USER` | shell, `.env`, machine |  | **Required.** Your own instance: the account a test's target side uses. |
+| `INT_TERADATA_TARGET_PASSWORD` | shell, `.env`, machine |  | **Required.** Your own instance: its password. |
 | `INT_TERADATA_PORT` | shell, `.env`, machine | `1025` | Your own instance: its port. |
 | `INT_TERADATA_DB` | shell, `.env`, machine | `dbc` | Your own instance: the database. |
 | `INT_TERADATA_SOURCE_SCHEMA` | shell, `.env`, machine | `qasource` | Your own instance: the schema source tables are made in. |

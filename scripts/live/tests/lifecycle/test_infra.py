@@ -822,6 +822,22 @@ def test_exclusive_refuses_leftover_containers_naming_stop_command():
     decl.release()                                        # the refused attempt released its lease
 
 
+@pytest.mark.parametrize("rc, stderr", [(1, "Cannot connect to the Docker daemon"),
+                                        (124, "`docker ps -a ...` did not finish within 60s and was stopped")],
+                         ids=["failed", "timed-out"])
+def test_exclusive_refuses_when_the_leftover_listing_fails(rc, stderr):
+    """A `docker ps` that fails or times out has listed nothing: it is a refusal, never "no leftover stack"."""
+    def docker(argv):
+        return SimpleNamespace(stdout="", stderr=stderr, returncode=rc)
+
+    prefix = "x" + hashlib.sha256(b"r7").hexdigest()[:8]
+    with pytest.raises(infra.InfraOwnershipError) as ei:
+        infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r7"), run=docker)
+    assert prefix in str(ei.value) and f"exit status {rc}" in str(ei.value) and stderr in str(ei.value)
+    decl = infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r7"), run=_no_docker)
+    decl.release()                                        # the refused attempt left nothing held
+
+
 def test_exclusive_refuses_reachable_or_open_endpoint_before_provisioning(tmp_path):
     cfg = SimpleNamespace(_slt_infra=infra.Infra("exclusive", 9080, tmp_path))
     url = "http://localhost:9080"
@@ -932,8 +948,7 @@ def test_resolve_service_two_processes_different_state_dirs_provision_once(tmp_p
 
 def test_resolve_service_parallel_branch_no_recursive_lock(monkeypatch, tmp_path):
     from livetest import services
-    assert services._PROVISION_LOCK != ".slt-shared-provision.lock"
-    assert services._PROVISION_LOCK != infra.SHARED_PROVISION_LOCK
+    assert services._PROVISION_LOCK != infra.shared_provision_lock("slt-postgres")
     monkeypatch.setenv("SLT_PARALLEL", "1")
     monkeypatch.setattr(services, "_state_dir", lambda: tmp_path / "state")
     (tmp_path / "state").mkdir()
@@ -959,7 +974,8 @@ def test_resolve_service_lock_timeout_is_bounded_failure(tmp_path):
     holder = subprocess.Popen(
         [sys.executable, "-c",
          "import sys, time; from filelock import FileLock; l = FileLock(sys.argv[1]); l.acquire(); "
-         "print('locked', flush=True); time.sleep(30)", str(tmp_path / "locks" / infra.SHARED_PROVISION_LOCK)],
+         "print('locked', flush=True); time.sleep(30)",
+         str(tmp_path / "locks" / infra.shared_provision_lock("slt-postgres"))],
         env=_child_env(tmp_path), stdout=subprocess.PIPE, text=True)
     (tmp_path / "locks").mkdir(exist_ok=True)
     try:
@@ -988,8 +1004,62 @@ def test_resolve_service_exclusive_passes_through(tmp_path):
                                 container_running=lambda c: pytest.fail("exclusive never probes containers"))
     assert out == "r" and calls == ["postgres"]
     assert decl.services == [{"name": "postgres", "container": "xabc-slt-postgres", "status": "owned"}]
-    assert not (tmp_path / "locks" / infra.SHARED_PROVISION_LOCK).exists()
+    assert not (tmp_path / "locks" / infra.shared_provision_lock("xabc-slt-postgres")).exists()
     legacy = []
     assert infra.resolve_service(None, "postgres", {}, set(),
                                  lambda name, env, started, progress=None: legacy.append(name) or "l") == "l"
     assert legacy == ["postgres"]
+
+
+# ---------------------------------------------------------------- docker outside the registry lock; orphaned stacks
+
+def test_the_leftover_docker_ps_runs_outside_the_port_registry_lock():
+    # A hung `docker ps` inside the registry lock made every other declaration on the port time out.
+    from filelock import FileLock, Timeout
+    held = []
+
+    def docker(argv):
+        probe = FileLock(str(infra._registry_path(infra._lock_dir(), 9080)))
+        try:
+            probe.acquire(timeout=0)
+            probe.release()
+            held.append(False)
+        except Timeout:
+            held.append(True)
+        return SimpleNamespace(stdout="", returncode=0)
+
+    decl = infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r-ps"), run=docker)
+    decl.release()
+    assert held and not any(held), held
+
+
+def test_exclusive_declaration_names_an_orphaned_exclusive_stack(capsys):
+    orphan = "x0123abcd"
+
+    def docker(argv):
+        if argv[-1] == "-q":                               # the allocated prefix: nothing left over
+            return SimpleNamespace(stdout="", returncode=0)
+        return SimpleNamespace(stdout=f"{orphan}-slt-postgres\n{orphan}-slt-striim\nslt-kafka\n", returncode=0)
+
+    decl = infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r-orphan"), run=docker)
+    decl.release()
+    err = capsys.readouterr().err
+    assert f"{orphan}-slt-postgres" in err and f"{orphan}-slt-striim" in err and "slt-kafka" not in err
+    assert f"SLT_STACK_PREFIX={orphan} python -m livetest.cli stop all" in err
+
+
+def test_a_live_exclusive_run_on_another_port_is_not_named_an_orphan(capsys):
+    run_id = "live-elsewhere"
+    live = "x" + hashlib.sha256(run_id.encode()).hexdigest()[:8]
+    owner = infra._lock_dir() / ".slt-endpoint-9081.exclusive.owner"
+    owner.parent.mkdir(parents=True, exist_ok=True)
+    owner.write_text(json.dumps({"runId": run_id, "pid": os.getppid()}))      # a live holder
+
+    def docker(argv):
+        if argv[-1] == "-q":
+            return SimpleNamespace(stdout="", returncode=0)
+        return SimpleNamespace(stdout=f"{live}-slt-postgres\n", returncode=0)
+
+    decl = infra.declare(_env(SLT_INFRA_OWNERSHIP="exclusive", SLT_RUN_EPOCH="r-other"), run=docker)
+    decl.release()
+    assert live not in capsys.readouterr().err

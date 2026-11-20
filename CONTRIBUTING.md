@@ -58,7 +58,8 @@ export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 DOCKER_HOST=unix:///nonexist
 
 The recovery cases commit copies of one reviewed CSV. After changing
 `samples/live/14-progress-recovery/expected/rows.csv`, run
-`python3 tools/prepare-recovery-goldens.py --write`; without `--write` it checks the copies.
+`python3 tools/prepare-recovery-goldens.py --write`; without `--write` it checks that the source is
+`(n, row-n)` for n=1..5000 and that every copy equals it.
 
 Run the suites for whatever you touch. These framework tests use pytest directly; use `striim-test` when running app cases.
 
@@ -73,8 +74,17 @@ Run the suites for whatever you touch. These framework tests use pytest directly
 (cd scripts/integration && ../../.venv-test/bin/python -m pytest -q -m 'not integration and not docker' tests)
 ```
 
+The same three commands run on every pull request (`.github/workflows/hermetic-tests.yml`, Linux,
+Python 3.12, no Docker, `STRIIM_HOME` unset). Each suite also has a skip budget there: a pull request
+that adds a skip raises that suite's `max-skips` and says why. `tests/test_ci_workflow.py` keeps the
+workflow, these commands and `tools/release.py` the same.
+
 On a Linux test host with user systemd, prefix each Python command with
 `systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0` to cap its memory.
+
+A few tests read this repository's git history or index (marked `git_checkout` in the root suite).
+In a copy that is not a git checkout, such as a `git archive` export, they skip and say why; run
+them in a checkout before a release.
 
 The framework's own live tests (`scripts/live/regression/`) need Striim and Docker:
 [docs/internals/ENGINE.md](docs/internals/ENGINE.md), "Running it with pytest".
@@ -123,6 +133,12 @@ performance extension, and the design notes on ownership, lifecycle and exact co
 ## Releases
 
 Maintainers cut tagged releases with `tools/release.py`: [docs/internals/RELEASING.md](docs/internals/RELEASING.md).
+
+A pull request that changes what a user sees adds an entry under `## Unreleased` in
+[RELEASE-NOTES.md](RELEASE-NOTES.md), in plain words, with what changed for the user first. If
+users must do something when they move to it, it also adds a heading under `## Unreleased` in
+[docs/UPGRADING.md](docs/UPGRADING.md). Consumers pin commits of `main`, so these sections are how
+they learn what a newer commit changes. The release turns both into the version's own sections.
 
 ## Pull requests
 

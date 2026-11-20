@@ -1,0 +1,35 @@
+CREATE NAMESPACE ${NS};
+USE ${NS};
+
+CREATE OR REPLACE APPLICATION ${APP};
+
+CREATE OR REPLACE SOURCE ${TID}src_reader USING Global.SpannerBatchReader (
+  ConnectionURL: '${SPANNER_GSQL_URL}',
+  ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json',
+  ProjectId: '${SPANNER_PROJECT}',
+  InstanceID: '${SPANNER_INSTANCE}',
+  DatabaseName: '${SPANNER_GSQL_DB}',
+  Tables: '${TID}src',
+  CheckColumn: '%=id',
+  StartPosition: '%=0',
+  FetchSize: 100,
+  pollingInterval: '5sec',
+  ReturnDateTimeAs: 'JODA',
+  ConnectionPoolSize: 5,
+  ThreadPoolSize: 5
+) OUTPUT TO ${TID}stream;
+
+CREATE OR REPLACE TARGET ${TID}tgt_writer USING Global.SpannerWriter (
+  ConnectionURL: '${SPANNER_GSQL_URL}',
+  ServiceAccountKey: 'UploadedFiles/fake-gcp-key.json',
+  ProjectId: '${SPANNER_PROJECT}',
+  InstanceID: '${SPANNER_INSTANCE}',
+  DatabaseName: '${SPANNER_GSQL_DB}',
+  Tables: '${TID}src,${SPANNER_GSQL_DB}.${TID}tgt',
+  BatchPolicy: 'EventCount:100,Interval:1'
+) INPUT FROM ${TID}stream;
+
+END APPLICATION ${APP};
+
+DEPLOY APPLICATION ${APP};
+START APPLICATION ${APP};

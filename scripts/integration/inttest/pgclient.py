@@ -40,7 +40,6 @@ touched at all.
 """
 from __future__ import annotations
 
-import os
 import random
 import re
 import time
@@ -72,7 +71,8 @@ def _assert_reset_is_safe(dsn: Mapping[str, str]) -> None:
     dbname = dsn.get("dbname")
     if dbname == _SANDBOX_DBNAME:
         return
-    if os.environ.get(_ALLOW_DESTRUCTIVE_RESET_ENV) == "1":
+    from . import paths
+    if paths.flag(_ALLOW_DESTRUCTIVE_RESET_ENV):
         return
     raise UnsafeResetError(
         f"refusing reset_schemas(): dbname {dbname!r} is not the harness's own "

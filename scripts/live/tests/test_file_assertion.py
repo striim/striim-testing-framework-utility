@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from livetest.assertions import AssertionFailed
 from livetest.assertions.file import (
@@ -32,6 +34,77 @@ def test_parse_raises_on_mid_stream_corruption():
     text = '[{"data":{"ID":"1"}}, garbage, {"data":{"ID":"2"}}, {"data":{"ID":"3"}}]'
     with pytest.raises(FileSpecError, match="corrupt"):
         parse_json_events(text)
+
+# A last event caught mid-write holds complete nested objects (`data`, arrays of objects, a
+# string with braces in it). None of them is a later event: only a value outside the failed
+# fragment, at the top level, shows that the stream goes on past it.
+@pytest.mark.parametrize("tail", [
+    '{"data":{"id":2},"metadata":{"Op',
+    '{"data":{"id":2}',
+    '{"data":{"id":2},"rows":[{"x":1},{"x":2}],"metadata":{"Op',
+    '{"data":{"s":"}}"},"m":{"id":9}',
+    '{"data":{"s":"a\\"}}"},"m":{"id":9}',
+    '{"data":{"id":2},"note":"a {} and {\\"x\\":1} b',
+    '{"data":{"id":2},"ok":tru',
+    '{"data":{"id":2},"n":-',
+    '{"data":{"id":2},"n":1.',
+], ids=["nested-then-partial", "torn-after-nested", "array-of-objects", "braces-in-string",
+        "escaped-quote", "objects-in-a-torn-string", "torn-literal", "torn-sign", "torn-number"])
+def test_parse_tolerates_a_partial_last_event_with_complete_nested_objects(tail):
+    for text in ('{"data":{"id":1}}\n' + tail, '[\n {"data":{"id":1}},\n ' + tail):
+        assert parse_json_events(text) == [{"data": {"id": 1}}]
+
+def test_parse_still_raises_on_corruption_with_nested_objects_before_a_later_event():
+    text = '{"data":{"id":1}}\n{"data":{"id":oops},"m":{"a":{}}}\n{"data":{"id":3}}'
+    with pytest.raises(FileSpecError, match="corrupt"):
+        parse_json_events(text)
+
+# An event missing its closing brace never brings the object depth back to the top level, so the
+# events after it are nested inside it by depth alone. They still start where the broken event
+# stops being valid JSON, which is what shows the stream goes on past the failure.
+_UNCLOSED = [
+    '{"data":{"id":1}, {"data":{"id":2}}, {"data":{"id":3}}',
+    '{"data":{"id":1},"metadata":{"Op":"I"}, {"data":{"id":2}}',
+    '{"data":{"id":1},"s":"{}" {"data":{"id":2}}',
+]
+
+@pytest.mark.parametrize("text", _UNCLOSED + ['[' + t + ']' for t in _UNCLOSED])
+def test_parse_raises_on_an_unclosed_event_mid_stream(text):
+    with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
+        parse_json_events(text)
+
+# A stray quote inside the corrupt event puts any string tracking out of step with the text after it,
+# so the later events read as string content and the stream as a pending tail (review N8).
+_STRAY_QUOTE = [
+    '{"data":{"name":"a"b"}}, {"data":{"id":2}}',
+    '{"data":{"id":1}}\n{"data":{"name":"a"b"}}\n{"data":{"id":3}}',
+    '{"data":{"s":"x"y"},"m":{"Op":"I"}} {"data":{"id":2},"m":{"Op":"I"}}',
+]
+
+@pytest.mark.parametrize("text", _STRAY_QUOTE + ['[' + t + ']' for t in _STRAY_QUOTE])
+def test_parse_raises_on_a_stray_quote_mid_stream(text):
+    with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
+        parse_json_events(text)
+
+def test_an_unclosed_event_mid_stream_fails_on_the_first_read(tmp_path):
+    reads = []
+    def read(path):
+        reads.append(path)
+        return '[{"data":{"id":1}, {"data":{"id":2}}, {"data":{"id":3}}]'
+    with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
+        assert_file(read, parse_file_specs([{"path": "/o", "min_events": 3}]), tmp_path,
+                    timeout=2, poll=0.01)
+    assert len(reads) == 1
+
+def test_partial_last_event_with_a_nested_object_is_polled_again(tmp_path):
+    # Caught mid-write on the first poll, complete on the second: the poll goes on and passes.
+    reads = ['{"data":{"id":1}}\n{"data":{"id":2},"metadata":{"Op',
+             '{"data":{"id":1}}\n{"data":{"id":2},"metadata":{"OperationName":"INSERT"}}\n']
+    def read(path):
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+    recs = assert_file(read, parse_file_specs([{"path": "/o", "min_events": 2}]), tmp_path,
+                       timeout=30, poll=0.01)
+    assert recs[0]["status"] == "passed" and not reads[1:]
 
 # ---- projection --------------------------------------------------------------
 
@@ -554,11 +627,10 @@ def test_an_absent_row_ALONGSIDE_a_real_row_is_still_accepted():
 
 
 def test_an_absent_row_with_NO_keys_is_REFUSED_as_impossible():
-    # Neighbour of the vacuous shape, and a different problem. `_evaluate` keeps events by
-    # the UNRESTRICTED projection, so without `keys:` every compared event projects at least
-    # one column and frozenset() can never appear in the actual set. Such a golden is
-    # IMPOSSIBLE rather than vacuous, and would fail only after the full assertion timeout
-    # with a diff naming no cause -- so it is refused at load, saying which of the two it is.
+    # Neighbour of the vacuous shape, and a different problem. Without `keys:` an all-<absent>
+    # row matches only an event whose whole projected section is empty, never one that merely
+    # lacks the named columns, so for a populated section it is impossible and would fail only
+    # after the full assertion timeout -- it is refused at load, saying which of the two it is.
     import pytest as _pytest, pathlib, tempfile
     from livetest.assertions.file import _load_golden, FileSpecError
     with tempfile.TemporaryDirectory() as d:
@@ -679,3 +751,167 @@ def test_a_long_golden_row_is_refused(tmp_path):
     (tmp_path / "g.csv").write_text("id,name\n1,a,b\n")
     with pytest.raises(FileSpecError, match="data row 1 has more cells"):
         _load_golden_rows(tmp_path, {"path": "/tmp/out", "match": "g.csv"})
+
+
+# ---- which events a projection compares: only true boundary events are dropped ----------
+
+def _wa(row, userdata, **extra):
+    return {"metadata": {"TableName": "s.items", "OperationName": "INSERT"}, "data": row,
+            "before": None, "userdata": userdata, **extra}
+
+
+def test_userdata_match_fails_an_event_the_operator_did_not_stamp(tmp_path):
+    # An Open Processor that forwards the original event on error delivers it with no userdata.
+    # Its row payload is real, so it is compared: an empty projection is not a boundary event.
+    _golden_rows(tmp_path, "g.csv", "processed", "true")
+    spec = {"path": "/o", "match": "g.csv", "project": "userdata", "keys": ["processed"]}
+    stamped = _wa({"id": 1}, {"processed": "true"})
+    for unstamped in (_wa({"id": 2}, None), _wa({"id": 2}, {}), _wa({"id": 2}, {"other": "x"})):
+        with pytest.raises(AssertionFailed, match="event set"):
+            assert_file(lambda p, u=unstamped: json.dumps([stamped, u]), [spec], tmp_path, timeout=0)
+    assert_file(lambda p: json.dumps([stamped, _wa({"id": 2}, {"processed": "true"})]), [spec],
+                tmp_path, timeout=0)
+
+
+def test_userdata_projection_still_drops_a_true_boundary_event(tmp_path):
+    # A BEGIN/COMMIT record carries metadata and no data, before or userdata at all: not a row,
+    # under any projection, even when a metadata key is projected.
+    spec = {"path": "/o", "match": "g.csv", "project": "userdata", "keys": ["processed", "OperationName"],
+            "metadata": ["OperationName"]}
+    _golden_rows(tmp_path, "g.csv", "processed,OperationName", "true,INSERT")
+    boundary = {"metadata": {"OperationName": "COMMIT"}, "data": None, "before": None, "userdata": None}
+    assert_file(lambda p: json.dumps([boundary, _wa({"id": 1}, {"processed": "true"}), boundary]),
+                [spec], tmp_path, timeout=0)
+
+
+def test_distinct_events_counts_an_unstamped_event_under_userdata(tmp_path):
+    spec = {"path": "/o", "distinct_events": 1, "project": "userdata", "keys": ["processed"]}
+    stamped = _wa({"id": 1}, {"processed": "true"})
+    assert_file(lambda p: json.dumps([stamped, stamped]), [spec], tmp_path, timeout=0)
+    with pytest.raises(AssertionFailed, match="distinct projected events=2"):
+        assert_file(lambda p: json.dumps([stamped, _wa({"id": 2}, None)]), [spec], tmp_path, timeout=0)
+
+
+def test_data_match_compares_a_before_only_event(tmp_path):
+    # An event with a before-image and no data is a row, not a boundary: under project: data it
+    # projects to its metadata keys only and must be in the golden to pass.
+    _golden_rows(tmp_path, "g.csv", "ID,OperationName", "1,INSERT")
+    spec = {"path": "/o", "match": "g.csv", "metadata": ["OperationName"]}
+    before_only = {"metadata": {"OperationName": "DELETE"}, "data": None, "before": {"ID": "1"}}
+    with pytest.raises(AssertionFailed, match="event set"):
+        assert_file(lambda p: json.dumps([_wa({"ID": "1"}, None), before_only]), [spec], tmp_path, timeout=0)
+
+
+# ---- a file that never finishes decoding fails at the deadline ---------------------------
+
+def test_permanently_truncated_last_event_fails_at_the_deadline(tmp_path):
+    text = '{"id":1}\n{"id":2}\n{"id":3,"name":"tru'            # the third event never completes
+    with pytest.raises(AssertionFailed, match="do not decode as a JSON event") as e:
+        assert_file(lambda p: text, [{"path": "/o", "events": 2}], tmp_path, timeout=0.2, poll=0.01)
+    assert e.value.records[0]["status"] == "failed"
+    with pytest.raises(AssertionFailed, match="do not decode as a JSON event"):
+        assert_file(lambda p: '[{"data":{"ID":"1"}},\n {"data":{"ID', [{"path": "/o", "min_events": 1}],
+                    tmp_path, timeout=0.2, poll=0.01)
+
+
+def test_non_object_values_fail_at_the_deadline(tmp_path):
+    for text in ('{"data":{"id":1}}\n"oops"\n', '[{"data":{"id":1}}, 42]'):
+        with pytest.raises(AssertionFailed, match="not an event object"):
+            assert_file(lambda p, t=text: t, [{"path": "/o", "events": 1}], tmp_path, timeout=0.2, poll=0.01)
+
+
+def test_a_last_event_caught_mid_write_is_polled_until_complete(tmp_path):
+    # Tolerance while the writer is still writing is kept: a partial tail that completes on a
+    # later read passes.
+    reads = ['[{"id":1},{"id":2},{"id":3,"na', '[{"id":1},{"id":2},{"id":3,"name":"x"}]']
+
+    def read(_p):
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+    assert_file(read, [{"path": "/o", "events": 3}], tmp_path, timeout=5, poll=0.01)
+    assert reads == ['[{"id":1},{"id":2},{"id":3,"name":"x"}]']
+
+
+def test_a_mid_write_read_inside_the_stable_window_is_read_again(tmp_path):
+    # The spec passed; a later read catches a duplicate mid-write. A distinct-set match is not
+    # changed by the completed duplicate, so the partial read must not fail the window.
+    _golden_rows(tmp_path, "g.csv", "ID", "1")
+    full = '[{"data":{"ID":"1"}}'
+    reads = [full + "]", full + ', {"data":{"I', full + ', {"data":{"ID":"1"}}]']
+
+    def read(_p):
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+    assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 0.2}], tmp_path, timeout=5, poll=0.01)
+    assert len(reads) == 1
+
+
+def test_a_tail_that_never_completes_inside_the_stable_window_fails(tmp_path):
+    _golden_rows(tmp_path, "g.csv", "ID", "1")
+    reads = ['[{"data":{"ID":"1"}}]', '[{"data":{"ID":"1"}}, {"data":{"I']
+
+    def read(_p):
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+    with pytest.raises(AssertionFailed, match="do not decode as a JSON event"):
+        assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 0.6}], tmp_path, timeout=0.3, poll=0.01)
+
+
+def test_before_projection_skips_an_event_with_no_before_image(tmp_path):
+    # An INSERT has no pre-image by nature: under project: before it is not a row, so a golden of
+    # UPDATE before-images matches a CDC stream that also carries INSERTs.
+    _golden_rows(tmp_path, "g.csv", "ID,NAME", "1,old")
+    spec = {"path": "/o", "match": "g.csv", "project": "before"}
+    insert = {"metadata": {"OperationName": "INSERT"}, "data": {"ID": "1", "NAME": "old"}, "before": None}
+    update = {"metadata": {"OperationName": "UPDATE"}, "data": {"ID": "1", "NAME": "new"},
+              "before": {"ID": "1", "NAME": "old"}}
+    assert_file(lambda p: json.dumps([insert, update]), [spec], tmp_path, timeout=0)
+    with pytest.raises(AssertionFailed, match="event set"):
+        assert_file(lambda p: json.dumps([insert]), [spec], tmp_path, timeout=0)
+
+
+class _Clock:
+    """A monotonic clock that only moves when the code under test sleeps."""
+    def __init__(self):
+        self.now = 0.0
+    def monotonic(self):
+        return self.now
+    def sleep(self, s):
+        self.now += max(s, 0.001)
+
+
+def _timed_reads(clock, schedule):
+    """read(path) returning, at each clock time, the text of the last schedule entry started."""
+    def read(_p):
+        return [text for start, text in schedule if clock.now >= start][-1]
+    return read
+
+
+_ONE = '[{"data":{"ID":"1"}}]'
+_TORN = '[{"data":{"ID":"1"}}, {"data":{"I'
+_DUPLICATE = '[{"data":{"ID":"1"}}, {"data":{"ID":"1"}}]'
+
+
+def test_a_mid_write_read_after_the_timeout_inside_the_stable_window_is_read_again(tmp_path, monkeypatch):
+    # timeout 120, stable_seconds 30: the spec first passes at 115 s, so its window runs to 145 s.
+    # A read at 125 s catches the writer mid-event (a duplicate that does not change a distinct-set
+    # match); as on the data and diff tiers, it is read again until the window closes.
+    from livetest.assertions import file as file_mod
+    clock = _Clock()
+    monkeypatch.setattr(file_mod, "time", clock)
+    _golden_rows(tmp_path, "g.csv", "ID", "1")
+    read = _timed_reads(clock, [(0, "["), (115, _ONE), (125, _TORN), (126, _DUPLICATE)])
+    recs = assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 30}], tmp_path,
+                       timeout=120, poll=0.5)
+    assert recs[0]["status"] == "passed" and clock.now >= 145
+
+
+def test_a_tail_still_torn_when_the_stable_window_closes_is_not_reported_as_a_change(tmp_path, monkeypatch):
+    from livetest.assertions import file as file_mod
+    clock = _Clock()
+    monkeypatch.setattr(file_mod, "time", clock)
+    _golden_rows(tmp_path, "g.csv", "ID", "1")
+    read = _timed_reads(clock, [(0, "["), (115, _ONE), (125, _TORN)])
+    with pytest.raises(AssertionFailed, match="could not be read whole again") as e:
+        assert_file(read, [{"path": "/o", "match": "g.csv", "stable_seconds": 30}], tmp_path,
+                    timeout=120, poll=0.5)
+    assert "late event changed the result" not in str(e.value)
+    assert "do not decode as a JSON event" in str(e.value)
+    assert 145 <= clock.now < 146

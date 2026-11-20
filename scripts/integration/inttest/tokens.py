@@ -34,7 +34,7 @@ not a key).
 Deliberately NOT implemented (out of scope for this slice, and for pure token assembly):
 the full docker-vs-live *mode* switch keyed on `live_override_env` (e.g. reusing an
 already-running external Postgres wholesale when `INT_PG_HOST` is set) -- that is a
-later-phase broker concern per `plugin.py`'s module docstring (`INT_SHARED_SERVICES`).
+later-phase concern.
 Here every `docker_defaults` key is independently env-overridable via its `live_env`
 name, which is sufficient for a test (or a developer's shell) to redirect one field
 without a live broker owning container lifecycle. `view_host` (the host the Striim

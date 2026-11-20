@@ -9,8 +9,8 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from livetest import stack
-from livetest.recovery import RecoveryError
+from livetest import dockercmd, stack
+from livetest.recovery import RecoveryError, await_stopped, utc_at
 from livetest.resultschema import build_assertion_result
 from livetest.assertions import AssertionFailed
 
@@ -137,7 +137,7 @@ def inventory(client, ctx, *, run=None, timeout=30):
     for role, container in containers.items():
         left = deadline - time.monotonic()
         if left <= 0: raise RecoveryError("fault-node-inventory-deadline")
-        call = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=left))
+        call = run or (lambda argv: dockercmd.run(argv, timeout=left))
         r = call(["docker", "inspect", container])
         if r.returncode: raise RecoveryError("fault-node-inventory-unreadable")
         rows = json.loads(r.stdout)
@@ -211,6 +211,12 @@ class Target:
         peers = [n["url"] for role, n in self.nodes.items() if role != "agent" and role != self.selected["role"] and n["url"]]
         if not peers: raise RecoveryError("fault-fallback-unavailable: publish the surviving node API port")
         client.configure_failover(peers, app=app)
+        self.mode = None
+        # A role fault's read of the app on the selected node (check_owner); a hosting fault is
+        # affected by construction, its owner proven at selection and at the boundary.
+        self.app_on_node = ({"appAffected": True, "appStatusOnNode": "RUNNING", "placementError": None}
+                            if self.hosting else
+                            {"appAffected": None, "appStatusOnNode": None, "placementError": "not read"})
         self.needs_restore = False
         self.needs_rejoin = False
 
@@ -243,6 +249,27 @@ class Target:
             if owners != {self.selected["server"]}:
                 self._refusal("fault-missed: hosting flow moved before interruption", "fault-boundary", owners)
                 raise RecoveryError("fault-missed: hosting flow moved before interruption")
+        else:
+            self.app_on_node = self._app_on_selected(remaining)
+
+    def _app_on_selected(self, remaining):
+        """Whether the app runs on the selected node, from `STATUS <server>;` at the boundary.
+
+        A role selection (`node: secondary|agent`) makes no claim about where the app runs, so
+        this records rather than refuses: `appAffected` false says the fault hit a node the app
+        was not on, and null says the listing could not be read (it is not read as false)."""
+        from livetest.striim import redact
+        try:
+            listing = self.client.node_status(self.selected["server"], timeout=max(.05, min(5.0, remaining)))
+            apps = listing.get("applications") if isinstance(listing, dict) else None
+            if not isinstance(apps, list):
+                raise ValueError("placement-node-status-unavailable")
+            matches = [a.get("status") for a in apps if isinstance(a, dict) and a.get("app") == self.app]
+            on_node = matches[0] if len(matches) == 1 else None
+            return {"appAffected": on_node == "RUNNING", "appStatusOnNode": on_node, "placementError": None}
+        except Exception as error:
+            return {"appAffected": None, "appStatusOnNode": None,
+                    "placementError": redact(str(error))[:MAX_FAILOVER_ERROR_CHARS]}
 
     def _command(self, argv, remaining=None):
         r = (self.run or (lambda a: subprocess.run(a, capture_output=True, text=True,
@@ -253,6 +280,7 @@ class Target:
     def interrupt(self, mode):
         if mode not in ("kill", "stop", "restart"): raise RecoveryError("invalid-node-fault")
         node = self.selected
+        self.mode = mode
         self.needs_restore = True
         self.needs_rejoin = True
         ok, detail = False, "ok"
@@ -273,7 +301,8 @@ class Target:
                     spec={"node": node["role"], "mode": mode}, status="passed" if ok else "failed", detail=detail,
                     expected={"kind": "count", "count": 1}, actual={"kind": "rows", "rows": [
                         {"node": node["server"], "role": node["role"], "containerId": node["id"],
-                         "observedAt": time.monotonic(), "interrupted": ok}]}))
+                         "observedAt": (observed := time.monotonic()), "observedUtc": utc_at(observed),
+                         "interrupted": ok, **self.app_on_node}]}))
 
     def _wait_failover(self, survivor, deadline):
         from livetest.striim import redact
@@ -297,7 +326,8 @@ class Target:
                     error = error[:MAX_FAILOVER_ERROR_CHARS]
                 observed = time.monotonic()
                 count += 1
-                row = {"index": count, "startedAt": started, "observedAt": observed,
+                row = {"index": count, "startedAt": started, "startedUtc": utc_at(started),
+                       "observedAt": observed,
                        "observedUtc": datetime.now(timezone.utc).isoformat(),
                        "remaining": left, "late": observed > deadline,
                        "owners": sorted(owners) if owners is not None else None,
@@ -320,6 +350,7 @@ class Target:
                         "phase": "failover-wait", "node": self.selected["server"],
                         "survivor": survivor, "containerId": self.selected["id"],
                         "interrupted": True, "failedOver": ok, "deadline": deadline,
+                        "deadlineUtc": utc_at(deadline),
                         "observations": observations, "observationCount": count,
                         "observationsDropped": count - len(observations),
                         "reads": dict(self._placement_reads)}]}))
@@ -336,16 +367,22 @@ class Target:
             self.wait_cluster(self.client, max(.05, deadline - time.monotonic()))
         if self.selected["role"] != "agent": _reset_modules()
         if self.refresh: self.nodes = inventory(self.client, self.ctx, run=self.run, timeout=max(.05, deadline - time.monotonic()))
-        if expect_running:
-            self.client.await_running(self.app, timeout=max(.05, deadline - time.monotonic()))
+        if not expect_running:
+            # The app must be stopped, not running again or dead (recovery.await_stopped).
+            return await_stopped(self.client, self.app, self.mode, max(.05, deadline - time.monotonic()),
+                                 poll=.2, record=self.record)
+        self.client.await_running(self.app, timeout=max(.05, deadline - time.monotonic()))
         status = self.client.current_status(self.app, timeout=max(.05, deadline - time.monotonic()))
         until = time.monotonic() + settle
-        while time.monotonic() < until:
-            if expect_running and status not in {"RUNNING", "COMPLETED"}:
+        while True:
+            # Checked on every read, the last one included: the read taken after the final sleep
+            # is the status this returns.
+            if status not in {"RUNNING", "COMPLETED"}:
                 raise RecoveryError("fault-node-restore-status: " + status)
-            time.sleep(min(.2, until - time.monotonic()))
+            if time.monotonic() >= until:
+                return status
+            time.sleep(min(.2, max(0, until - time.monotonic())))
             status = self.client.current_status(self.app, timeout=max(.05, until - time.monotonic()))
-        return status
 
     def close(self, remaining=None):
         if self.needs_restore or self.needs_rejoin:
@@ -413,7 +450,8 @@ def initial_placement(*, client, flow, servers, timeout, record, read=None,
         spec={"initialServers": sorted(servers)}, status="passed" if ok else "failed", detail=detail,
         expected={"kind": "count", "count": 1}, actual={"kind": "rows", "rows": [{
             "phase": "initial-placement", "owners": sorted(actual) if actual is not None else None,
-            "allowedOwners": sorted(servers), "deadline": deadline, "observedAt": now(),
+            "allowedOwners": sorted(servers), "deadline": deadline, "deadlineUtc": utc_at(deadline, now),
+            "observedAt": (observed := now()), "observedUtc": utc_at(observed, now),
             "lastReadError": last_error[:1024] if last_error is not None else None,
             "errorTruncated": last_error is not None and len(last_error) > 1024, "reads": reads}]}))
     if not ok: raise RecoveryError(detail)

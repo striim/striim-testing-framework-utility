@@ -42,11 +42,39 @@ Declaration points:
 
 **Shared** — registered, non-destructive, coordinated:
 - `SLT_KEEP_SERVICES=1` is required. The run registers
-  `<SLT_LOCK_DIR>/.slt-endpoint-<port>.shared/<pid>`; refused while the exclusive lease is held.
-- Every service resolves through one adapter under `<SLT_LOCK_DIR>/.slt-shared-provision.lock`
-  (bounded wait, 600 s, then `lock-timeout: …`). Inside the lock a running container is recorded
-  `reused`; otherwise it is provisioned and recorded `provisioned-and-kept`. The parallel
-  provisioning registry uses a different lock file.
+  `<SLT_LOCK_DIR>/.slt-endpoint-<port>.shared/<pid>` (`pid`, `runId`, `started`: the process
+  start time); refused while the exclusive lease is held. A pre-flight entry point
+  (`livetest.preflight`, `livetest.cli start`) removes its marker before it returns.
+- A marker names a live session only while its pid is alive and is still the process that wrote
+  it: `started` must match the process start time (within 2 s). A marker without `started`
+  (written by an earlier release, or not a record) is judged by its file time: a process that
+  started after the marker was written (a reused pid, or any process after a reboot) is not its
+  writer. Every read under the port's registry lock removes markers that name no live session.
+- Every service resolves through one adapter under its container's lock,
+  `<SLT_LOCK_DIR>/.slt-shared-provision-<container>.lock` (bounded wait, 600 s, then
+  `lock-timeout: …`), so one service's slow start never holds up another's. Inside the lock a
+  running container is recorded `reused`; otherwise its provision records are dropped (a record
+  that outlived its container made the bring-up a no-op) and it is provisioned and recorded
+  `provisioned-and-kept`. The parallel provisioning registry uses different lock files: each key's
+  own `.slt-provision-key-<key>.lock`, held across its bring-up and post-up so it runs once, and the
+  registry's lock, held only to read the record and to update it afterwards. A bring-up therefore
+  holds up only another bring-up of the same container.
+- `SLT_SHARED_PROVISION=0` (unset or `1` is the default) refuses to start a missing service and
+  names its `SLT_SHARED_PROVISION=1 python -m livetest.cli start <service>` command instead (the
+  start command resolves through the same adapter, so it sets `1` for itself); a lane that must
+  never start a shared service sets it.
+- `livetest.cli stop` (and `livetest.preflight --teardown`) is refused, exit 2, while another live
+  session uses the stack: a live shared marker other than its own, or a live exclusive run other
+  than its own run. The refusal names the pids and the same command with `--force`, which stops
+  anyway. With no other live session the stop runs as before.
+- `livetest.preflight --restart-app-nodes` under `shared` is refused, exit 2, while another live
+  shared marker exists.
+- The check and the stop or restart are one step: under the registry lock that found no other
+  session, the stopping process writes `.slt-endpoint-<port>.stopping/<pid>` (pid and start time,
+  judged live as a shared marker is), and removes it once the stop or restart is over, failed or
+  interrupted. Every declaration on the port reads it under the same lock and is refused while
+  another process's record is live, so no session joins between the check and the `down -v`.
+  `--force` skips the check, not the record.
 - The cluster is reused when reachable, provisioned and kept when absent, never redeployed: an
   identity mismatch fails `shared cluster identity mismatch: …` and live items skip.
 - All invocations on a host must use the same `SLT_LOCK_DIR`; the value is recorded.
@@ -136,8 +164,10 @@ present, deletes it, observes it absent. `${SENTINEL_TAG}` = `slt-<per_test>-<at
 No other row ever matches; insert-only targets cannot use it. `seed[].after` stays a delay.
 
 Records: `ready` / `completion` = `{kind, condition, witness, at, startedAt, endedAt, deadlineS,
-observations (last 50), reason}`; `stability` = `{seconds, heldAt, measuredS, value, held}` from
-a real re-read after the interval.
+observations (last 50), reason}`; `stability` = `{seconds, status, heldAt, measuredS, value, held}` from
+a real re-read after the interval, then a status read of every app: `status` names the first
+terminal one (`terminal-status:<status> (<app>)`), and an unreadable status is `statusError`
+and `stability-lost`.
 
 ## Ownership ledger and cleanup (`ownership.py`)
 
@@ -165,11 +195,15 @@ live engine dir), persisted before any side effect.
   before use, then deleted by exact owned name in the current attempt. Without an
   immutable incarnation identity, a prior-attempt replay cannot delete them.
 - **Unsupported kinds.** Other engine tables, GCS buckets and OP uploads remain
-  verification gaps; no computed-name or prefix drop is deletion authority.
+  verification gaps; no computed-name or prefix drop is deletion authority. A case without the
+  block still deletes them after the ledger cleanup, by this run's prefix (`teardown_unowned`);
+  each delete that fails is a cleanup failure (`unowned-teardown-failed: <kind> <name>: …`), not
+  only a gap.
 - **Inventories.** A docker check is `present`, `absent` or unreadable; unreadable refuses
   acquisition and is a failed verification read, never absence.
 - **Checkpoints** are deleted only by exact name when `<ns>.` is a whole component; every other
-  listed name is reported. Foreign objects are reported, never deleted.
+  listed name is reported. A listing or delete that fails is a cleanup failure (`op-checkpoint`): a
+  leftover checkpoint moves where the next run of the same case resumes. Foreign objects are reported, never deleted.
 - **Bounded cleanup.** Each delete and verification read has a per-operation bound inside a
   per-case deadline. Cleanup never raises: an unexpected error is `cleanup.status: failed` with
   detail `cleanup-error:…`, and a test's own failure is never replaced.

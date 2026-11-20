@@ -544,3 +544,122 @@ def test_a_source_unreadable_at_the_timeout_keeps_every_record():
                     timeout=0, poll=0)
     assert "diff not satisfied" in str(ei.value)
     assert len(ei.value.records) == 1
+
+
+# ---- surplus data: a target AHEAD of its source is never a pass ------------------------------
+
+@pytest.mark.parametrize("admin", [FakePg, _SlowCountingPg], ids=["full-read", "count-first"])
+def test_a_target_with_a_row_the_source_lacks_never_passes(admin):
+    """Without `exact:` the distinct row SETS must be equal, not the source a subset of the target:
+    a writer that leaks a row the source never had has not converged. With the count opt-in the
+    target's count (2) is above the source's distinct rows (1), so the full read decides."""
+    pg = admin({"s.src": [{"id": "1"}], "s.tgt": [{"id": "1"}, {"id": "2"}]})
+    with pytest.raises(AssertionFailed, match=r"\|src\|=1 \|tgt\|=2") as ei:
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt"}], timeout=0, poll=0)
+    assert [r["status"] for r in ei.value.records] == ["failed"]
+
+
+def test_a_target_with_a_changed_row_never_passes():
+    pg = FakePg({"s.src": [{"id": "1", "v": "a"}], "s.tgt": [{"id": "1", "v": "b"}]})
+    with pytest.raises(AssertionFailed, match=r"\|src\|=1 \|tgt\|=1") as ei:
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt"}], timeout=0, poll=0)
+    assert [r["status"] for r in ei.value.records] == ["failed"]
+
+
+# ---- stable_seconds: hold a converged diff for N seconds ----------------------------------------
+
+class _TargetSequence(FakePg):
+    """The source is static; each target read returns the next state (the last repeats). A state
+    may be an exception instance, raised from the read."""
+    def __init__(self, src, *states, counts=False):
+        super().__init__({"s.src": src})
+        self.states, self.reads = list(states), 0
+        self.diff_counts_rows = counts
+
+    def select_rows(self, table):
+        if table == "s.src":
+            return super().select_rows(table)
+        state = self.states[min(self.reads, len(self.states) - 1)]
+        self.reads += 1
+        if isinstance(state, Exception):
+            raise state
+        return list(state)
+
+    def count_rows(self, table):
+        if table == "s.src":
+            return len(self._t["s.src"])
+        state = self.states[min(self.reads, len(self.states) - 1)]
+        return 0 if isinstance(state, Exception) else len(state)
+
+
+_ROWS = [{"id": "1"}, {"id": "2"}]
+
+
+def test_parse_accepts_and_validates_stable_seconds():
+    assert parse_diff_specs([{"source": "a", "target": "b", "stable_seconds": 3}])
+    for bad in (-1, "3", True, None):
+        with pytest.raises(DiffSpecError, match="stable_seconds"):
+            parse_diff_specs([{"source": "a", "target": "b", "stable_seconds": bad}])
+
+
+def test_without_stable_seconds_a_late_duplicate_is_never_read():
+    pg = _TargetSequence(_ROWS, _ROWS, _ROWS + [_ROWS[1]])
+    recs = assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "exact": True}],
+                       timeout=5, poll=0.01)
+    assert recs[0]["status"] == "passed" and pg.reads == 1
+
+
+def test_stable_seconds_fails_an_exact_diff_when_a_late_duplicate_lands():
+    pg = _TargetSequence(_ROWS, _ROWS, _ROWS + [_ROWS[1]])
+    with pytest.raises(AssertionFailed) as ei:
+        assert_diff({"postgres-source": pg},
+                    [{"source": "s.src", "target": "s.tgt", "exact": True, "stable_seconds": 5}],
+                    timeout=5, poll=0.01)
+    assert "stable_seconds" in str(ei.value) and "1 extra-or-duplicated" in str(ei.value)
+    assert ei.value.records[0]["status"] == "failed"
+    assert "elapsed_s" not in ei.value.records[0]
+
+
+def test_stable_seconds_fails_a_default_diff_when_a_late_wrong_row_lands():
+    pg = _TargetSequence(_ROWS, _ROWS, _ROWS + [{"id": "9"}])
+    with pytest.raises(AssertionFailed, match="stable_seconds"):
+        assert_diff({"postgres-source": pg}, [{"source": "s.src", "target": "s.tgt", "stable_seconds": 5}],
+                    timeout=5, poll=0.01)
+
+
+@pytest.mark.parametrize("late", [[_ROWS[0], {"id": "9"}], _ROWS + [_ROWS[1]]])
+def test_stable_seconds_on_counting_admins_reads_the_target_in_full(late):
+    # The window reads in full: a count that still matches proves nothing about a changed row, and
+    # a count that differs must fail as a change, not be taken for an unreadable poll.
+    pg = _TargetSequence(_ROWS, _ROWS, late, counts=True)
+    with pytest.raises(AssertionFailed, match="passed, then failed within its stable_seconds window"):
+        assert_diff({"postgres-source": pg},
+                    [{"source": "s.src", "target": "s.tgt", "exact": True, "stable_seconds": 5}],
+                    timeout=1, poll=0.01)
+
+
+def test_stable_seconds_passes_an_unchanged_target_and_keeps_the_first_pass_elapsed():
+    import time as _t
+    pg = _TargetSequence(_ROWS, _ROWS)
+    t0 = _t.monotonic()
+    recs = assert_diff({"postgres-source": pg},
+                       [{"source": "s.src", "target": "s.tgt", "exact": True, "stable_seconds": 0.3}],
+                       timeout=5, poll=0.05)
+    assert _t.monotonic() - t0 >= 0.3 and pg.reads > 2
+    assert recs[0]["status"] == "passed" and recs[0]["elapsed_s"] < 0.3
+
+
+def test_an_unreadable_target_in_the_window_neither_passes_nor_fails_it():
+    from livetest.assertions import NotYetReadable
+    pg = _TargetSequence(_ROWS, _ROWS, NotYetReadable("locked"), _ROWS)
+    recs = assert_diff({"postgres-source": pg},
+                       [{"source": "s.src", "target": "s.tgt", "stable_seconds": 0.2}], timeout=5, poll=0.05)
+    assert recs[0]["status"] == "passed"
+
+
+def test_a_diff_window_that_ends_unreadable_fails():
+    from livetest.assertions import NotYetReadable
+    pg = _TargetSequence(_ROWS, _ROWS, NotYetReadable("locked"))
+    with pytest.raises(AssertionFailed, match="could not be read again"):
+        assert_diff({"postgres-source": pg},
+                    [{"source": "s.src", "target": "s.tgt", "stable_seconds": 0.2}], timeout=0.3, poll=0.05)

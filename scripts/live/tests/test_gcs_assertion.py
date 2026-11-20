@@ -100,3 +100,42 @@ def test_assert_gcs_mixed_specs_report_both_statuses():
     by_target = {r["target"]: r for r in records}
     assert by_target["b/ok"]["status"] == "passed"
     assert by_target["b/bad"]["status"] == "failed"
+
+
+# ---- an empty object is right before the upload: zero-size specs hold ------------------
+
+EMPTY_SHA = hashlib.sha256(b"").hexdigest()
+
+
+class SeqGcs:
+    """read_object_bytes returns the next value of `seq` per call (the last one repeats)."""
+
+    def __init__(self, seq):
+        self.seq, self.calls = list(seq), 0
+
+    def read_object_bytes(self, bucket, name):
+        self.calls += 1
+        return self.seq.pop(0) if len(self.seq) > 1 else self.seq[0]
+
+
+@pytest.mark.parametrize("check", [{"size": 0}, {"content_hex": ""}, {"sha256": EMPTY_SHA},
+                                   {"sha256": "sha256:" + EMPTY_SHA.upper()}])
+def test_an_empty_object_spec_holds_until_the_deadline(check):
+    import time
+    gcs = SeqGcs([b""])
+    t0 = time.monotonic()
+    records = assert_gcs(gcs, [{"bucket": "b", "object": "o", **check}], timeout=0.2, poll=0.02)
+    assert time.monotonic() - t0 >= 0.2 and gcs.calls > 2 and records[0]["status"] == "passed"
+
+
+def test_an_empty_object_that_fills_before_the_deadline_fails_at_once():
+    gcs = SeqGcs([b"", b"", b"late"])
+    with pytest.raises(AssertionFailed, match="matched, then stopped matching") as e:
+        assert_gcs(gcs, [{"bucket": "b", "object": "o", "size": 0}], timeout=30, poll=0)
+    assert gcs.calls == 3 and "size 4 != 0" in str(e.value)
+
+
+def test_a_content_spec_passes_on_its_first_match():
+    gcs = SeqGcs([bytes.fromhex("89ab")])
+    assert_gcs(gcs, [{"bucket": "b", "object": "o", "content_hex": "89ab"}], timeout=30, poll=0)
+    assert gcs.calls == 1

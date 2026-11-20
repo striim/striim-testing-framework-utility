@@ -263,7 +263,8 @@ half-copied target can match too early. The `lifecycle:` block makes the framewo
   this run, waits until it appears on the target, deletes it and waits until it is gone. At
   readiness this proves the reader is capturing. At completion, after `changes.sql`, it proves
   every change before it has arrived, because CDC keeps commit order.
-- `stability: 5s`: the target must then stay unchanged for five seconds.
+- `stability: 5s`: the target must then stay unchanged for five seconds, and the app must not
+  have crashed or halted in that time.
 - `reset: owned`: the framework removes only what this run created.
 
 The sentinel needs two small SQL files. Your table has `NOT NULL` columns, so fill them:
@@ -284,8 +285,10 @@ For an initial load, use `mode: initial-load` with `baseline-landed` and `source
 
 ## 6. Check it, list it, run it
 
-**Check the test without running it.** `doctor` loads each case you name the way a run does,
-and prints one `case` line for it. A mistake shows there with the key at fault:
+**Check the test without running it.** `doctor` loads each case you name the way a run does
+before it deploys anything, assertion specs included, and prints one `case` line for it. A
+mistake shows there with the key at fault: a misspelt key anywhere in the file, or a spec
+missing a key it needs. A golden file's contents are read only when its tier runs.
 
 ```
 striim-test doctor --case samples/mine/orders-cdc
@@ -352,9 +355,10 @@ In it, under `live/`:
 - **Consistent snapshots**: A `data` assertion for `snapshot:<db>` contains history rows with `observedUtc`, monotonic `at`, matched zero-based `prefix` (null when none matched), aggregate `sha256` and total `rows`. Failure before final qualification keeps an `observer-incomplete` record and worker error. This uses the `data` record type; there is no separate snapshot assertion tier. An undeclared state also records per-table keyColumns, bounded canonical keys, total rows and truncation flags, retained through abandon().
 - **Append-only audit**: Audit uses the normal exact multiset comparison, so repeated deliveries appear as extra counted rows. The declaration records ignored sink-generated delivery keys; it must still retain every payload delivery.
 - **Progress trigger**: `recover.trigger` declares the reader, thresholds and polling budget. A missed window or unreadable position fails before interruption; inspect the progress error and source/target state.
-- **Fault boundary**: Each cycle writes a `recovery` assertion with trigger, first in-window `windowOpened`, pre-command value, UTC/monotonic times, held and interrupted booleans, issue time and bounded `afterInterrupt`. Timed recovery uses trigger kind `timed`. A failure before issuance has interrupted false; work completed during STOP fails with interrupted true and retained post-interruption value. Neither missed boundary is absorbed by `xfail`.
+- **Fault boundary**: Each cycle writes a `recovery` assertion with trigger, first in-window `windowOpened`, pre-command value, UTC/monotonic times, held and interrupted booleans, issue time, bounded `afterInterrupt` and, for `stop`/`quiesce`, `settledStatus` (what the command left the app in: DEPLOYED, STOPPED or CREATED for `stop`, QUIESCED for `quiesce`; anything else fails the cycle). Timed recovery uses trigger kind `timed`. A failure before issuance has interrupted false; work completed during STOP fails with interrupted true and retained post-interruption value. Neither missed boundary is absorbed by `xfail`.
+- **Stop cycles**: `stop_start_cycle` writes one `recovery` assertion per cycle (`spec: {action: stop_start_cycle, cycle}`) whose row is the status the STOP settled on, with monotonic `issuedAt`/`settledAt` and their UTC twins `issuedUtc`/`settledUtc` (null for a time the cycle did not reach). A STOP still RUNNING after half the case timeout (at least 120 s), or one that left the app CRASH or HALT, fails the case before the START.
 - **Recovery marker**: Each cycle adds a `recovery` assertion whose expected booleans are `insertPresent: true` and `deleteAbsent: true`; actual rows retain the full marker witness, its phase and observations. This is additional to the fault-boundary record.
-- **Named node and placement**: A named fault adds another `recovery` assertion with `node`, `role`, exact `containerId`, monotonic `observedAt` and `interrupted`. A `placement` assertion compares the declared singleton node with live owner rows read from Striim; check its status before interpreting an empty owner set. Refused owner selection or final revalidation retains phase, flow, selected server, owner names, Docker mapping and redacted/truncated JSON strings for the queried MON, DESCRIBE and per-server STATUS replies. Initial selection checks all nodes; issuance rechecks only the selected server plus MON single-owner count. The separate failover-wait record retains bounded placement observations and errors on both success and failure, plus the total/dropped counts and last native reply diagnostics.
+- **Named node and placement**: A named fault adds another `recovery` assertion with `node`, `role`, exact `containerId`, monotonic `observedAt` with UTC `observedUtc`, `interrupted`, and `appAffected`/`appStatusOnNode` (for a role selection, whether the app was RUNNING on that node; null with `placementError` when unread). A `placement` assertion compares the declared singleton node with live owner rows read from Striim; check its status before interpreting an empty owner set. Refused owner selection or final revalidation retains phase, flow, selected server, owner names, Docker mapping and redacted/truncated JSON strings for the queried MON, DESCRIBE and per-server STATUS replies. Initial selection checks all nodes; issuance rechecks only the selected server plus MON single-owner count. The separate failover-wait record retains bounded placement observations and errors on both success and failure, plus the total/dropped counts and last native reply diagnostics.
 
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists the common failures, what causes each, and the fix.
 
@@ -386,6 +390,8 @@ op:
 - Both paths are relative to the project root: `SLT_PROJECT_ROOT`, or this clone.
 - You need Maven, a JDK 17 and `STRIIM_HOME`. Against your own Striim server, `STRIIM_HOME` must be
   that server's own install, on this machine.
+- The two samples run in Docker mode only: their `lifecycle:` block puts the file check under
+  `${OWNED_DIR}`, which the framework creates only on its own Docker cluster.
 
 ## 9. Move your tests into your own repo
 
@@ -549,7 +555,7 @@ Start with [14-progress-recovery](../samples/live/14-progress-recovery/README.md
 
 ### Prove the fault was issued while its precondition held
 
-Start with [15-fault-evidence](../samples/live/15-fault-evidence/README.md), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-fault-evidence/README.md) exercises the same framework contract.
+Start with [14-progress-recovery](../samples/live/14-progress-recovery/README.md) ("What the run records"), then use the corresponding block in [TEST-YAML.md](TEST-YAML.md). The [gallery case](../scripts/live/regression/framework/framework-fault-evidence/README.md) exercises the same framework contract.
 
 ### Prove the route transports a fresh marker after recovery
 

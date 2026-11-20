@@ -28,8 +28,12 @@ services:
     cpus: ${SLT_BIGTABLE_CPUS:-1}
     mem_limit: ${SLT_BIGTABLE_MEM_LIMIT:-2g}
     command: ["sh", "-c", "gcloud config set disable_endpoints_check true; gcloud config set project test-project; exec gcloud beta emulators bigtable start --host-port=0.0.0.0:9470"]
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
-      - "${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_BIGTABLE_GRPC_HOST_PORT:-9470}:9470"
     healthcheck:
       # Keeps `--wait` honest: a TCP connect succeeds once the listener is up. Readiness for admin
       # RPCs is BigtableAdmin.ensure(), which LiveItem.runtest runs before a bigtable test. /dev/tcp

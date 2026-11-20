@@ -5,8 +5,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from livetest.assertions import AssertionFailed
-from livetest.assertions.data import apply_null, distinct_set, normalized_row, read_golden_csv, sorted_rows_for_display, strip_absent   # reuse the exact distinct-set compare
+from livetest.assertions import AssertionFailed, refuse_unknown_keys
+from livetest.assertions.data import apply_null, check_stable_seconds, distinct_set, normalized_row, read_golden_csv, sorted_rows_for_display, strip_absent   # reuse the exact distinct-set compare
 from livetest.assertions.expected import load_expected_text
 from livetest.resultschema import build_assertion_result
 
@@ -16,6 +16,20 @@ class FileSpecError(Exception):
 
 
 _PROJECTIONS = ("data", "userdata", "before", "all")
+
+
+#: Every key an `assert.file` spec may carry: what assert_file reads, plus the typed `exact:`
+#: and `audit:` keys. `raw:` and `nothing:` specs take fewer keys, and their own validators
+#: (livetest.rawfile, livetest.nothing) say which.
+FILE_SPEC_KEYS = frozenset({
+    "path", "match", "min_events", "events", "distinct_events", "project", "metadata", "keys",
+    "multiset", "order", "stable_seconds", "exact", "audit", "raw", "nothing",
+})
+
+
+class _TailPending(str):
+    """A failure detail whose only problem is a last event that does not decode yet: a later
+    read may complete it. A stable_seconds window reads again instead of failing on it."""
 
 
 def parse_file_specs(raw: list) -> list[dict]:
@@ -30,6 +44,7 @@ def parse_file_specs(raw: list) -> list[dict]:
             continue
         if "nothing" in spec:
             continue
+        refuse_unknown_keys(spec, FILE_SPEC_KEYS, f"file spec {spec['path']!r}", FileSpecError)
         if not any(k in spec for k in ("match", "min_events", "events", "distinct_events")):
             raise FileSpecError(
                 f"file spec {spec['path']!r} needs one of match/min_events/events/distinct_events")
@@ -96,9 +111,7 @@ def _parse_ordering_specs(spec: dict) -> None:
                     f"file spec {path!r}: order[{i}] must be {{before: {{...}}, after: {{...}}}}"
                     " with non-empty column selectors")
     if "stable_seconds" in spec:
-        v = spec["stable_seconds"]
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-            raise FileSpecError(f"file spec {path!r}: 'stable_seconds' must be a non-negative number")
+        check_stable_seconds(spec["stable_seconds"], f"file spec {path!r}", FileSpecError)
 
 
 def _selector_matches(row: dict, selector: dict) -> bool:
@@ -125,28 +138,35 @@ def _check_order(rows: list[dict], edges: list[dict]):
 
 
 def _has_later_value(text: str, start: int, n: int) -> bool:
-    # Scan forward from `start`, skipping wrapper/comma punctuation, trying to decode an
-    # *event object* at each position. Used to distinguish "the file is still being
-    # written" (no event ever follows the failure) from real mid-stream corruption (a
-    # later object still decodes fine, so what we choked on wasn't just a trailing
-    # partial). Only a dict counts -- a partial trailing object like {"data":{"ID" still
-    # contains a decodable bare string ("data"), which isn't an event and must not be
-    # mistaken for one.
+    # Whether an *event object* follows the value at `start` that failed to decode: real
+    # mid-stream corruption (a later event still decodes, so what we choked on wasn't just a
+    # trailing partial) rather than a file still being written (no event follows the failure).
+    # A later event starts at or after the point where the failed value stops being valid JSON
+    # (the decoder's error position). A last event caught mid-write,
+    # {"data":{"id":2},"metadata":{"Op, is valid up to its end, so its complete nested objects
+    # all lie before that point and none of them is a later event. An event missing its closing
+    # brace, {"data":{"id":1}, {"data":{"id":2}}, stops being valid exactly where the next event
+    # starts. Every `{` from there on is tried, whatever string it may sit in: a stray quote in the
+    # corrupt event, {"data":{"name":"a"b"}}, would put any tracking of strings out of step with the
+    # text after it. Only a non-empty dict counts -- a bare string or number is not an event, and
+    # inside a torn string (every quote escaped) nothing but `{}` decodes as a dict. Text across
+    # adjacent strings can decode (`["x{",":1}"]` from its inner `{`), but such text lies before
+    # the error position, which is where the search starts.
     dec = json.JSONDecoder()
-    j = start
-    while j < n:
-        while j < n and text[j] in " \t\r\n,[]":
-            j += 1
-        if j >= n:
-            return False
+    try:
+        dec.raw_decode(text, start)
+        return False
+    except json.JSONDecodeError as e:
+        invalid_from = e.pos
+    j = text.find("{", invalid_from, n)
+    while j >= 0:
         try:
-            obj, _ = dec.raw_decode(text, j)
+            obj = dec.raw_decode(text, j)[0]
+            if isinstance(obj, dict) and obj:
+                return True
         except json.JSONDecodeError:
-            j += 1
-            continue
-        if isinstance(obj, dict):
-            return True
-        j += 1
+            pass
+        j = text.find("{", j + 1, n)
     return False
 
 
@@ -155,8 +175,18 @@ def parse_json_events(text: str) -> list[dict]:
     # several files, so concatenated content can be [..][..] (or partially-written/unclosed
     # while active). Decode successive JSON values with raw_decode, skipping array/comma
     # punctuation — tolerant of the wrapper, of concatenation, and of a trailing partial.
+    return _parse_json_stream(text)[0]
+
+
+def _parse_json_stream(text: str) -> tuple[list[dict], str | None]:
+    # parse_json_events, plus what it skipped: a trailing remainder that does not decode, or
+    # complete JSON values that are not event objects. Either is tolerated on one read (the
+    # writer may be mid-event), but neither is ever a pass: _evaluate reports it, so a tail
+    # that stays undecodable, or a value that is not an event, fails at the deadline.
     dec = json.JSONDecoder()
     out: list[dict] = []
+    skipped: list = []
+    problem = None
     i, n = 0, len(text)
     while i < n:
         while i < n and text[i] in " \t\r\n,[]":
@@ -167,17 +197,40 @@ def parse_json_events(text: str) -> list[dict]:
             obj, end = dec.raw_decode(text, i)
         except json.JSONDecodeError as e:
             remainder = text[i:].strip(" \t\r\n,[]")
-            if remainder and _has_later_value(text, i + 1, n):
+            if remainder and _has_later_value(text, i, n):
                 # Something later in the stream still decodes cleanly, so this wasn't
                 # just a trailing partial being written -- it's corruption in the
                 # middle, and silently truncating here would drop real events.
                 raise FileSpecError(
                     f"corrupt JSON event stream at byte offset {i}: {e}") from e
-            break            # trailing partial object (file still being written)
+            if remainder:    # trailing partial object (file still being written, or truncated)
+                problem = _TailPending(f"the file ends in {len(remainder)} characters that do not decode as a"
+                           f" JSON event (a last event not yet, or never, completed): {remainder[:80]!r}")
+            break
         if isinstance(obj, dict):
             out.append(obj)
+        else:
+            skipped.append(obj)
         i = end
-    return out
+    if skipped:
+        problem = (f"{len(skipped)} JSON value(s) not an event object: {skipped[:3]!r}"
+                   + (f"; and {problem}" if problem else ""))
+    return out, problem
+
+
+def _has_payload(event: dict, mode: str) -> bool:
+    # A true boundary event (an AvroConverterOp BEGIN/COMMIT) carries no data, before or
+    # userdata at all; it is not a row under any projection, even with metadata. Every other
+    # event is a row and is compared, even when the projected section is empty: an event an
+    # enricher failed to stamp projects to {} under `project: userdata` and must fail the
+    # golden, not vanish from it. A typed event (no WAEvent sections) is a row by its fields.
+    # One exception: under `project: before` an event with no before-image (an INSERT has
+    # none by nature) is not a row.
+    if not any(k in event for k in ("data", "before", "userdata", "metadata")):
+        return bool(event) and mode != "before"
+    if mode == "before":
+        return bool(event.get("before"))
+    return any(event.get(k) for k in ("data", "before", "userdata"))
 
 
 def _project(event: dict, mode: str, meta_keys: list = (), keys: list | None = None) -> dict:
@@ -237,17 +290,17 @@ def _load_golden(basedir, spec: dict, tokens: dict | None = None):
         raise FileSpecError(
             f"{spec['path']}: golden {spec['match']} is empty; a match spec must expect >=1 event")
     if frozenset() in want and spec.get("keys") is None:
-        # A stripped-empty row can only ever match an event that projects to {}. `_evaluate`
-        # keeps events by the UNRESTRICTED projection, so without `keys` every kept event
-        # projects non-empty and frozenset() can never appear -- the golden is IMPOSSIBLE, not
-        # vacuous, and would fail only after the full assertion timeout with a diff naming no
-        # cause. Refuse it here, and say which of the two problems it is.
+        # A stripped-empty row can only ever match an event that projects to {}. Without
+        # `keys` that is an event whose whole projected section is empty -- under
+        # `project: userdata`, an event nothing stamped -- so the row does not say which
+        # columns it means are missing, and for a populated section it can never match and
+        # would fail only after the full assertion timeout. Refuse it here, and say which of
+        # the two problems it is.
         raise FileSpecError(
             f"{spec['path']}: golden {spec['match']} uses <absent> but the spec sets no"
-            " `keys:`, so it can never match: without `keys` every event that is compared"
-            " projects at least one column, and an all-<absent> row matches only an empty"
-            " projection. Add the `keys:` the <absent> row is written against, or drop the"
-            " row.")
+            " `keys:`: without `keys` an all-<absent> row matches only an event whose whole"
+            " projected section is empty, not one that lacks the columns the row names."
+            " Add the `keys:` the <absent> row is written against, or drop the row.")
     if want == {frozenset()}:
         # Every row stripped to nothing -- i.e. the golden is all <absent>. That is not the
         # same as an EMPTY golden, so the guard above cannot see it, and it asserts only
@@ -268,7 +321,7 @@ def _evaluate(read_fn, spec: dict, golden_rows, want):
     # Mirrors _check_spec's pass/fail decision but also returns the expected/actual
     # snapshot for the sidecar record. _check_spec itself stays untouched (existing
     # direct callers/tests rely on its 3-arg signature and str|None return).
-    events = parse_json_events(read_fn(spec["path"]))
+    events, stream_problem = _parse_json_stream(read_fn(spec["path"]))
     expected = actual = None
 
     if "events" in spec:
@@ -290,7 +343,7 @@ def _evaluate(read_fn, spec: dict, golden_rows, want):
         mode = spec.get("project", "data")
         mkeys = spec.get("metadata", [])
         keys = spec.get("keys")
-        projected = [_project(e, mode, mkeys, keys) for e in events if _project(e, mode)]
+        projected = [_project(e, mode, mkeys, keys) for e in events if _has_payload(e, mode)]
         distinct = len(distinct_set(projected))
         expected = {"kind": "count", "count": spec["distinct_events"]}
         actual = {"kind": "count", "count": distinct}
@@ -302,12 +355,11 @@ def _evaluate(read_fn, spec: dict, golden_rows, want):
         mode = spec.get("project", "data")
         mkeys = spec.get("metadata", [])
         keys = spec.get("keys")
-        # A data assertion counts only events with an actual row payload. A boundary
-        # event (a AvroConverterOp BEGIN/COMMIT: no data/userdata) is skipped even when it
-        # carries metadata — so projecting a metadata key doesn't resurrect it. The
-        # non-metadata projection decides "has payload"; the full one (with metadata) is
-        # the row.
-        projected = [_project(e, mode, mkeys, keys) for e in events if _project(e, mode)]
+        # A data assertion counts only events with a row payload (_has_payload). A boundary
+        # event (a AvroConverterOp BEGIN/COMMIT: no data, before or userdata) is skipped even
+        # when it carries metadata — so projecting a metadata key doesn't resurrect it. An
+        # event whose PROJECTED section is empty is still a row and is compared.
+        projected = [_project(e, mode, mkeys, keys) for e in events if _has_payload(e, mode)]
         got = distinct_set(projected)
         expected = {"kind": "rows", "rows": golden_rows}
         actual = {"kind": "rows", "rows": projected}
@@ -332,6 +384,11 @@ def _evaluate(read_fn, spec: dict, golden_rows, want):
         problem = _check_order(ordered, spec["order"])
         if problem:
             return False, f"{spec['path']}: {problem}", expected, actual
+
+    if stream_problem:
+        # Never a pass while part of the file is not an event: polled again, failed at the deadline.
+        detail = f"{spec['path']}: {stream_problem}"
+        return False, (_TailPending(detail) if isinstance(stream_problem, _TailPending) else detail), expected, actual
 
     return True, None, expected, actual
 
@@ -446,14 +503,26 @@ def assert_file(read_fn, specs: list[dict], basedir, timeout: int, poll: float =
             status_probe()
         results = [_evaluate(read_fn, s, rows, want) for s, (rows, want) in zip(specs, goldens)]
         detail = next((d for ok, d, _, _ in results if not ok), None)
+        torn = detail is not None and all(ok or isinstance(d, _TailPending) for ok, d, _, _ in results)
         if detail is not None and passed_at is not None:
-            # It passed, then stopped passing: something arrived after the matching prefix.
+            if torn and time.monotonic() < max(deadline, passed_at + stable_for):
+                # Inside the window a read caught the writer mid-event: read again until the
+                # window closes, even past the timeout (as assert_data and assert_diff do), rather
+                # than judge an event that is not there yet.
+                time.sleep(poll or 0.05)
+                continue
             records = [
                 build_assertion_result(type="file", status="passed" if ok else "failed", spec=s,
                                         target=s["path"], db=db, detail="ok" if ok else d,
                                         expected=exp, actual=act)
                 for s, (ok, d, exp, act) in zip(specs, results)
             ]
+            if torn:
+                raise AssertionFailed(
+                    "file assertion passed, but its file could not be read whole again before its"
+                    " stable_seconds window closed (a last event was still being written):"
+                    f"{_format_failure_detail(results)}", records)
+            # It passed, then stopped passing: something arrived after the matching prefix.
             raise AssertionFailed(
                 "file assertion passed, then failed within its stable_seconds window (a late"
                 f" event changed the result):{_format_failure_detail(results)}", records)

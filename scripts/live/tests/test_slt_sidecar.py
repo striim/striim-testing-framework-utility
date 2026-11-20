@@ -162,3 +162,84 @@ def test_write_sidecar_noop_without_results_or_path(tmp_path):
     xml = tmp_path / "live-foo.xml"
     _slt_write_sidecar(_config(str(xml)))
     assert not (tmp_path / "live-foo.slt.json").exists()
+
+
+# ---- xfail outcomes: xfailed and xpassed, not skipped and passed ---------------------------
+
+def _xreport(outcome, wasxfail="known bug 123", longrepr="AssertionFailed: data ...\n  long traceback"):
+    rep = _report("call", outcome, longrepr=longrepr)
+    rep.wasxfail = wasxfail
+    return rep
+
+
+def test_an_expected_failure_is_recorded_as_xfailed_with_its_reason():
+    config = _config("/tmp/x.xml")
+    item = _item("a::b", "b", [_data_record(status="failed")])
+    _slt_collect_report(config, item, _xreport("skipped"))
+    tr = config._slt_results["a::b"]
+    assert tr["status"] == "xfailed"
+    assert tr["skip_reason"] == "known bug 123"            # the xfail reason, not the traceback
+    assert tr["assertions"][0]["status"] == "failed"
+    validate({"schema_version": 1, "tests": [tr]})
+
+
+def test_an_unexpected_pass_is_recorded_as_xpassed():
+    config = _config("/tmp/x.xml")
+    item = _item("a::b", "b", [_data_record()])
+    _slt_collect_report(config, item, _xreport("passed", longrepr=None))
+    tr = config._slt_results["a::b"]
+    assert tr["status"] == "xpassed" and tr["skip_reason"] is None
+    validate({"schema_version": 1, "tests": [tr]})
+
+
+def test_a_strict_xpass_stays_a_failure():
+    # pytest reports xfail(strict=True) that passed as a failed call with no wasxfail.
+    config = _config("/tmp/x.xml")
+    item = _item("a::b", "b", [_data_record()])
+    _slt_collect_report(config, item, _report("call", "failed", longrepr="[XPASS(strict)] known bug"))
+    assert config._slt_results["a::b"]["status"] == "failed"
+
+
+def test_a_plain_skip_is_still_skipped():
+    config = _config("/tmp/x.xml")
+    item = _item("a::b", "b", [])
+    _slt_collect_report(config, item, _report("call", "skipped", longrepr=("f", 1, "Skipped: no cluster")))
+    tr = config._slt_results["a::b"]
+    assert tr["status"] == "skipped" and tr["skip_reason"] == "no cluster"
+
+
+def test_the_schema_accepts_the_two_xfail_statuses_and_nothing_else_new():
+    from livetest.resultschema import VALID_TEST_STATUSES
+    assert VALID_TEST_STATUSES == {"passed", "failed", "skipped", "error", "xfailed", "xpassed"}
+
+
+# ---- XPASS is reported at session end ------------------------------------------------------
+
+class _TR:
+    def __init__(self, stats):
+        self.stats, self.lines = stats, []
+
+    def write_sep(self, sep, title, **kw):
+        self.lines.append(f"{sep * 3} {title}")
+
+    def write_line(self, line, **kw):
+        self.lines.append(line)
+
+
+def test_xpassed_live_cases_are_listed_at_session_end():
+    from livetest.plugin import _slt_report_xpasses
+    live = types.SimpleNamespace(nodeid="cases/a/test.yaml::a", wasxfail="known bug 123", _slt_live=True)
+    other = types.SimpleNamespace(nodeid="tests/test_x.py::t", wasxfail="unit", _slt_live=False)
+    tr = _TR({"xpassed": [live, other]})
+    _slt_report_xpasses(tr)
+    text = "\n".join(tr.lines)
+    assert "XPASS" in text and "cases/a/test.yaml::a" in text and "known bug 123" in text
+    assert "tests/test_x.py::t" not in text
+    assert "strict: true" in text                          # says what to do about it
+
+
+def test_nothing_is_written_without_an_xpass():
+    from livetest.plugin import _slt_report_xpasses
+    tr = _TR({"passed": [types.SimpleNamespace(nodeid="n", _slt_live=True)]})
+    _slt_report_xpasses(tr)
+    assert tr.lines == []

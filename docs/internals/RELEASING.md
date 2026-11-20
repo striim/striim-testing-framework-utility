@@ -56,15 +56,20 @@ It refuses (exit 2), changing nothing, when:
 - `templates/consumer-repo/framework.pin` names no commit or tag of this repository (see "The first
   release of a fresh repository");
 - the release notes match a deny pattern (see below; the matches are listed), or there is no previous
-  tag and no `--notes-file`, or the notes are generated and no deny-pattern file is given.
+  tag and no hand-written notes, or the notes are generated and no deny-pattern file is given;
+- `RELEASE-NOTES.md` has entries under `## Unreleased` and `--notes-file` is also given (use one or
+  the other).
 
 ## What it does
 
 1. Runs the hermetic suites with the current interpreter (`--python` names another), and stops at
    the first failure before any file changes (exit 1):
-   - `tests/` at the root;
+   - `tests/` at the root: `pytest -m "not live and not docker" tests`;
    - `scripts/live`: `pytest -m "not live" tests`;
-   - `scripts/integration`: `pytest -m "not docker" tests`.
+   - `scripts/integration`: `pytest -m "not integration and not docker" tests`.
+
+   These are the commands in [CONTRIBUTING.md](../../CONTRIBUTING.md) and the pull-request
+   workflow, `.github/workflows/hermetic-tests.yml`; `tests/test_ci_workflow.py` keeps the three equal.
 
    `--skip-tests` skips them and prints a warning. Use it only when the same commit has just passed
    them.
@@ -75,15 +80,18 @@ It refuses (exit 2), changing nothing, when:
    It also writes the tag into `templates/consumer-repo/framework.pin` and every shipped
    `examples/*/framework.pin`, so the starter and worked consumer repos use the release
    containing their guides and apps; `tests/test_consumer_template.py` checks the pin resolves in this repository.
-3. Adds an entry at the top of `RELEASE-NOTES.md` (creating the file the first time): the version, the
-   date, and the notes (below).
-4. Commits those files as `Release vX.Y.Z` and makes the annotated tag `vX.Y.Z`, whose message is the
+3. Adds the version's entry to `RELEASE-NOTES.md` (creating the file the first time): the version, the
+   date, and the notes (below). The entry goes where `## Unreleased` was, and an empty
+   `## Unreleased` ("Nothing yet.") stays above it for the next release.
+4. Renames the `## Unreleased` section of `docs/UPGRADING.md` to `## vX.Y.Z` and puts an empty
+   `## Unreleased` above it, when that section has anything in it. An empty one is left alone.
+5. Commits those files as `Release vX.Y.Z` and makes the annotated tag `vX.Y.Z`, whose message is the
    notes.
-5. With `--push` only: `git push --atomic origin main vX.Y.Z`, then
+6. With `--push` only: `git push --atomic origin main vX.Y.Z`, then
    `gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-from-tag`. If either fails, the commit
    and tag stay local; run the remaining printed steps from the checkout.
 
-`--apply` stops after step 4 and prints the two publishing steps. They need no other file, so they
+`--apply` stops after step 5 and prints the two publishing steps. They need no other file, so they
 work as printed after the tool exits. Review with `git show vX.Y.Z`.
 
 ## The first release of a fresh repository
@@ -107,9 +115,14 @@ pushing; push `main` yourself before the release. Then run the release as usual 
 
 Either written by hand, or generated:
 
-- **By hand:** `--notes-file notes.md`, Markdown, used as written. Keep it outside the checkout, or
-  leave it untracked; it is not committed.
-- **Generated:** one line per pull request merged on `main` since the previous tag, its title only:
+- **The `## Unreleased` section** of `RELEASE-NOTES.md`, when it has entries. Every pull request that
+  changes what a user sees adds its entry there, and `docs/UPGRADING.md`'s `## Unreleased` gets a
+  heading for anything a user must act on. Consumers that pin a commit of `main` read both
+  sections, so they are kept current between releases. The release uses the section as written.
+- **By hand:** `--notes-file notes.md`, Markdown, used as written, when `## Unreleased` is empty.
+  Keep it outside the checkout, or leave it untracked; it is not committed.
+- **Generated**, when neither of the above is given: one line per pull request merged on `main`
+  since the previous tag, its title only:
   squash-merge subjects (`Title (#N)`) and, for merge commits (`Merge pull request #N from ...`), the
   first line of the commit body, which GitHub fills with the title. A pull request's description is
   never copied. Commits pushed straight to `main` are not listed.
@@ -125,7 +138,8 @@ host (?i)\bbuildhost\d*\b
 ```
 
 Keep the file out of this repository; it holds the very names it guards. Personal home paths and
-private IP addresses are always checked. Hand-written notes are checked against the same patterns. A
+private IP addresses are always checked. Hand-written notes, `## Unreleased` included, are checked
+against the same patterns. A
 match refuses the release and lists each hit (`#N: title [kind: match]`); copy the entry from the dry
 run into a notes file, edit it, and pass `--notes-file`.
 

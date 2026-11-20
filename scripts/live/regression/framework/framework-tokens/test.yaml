@@ -44,6 +44,7 @@ assert:
     - target: ${PG_TARGET_SCHEMA}.${TID}tgt
       target_db: postgres-target
       match: expected/tgt.csv
+      rows: 3                       # seed.sql inserts 3 rows; the initial load copies each once
 
 timeout: 180
 tags: [framework, tokens, postgres, regression]

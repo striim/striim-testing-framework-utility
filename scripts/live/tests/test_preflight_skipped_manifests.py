@@ -38,3 +38,20 @@ def test_known_test_ids_names_the_skipped_file(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "_log", logs.append)
     assert preflight.known_test_ids() == {"fooop-good"}
     assert any(m.startswith("WARNING: skipped unloadable manifest") and str(bad) in m for m in logs), logs
+
+
+def test_known_test_ids_does_not_report_a_set_only_match(tmp_path, monkeypatch):
+    # The name scan loads every manifest on disk; the warning belongs to the cases a run selects.
+    import warnings
+
+    from livetest.manifest import CardinalityWarning
+    case = tmp_path / "op" / "fooop" / "fooop-setonly"
+    case.mkdir(parents=True)
+    (case / "app.tql").write_text("CREATE APPLICATION ${APP};\nEND APPLICATION ${APP};\n")
+    (case / "test.yaml").write_text(
+        "name: fooop-setonly\ntql: app.tql\nassert:\n  data:\n    - {target: s.t, match: rows.csv}\n")
+    monkeypatch.setattr(preflight, "_CASES", tmp_path)
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        assert preflight.known_test_ids() == {"fooop-setonly"}
+    assert not [w for w in seen if issubclass(w.category, CardinalityWarning)]

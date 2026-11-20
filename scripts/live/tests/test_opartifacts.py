@@ -69,6 +69,7 @@ def test_build_jar_reuses_when_up_to_date(tmp_path, monkeypatch):
     _touch(mod / "pom.xml", 1000)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _jar(jar, fp=_fp(RELEASE_54), major=61)   # a real (readable) jar -- a text stand-in
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))               # would now correctly count as corrupt
     calls = []
     built = build_jar(MODULE, RELEASE_54, run=lambda argv, cwd, env: calls.append(argv))
@@ -245,6 +246,7 @@ def test_build_jar_still_reuses_a_valid_jar_with_no_stamp_and_no_own_classes(tmp
     jar.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(jar, "w") as z:
         z.writestr("com/other/Dep.class", b"x")   # valid zip, nothing determinable
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))                   # newer than every source
     build_jar(MODULE, RELEASE_54, run=lambda *a: pytest.fail("must not build"))
 
@@ -276,6 +278,7 @@ def test_build_jar_reuses_when_manifest_matches(tmp_path, monkeypatch):
     _touch(mod / "src/main/java/X.java", 1000)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _jar(jar, fp=_fp(RELEASE_54), major=61)
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))            # newer than source
     calls = []
     build_jar(MODULE, RELEASE_54, run=lambda argv, cwd, env: calls.append(argv))
@@ -341,6 +344,7 @@ def test_build_jar_absent_manifest_reused_when_bytecode_matches(tmp_path, monkey
     _touch(mod / "src/main/java/X.java", 1000)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _jar(jar, major=61)                    # no manifest stamp, Java-17 bytecode
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))
     calls = []
     build_jar(MODULE, RELEASE_54, run=lambda argv, cwd, env: calls.append(argv))
@@ -393,6 +397,7 @@ def test_build_jar_reports_reason_on_stale_rebuild(tmp_path, monkeypatch):
     _jar(jar, fp=_fp(RELEASE_54), major=61)
     os.utime(jar, (1000, 1000))
     _touch(mod / "src/main/java/X.java", 3000)     # source newer than jar -> stale
+    opartifacts._write_source_record(jar, mod)
     reasons = []
     def fake_run(argv, cwd, env):
         jar.write_text("rebuilt"); return types.SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -421,6 +426,7 @@ def test_build_jar_does_not_report_on_reuse(tmp_path, monkeypatch):
     _touch(mod / "src/main/java/X.java", 1000)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _jar(jar, fp=_fp(RELEASE_54), major=61)
+    opartifacts._write_source_record(jar, mod)
     os.utime(jar, (2000, 2000))                    # newer than source -> reuse
     reasons = []
     build_jar(MODULE, RELEASE_54, run=lambda *a: pytest.fail("must not build"), report=reasons.append)
@@ -736,6 +742,7 @@ def test_stale_trigger_fires_when_an_add_sourced_shared_file_changes(tmp_path):
     mod = _module_with_shared_roots(tmp_path)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _touch(jar, 2000)
+    opartifacts._write_source_record(jar, mod)
     shared = tmp_path / "java/SampleCommon/src/main/java/com/example/common/WAEvents.java"
     _touch(shared, 3000)                            # newer than the jar
     trigger = opartifacts._stale_trigger(jar, mod)
@@ -746,6 +753,7 @@ def test_stale_trigger_fires_for_openprocessorcommon_too(tmp_path):
     mod = _module_with_shared_roots(tmp_path)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _touch(jar, 2000)
+    opartifacts._write_source_record(jar, mod)
     _touch(mod.parent / "OpenProcessorCommon/src/main/java/Shared.java", 3000)
     trigger = opartifacts._stale_trigger(jar, mod)
     assert trigger is not None and trigger.name == "Shared.java"
@@ -756,7 +764,29 @@ def test_stale_trigger_still_none_when_shared_roots_are_older(tmp_path):
     mod = _module_with_shared_roots(tmp_path)
     jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
     _touch(jar, 5000)                               # newer than every source
+    opartifacts._write_source_record(jar, mod)
     assert opartifacts._stale_trigger(jar, mod) is None
+
+
+def test_stale_trigger_sees_a_deleted_source_and_an_edited_parent_pom(tmp_path):
+    # Mtimes cannot see a deleted file, and the parent pom a module inherits from is an input
+    # to its build: the jar's source record and the <parent> chain cover both.
+    mod = tmp_path / "java" / "Ops" / "FooOp"
+    keep, gone = mod / "src/main/java/Keep.java", mod / "src/main/java/Gone.java"
+    parent = tmp_path / "java" / "pom.xml"
+    for p in (keep, gone, parent):
+        _touch(p, 1000)
+    _touch(mod / "pom.xml", 1000, "<project><parent><relativePath>../../pom.xml</relativePath></parent></project>")
+    jar = mod / "target" / "FooOp-5.4.jar"
+    _touch(jar, 1000, "jar")
+    opartifacts._write_source_record(jar, mod)
+    os.utime(jar, (2000, 2000))
+    assert opartifacts._stale_trigger(jar, mod) is None
+    gone.unlink()                                             # a class removed from the module
+    assert opartifacts._stale_trigger(jar, mod) == gone
+    _touch(gone, 1000)
+    _touch(parent, 3000, "new dependency version")            # the parent pom edited
+    assert opartifacts._stale_trigger(jar, mod) == parent.resolve()
 
 # ---- place_on_agent ---------------------------------------------------------
 #
@@ -1247,3 +1277,105 @@ def test_require_platform_home_before_mvn(tmp_path, prop, env, platform, raises)
         assert not isinstance(e.value, opartifacts.OpBuildFailed)
     else:
         check()
+
+
+# ---------------------------------------------------------------- failures that are not skips
+# A plain OpArtifactError is a missing build prerequisite and the case skips. A prebuilt jar
+# the run was told to use (SLT_PREBUILT_*) that cannot be used, and a rebuilt jar that still
+# does not match the release, are defects of what was handed in or built: the case fails.
+
+def _prebuilt_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(tmp_path / "missing.jar"))
+
+
+def _prebuilt_corrupt(tmp_path, monkeypatch):
+    (tmp_path / "bad.jar").write_text("not a real jar file")
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(tmp_path / "bad.jar"))
+
+
+def _prebuilt_wrong_bytecode(tmp_path, monkeypatch):
+    _jar(tmp_path / "ExampleMapOpV8G-5.4.jar", major=55)
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(tmp_path / "ExampleMapOpV8G-5.4.jar"))
+
+
+def _prebuilt_dir_without_the_module(tmp_path, monkeypatch):
+    _jar(tmp_path / "stage" / "OtherOpV1-5.4.jar", major=61)
+    monkeypatch.setenv("SLT_PREBUILT_DIR", str(tmp_path / "stage"))
+
+
+def _prebuilt_dir_with_two_jars(tmp_path, monkeypatch):
+    _jar(tmp_path / "stage" / "a" / "ExampleMapOpV8G-5.4.jar", major=61)
+    _jar(tmp_path / "stage" / "b" / "ExampleMapOpV9-5.4.jar", major=61)
+    monkeypatch.setenv(opartifacts.prebuilt_env_var(MODULE), str(tmp_path / "stage"))
+
+
+def _prebuilt_other_module(tmp_path, monkeypatch):
+    jar = tmp_path / "ExampleMapOpV8G-5.4.jar"
+    _jar(jar, major=61)
+    with zipfile.ZipFile(jar, "a") as z:
+        z.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\r\nStriim-Module-Name: OtherOpV1\r\n")
+    monkeypatch.setenv("SLT_PREBUILT_JAR", str(jar))
+
+
+@pytest.mark.parametrize("setup, message", [
+    (_prebuilt_missing, "prebuilt jar not found"),
+    (_prebuilt_corrupt, "prebuilt jar is not a readable jar"),
+    (_prebuilt_wrong_bytecode, "wrong JDK"),
+    (_prebuilt_dir_without_the_module, "no ExampleMapOp jar for series 5.4"),
+    (_prebuilt_dir_with_two_jars, "multiple candidates"),
+    (_prebuilt_other_module, "does not match module 'ExampleMapOp'"),
+])
+def test_a_requested_prebuilt_jar_that_cannot_be_used_is_rejected_not_missing(tmp_path, monkeypatch, setup, message):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    _hermetic_build_env(monkeypatch)
+    setup(tmp_path, monkeypatch)
+    with pytest.raises(opartifacts.OpJarRejected, match=message):
+        build_jar(MODULE, RELEASE_54, run=lambda *a, **k: pytest.fail("a prebuilt jar is never rebuilt"))
+
+
+def test_a_release_stamp_that_survives_the_clean_rebuild_is_a_build_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    _hermetic_build_env(monkeypatch)
+    mod = tmp_path / MODULE
+    _touch(mod / "src/main/java/X.java", 1000)
+    jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
+    wrong = {"STRIIM_VERSION": "5.4.0.6C", "STRIIM_SERIES": "5.4", "JAVA_RELEASE": "17"}
+    _jar(jar, fp=wrong, major=61)
+    os.utime(jar, (2000, 2000))
+
+    def fake_run(argv, cwd, env):
+        _jar(jar, fp=wrong, major=61)             # the rebuild does NOT fix the stamp
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with pytest.raises(opartifacts.OpBuildFailed, match="still stamped for"):
+        build_jar(MODULE, RELEASE_54, run=fake_run)
+
+
+def test_a_rebuilt_jar_at_the_wrong_java_level_is_a_build_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    _hermetic_build_env(monkeypatch)
+    mod = tmp_path / MODULE
+    _touch(mod / "src/main/java/X.java", 1000)
+    jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
+
+    def fake_run(argv, cwd, env):
+        _jar(jar, fp=_fp(RELEASE_54), major=55)   # what landed was compiled for Java 11
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    with pytest.raises(opartifacts.OpBuildFailed, match="wrong JDK"):
+        build_jar(MODULE, RELEASE_54, run=fake_run)
+
+
+def test_a_reused_jar_at_the_wrong_java_level_is_still_a_missing_prerequisite(tmp_path, monkeypatch):
+    # Not built by this run: the existing jar is stale, and `mvn clean` is the advice. It stays a
+    # skip (which fails the run through the infra guard), not a failure of the module.
+    monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
+    _hermetic_build_env(monkeypatch)
+    mod = tmp_path / MODULE
+    _touch(mod / "src/main/java/X.java", 1000)
+    jar = mod / "target" / "ExampleMapOpV8G-5.4.jar"
+    _jar(jar, major=55)                            # no stamp: only the bytecode guard can tell
+    os.utime(jar, (2000, 2000))
+    with pytest.raises(OpArtifactError, match="wrong JDK") as e:
+        build_jar(MODULE, RELEASE_54, run=lambda *a, **k: pytest.fail("must not build"))
+    assert not isinstance(e.value, (opartifacts.OpBuildFailed, opartifacts.OpJarRejected))

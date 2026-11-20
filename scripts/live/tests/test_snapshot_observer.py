@@ -282,3 +282,27 @@ def test_repeated_state_does_not_allow_a_later_regression():
     o.read = lambda *a: {'a': [{'id': 1}], 'b': [{'id': 1}]}
     with pytest.raises(AssertionFailed, match='snapshot-prefix-regressed'):
         o.sample()
+
+
+def test_max_snapshots_stops_the_observer_at_its_limit():
+    """`snapshot_observer.max_snapshots` bounds the history: the sample past it fails the case."""
+    data = {"empty.csv": b"id\n", "full.csv": b"id\n1\n"}
+    o = observer.Observer(dict(spec(), max_snapshots=2), admins={}, tokens={}, case_dir=".",
+                          inputs=SimpleNamespace(golden=lambda p: data[p.name]),
+                          read=lambda *a: {"a": [{"id": 1}], "b": [{"id": 1}]})
+    o.sample()
+    o.sample()
+    with pytest.raises(AssertionFailed, match="snapshot-limit-exceeded: max_snapshots reached"):
+        o.sample()
+    assert len(o.history) == 2
+
+
+@pytest.mark.parametrize("value", [0, 100001, True, "10"])
+def test_max_snapshots_outside_its_budget_is_refused(value):
+    with pytest.raises(ValueError, match="max_snapshots is outside its supported budget"):
+        observer.normalize(dict(spec(), max_snapshots=value), "p", lifecycle=True)
+
+
+@pytest.mark.parametrize("value", [1, 100000])
+def test_max_snapshots_at_its_bounds_loads(value):
+    assert observer.normalize(dict(spec(), max_snapshots=value), "p", lifecycle=True)["max_snapshots"] == value

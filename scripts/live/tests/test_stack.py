@@ -50,7 +50,7 @@ def test_explicit_env_mapping_beats_os_environ(monkeypatch):
     assert stack.prefixed("slt-x", env={"SLT_STACK_PREFIX": "b2"}) == "b2-slt-x"
 
 
-@pytest.mark.parametrize("bad", ["Alt", "alt stack", "-alt", "alt_x", " alt", "alt/x"])
+@pytest.mark.parametrize("bad", ["Alt", "alt stack", "-alt", "alt_x", " alt", "alt/x", "alt\n", "../x"])
 def test_invalid_prefix_fails_loud(monkeypatch, bad):
     # A bad prefix would otherwise surface as a cryptic docker-compose name error mid-run.
     monkeypatch.setenv("SLT_STACK_PREFIX", bad)

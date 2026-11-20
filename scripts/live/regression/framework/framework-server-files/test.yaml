@@ -39,6 +39,7 @@ assert:
   file:
     - path: /tmp/${NS}-out
       match: expected/events.csv
+      events: 4                     # 2 data rows in each of baseline.csv and change.csv
       project: data
 
 timeout: 180

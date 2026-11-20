@@ -268,15 +268,11 @@ def missing_python_module(module: str | None, hint: str | None = None) -> str | 
     return f"Python module {module} is not installed" + (f": {hint}" if hint else "")
 
 
-_OFF = ("", "0", "false", "no", "off")
-
-
 def opted_in(gate: str | None, env) -> bool:
     """True when a service's opt-in setting ``gate`` (its ``opt_in_env``) or the ``SLT_EMULATORS``
-    umbrella is on. Each is read as a flag, so empty, ``0``, ``false``, ``no`` and ``off`` (any case)
-    leave it off: ``SLT_EMULATORS=0`` opts in to nothing. Provisioning, preflight and doctor all ask
-    here, so they agree."""
-    return any(str(env.get(name) or "").strip().lower() not in _OFF for name in (gate, "SLT_EMULATORS") if name)
+    umbrella is on. Each is a switch (paths.flag): ``1`` on, ``0`` or unset off, anything else
+    refused. Provisioning, preflight and doctor all ask here, so they agree."""
+    return any(paths.flag(name, env) for name in (gate, "SLT_EMULATORS") if name)
 
 
 def unavailable(defn: ServiceDef, env) -> str | None:
@@ -304,6 +300,19 @@ def unavailable(defn: ServiceDef, env) -> str | None:
     return f"required files missing from {defn.dir}: {', '.join(missing)} ({how}{alt})"
 
 
+#: Every key a live service.yaml may hold: what load_service and hook_policy read. Any other key
+#: is refused when the definition loads; a misspelt `live_override_env:` used to load as no
+#: override, so the service ran in container mode. (An integration service.yaml is read by
+#: inttest.services, not here, and holds keys of its own.)
+SERVICE_KEYS = frozenset({
+    "name", "family", "isolation", "compose", "container", "docker_defaults", "docker_env",
+    "live_override_env", "live_env", "live_defaults", "required_env", "provides", "opt_in_env",
+    "post_up", "required_files", "required_files_env", "python_module", "python_module_hint",
+    "driver", "pre_up", "pre_up_env", "pre_up_check", "pre_up_timeout", "unavailable_policy",
+    "graceful_stop", "graceful_stop_timeout", "restart_in_place", "restart_in_place_timeout",
+})
+
+
 def load_service(name: str, services_dir: Path | None = None, env=None) -> ServiceDef:
     found = _find(name, services_dir)
     if found is None:
@@ -315,6 +324,10 @@ def load_service(name: str, services_dir: Path | None = None, env=None) -> Servi
         raw = yaml.safe_load(path.read_text()) or {}
     except yaml.YAMLError as e:
         raise RegistryError(f"{path}: invalid YAML: {e}") from e
+    unknown = sorted(str(k) for k in raw if k not in SERVICE_KEYS) if isinstance(raw, dict) else []
+    if unknown:
+        raise RegistryError(
+            f"{path}: unknown key(s) {unknown} -- allowed: {sorted(SERVICE_KEYS)}")
     if raw.get("name") != name:
         raise RegistryError(f"{path}: 'name' must equal {name!r}")
     if not raw.get("isolation"):

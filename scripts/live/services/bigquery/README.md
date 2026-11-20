@@ -161,8 +161,9 @@ exact-chunk-boundary case. Unknown-total chunks remain incomplete; no padding,
 chunk-size or expected-row workaround is used. No product code or SDK jar is changed.
 Actual writer and image architecture qualification are recorded separately.
 
-A client regression with a one-row oracle must pass with a corrected client
-before this exclusion is lifted. A skip is
+The framework no longer carries a client regression for this boundary; it was removed
+with the emulator build recipe. A client regression with a one-row oracle must be
+re-added and pass with a corrected client before this exclusion is lifted. A skip is
 not a passing boundary test. The emulator may retain PENDING job metadata; no
 completed load job or target rows result from the omitted final request.
 
@@ -172,8 +173,8 @@ The arm64 cross-build config is
 `a7e788395af8d7bb2f24ba7b973d9a589f16f0ffedbfaa985af279bfdffea421`;
 native ARM execution remains unqualified. The full feasible upstream Go suite,
 HTTP/TLS client controls, load job persistence and chunk replay controls pass.
-The exact-boundary client regression is an explicit skip, outside this bounded
-qualification. These API controls are separate from the actual writer fixtures. The current image gate
+The exact-boundary client regression was an explicit skip, outside this bounded
+qualification, and has since been removed. These API controls are separate from the actual writer fixtures. The current image gate
 requires `0.8.1-framework.8`; the recorded `.7` results do not qualify `.8`.
 No repeat of those native controls on `.8` is recorded here. Its supplier must retain
 the matching image ID and fresh qualification evidence before treating it as qualified.

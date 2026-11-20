@@ -1,0 +1,1 @@
+CREATE TABLE ${TID}tgt (id int PRIMARY KEY);

@@ -26,7 +26,6 @@ def test_verify_striim_home_accepts_the_matching_install_and_skips_when_unset(tm
 def test_build_jar_runs_the_striim_home_guard_before_mvn(tmp_path, monkeypatch):
     # _hermetic_build_env minus its stub of the guard under test.
     monkeypatch.setattr(opartifacts, "_root", lambda: tmp_path)
-    monkeypatch.setattr(opartifacts, "_common_dir", lambda: tmp_path / "Common")
     monkeypatch.setattr(opartifacts, "resolve_build_java_home", lambda *a, **k: None)
     monkeypatch.setenv("STRIIM_HOME", str(tmp_path / "Striim_other"))
     _mk(tmp_path / MODULE / "src" / "main" / "java" / "X.java", 1000)

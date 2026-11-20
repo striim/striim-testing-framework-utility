@@ -35,12 +35,13 @@ import re
 import uuid
 import sys
 import subprocess
+import warnings
 from pathlib import Path
 
-from livetest import lockdir, opartifacts, opregistry, stack
+from livetest import dockercmd, lockdir, opartifacts, opregistry, paths, stack
 from livetest import infra as _slt_infra   # the shared-service adapter, C7.1
 from livetest import striim_provision as _sp
-from livetest.manifest import load_manifest
+from livetest.manifest import CardinalityWarning, load_manifest
 from livetest.mssqladmin import MssqlAdmin
 from livetest.pgclient import PgAdmin
 from livetest.teradataadmin import TeradataAdmin
@@ -98,7 +99,11 @@ def known_test_ids() -> set:
     names = set()
     for path in _case_manifests():
         try:
-            names.add(load_manifest(path).name)
+            # Every manifest on disk is loaded for its name only; a set-only match: in an
+            # unselected case is not this caller's to report (doctor and collection do).
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", CardinalityWarning)
+                names.add(load_manifest(path).name)
         except Exception as e:
             # As manifests_for: skipped, never silently.
             _log(f"WARNING: skipped unloadable manifest {path}: {e}")
@@ -179,10 +184,33 @@ def missing_port_overrides(services, env=None) -> list:
         if not path or not pathlib.Path(path).is_file():
             continue
         text = pathlib.Path(path).read_text()
-        for var, default in _PORT_VAR_RE.findall(text):
+        # Each mapping is written twice (bind address and gateway): report a variable once.
+        for var, default in dict.fromkeys(_PORT_VAR_RE.findall(text)):
             if default and not (env.get(var) or "").strip():
                 missing.append((svc, var, default))
     return missing
+
+
+def stop_command(targets, env=None) -> str:
+    """The `livetest.cli stop` command line that stops ``targets`` anyway."""
+    import shlex
+    prefix = stack.prefix(os.environ if env is None else env)
+    return ((f"SLT_STACK_PREFIX={prefix} " if prefix else "") + "python -m livetest.cli stop "
+            + " ".join(shlex.quote(t) for t in targets) + " --force")
+
+
+def stop_reserved(env, force: bool = False, retry: str | None = None):
+    """A stop is `down -v` (databases, volumes, the MDR). Refuse it, logged with the pids and the
+    command that stops anyway, while another live session uses the stack (``infra.reserve_stop``);
+    ``force`` skips the check. Otherwise the stop is reserved in the same step as the check: no session
+    is admitted on the endpoint until the returned reservation is released, which the caller does in a
+    ``finally`` once the stop is over. None: refused."""
+    reservation, why = _slt_infra.reserve_stop(env, force)
+    if why is None:
+        return reservation
+    _log(f"ERROR: refusing to stop: {why}. Stopping now removes what they use. Wait for them to finish, "
+         f"or stop anyway with: {retry or 'python -m livetest.cli stop <targets> --force'}")
+    return None
 
 
 def _sweep_postgres_slots(admin, infra) -> None:
@@ -411,9 +439,7 @@ def _replaced_loaded_jars(ctx, client, builts) -> list[str]:
             continue
         want = opartifacts.file_sha256(built.path)
         for node in stack.app_nodes():
-            got = subprocess.run(["docker", "exec", node, "sha256sum",
-                                  f"/opt/striim/UploadedFiles/{built.name}"],
-                                 capture_output=True, text=True)
+            got = dockercmd.run(["docker", "exec", node, "sha256sum", f"/opt/striim/UploadedFiles/{built.name}"])
             words = (got.stdout or "").split()
             if got.returncode != 0 or not words or words[0] == want:
                 continue
@@ -467,6 +493,17 @@ def provision(test_ids, env=None, *, recovery_context=None) -> int:
     release = _resolve_release(cfg)
     _log(f"release STRIIM_VERSION={release.get('STRIIM_VERSION')}; provisioning cluster")
     ctx = _resolve_striim(cfg)
+    # The declaration (a shared marker) goes with this entry point, not with the process. (The
+    # resolution above stays a plain statement of this function, behind the declaration; if it raises, the
+    # marker outlives only a process about to exit, and the next registry read prunes it.)
+    try:
+        return _provision_resolved(env, manifests, ctx, cfg, release, _slt_decl, recovery_context)
+    finally:
+        _slt_decl.release()
+
+
+def _provision_resolved(env, manifests, ctx, cfg, release, _slt_decl, recovery_context) -> int:
+    """The rest of :func:`provision`, once the cluster is resolved, while its declaration is held."""
     if ctx is None:
         _log(f"ERROR: cluster not available: {getattr(cfg, '_slt_striim_reason', 'unknown')}")
         return 1
@@ -609,7 +646,7 @@ def provision(test_ids, env=None, *, recovery_context=None) -> int:
     return 1 if failures else 0
 
 
-def teardown(test_ids, env=None, explicit: bool = False) -> int:
+def teardown(test_ids, env=None, explicit: bool = False, force: bool = False) -> int:
     """Mirror ``plugin.pytest_sessionfinish``: with ``SLT_KEEP_SERVICES`` this is a no-op (infra
     stays up between runs; the next pre-flight re-registers from a clean slate). Otherwise tear
     down each provisioned service container and the Striim cluster (best-effort).
@@ -620,11 +657,23 @@ def teardown(test_ids, env=None, explicit: bool = False) -> int:
     command into a no-op reporting success), failures are reported, and the Striim cluster is
     left alone -- re-provisioning one costs minutes, and these commands are documented
     as covering services only.
+
+    Refused (exit 2) while another live session uses the stack, unless ``force``.
     """
     env = os.environ if env is None else env
-    if not explicit and (env.get("SLT_KEEP_SERVICES") or env.get("SLT_KEEP_RESOURCES_ON_ERROR")):
+    if not explicit and (paths.flag("SLT_KEEP_SERVICES", env) or paths.flag("SLT_KEEP_RESOURCES_ON_ERROR", env)):
         _log("SLT_KEEP_SERVICES set — leaving services + cluster up")
         return 0
+    reservation = stop_reserved(env, force, stop_command(test_ids, env))
+    if reservation is None:
+        return 2
+    try:
+        return _teardown_reserved(test_ids, env, explicit)
+    finally:
+        reservation.release()
+
+
+def _teardown_reserved(test_ids, env, explicit: bool) -> int:
     manifests = manifests_for(test_ids)
     services, _ = compute_unions(manifests)
     if not explicit and env.get("SLT_PREFLIGHT_CLEANUP_SERVICES") is not None:
@@ -741,6 +790,7 @@ def provision_cluster(publish_gcs_host: bool = False) -> int:
     cfg = _PreflightConfig()
     cfg._slt_infra = _slt_decl
     ctx = _resolve_striim(cfg)
+    _slt_decl.release()                 # the cluster is resolved; nothing below needs the declaration
     if ctx is None:
         _log(f"ERROR: could not start the Striim cluster: "
              f"{getattr(cfg, '_slt_striim_reason', 'unknown')}")
@@ -760,7 +810,7 @@ def provision_cluster(publish_gcs_host: bool = False) -> int:
     return 0
 
 
-def teardown_cluster() -> int:
+def teardown_cluster(force: bool = False) -> int:
     """Tear the Striim cluster down, for `livetest.cli stop striim` and the default `stop live`.
 
     Guarded the way plugin.pytest_sessionfinish is (it tears down "only if WE provisioned it"):
@@ -768,7 +818,19 @@ def teardown_cluster() -> int:
     native Striim, or one reachable at an external STRIIM_URL, leaves this checkout's compose
     project with no containers -- there is nothing of ours to take down, and running it anyway
     would delete a volume we never created.
+
+    Refused (exit 2) while another live session uses the stack, unless ``force``.
     """
+    reservation = stop_reserved(os.environ, force, stop_command(["striim"], os.environ))
+    if reservation is None:
+        return 2
+    try:
+        return _teardown_cluster_reserved()
+    finally:
+        reservation.release()
+
+
+def _teardown_cluster_reserved() -> int:
     try:
         # Inside the try, and resolved once: _resolve_release raises on a broken STRIIM_HOME
         # (no Platform-*.jar, or two of them), and outside it that became an unhandled
@@ -824,22 +886,25 @@ def provision_services(names, env=None, apply_gate: bool = False) -> int:
     _slt_svc_decl = _slt_infra.declare_or_log(env, _log)
     if _slt_svc_decl is None:
         return 2
-    if "gcs" in names:
-        _note_gcs_public_host()
-    _prune_dead_records(names)
-    # A bring-up failure is an rc, not a traceback: this runs behind a runner's `start`, and
-    # a Docker daemon that is down would otherwise print a stack trace over the clean
-    # diagnosis its caller already logged.
     try:
-        resolved = _bring_up_services(names, env, apply_gate=apply_gate, infra=_slt_svc_decl)
-    except Exception as e:
-        _log(f"ERROR: could not bring up services: {e!r}")
-        return 1
+        if "gcs" in names:
+            _note_gcs_public_host()
+        _prune_dead_records(names)
+        # A bring-up failure is an rc, not a traceback: this runs behind a runner's `start`, and
+        # a Docker daemon that is down would otherwise print a stack trace over the clean
+        # diagnosis its caller already logged.
+        try:
+            resolved = _bring_up_services(names, env, apply_gate=apply_gate, infra=_slt_svc_decl)
+        except Exception as e:
+            _log(f"ERROR: could not bring up services: {e!r}")
+            return 1
+    finally:
+        _slt_svc_decl.release()         # the declaration goes with this entry point
     _log(f"services up: {len(resolved)} service(s)")
     return 0
 
 
-def teardown_services(names, env=None) -> int:
+def teardown_services(names, env=None, force: bool = False) -> int:
     """Tear down `names` and nothing else -- the services-only mirror of :func:`teardown`.
     Leaves the Striim cluster alone: `stop postgres` must not take the cluster with it.
 
@@ -847,9 +912,17 @@ def teardown_services(names, env=None) -> int:
     "don't tear down when a test run ends", which is the documented dev default (README's
     "always pass SLT_KEEP_SERVICES=1") and routinely exported in a shell. Applying it to an
     explicit `stop <service>` would turn a direct command into a no-op reporting success.
+
+    Refused (exit 2) while another live session uses the stack, unless ``force``.
     """
     env = os.environ if env is None else env
-    failed = _take_down_services(names, env, apply_gate=False)
+    reservation = stop_reserved(env, force, stop_command(names, env))
+    if reservation is None:
+        return 2
+    try:
+        failed = _take_down_services(names, env, apply_gate=False)
+    finally:
+        reservation.release()
     if failed:
         _log(f"ERROR: could not tear down: {', '.join(failed)}")
         return 1
@@ -862,17 +935,47 @@ def restart_app_nodes(env=None) -> int:
     _slt_decl = _slt_infra.declare_or_log(os.environ, _log)
     if _slt_decl is None:
         return 2
+    reservation = _restart_reservation(_slt_decl)
+    if reservation is None:
+        return 2
+    # Reserved in the same step as the check, until the restart is over: no session joins the cluster
+    # between the check and the restart.
     cfg = _PreflightConfig()
     cfg._slt_infra = _slt_decl
-    ctx = _resolve_striim(cfg)
-    if ctx is None:
-        _log(f"ERROR: cluster not available: {getattr(cfg, '_slt_striim_reason', 'unknown')}")
-        return 1
-    client = StriimClient.from_url(ctx.url, ctx.user, ctx.password)
-    _log("restarting app nodes (OP-loader poison recovery)")
-    _sp.restart_app_nodes(client)
-    _log("app nodes restarted")
-    return 0
+    try:
+        ctx = _resolve_striim(cfg)
+        if ctx is None:
+            _log(f"ERROR: cluster not available: {getattr(cfg, '_slt_striim_reason', 'unknown')}")
+            return 1
+        client = StriimClient.from_url(ctx.url, ctx.user, ctx.password)
+        _log("restarting app nodes (OP-loader poison recovery)")
+        _sp.restart_app_nodes(client)
+        _log("app nodes restarted")
+        return 0
+    finally:
+        reservation.release()
+        _slt_decl.release()             # the declaration goes with this entry point
+
+
+def _restart_reservation(infra):
+    """``infra.reserve_restart`` for ``restart_app_nodes``; None when refused (logged, and the declaration
+    released)."""
+    try:
+        reservation, others = _slt_infra.reserve_restart(infra)
+    except BaseException as e:
+        infra.release()
+        if not isinstance(e, _slt_infra.InfraOwnershipError):
+            raise
+        _log(f"ERROR: refusing to restart the app nodes: {e}")
+        return None
+    if others:
+        infra.release()
+        # As the in-run path (plugin._op_poison_restart_refusal) and the slot sweep refuse: the
+        # restart takes the app nodes away from every other session on the shared cluster.
+        _log(f"ERROR: refusing to restart the app nodes of a shared cluster: other live sessions use it "
+             f"(pids {others}); restart them once they have finished")
+        return None
+    return reservation
 
 
 def main(argv=None) -> int:
@@ -894,6 +997,14 @@ def main(argv=None) -> int:
         except Exception as e:
             _log(f"ERROR: cannot activate the project manifest: {e}")
             return 2
+    from livetest import service_env
+    problems = service_env.switch_problems(paths.effective_env(os.environ))
+    if problems:                               # a switch or opt-in gate set to neither 1 nor 0
+        _log("ERROR: " + "\n".join(problems))
+        return 2
+    # As livetest.cli does: the cluster's compose calls read SLT_STACK_PREFIX from os.environ only, so a
+    # prefix set only in .env would leave `--teardown` running `down -v` on the unprefixed cluster.
+    stack.adopt_prefix()
     if args.restart_app_nodes:
         return restart_app_nodes()
     if args.teardown:

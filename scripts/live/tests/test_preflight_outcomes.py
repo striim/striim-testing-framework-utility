@@ -15,6 +15,8 @@ REAL_GATED_OUT = pf._gated_out
 
 @pytest.fixture
 def rig(monkeypatch, tmp_path):
+    from livetest import stack
+    monkeypatch.setattr(stack, "_LOCK_DIR", tmp_path / "locks")    # the stop check reads the lock dir
     monkeypatch.setattr(pf, "missing_port_overrides", lambda *a: [])
     monkeypatch.setattr(pf, "_gated_out", lambda *a: False)
     monkeypatch.setattr(pf, "load_service", lambda n: NS(name=n))
@@ -25,7 +27,7 @@ def rig(monkeypatch, tmp_path):
     monkeypatch.setattr(pf, "PgAdmin", lambda *a, **kw: NS(
         ensure_setup=lambda: None, sweep_stale_replication_slots=lambda log: None))
     monkeypatch.setattr(pf, "clear_provision_registry", lambda *a: None)
-    monkeypatch.setattr(pf._slt_infra, "declare_or_log", lambda *a: object())
+    monkeypatch.setattr(pf._slt_infra, "declare_or_log", lambda *a: NS(release=lambda: None))
     monkeypatch.setattr(pf, "_resolve_release", lambda *a: {})
     monkeypatch.setattr(pf, "_resolve_striim", lambda *a: NS(mode="remote"))
     monkeypatch.setattr(pf, "manifests_for", lambda ids: [NS(name="a", requires=["extdb", "postgres"], modules=[])])

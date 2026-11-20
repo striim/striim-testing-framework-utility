@@ -78,6 +78,7 @@ def test_template_ships_its_files():
     assert len(pin) == 40 or pin.startswith("v"), pin
 
 
+@pytest.mark.git_checkout
 def test_template_pin_names_a_commit_of_this_repository():
     # A tag is cut by tools/release.py; a commit must be in this history. Either way a new
     # consumer's first sync can find it.
@@ -426,3 +427,41 @@ def test_a_missing_repo_venv_is_made_with_a_python_that_qualifies(tmp_path):
     assert mod.prepare_venv(venv, need, None, "v1") == sys.executable
     assert mod.python_version(mod.venv_python(venv))[:2] == need
     assert mod.prepare_venv(venv, need, None, "v1") is None
+
+
+def _sync_in_place(folder, tmp_path, *args):
+    """The shipped folder's own sync script, run where it ships (inside this checkout)."""
+    env = {k: v for k, v in GIT_ENV.items() if k not in ("FRAMEWORK_CHECKOUT", "FRAMEWORK_REMOTE")}
+    env["FRAMEWORK_REMOTE"] = str(tmp_path / "no-such-remote.git")        # never the network
+    return subprocess.run([sys.executable, str(REPO / folder / "scripts" / "sync-framework.py"), *args],
+                          cwd=REPO / folder, capture_output=True, text=True, env=env, timeout=120)
+
+
+@pytest.mark.parametrize("folder", ["examples/acme-retail", "templates/consumer-repo"])
+@pytest.mark.parametrize("args", [["--dry-run"], ["--check"], ["--no-install"]])
+def test_sync_refuses_to_run_inside_the_framework_checkout(folder, args, tmp_path):
+    # Run where it ships, it would clone a second framework beside the folder, inside this checkout,
+    # and make .venv and .env in the shipped folder.
+    nested = (REPO / folder).parent / "striim-testing-framework-utility"
+    before = {p.name for p in (REPO / folder).iterdir()}
+    r = _sync_in_place(folder, tmp_path, *args)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "inside the framework checkout" in r.stderr and str(REPO) in r.stderr, r.stderr
+    assert "copy" in r.stderr and "--home" in r.stderr
+    assert "would clone" not in r.stdout
+    assert not nested.exists()
+    assert {p.name for p in (REPO / folder).iterdir()} == before
+
+
+def test_sync_inside_the_framework_checkout_runs_with_an_explicit_home(tmp_path):
+    r = _sync_in_place("templates/consumer-repo", tmp_path, "--dry-run", "--home", str(tmp_path / "framework"))
+    assert r.returncode == 0, r.stderr
+    assert f"into {tmp_path / 'framework'}" in r.stdout
+
+
+def test_sync_in_a_copy_needs_no_home(consumer):
+    # The guard looks at the folders above the copy only: a copy outside the checkout is not refused.
+    r = subprocess.run([sys.executable, str(consumer / "scripts" / "sync-framework.py"), "--dry-run"],
+                       cwd=consumer, capture_output=True, text=True, env=GIT_ENV, timeout=120)
+    assert r.returncode == 0, r.stderr
+    assert f"into {consumer.parent / 'striim-testing-framework-utility'}" in r.stdout

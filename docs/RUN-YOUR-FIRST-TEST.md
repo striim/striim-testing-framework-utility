@@ -90,6 +90,20 @@ Shutdown") and the run fails. Cap each node, in your shell:
 export SLT_STRIIM_PRIMARY_CPUS=12 SLT_STRIIM_NODE_CPUS=12
 ```
 
+**Memory.** The Docker cluster runs three Striim JVMs, the two nodes and the agent, and
+`SLT_STRIIM_MEM_MAX` sets the heap of each: `16384m` by default, three 16 GB heaps. Their containers
+have no memory limit unless you set `SLT_STRIIM_MEM_LIMIT` (default `0`, no limit), so nothing stops
+the stack from taking all of the machine's memory, or all of Docker Desktop's (Settings,
+Resources). A heap is a ceiling, not what a JVM holds from the start. On a machine with less
+memory than that, lower both together and keep the limit about 1 GB above the heap:
+
+```
+export SLT_STRIIM_MEM_MAX=3072m SLT_STRIIM_MEM_LIMIT=4g
+```
+
+Before the cluster starts, `striim-test doctor` warns when three heaps are more than Docker's
+memory and `SLT_STRIIM_MEM_LIMIT` is unset.
+
 **Download and disk.** The first run downloads about 6.3 GB of Striim packages and drivers into
 `scripts/live/services/striim/images/striim/deps/`, then builds an image of about 22 GB. Docker
 needs at least **35 GB free** for that first build, and 5 GB to run afterwards. On Docker Desktop
@@ -100,6 +114,15 @@ build cache and needs only the 5 GB.
 
 **Vendor drivers.** The JDBC drivers and other third-party files the first run downloads remain under
 their vendors' licenses, which apply to your use of them.
+
+**What is checked.** Each third-party file must match the SHA-256 the framework ships for it
+(`scripts/live/services/striim/deps.sha256`). A download that does not match is deleted, and a file
+already present that does not match stops the run, naming it. Striim publishes no checksums for
+its packages, so the first time this machine sees each `striim-*.deb` the run records its digest
+(`images/striim/deps/.slt-sha256-pins.json`) and checks it before every later build. A file is
+read again only when its size, mtime or ctime changed since it last matched; the stats are kept in
+`scripts/live/services/striim/.slt-sha256-verified.json`. If Striim republishes a package under the
+same name, delete the file and its entry in the pin record.
 
 **If you already have the installers,** skip the download: list them in a manifest and export its
 path from your shell.
@@ -125,6 +148,8 @@ It must name all nine files: `striim-dbms-5.4.2-Linux.deb`, `striim-node-5.4.2-L
 run checks every digest before it builds, and stops at the first file that is missing or does not
 match, naming it. With `SLT_TERADATA_JDBC=1` it must also name `terajdbc-20.00.00.46.jar`. It
 copies the files into the clone (about 5.2 GB) and never changes the originals.
+These are the names for the default release, 5.4.2. With `STRIIM_HOME` set, Docker mode builds
+that install's release, and the four `striim-*` packages carry its version in place of `5.4.2`.
 
 **Apple Silicon.** The Striim image is amd64 and runs under emulation: sample 01 takes about six
 minutes there, against about a minute and a half on a Linux x86-64 host.
@@ -187,7 +212,8 @@ stayed still, compares the target with `expected/rows.csv` row by row, and clean
 | 5 | nothing was selected |
 
 When a run has several outcomes, it exits with the first of 2, 4, 1, 3: a failed test beside a
-skipped one exits 1.
+skipped one exits 1. A tier that selected nothing beside one that passed exits 0, and the console
+says `<tier>: no tests selected` for it.
 
 ## 6. Read the result
 
@@ -216,11 +242,31 @@ Read the [sample prerequisite table](../README.md) before selecting the whole di
 whose prerequisite is missing is skipped (exit 3), so the run cannot exit 0: the BigQuery samples skip
 unless `SLT_BIGQUERY_IMAGE` names an emulator image you supply. To run only what your setup
 supports, pass each sample's directory.
-Sample 17 kills one shared app node and requires a two-node Docker cluster plus
-an agent and the survivor API port. Coordinate other stack users first;
-`disabled_parallel` excludes a concurrent case but provides no lock.
+Sample 17 kills one app node and requires a two-node Docker cluster plus an agent, and
+`SLT_ENABLE_NODE_FAULTS=1`, which you set only on a dedicated disposable stack; without it the
+case skips (exit 3). Coordinate other stack users first; `disabled_parallel` excludes a concurrent
+case but provides no lock.
 Spanner and file samples need their listed service or Docker access. The README lists what each sample shows. `samples/code/` holds two more that build
 and load Java ([TESTING-YOUR-JAVA.md](TESTING-YOUR-JAVA.md)).
+
+### Every command and option
+
+`striim-test <command> --help` prints the same list. `--targets PATH` (all but `fetch`) names your
+project manifest; unset, `GOLD_TARGETS`, and with neither, this clone's own cases.
+
+| Command | Option | What it does |
+|---|---|---|
+| `striim-test run [PATH]` | `PATH` | only the cases under this case dir, `test.yaml` or folder of cases, relative to the working directory |
+| | `--tier TIER` | only this tier: `live`, `integration`, `perf`, or a tier a project runner declares; default `live` and `integration` |
+| | `--suite SUITE` | only the cases under this folder, relative to the project root and inside a tier's case root; or the name of a project runner |
+| | `--case ID ...` | only these cases, by **id**: what `striim-test list` prints, the manifest `name:`, or the case dir relative to the project root, as in `striim-test run --case samples/live/01-plain-replication` |
+| | `--parallel` | three tests at a time; not with the perf tier |
+| | `--keep-resources` | keep each test's app, tables and slots whatever the result |
+| | `--dry-run` | print the selection and deploy nothing (writes only a run record) |
+| `striim-test list` | `--tier`, `--suite` | as for `run`; prints what a run would select and deploys nothing |
+| `striim-test doctor` | `--case PATH ...` | check the settings, Striim and the services these cases require. Here `--case` is a **path** (a case dir, its `test.yaml`, or a folder of cases), not an id |
+| | `--strict` | fail, rather than warn, on anything that would skip a selected case |
+| `striim-test fetch` | `--gcs-prefix`, `--destination`, `--endpoint` | download and verify a published example ([RUN-A-DOWNLOADED-EXAMPLE.md](RUN-A-DOWNLOADED-EXAMPLE.md)) |
 
 ## 8. Stop what the runs left up
 
@@ -241,7 +287,7 @@ checkouts started. Use it only when this Docker is yours alone.
 
 ## If it did not work
 
-- **`Bind for 0.0.0.0:5432 failed: port is already allocated`**: something else on this machine uses
+- **`Bind for 127.0.0.1:5432 failed: port is already allocated`**: something else on this machine uses
   the port. Set another in `.env`, for Postgres `SLT_PG_HOST_PORT=55432`; the run and Striim both
   follow it. Each service's setting is in [SERVICES.md](SERVICES.md).
 - **`PermissionError: … /tmp/slt-locks/…`, or "the shared lock dir … belongs to …"**: every user on a

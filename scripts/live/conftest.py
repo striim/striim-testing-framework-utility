@@ -1,5 +1,9 @@
+import itertools
 import os
+import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +14,74 @@ import pytest
 # non-top-level conftest as a hard error, which is exactly what this file becomes
 # when the suite is collected from a repo-root `pytest` run.
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # make `livetest` importable
+
+
+# ---------------------------------------------------------------------------------------
+# The fixture further down runs per test, which is too late for one thing: the plugin's
+# pytest_configure deletes the service-provision registry in its state directory, which it bound
+# at import from SLT_STATE_DIR (else this checkout's scripts/live). A unit run in a shell set up
+# for a real stack therefore deleted that stack's registry, and a running session's workers then
+# re-provisioned services it had already provisioned. A session whose `-m` expression can select
+# no `live` item touches no service, so it uses a temporary state directory of its own instead.
+# Anything else is a real session and is left alone.
+# ---------------------------------------------------------------------------------------
+
+_SERVICE_MARKERS = ("live",)
+
+
+def _selects_no_service_item(markexpr: str) -> bool:
+    """True when no assignment of markers that includes `live` satisfies `markexpr`. Every marker
+    name in the expression is tried both ways, so `-m postgres` -- which selects a live case marked
+    `live` and `postgres` -- is a real session."""
+    if not markexpr.strip():
+        return False
+    try:
+        from _pytest.mark.expression import Expression
+        expression = Expression.compile(markexpr)
+    except Exception:  # noqa: BLE001 - pytest reports a bad -m itself; treat it as a real session
+        return False
+    names = (set(re.findall(r"[\w:+\-.\[\]\\/]+", markexpr)) - {"and", "or", "not"}) \
+        | set(_SERVICE_MARKERS)
+    if len(names) > 12:
+        return False
+    for forced in _SERVICE_MARKERS:
+        others = sorted(names - {forced})
+        for values in itertools.product((False, True), repeat=len(others)):
+            on = dict(zip(others, values), **{forced: True})
+            if expression.evaluate(lambda name, **_kwargs: on.get(name, False)):
+                return False
+    return True
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Before the plugin's own pytest_configure clears the provision registry."""
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return          # the controller already redirected it, and the worker inherits that
+    if not _selects_no_service_item(config.option.markexpr or ""):
+        return
+    plugin = sys.modules.get("livetest.plugin")     # loaded by `-p livetest.plugin` (addopts)
+    names = ("SLT_STATE_DIR", "SLT_FRAMEWORK_HOME", "SLT_STACK_PREFIX")
+    saved = {name: os.environ.get(name) for name in names}
+    saved_dir = getattr(plugin, "_STATE_DIR", None)
+    state = tempfile.mkdtemp(prefix="slt-hermetic-state-")
+    os.environ["SLT_STATE_DIR"] = state
+    os.environ.pop("SLT_FRAMEWORK_HOME", None)
+    os.environ.pop("SLT_STACK_PREFIX", None)
+    if plugin is not None:
+        plugin._STATE_DIR = Path(state)     # bound at plugin import, before this hook could run
+
+    def restore():      # runs after pytest_unconfigure
+        if plugin is not None:
+            plugin._STATE_DIR = saved_dir
+        shutil.rmtree(state, ignore_errors=True)
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    config.add_cleanup(restore)
 
 
 # ---------------------------------------------------------------------------------------

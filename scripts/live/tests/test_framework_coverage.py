@@ -21,14 +21,15 @@ import pathlib
 import pytest
 import yaml
 
-from livetest.manifest import VALID_MANIFEST_KEYS, load_manifest
+from livetest.manifest import VALID_ASSERT_TIERS, VALID_MANIFEST_KEYS, load_manifest
 
 FRAMEWORK = pathlib.Path(__file__).resolve().parents[1] / "regression" / "framework"
 
 # Assert tiers a manifest can declare. Kept as a literal rather than imported: this is the
 # checklist the gallery is measured against, so it should change only when someone edits it
 # deliberately, not because a refactor moved a set around.
-ASSERT_TIERS = {"smoke", "data", "diff", "file", "gcs", "json", "bigtable", "monitor", "jmx", "placement"}
+ASSERT_TIERS = {"smoke", "data", "diff", "file", "gcs", "json", "bigtable", "monitor", "checkpoint_history",
+                "jmx", "placement"}
 
 # Features with no framework example YET. Every entry states what would have to be built,
 # because "why is this exempt" is the question a reader arrives with. Shrinking this list to
@@ -67,6 +68,9 @@ EXEMPT = {
         "the bigtable tier reads a table a live app wrote; it needs the same Bigtable target app as "
         "setup. Covered hermetically by tests/test_assertions_bigtable.py"
     ),
+    "checkpoint_history": ("reads SHOW <app> CHECKPOINT HISTORY, so it needs an app with a RECOVERY "
+                           "clause that has checkpointed; a framework-checkpoint-history example "
+                           "would carry it"),
 }
 
 
@@ -114,6 +118,15 @@ def test_every_manifest_key_has_an_example(key):
     assert key in _covered_keys(), (
         f"manifest key {key!r} is accepted by the loader but no framework example uses it.\n"
         f"Add one under {FRAMEWORK}/, or add {key!r} to EXEMPT in this file with the reason."
+    )
+
+
+def test_the_tier_checklist_is_every_tier_the_loader_accepts():
+    # The literal stays a deliberate edit, but it cannot fall behind the loader: a tier missing
+    # here is never measured by the gate below, so it would need neither an example nor a reason.
+    assert ASSERT_TIERS == VALID_ASSERT_TIERS, (
+        f"ASSERT_TIERS is missing {sorted(VALID_ASSERT_TIERS - ASSERT_TIERS)} and has extra "
+        f"{sorted(ASSERT_TIERS - VALID_ASSERT_TIERS)} against livetest.manifest.VALID_ASSERT_TIERS"
     )
 
 

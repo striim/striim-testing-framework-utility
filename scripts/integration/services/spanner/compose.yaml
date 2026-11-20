@@ -22,13 +22,18 @@ services:
     cpus: ${INT_SPANNER_CPUS:-0.5}
     mem_limit: ${INT_SPANNER_MEM_LIMIT:-2g}
     platform: linux/amd64
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host ports are overridable for machines where they are already taken (distinct
       # from the live tier's 9010/9020 so both stacks can run at once). When
       # overriding, point the framework at it too: INT_SPANNER_HOST=localhost +
       # INT_SPANNER_PORT / INT_SPANNER_ADMIN_PORT=<ports>.
-      - "${INT_SPANNER_GRPC_HOST_PORT:-19010}:9010"
-      - "${INT_SPANNER_REST_HOST_PORT:-19020}:9020"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_SPANNER_GRPC_HOST_PORT:-19010}:9010"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_SPANNER_GRPC_HOST_PORT:-19010}:9010"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_SPANNER_REST_HOST_PORT:-19020}:9020"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_SPANNER_REST_HOST_PORT:-19020}:9020"
     networks:
       - int-spanner-net
 

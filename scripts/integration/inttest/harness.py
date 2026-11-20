@@ -148,9 +148,9 @@ def ensure_harness_jar() -> Path:
 def _build_harness_jar() -> Path:
     # `clean`: a deleted source's class stays in target/classes and would be shaded back in.
     sources = _source_names(_sources())
-    r = subprocess.run(
-        ["mvn", "-q", "-f", str(_JAVA_POM), "clean", "package"],
-        cwd=str(_JAVA_DIR), capture_output=True, text=True)
+    from livetest import dockercmd
+    r = dockercmd.run(["mvn", "-q", "-f", str(_JAVA_POM), "clean", "package"],
+                      timeout=dockercmd.BUILD_TIMEOUT_S, cwd=str(_JAVA_DIR))
     if r.returncode != 0:
         out = (r.stderr or r.stdout or "")[-4000:]
         raise HarnessError(f"mvn package failed building the inttest harness in {_JAVA_DIR}:\n{out}")

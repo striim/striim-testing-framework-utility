@@ -27,11 +27,13 @@ def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1
          requires=("postgres", "mysql", "orders-db")):
     (tmp_path / "op.sql").write_text("INSERT INTO t VALUES (1)")
     calls = {"n": 0}
+    entered = threading.Event()
 
     def run_admin_sql(entry, sql, **kw):
         calls["n"] += 1
+        entered.set()
         if block is not None:
-            block.wait(5)
+            block.wait(60)                                 # released by the finally below
         if fail(entry["admin"]):
             raise RuntimeError(f"{entry['admin']} refused")
     ns = dict(m=SimpleNamespace(source_dir=tmp_path, name="c", requires=list(requires)),
@@ -43,7 +45,12 @@ def _run(tmp_path, ops, fail=lambda admin: False, down_service=None, seconds=0.1
     start, stop = _nested("_start_concurrent", ns), _nested("_stop_concurrent", ns)
     flag, threads = start([{"db": db, "file": file, "loop_interval": 0.01} for db in ops])
     try:
-        time.sleep(seconds)
+        if block is not None:
+            # stop only once a run is inside its statement: on a loaded host the thread can start
+            # after any fixed sleep, and a loop stopped before its first run is a different report
+            assert entered.wait(30), "the concurrent loop never started a run"
+        else:
+            time.sleep(seconds)
         return stop(flag, threads, down_service=down_service)
     finally:
         flag.set()                                         # never leave a loop running

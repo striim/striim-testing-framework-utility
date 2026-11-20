@@ -15,11 +15,12 @@ import java.util.stream.Stream;
  * ({@link IntegrationProcessorReferenceOpTest}, {@link UdfCoreReferenceUdfTest}, and a project's
  * own tests under {@code scripts/integration/java-field}) rather than a synthetic one.
  *
- * <p>The build-or-reuse decision is mtime-based, deliberately mirroring the Python
- * side's {@code opartifacts._stale_trigger} / {@code harness._is_stale}: reuse the jar
- * in {@code target/} only when it is newer than every file under the module's own
- * {@code src/} tree, its {@code pom.xml}, and any extra source roots the module
- * add-sources in. An unconditional reuse (the pre-fix behaviour) silently drives the OLD
+ * <p>The build-or-reuse decision is mtime-based, in the spirit of the Python engines'
+ * {@code opartifacts._stale_trigger} but NOT the same rule: reuse the jar in {@code target/}
+ * only when it is newer than every file under the module's own {@code src/} tree, its
+ * {@code pom.xml}, {@code OpenProcessorCommon}'s {@code src/} and any extra source roots the
+ * caller passes (see {@link #ensureFreshJar} for how the sets differ). An unconditional reuse
+ * (the pre-fix behaviour) silently drives the OLD
  * bytecode against the NEW test, turning a rename or a signature change into a
  * misleading value assertion instead of a clear "stale jar" signal -- the failure mode
  * {@code opartifacts}'s docstring already warns about ("silently ships a stale jar").
@@ -104,14 +105,21 @@ final class ModuleJars {
      * package} first when the jar is missing or older than any tracked source.
      *
      * <p>{@code OpenProcessorCommon}'s {@code src/} is folded into the staleness set
-     * unconditionally (unless {@code moduleDir} IS Common) -- mirroring {@code
-     * opartifacts._stale_trigger} exactly, not just for callers that remember to ask:
-     * it add-sources into every op's build (SPEC §8's "build-staleness gotcha"), and per
-     * that function's own reasoning, a false-positive rebuild for a module that doesn't
-     * actually depend on Common is harmless (a no-op {@code mvn package}), while a false
-     * negative silently ships a stale jar -- exactly the bug class this class exists to
-     * close. If Common can't be located (e.g. this test tier run from outside the full
-     * repo checkout), that half of the check is skipped rather than failing the caller.
+     * unconditionally (unless {@code moduleDir} IS Common), not just for callers that remember
+     * to ask: a false-positive rebuild for a module that does not compile Common in is harmless
+     * (a no-op {@code mvn package}), while a false negative silently ships a stale jar -- the
+     * bug class this class exists to close. If Common can't be located (e.g. this test tier run
+     * from outside the full repo checkout), that half of the check is skipped rather than
+     * failing the caller.
+     *
+     * <p>This is a separate, looser rule than the Python engines' ({@code opartifacts}), which
+     * decide from the files Maven reads to build the jar -- {@code src/main}, {@code pom.xml}
+     * and the source roots the module compiles in -- and, where they keep a {@code <jar>.sources}
+     * record beside the jar, also see a DELETED source. Here {@code src/test} counts (a test-only
+     * edit rebuilds), other shared roots the pom add-sources count only when the caller passes
+     * them, and nothing records the inputs, so a deleted source is not seen: {@code rm -rf target}
+     * forces the rebuild. It writes no {@code .sources} record either, so an engine that keeps one
+     * treats a jar built here as stale and rebuilds it once.
      *
      * @param extraSourceRoots additional directories add-source'd into this module's
      *                         compilation beyond its own {@code src/} and Common's.

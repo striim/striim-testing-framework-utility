@@ -747,9 +747,42 @@ def _read_result(text: str) -> dict:
     return result
 
 
+def _target_evidence_gap(perf_result: dict, measured_input: int) -> str | None:
+    """Why a target iteration's result shows no write, or None. "Accepted and flushed without
+    throwing" is all the other checks prove for a writer: one whose table mapping matched
+    nothing, or that dropped every event, reported a throughput and passed.
+
+    PROCESSED is cumulative, so the window's evidence is `measuredProcessed`, its rise from a read
+    after the warmup's flush to one after the window's; `publishedProcessed` counts warmup writes
+    too. The acknowledgment count is the evidence only for a writer that publishes no PROCESSED."""
+    # Missing keys fail rather than default, like `perReplayOutputEventsStable`: a harness that
+    # predates the fields must not pass every target iteration unchecked.
+    for key in ("measuredAckedEvents", "publishedProcessed", "measuredProcessed"):
+        if key not in perf_result:
+            return f"result is missing required field {key!r} for a target case"
+    acked = perf_result["measuredAckedEvents"]
+    processed = perf_result["publishedProcessed"]
+    rise = perf_result["measuredProcessed"]
+    if acked is not None and acked <= 0:
+        return (f"the writer acknowledged none of the {measured_input} events of the measured "
+                f"window: nothing shows that anything was written")
+    if rise is not None and rise <= 0:
+        return (f"the writer's PROCESSED rose by {rise} across a measured window of "
+                f"{measured_input} events (published {processed} after it): nothing shows that "
+                f"the window wrote anything")
+    if rise is None and processed is not None:
+        return (f"the writer published PROCESSED {processed} but the result has no "
+                f"measuredProcessed for the window: its rise across the window is unknown")
+    if acked is None and rise is None:
+        return ("no evidence that the writer wrote anything: it does not acknowledge events (no "
+                "Acknowledgeable marker) and publishes no PROCESSED count")
+    return None
+
+
 def check_correctness(perf_result: dict, events_in_file: int, run_size: int, correctness_mode: str,
                        sample_indices: list | None, expected_events: list | None,
-                       returncode: int = 0, stderr: str = "") -> CorrectnessOutcome:
+                       returncode: int = 0, stderr: str = "", *,
+                       target: bool = False) -> CorrectnessOutcome:
     """The §6 mandatory checks (every mode, every measured iteration) plus the
     mode-specific record comparison. `perf_result` is the Java driver's parsed
     `PerfResult` JSON for this iteration. `returncode` is the operator subprocess's
@@ -761,7 +794,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
     `mode`/`records_compared` on the returned outcome are for reporting:
     `records_compared` is `len(sample_indices)` for 'sampled', `len(expected_events)`
     for 'full', `0` for 'disabled', and `None` when the run failed before a
-    comparison was attempted."""
+    comparison was attempted.
+
+    `target` (a `target:` case) adds the writer-evidence check: a writer emits nothing, so a
+    non-empty window must show that it wrote something -- acknowledged events, and a published
+    PROCESSED that rose across the window -- or the iteration fails."""
     if returncode != 0:
         # ⚠ WITH THE SUBPROCESS'S OWN LAST WORDS. This used to report the exit code ALONE, so a
         # JVM that failed to start, threw in init, or could not reach the database all looked
@@ -802,6 +839,11 @@ def check_correctness(perf_result: dict, events_in_file: int, run_size: int, cor
         idx = perf_result.get("firstUnstableReplayIndex")
         return CorrectnessOutcome(
             False, f"emission-count instability first detected at replay index {idx}", mode=correctness_mode)
+
+    if target and expected_measured_input > 0:
+        missing = _target_evidence_gap(perf_result, expected_measured_input)
+        if missing:
+            return CorrectnessOutcome(False, missing, mode=correctness_mode)
 
     if correctness_mode == "disabled":
         return CorrectnessOutcome(True, None, mode=correctness_mode, records_compared=0)
@@ -1034,7 +1076,7 @@ def run_measured_iteration(
         correctness = check_correctness(
             perf_result, preflight_result.events_in_file, run_size.value, performance.correctness.mode,
             preflight_result.sample_indices, preflight_result.expected_events, launch["returncode"],
-            launch.get("stderr", ""),
+            launch.get("stderr", ""), target=manifest.target is not None,
         )
 
         duration_seconds = (

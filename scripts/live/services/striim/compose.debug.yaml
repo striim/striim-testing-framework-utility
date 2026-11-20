@@ -1,0 +1,10 @@
+# Opt-in JDWP remote debugger on the primary: the harness adds this file when SLT_STRIIM_DEBUG=1.
+# JDWP has no authentication, so the port is published on the host's loopback only, whatever
+# SLT_BIND_ADDRESS says. From another machine, forward it over SSH. By hand:
+#   docker compose -f compose.yaml -f compose.debug.yaml up -d
+services:
+  slt-striim:
+    environment:
+      STRIIM_DEBUG: "1"
+    ports:
+      - "127.0.0.1:${SLT_STRIIM_DEBUG_HOST_PORT:-8787}:8787"

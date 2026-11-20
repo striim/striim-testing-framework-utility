@@ -13,16 +13,16 @@ pom.xml) -- never a versioned jar path. The release (detected from STRIIM_HOME b
 shaded jar's finalName (`${artifactId}-${STRIIM_SERIES}.jar`); we glob for that rather
 than hardcoding a name, so the same code builds every gold OP.
 
-**The OpenProcessorCommon staleness fold (SPEC §8's "build-staleness gotcha").** The
+**Shared source roots in the staleness check (SPEC §8's "build-staleness gotcha").** The
 shared contracts (`EventProcessor`, `Logger`, `TypeResolver`, ...) are add-source'd from
 `java/OpenProcessors/OpenProcessorCommon/src/main/java` into EVERY op's own build and
 shaded into its single output jar -- they compile as if they were the op's own sources,
 but they live outside the op's `src/` tree. If `_stale_trigger` only looked at the op's
 own `src/**` + `pom.xml`, editing a shared interface would leave every dependent op's
-jar's mtime untouched and stale, so a real regression would be silently built over. We
-fix this the simplest-correct way: `_stale_trigger` ALWAYS folds `OpenProcessorCommon`'s
-own `src/**` mtimes into the comparison for every module (not just ones we know add-source
-it) -- see the module docstring for `_stale_trigger` below.
+jar's mtime untouched and stale, so a real regression would be silently built over. So
+the staleness inputs (`_sources`) are what `jarinputs` reads from the module's pom, exactly
+as the live engine does: every root it add-sources (OpenProcessorCommon, FieldCommon, ...)
+and the parent poms it inherits from -- see `_sources` below.
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from inttest import opjarrelease
+from livetest import dockercmd, jarinputs
 
 from inttest import paths
 
@@ -46,16 +47,23 @@ def _root() -> Path:
     return _project.example_root()
 
 
-def _common_dir() -> Path:
-    return _root() / "java" / "OpenProcessors" / "OpenProcessorCommon"
-
-
 class OpArtifactError(Exception):
     pass
 
 
 class OpBuildFailed(OpArtifactError):
-    """The build ran and failed: the module's code or pom is broken, not the environment."""
+    """The build ran and failed, or produced a jar that does not match the release it was asked
+    for: the module's code or pom is broken, or the release does not reach the build."""
+
+
+class OpJarRejected(OpArtifactError):
+    """A prebuilt jar the run was told to use (SLT_PREBUILT_JAR[_<MODULE>] / SLT_PREBUILT_DIR) that
+    cannot be used: missing, ambiguous, unreadable, another module's, or the wrong Java level."""
+
+
+class OpModuleMissing(OpArtifactError):
+    """The module reference names a directory that does not exist: the case is mis-authored (a
+    rename it missed), not this host lacking something."""
 
 
 @dataclass(frozen=True)
@@ -130,80 +138,49 @@ def jar_module_name(path) -> str:
     return m.group(1) if m else ""
 
 
-def _files_under(directory: Path) -> list[Path]:
-    return [p for p in directory.rglob("*") if p.is_file()] if directory.is_dir() else []
-
-
-def _stale_trigger(jar: Path, module_dir: Path) -> Path | None:
+def _stale_trigger(jar: Path, module_dir: Path, srcs: list[Path] | None = None) -> Path | None:
     # Return the SOURCE that is newest-newer than the built jar (so a rebuild note can
     # name what changed), or None when the jar is up to date. Rebuild if any source is
     # newer -- otherwise an edit (without `mvn clean`) is silently ignored and this tier
-    # would drive the OLD jar, reporting green over a real regression. Covers every file
-    # under the module's own src/ (java AND resources) plus its pom.xml (a
-    # dependency/version/shade change alters the artifact) -- AND, per SPEC §8's
-    # "build-staleness gotcha", every file under OpenProcessorCommon's src/ tree, which
-    # is add-source'd into (and shaded into the single jar of) every op, module docstring
-    # above. We fold Common's tree in unconditionally rather than only for ops we know
-    # declare the add-source plugin execution: it is the simplest approach that is
-    # correct for every current AND future op that depends on Common, and the cost is
-    # cheap (Common is a small module) -- a false-positive rebuild trigger for an op that
-    # somehow does NOT depend on Common is harmless (mvn package is a no-op rebuild),
-    # whereas a false negative (missing a real dependency) silently ships a stale jar.
-    # The one module exempted is Common itself -- its own build already covers its own
-    # tree, and folding it in again is a no-op.
+    # would drive the OLD jar, reporting green over a real regression. The inputs are
+    # `_sources`: what Maven builds the jar from.
     #
-    # Mtimes cannot see a DELETED source, so the jar's source record (`_source_record`) is
-    # compared too: a missing record, or a recorded path that is gone, returns a path that is not
-    # a current source, which `build_jar` answers with a clean rebuild.
-    try:
-        jar_mtime = jar.stat().st_mtime
-    except FileNotFoundError:
-        return jar
-    srcs = _sources(module_dir)
-    record = _source_record(jar)
-    try:
-        recorded = set(record.read_text().splitlines())
-    except OSError:
-        return record
-    names = {p: os.path.relpath(p, module_dir) for p in srcs}
-    removed = sorted(recorded - set(names.values()))
-    if removed:
-        return module_dir / removed[0]
-    newer = [p for p in srcs if p.stat().st_mtime > jar_mtime or names[p] not in recorded]
-    return max(newer, key=lambda p: p.stat().st_mtime) if newer else None
+    # Mtimes cannot see a DELETED source, nor bytes restored with an old mtime, so the jar's source
+    # record (`_source_record`: each input with its content digest) is compared too: a missing
+    # record, a recorded path that is gone, or an input whose digest changed is answered by
+    # `build_jar` with a clean rebuild. `srcs` is the build's one walk of the inputs.
+    if srcs is None:
+        srcs = _sources(module_dir)
+    return jarinputs.stale_trigger(jar, module_dir, srcs)
 
 
 def _sources(module_dir: Path) -> list[Path]:
-    # src/test is deliberately EXCLUDED: tests are compiled but never packaged, so no edit
-    # there can change the jar's bytes, and including it made a test-only edit trigger a
-    # full rebuild that could not alter the artifact. Trade-off: the build's `-DskipTests`
-    # test COMPILE (which catches a Java-16+ construct in a test before it breaks a Java-11
-    # release build) no longer re-runs for a test-only edit — it fires on the next rebuild
-    # from any main/pom change, and in CI.
-    srcs = _files_under(module_dir / "src" / "main")
-    pom = module_dir / "pom.xml"
-    if pom.exists():
-        srcs.append(pom)
-    common = _common_dir()
-    if module_dir.resolve() != common.resolve():
-        srcs.extend(_files_under(common / "src" / "main"))
-    return srcs
+    # jarinputs.inputs: src/main (src/test is excluded, see there), pom.xml, the parent poms it
+    # inherits from, and every root the pom add-sources (OpenProcessorCommon, FieldCommon, ...),
+    # read from the pom as the build reads it. It is the same set the live engine uses, and
+    # both engines read and write the same `.sources` record beside the jar, so it must stay the
+    # same set: a module whose inputs differed between engines would rebuild every time the
+    # other engine had built it.
+    return jarinputs.inputs(module_dir)
 
 
 def _source_record(jar: Path) -> Path:
-    return jar.with_name(jar.name + ".sources")
+    return jarinputs.record_path(jar)
 
 
-def _write_source_record(jar: Path, module_dir: Path) -> None:
-    names = sorted(os.path.relpath(p, module_dir) for p in _sources(module_dir))
-    _source_record(jar).write_text("".join(n + "\n" for n in names))
+def _write_source_record(jar: Path, module_dir: Path, recorded: dict[str, str] | None = None) -> None:
+    # The record beside a jar built from module_dir: `recorded`, the digests build_jar took before Maven
+    # ran, or (None) the inputs' digests now, for a jar that is current with the tree.
+    if recorded is None:
+        recorded = jarinputs.digests(module_dir, _sources(module_dir))
+    jarinputs.write_record(jar, recorded)
 
 
 def _running_java_major(run=None) -> str | None:
     # Best-effort major version of whatever `java` the ambient JAVA_HOME/PATH resolves
     # to, so a build that already matches JAVA_RELEASE doesn't need a JAVA_HOME
     # override. Returns None if it can't be determined (java missing / unparseable).
-    run = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+    run = run or dockercmd.run
     java_bin = "java"
     home = os.environ.get("JAVA_HOME")
     if home:
@@ -233,7 +210,7 @@ def resolve_build_java_home(java_release: str, run=None, platform: str | None = 
     if _running_java_major(run=run) == str(java_release):
         return None
     if (platform or os.uname().sysname) == "Darwin":
-        probe = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True))
+        probe = run or dockercmd.run
         r = probe(["/usr/libexec/java_home", "-v", str(java_release)])
         out = (getattr(r, "stdout", "") or "").strip()
         if getattr(r, "returncode", 1) != 0 or not out:
@@ -258,7 +235,7 @@ def resolve_build_java_home(java_release: str, run=None, platform: str | None = 
 
 
 def _default_run(argv, cwd, env):
-    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True)
+    return dockercmd.run(argv, timeout=dockercmd.BUILD_TIMEOUT_S, cwd=cwd, env=env)
 
 
 def _verify_striim_home(build_env: dict, release: dict) -> None:
@@ -436,9 +413,9 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None
         if not matches:
             wanted = (f"series {suffix}" if len(names) == 1
                       else f"release suffix {suffix} or series {series}")
-            raise OpArtifactError(f"{var}: no {mod} jar for {wanted} in {path}")
+            raise OpJarRejected(f"{var}: no {mod} jar for {wanted} in {path}")
         if len(matches) > 1:
-            raise OpArtifactError(f"{var}: multiple candidates for {mod} in {path}: "
+            raise OpJarRejected(f"{var}: multiple candidates for {mod} in {path}: "
                                   f"{[p.name for p in matches]}")
         path = matches[0]
     elif var == "SLT_PREBUILT_JAR" and path.is_file():
@@ -446,17 +423,17 @@ def _prebuilt_jar(module_ref: str, suffix: str, series: str | None = None
         mod = module_name(module_ref)
         own = re.compile(rf"{re.escape(mod)}(?:V\d[^-]*)?", re.IGNORECASE)
         if mod_id and not own.fullmatch(mod_id):
-            raise OpArtifactError(
+            raise OpJarRejected(
                 f"{var}: Striim-Module-Name {mod_id!r} does not match module {mod!r}: {path}")
         # No entry (UDF jars carry none): the file name must name the module, as in a folder. A
         # name ending in neither suffix is left to op_name_for's error.
         end = next((f"-{n}.jar" for n in names if path.name.endswith(f"-{n}.jar")), None)
         if not mod_id and end and not own.fullmatch(path.name[: -len(end)]):
-            raise OpArtifactError(
+            raise OpJarRejected(
                 f"{var}: {path.name} has no Striim-Module-Name and is not named for module "
                 f"{mod!r}: {path}")
     if not path.is_file():
-        raise OpArtifactError(f"{var}: prebuilt jar not found: {path}")
+        raise OpJarRejected(f"{var}: prebuilt jar not found: {path}")
     return path, var
 
 
@@ -493,14 +470,23 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         prebuilt, var = chosen
         corrupt = _jar_unreadable(prebuilt)
         if corrupt is not None:
-            raise OpArtifactError(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
-        _assert_jar_java_version(prebuilt, java_release, module_dir)
+            raise OpJarRejected(f"prebuilt jar is not a readable jar ({corrupt}): {prebuilt}")
+        try:
+            _assert_jar_java_version(prebuilt, java_release, module_dir)
+        except OpArtifactError as e:
+            raise OpJarRejected(f"prebuilt jar ({var}) {prebuilt}: {e}") from None
         jar_name = prebuilt.name
         op_name = op_name_for(jar_name, suffix, series)
         digest = file_sha256(prebuilt)
         notify(f"using prebuilt jar ({var}): {prebuilt} (sha256: {digest})")
         return BuiltArtifact(path=prebuilt, name=jar_name, op_name=op_name, sha256=digest, origin="prebuilt")
 
+    if not module_dir.is_dir():
+        # Checked here, not left to `mvn`: with no directory, the build's subprocess raises
+        # FileNotFoundError, which reads exactly like `mvn` missing from this host.
+        raise OpModuleMissing(
+            f"module directory {module_dir} does not exist -- check the case's module reference "
+            f"{module_ref!r}")
     existing = _release_jar_candidates(module_dir, suffix)
     # >1 candidate is stale build output, not a broken repo: a version bump changes the
     # pom's finalName, and `mvn package` writes the new jar BESIDE the old one instead of
@@ -518,6 +504,8 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
     # which died with `ZipException: zip END header not found` and reported a test FAILURE
     # where PERF_SPEC.md §2 wants a rebuild (or, if unbuildable, a skip).
     corrupt = _jar_unreadable(jar) if jar is not None else None
+    # One walk of the inputs serves the staleness check, the rebuild's reason and the record.
+    srcs = _sources(module_dir)
 
     if jar is not None and corrupt is None:
         recorded = _read_manifest_fingerprint(jar)
@@ -532,25 +520,29 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         # agnostic bytecode guard must hold: it catches a wrong Java LEVEL no matter who built the
         # jar (e.g. a 5.4/Java17 <-> 5.0/Java11 switch) and a stale-repackage whose manifest lies.
         _assert_jar_java_version(jar, java_release, module_dir)
-        trigger = _stale_trigger(jar, module_dir)
+        trigger = _stale_trigger(jar, module_dir, srcs)
         if trigger is None:
             return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="reused")
-        clean = False   # a source edit in the same environment -> incremental rebuild
+        # Any stale input forces `mvn clean`, as in the live engine. The trigger is only the
+        # FIRST reason found: another input may have changed behind an old mtime (a checkout,
+        # an archive extract, a timestamp-preserving copy), and Maven, recompiling and
+        # recopying by mtime, would keep its old output in an incremental `package` -- which
+        # the build's source record would then vouch for. A removed source's
+        # class or resource likewise stays in target/classes until a clean.
+        clean = True
         try:
             changed = trigger.relative_to(module_dir)
         except ValueError:
             changed = trigger
-        reason = f"source changed ({changed} is newer than {jar.name}) -> incremental rebuild"
+        reason = f"source changed ({changed} is newer than {jar.name}) -> clean rebuild"
         if trigger == _source_record(jar):
             # Built by an older framework or by hand: what it was built from is unknown.
-            clean = True
             reason = f"no source record for {jar.name} -> clean rebuild"
-        elif os.path.relpath(trigger, module_dir) not in {
-                os.path.relpath(p, module_dir) for p in _sources(module_dir)}:
-            # A removed source's class or resource stays in target/classes; only clean drops it.
-            # By exact name, not exists(): a case-only rename still "exists" on macOS.
-            clean = True
+        elif jarinputs.is_removed(trigger, module_dir, srcs):
             reason = f"source removed ({changed} was built into {jar.name}) -> clean rebuild"
+        elif jarinputs.mtime_hides(trigger, jar):
+            reason = (f"source changed ({changed} differs from what {jar.name} was built from, "
+                      f"mtime not newer) -> clean rebuild")
     elif corrupt is not None:
         # The interrupted build that truncated the jar may have left target/classes
         # half-written too, and shade would fold those into a plain `package` -- only
@@ -584,36 +576,30 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
             build_env["JAVA_HOME"] = java_home
     # -DskipTests (not -Dmaven.test.skip): COMPILE the test sources at the release's Java level
     # so a Java-16+ construct slipping into a test is caught here, but do NOT RUN the suites.
-    # `clean` is prepended only when a prior different-release build must be discarded (above).
+    # `clean` is prepended whenever target/ holds output that cannot be trusted (above).
     # Announce the automatic (re)build and the trigger that caused it, so a long silent `mvn`
     # step isn't a silent surprise.
     notify(reason)
+    # The record vouches for what the build read, so it is digested before Maven starts: an input
+    # saved during the build may not be in the jar, and must still read as changed next run.
+    started_from = jarinputs.digests(module_dir, srcs)
     goals = ["mvn", "-q"] + (["clean"] if clean else []) + ["package", "-DskipTests=true"]
     r = run(goals, str(module_dir), build_env)
     if getattr(r, "returncode", 1) != 0:
         out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
         raise OpBuildFailed(f"mvn package failed in {module_dir}:\n{out}")
     existing = _release_jar_candidates(module_dir, suffix)
-    if len(existing) != 1 and not clean:
-        # An INCREMENTAL build can itself create the ambiguity the branch above only
-        # catches on the NEXT run: a version bump changes the pom's finalName, so
-        # `mvn package` writes the new jar BESIDE the old one instead of replacing it,
-        # and the run that performed the bump-rebuild then dies here. Retrying with
-        # `clean` -- which empties target/ -- resolves it in the SAME run, so a version
-        # bump costs one extra build rather than one failed run plus a manual retry.
-        notify(f"ambiguous *-{suffix}.jar after incremental build "
-               f"({', '.join(p.name for p in existing)}) -> clean rebuild")
-        r = run(["mvn", "-q", "clean", "package", "-DskipTests=true"], str(module_dir), build_env)
-        if getattr(r, "returncode", 1) != 0:
-            out = (getattr(r, "stderr", "") or getattr(r, "stdout", "") or "")[-800:]
-            raise OpBuildFailed(f"mvn clean package failed in {module_dir}:\n{out}")
-        existing = _release_jar_candidates(module_dir, suffix)
     if len(existing) != 1:
         raise OpBuildFailed(
             f"build succeeded but no unambiguous *-{suffix}.jar found in "
             f"{module_dir / 'target'} (found: {[p.name for p in existing]})")
     jar = existing[0]
     # The MANIFEST stamp is written by the pom during the build, not here; verify what landed.
-    _assert_jar_java_version(jar, java_release, module_dir)
-    _write_source_record(jar, module_dir)
+    # This run built it, so a wrong Java level here is a build that did not produce the release
+    # it was asked for (OpBuildFailed), not a stale jar to clean (the reuse path's OpArtifactError).
+    try:
+        _assert_jar_java_version(jar, java_release, module_dir)
+    except OpArtifactError as e:
+        raise OpBuildFailed(str(e)) from None
+    _write_source_record(jar, module_dir, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")

@@ -29,13 +29,19 @@ def log(event, **kw):
 
 
 class _Pg:
+    resets = 0
     def ensure_setup(self): pass
-    def reset_schemas(self): pass
+    def reset_schemas(self):
+        _Pg.resets += 1             # the first is the setup reset, the second the teardown's
+        if SC.get("teardown_reset_fails") and _Pg.resets > 1:
+            raise RuntimeError("connection to server lost during teardown")
     def reset_test_objects(self, tid): pass
 
 
 def drive(*args, **kwargs):
-    log("drive", target=kwargs.get("target") is not None)
+    events = args[2] if len(args) > 2 else kwargs.get("input_events")
+    log("drive", target=kwargs.get("target") is not None,
+        inputs=(len(events) if isinstance(events, list) else None))
     if "error" in SC:
         error = H.HarnessError(SC["error"])
         error.failure = SC.get("failure")   # what drive() reads back from the run's errorFile
@@ -165,11 +171,45 @@ def test_expect_error_fails_when_the_drive_succeeds(pytester, monkeypatch, tmp_p
     assert failure is not None and "it SUCCEEDED" in failure
 
 
-@pytest.mark.parametrize("rows,passes", [([[1]], True), ([[2]], False), ([], False)])
+@pytest.mark.parametrize("message", ["", "  ", "Exception"])
+def test_an_expect_error_that_renders_empty_or_too_broad_fails_the_case(pytester, monkeypatch, tmp_path, message):
+    """The breadth guard runs on the RENDERED text: a token that renders empty is a substring of
+    every failure, so the case would pass on "Connection refused"."""
+    case = TARGET_CASE.replace("expect_error: does not fit scale 2", "expect_error: '${MSG}'")
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path, case, {
+        "error": "IntegrationProcessor exited 1",
+        "failure": "java.sql.SQLException: Connection refused\n",
+        "tokens": {"POSTGRES_TARGET_PASSWORD": "unused-pw", "MSG": message}}, TARGET_FILES)
+    assert failure is not None and "assert.expect_error renders to" in failure, failure
+    assert "drive" not in [e["event"] for e in events]
+
+
+# [[True]] and [[1.0]] equal [[1]] under Python's ==: the rows compare as assert.data's values do.
+@pytest.mark.parametrize("rows,passes", [([[1]], True), ([[2]], False), ([], False),
+                                         ([[True]], False), ([[1.0]], False)])
 def test_the_target_rows_decide_a_target_case(pytester, monkeypatch, tmp_path, rows, passes):
     _, failure, _ = run_case(pytester, monkeypatch, tmp_path, TARGET_ROWS_CASE, {
         "returns": {"ackedEvents": 1, "acknowledgeable": True}, "rows": rows}, TARGET_FILES)
     assert (failure is None) is passes, failure
+
+
+OP_REFUSE_CASE = """
+name: op-refuse
+purpose: p
+op: {jar: java/OpenProcessors/X}
+assert:
+  expect_error: 'unsupported operation DELETE'
+"""
+
+
+def test_expect_error_on_an_op_case_drives_the_operator_with_no_events(pytester, monkeypatch, tmp_path):
+    """The documented limit: an op: case without target: has no input for the failure path, so
+    only a refusal at construction or start can be asserted."""
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path, OP_REFUSE_CASE, {
+        "error": "exited 1",
+        "failure": "java.lang.IllegalStateException: unsupported operation DELETE\n"}, {})
+    assert failure is None, failure
+    assert [e["inputs"] for e in events if e["event"] == "drive"] == [0]
 
 
 @pytest.mark.parametrize("emitted,passes", [(1, True), (True, False), (1.0, False)])
@@ -209,3 +249,21 @@ def test_each_case_is_recorded_for_incremental_certification(pytester, monkeypat
     assert [(j["module"], j["origin"]) for j in item["jars"]] == [("java/OpenProcessors/X", "unknown")]
     assert "SLT_CASE_RECORDS" in session["envNames"]
     assert end["exitstatus"] == (0 if status == "passed" else 1)
+
+
+@pytest.mark.parametrize("input_text", ["[]", "  [ ]\n"])
+def test_a_data_case_whose_input_has_no_events_fails_without_driving(pytester, monkeypatch, tmp_path,
+                                                                     input_text):
+    """`input: []` with `match: []` compared an operator that was never fed with nothing, and passed."""
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path, DATA_CASE, {"returns": []},
+                                  {"in.json": input_text, "out.json": "[]"})
+    assert failure is not None and "assert.data[0].input in.json has no events" in failure, failure
+    assert "drive" not in [e["event"] for e in events]
+
+
+def test_a_data_case_may_expect_no_output_from_real_input(pytester, monkeypatch, tmp_path):
+    """An operator that filters everything: an empty `match` with events in `input` stays legal."""
+    _, failure, events = run_case(pytester, monkeypatch, tmp_path, DATA_CASE, {"returns": []},
+                                  {"in.json": json.dumps([EVENT]), "out.json": "[]"})
+    assert failure is None, failure
+    assert [e["event"] for e in events] == ["drive"]

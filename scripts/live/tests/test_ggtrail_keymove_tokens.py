@@ -3,7 +3,6 @@ txn_tokens puts GoldenGate's TxnID and CSN tokens on a transaction's first recor
 GoldenGate does) or on every record (EVERY)."""
 from __future__ import annotations
 import datetime
-import os
 import struct
 import pytest
 from livetest.ggtrail import record as rec
@@ -125,8 +124,7 @@ def test_writer_passes_txn_tokens_through(tmp_path, mode):
         assert r in data and (_chunks(r)[1] is not None) == tokened, part
 
 
-_NO_ORACLE = (None if os.environ.get("STRIIM_HOME") else "requires STRIIM_HOME for the Java oracle") \
-    or _ggtrail_harness.missing_reason()
+_NO_ORACLE = _ggtrail_harness.oracle_skip_reason()
 
 
 @pytest.mark.skipif(_NO_ORACLE is not None, reason=_NO_ORACLE or "")

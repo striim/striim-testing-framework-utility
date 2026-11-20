@@ -7,19 +7,22 @@ expected rows exactly, and cleans up. It runs against your own Striim server, or
 cluster it builds and starts in Docker.
 
 It is for teams who build Striim apps, Open Processors or UDFs and want checks they can repeat on
-every change and run in CI.
+every change and run in their own CI ([docs/SET-UP-YOUR-OWN-REPO.md](docs/SET-UP-YOUR-OWN-REPO.md#run-it-in-ci)).
+The framework's own hermetic tests, which need no Striim or Docker, run on every pull request to it.
 
 ## Run your first test
 
 You need Python 3.12 or later, git and Docker, plus either a Striim server of your own or your own
-Striim license for the Docker one. `python3 -V` shows which Python `python3` is; if it is older than 3.12
+Striim license for the Docker one. The Docker one runs three Striim JVMs with a 16 GB heap each by
+default; on a machine with less memory, lower `SLT_STRIIM_MEM_MAX`
+([step 3b](docs/RUN-YOUR-FIRST-TEST.md#3b-docker-mode)). `python3 -V` shows which Python `python3` is; if it is older than 3.12
 (as it often is on a Mac), use `python3.12` or newer in its place below. `.env.example` starts with a
 dot, so `ls` hides it; `ls -a` shows it.
 
 ```
 git clone https://github.com/striim/striim-testing-framework-utility.git striim-testing-framework-utility
 cd striim-testing-framework-utility
-python3 -m venv .venv && .venv/bin/pip install -e .
+python3 -m venv .venv && .venv/bin/pip install -e .     # python3 must be 3.12 or later
 . .venv/bin/activate
 cp .env.example .env
 ```
@@ -53,11 +56,12 @@ step in detail, with the output to expect and what to do when something fails.
 | `11-transaction-seeds` | overlapping sessions, savepoints and a transaction across recovery | Postgres CDC; STOP/restore |
 | `12-snapshot-observer` | consistent snapshots of related target tables | Postgres CDC; transaction preservation; STOP/restore |
 | `13-append-only-audit` | immutable delivery rows with counted multiset comparison | Postgres |
-| `14-progress-recovery` | interrupt CDC inside a declared target progress window | Postgres CDC; STOP/restore |
-| `15-fault-evidence` | fault-time progress evidence and missed-window failure | Postgres CDC; STOP/restore |
+| `14-progress-recovery` | interrupt CDC inside a declared target progress window, with the fault-time evidence and the missed-window failure | Postgres CDC; STOP/restore |
 | `16-recovery-sentinel` | fresh route proof after recovery and before assertions | Postgres CDC; STOP/restore |
-| `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data | Postgres CDC; Docker cluster, two app nodes and agent; published survivor API; **kills one shared app node** |
+| `17-one-node-failover` | kill one flow owner and prove survivor placement and complete data | Postgres CDC; Docker cluster, two app nodes and agent; `SLT_ENABLE_NODE_FAULTS=1`, set only on a dedicated disposable stack; **kills one app node** |
 | `18-kafka-nothing` | no output in a bounded window after a Kafka sentinel; fresh owned topics | Postgres CDC; Kafka |
+| `19-expect-halt` | a case that passes because the app halts, for the reason it names | Postgres |
+| `20-spanner-json` | a Spanner JSON column copied with every member, type and array order, checked by `assert.json` | Spanner service |
 | `bigquery-legacy-append` | finite legacy REST streaming into the local BigQuery emulator, with exact values and multiplicity | Postgres; a BigQuery emulator image you supply in `SLT_BIGQUERY_IMAGE` |
 | `bigquery-batch-load` | finite direct CSV batch loads with default writer settings and typed exact rows; installed-client exact-boundary exclusion applies | Postgres; a BigQuery emulator image you supply in `SLT_BIGQUERY_IMAGE` |
 | `bigquery-batch-merge` | bounded batch CDC MERGE with same-writer insert/delete witnesses and owned staging dataset | Postgres; a BigQuery emulator image you supply in `SLT_BIGQUERY_IMAGE` |
@@ -67,8 +71,9 @@ your own Java: an Open Processor and a UDF.
 
 The framework does not build the BigQuery emulator image; supply one that meets
 [scripts/live/services/bigquery/README.md](scripts/live/services/bigquery/README.md). Without
-`SLT_BIGQUERY_IMAGE` the BigQuery samples are skipped (exit 3). `striim-test run samples/live`
-exits 0 only when every prerequisite in the table is in place.
+`SLT_BIGQUERY_IMAGE` the BigQuery samples are skipped (exit 3), and so is sample 17 without
+`SLT_ENABLE_NODE_FAULTS=1`. `striim-test run samples/live` exits 0 only when every prerequisite in
+the table is in place.
 
 ## A real-world example
 
@@ -119,6 +124,8 @@ also covers running against your own Striim server.
 - `scripts/integration`: the integration test engine (`inttest`).
 - `tools/python/striim_api.py`: the Striim REST client both engines use.
 - `docs/`: these docs.
+- `examples/`: a worked example of a consumer repo (Acme Retail).
+- `skills/`: the TQL authoring skill, for AI coding assistants that load skills.
 
 The optional Teradata driver is Teradata's own, under Teradata's licence: see
 [docs/SERVICES.md](docs/SERVICES.md), "Teradata". The drivers that Docker mode downloads are

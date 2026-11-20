@@ -1,6 +1,6 @@
 name: needs-absent
-purpose: synthetic case whose required service is not provisionable, so it skips before any Docker call
-requires: [synthetic-absent-service]
+purpose: synthetic case whose required service has no instance here (connection-only teradata, INT_TERADATA_HOST unset), so it skips before any Docker call
+requires: [teradata]
 op:
   jar: java/OpenProcessors/ReferenceOp
 assert:

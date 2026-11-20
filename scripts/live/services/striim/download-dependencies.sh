@@ -7,6 +7,11 @@
 #
 # Idempotent: files already present (non-empty) are skipped, so re-running only
 # fetches what is missing. Versions below must match compose.yaml build args.
+#
+# Third-party files are checked against the SHA-256 list beside this script (deps.sha256):
+# a download that does not match is deleted and the script stops, and so does a file already
+# present that does not match. Striim publishes no checksums for its .debs; the live harness
+# records each one's digest the first time it sees it and checks it on every later build.
 set -euo pipefail
 
 # Load defaults from the .env docker compose reads, but let an already-set environment
@@ -31,17 +36,48 @@ INSTANTCLIENT_VERSION="${INSTANTCLIENT_VERSION:-216000}"
 INSTANTCLIENT_ZIPFILE="${INSTANTCLIENT_ZIPFILE:-instantclient-basic-linux.x64-21.6.0.0.0dbru.zip}"
 
 DEPS_DIR="$(cd "$(dirname "$0")" && pwd)/images/striim/deps"
+SUMS_FILE="$(cd "$(dirname "$0")" && pwd)/deps.sha256"
 mkdir -p "$DEPS_DIR"
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# The shipped SHA-256 for a file name, or nothing when the list does not name it.
+shipped_sha256() {
+  [ -f "$SUMS_FILE" ] || return 0
+  awk -v n="$1" '$1 !~ /^#/ && $2 == n { print tolower($1); exit }' "$SUMS_FILE"
+}
+
+# 0 when $1 matches the shipped digest for name $2 (or the list does not name $2), else 1.
+matches_list() {
+  local want got
+  want="$(shipped_sha256 "$2")"
+  [ -z "$want" ] && return 0
+  got="$(sha256_of "$1")"
+  [ "$got" = "$want" ]
+}
 
 fetch() {
   local url="$1" name="$2"
   local dest="$DEPS_DIR/$name"
   if [ -s "$dest" ]; then
+    if ! matches_list "$dest" "$name"; then
+      echo "ERROR: $dest does not match its SHA-256 in $SUMS_FILE." >&2
+      echo "  Delete it and run again to download it again." >&2
+      exit 1
+    fi
     echo "  present  $name"
     return 0
   fi
   echo "  fetching $name"
   curl -fL --retry 3 --progress-bar -o "$dest.part" "$url"
+  if ! matches_list "$dest.part" "$name"; then
+    rm -f "$dest.part"
+    echo "ERROR: the download of $name does not match its SHA-256 in $SUMS_FILE; nothing was kept." >&2
+    exit 1
+  fi
   mv "$dest.part" "$dest"
   echo "  done     $name ($(du -h "$dest" | cut -f1))"
 }

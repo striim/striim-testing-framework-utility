@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from inttest import dbroutes
+from inttest import plugin as plugin_mod
 from inttest.manifest import ManifestError, load_manifest
 from inttest.plugin import IntYamlItem
 
@@ -143,14 +144,19 @@ def test_teardown_drops_each_created_table_once(tmp_path, monkeypatch):
     assert dropped == [("t_emp", "bigtable-target")]
 
 
-def test_teardown_reports_a_failed_drop_and_does_not_raise(monkeypatch, capsys):
+def test_teardown_records_a_failed_drop_as_a_teardown_leak_and_does_not_raise(monkeypatch):
     def boom(table, route="bigtable-target", tokens=None):
         raise RuntimeError("admin unreachable")
 
     monkeypatch.setattr(dbroutes, "teardown_bigtable", boom)
+    leaks = []
+    monkeypatch.setattr(plugin_mod, "_teardown_leak",
+                        lambda item, step, error: leaks.append((item, step, repr(error))))
     item = SimpleNamespace(_bigtable_created=[("bigtable-target", "t_emp", {})])
     IntYamlItem._teardown_bigtable(item)
-    assert "failed to drop bigtable table 't_emp'" in capsys.readouterr().out
+    # Shown, summarised and counted in the case record like every other per-case teardown step.
+    assert leaks == [(item, "drop bigtable table 't_emp' on 'bigtable-target'", "RuntimeError('admin unreachable')")]
+    assert item._bigtable_created == []
 
 
 def test_teardown_with_nothing_created_is_a_no_op():

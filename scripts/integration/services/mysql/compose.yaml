@@ -19,11 +19,15 @@ services:
       # schemas at first cluster init.
       MYSQL_ROOT_PASSWORD: striim
       MYSQL_DATABASE: intdb
+    # Each port is published twice, on ${SLT_BIND_ADDRESS} and on ${SLT_BIND_GATEWAY}: all
+    # interfaces with neither set; this machine and its containers on a framework run
+    # (docs/SETTINGS.md, SLT_BIND_ADDRESS).
     ports:
       # Host port is overridable for machines where :13306 is already taken (distinct
       # from the live tier's :3306 so both stacks can run at once). When overriding,
       # point the framework at it too: INT_MYSQL_HOST=localhost INT_MYSQL_PORT=<port>.
-      - "${INT_MYSQL_HOST_PORT:-13306}:3306"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${INT_MYSQL_HOST_PORT:-13306}:3306"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${INT_MYSQL_HOST_PORT:-13306}:3306"
     volumes:
       - ./sql/init.sql:/docker-entrypoint-initdb.d/10-qausers.sql:ro
     networks:

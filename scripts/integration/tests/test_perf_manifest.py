@@ -3,9 +3,10 @@ parsing/normalization (PERF_SPEC.md §3).
 
 A perf test.yaml is structurally identical to a regression test.yaml
 (inttest.manifest.load_manifest) except `assert:` is replaced by `performance:` --
-`name`/`op`/`properties`/`purpose`/`requires`/`ddl`/`seed`/`timeout`/`disabled`/
+`name`/`op`/`properties`/`purpose`/`requires`/`ddl`/`seed`/`disabled`/
 `types`/`password_properties` mean exactly the same thing and are validated by the
-same inttest.manifest normalizers. Pure parsing tests: no Docker, no Striim, no
+same inttest.manifest normalizers; a top-level `timeout:` is refused (it is
+`performance.timeout` that bounds an iteration). Pure parsing tests: no Docker, no Striim, no
 pytest-plugin collection. Each test writes a small inline perf test.yaml into
 tmp_path and calls load_perf_manifest() directly.
 """
@@ -59,7 +60,6 @@ ddl: ddl_lookup.sql
 seed:
   - file: seed_lookup.sql
     db: postgres-source
-timeout: 300
 disabled: false
 types:
   CUSTOMERS: [id, name]
@@ -112,7 +112,6 @@ def test_full_manifest_all_keys(tmp_path):
     assert tm.requires == ["postgres"]
     assert len(tm.ddl) == 1 and tm.ddl[0].file == "ddl_lookup.sql"
     assert len(tm.seed) == 1 and tm.seed[0].file == "seed_lookup.sql"
-    assert tm.timeout == 300
     assert tm.disabled is False
     assert tm.types == {"CUSTOMERS": ["id", "name"]}
     assert tm.password_properties == []
@@ -385,6 +384,22 @@ performance:
 """
     manifest_path, _ = _write(tmp_path, text)
     with pytest.raises(PerfManifestError):
+        load_perf_manifest(manifest_path)
+
+
+def test_top_level_timeout_is_refused_naming_performance_timeout(tmp_path):
+    """Accepted and never read: the launch is bounded by performance.timeout (default 900 s), so
+    `timeout: 5` at the top of a perf case changed nothing."""
+    text = _REQUIRED_PREFIX + """
+timeout: 5
+performance:
+  input: performance/in.json
+  run_sizes: [100]
+  correctness:
+    mode: disabled
+"""
+    manifest_path, _ = _write(tmp_path, text)
+    with pytest.raises(PerfManifestError, match=r"top-level 'timeout'.*'performance\.timeout'"):
         load_perf_manifest(manifest_path)
 
 
@@ -1143,6 +1158,20 @@ def test_gcs_prune_prefix_must_be_a_non_empty_prefix(tmp_path, value):
 def test_gcs_prune_prefix_needs_gcs_in_requires(tmp_path):
     manifest_path, _ = _write(tmp_path, _REQUIRED_PREFIX + _PERF_BLOCK + "  gcs_prune_prefix: 'x/'\n")
     with pytest.raises(PerfManifestError, match="needs 'gcs'"):
+        load_perf_manifest(manifest_path)
+
+
+def test_requires_naming_an_unknown_service_is_refused_at_load(tmp_path):
+    text = _REQUIRED_PREFIX + """
+requires: postgress
+performance:
+  input: performance/in.json
+  run_sizes: [100]
+  correctness:
+    mode: disabled
+"""
+    manifest_path, _ = _write(tmp_path, text)
+    with pytest.raises(PerfManifestError, match="postgress"):
         load_perf_manifest(manifest_path)
 
 

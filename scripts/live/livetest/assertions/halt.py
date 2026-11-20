@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import time
 
 from livetest.assertions import AssertionFailed
@@ -6,9 +7,41 @@ from livetest.resultschema import build_assertion_result
 from livetest.striim import TERMINAL_STATUSES, StriimTimeout
 
 
+#: Where one server-log record starts: a line that begins with a timestamp. Every line up to the next
+#: such line (a stack trace, a multi-line message) continues the record above it. Text before the
+#: first timestamped line is a record of its own.
+LOG_RECORD_START = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
+
+#: Joins the log text of two app nodes (plugin._node_log_since). A node's text starts at a byte mark
+#: that can fall inside another app's multi-line record, so its first lines may be a continuation;
+#: across this boundary they start a record of their own and never continue the other node's last
+#: record. Whitespace only, so text made of empty slices still strips to "".
+NODE_LOG_BOUNDARY = "\n\x1e\n"
+
+
+def log_records(text: str) -> list[str]:
+    """``text`` split into server-log records, each with its continuation lines (LOG_RECORD_START).
+    A record never spans a NODE_LOG_BOUNDARY."""
+    records = []
+    for node_text in text.split(NODE_LOG_BOUNDARY):
+        current = ""
+        for line in node_text.splitlines(keepends=True):
+            if LOG_RECORD_START.match(line) and current:
+                records.append(current)
+                current = ""
+            current += line
+        if current:
+            records.append(current)
+    return records
+
+
+def _names(record: str, namespaces) -> bool:
+    return any(re.search(rf"(?<![A-Za-z0-9_]){re.escape(ns)}(?![A-Za-z0-9_])", record) for ns in namespaces)
+
+
 def assert_halt(client, app, timeout: int, poll: float = 2.0,
                 *, db: str | None = None, progress=None,
-                contains: tuple = (), log_tail=None) -> list[dict]:
+                contains: tuple = (), log_tail=None, mode: str | None = None) -> list[dict]:
     # The `expect_halt` assertion: the test's CORRECT outcome is the app entering a
     # terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) -- e.g. a product raise-path
     # where a bad/No-Op event fails the batch. This is the inverse of assert_smoke: here a
@@ -22,10 +55,19 @@ def assert_halt(client, app, timeout: int, poll: float = 2.0,
     # `contains` (expect_halt_contains) narrows the pass condition from "terminal for any
     # reason" to "terminal AND the reason names these substrings". current_status gives no
     # error text, so the reason comes from `log_tail()` -- a zero-arg callable returning the
-    # node server-log tail (plugin._node_log_tail). That returns "" on native single-node,
-    # where the check is impossible: we PASS but stamp "halt reason not checked (native
-    # mode)" into the record detail so the gap is greppable, never silently skipped.
+    # node server-log slice (plugin._halt_log_tail). `mode` is the Striim context's mode.
+    # Only "native" has no node log to read: there we PASS but stamp "halt reason not checked
+    # (native mode)" into the record detail so the gap is greppable, never silently skipped.
+    # In any other mode the log exists, so a tail that raised or came back empty means the
+    # reason was never checked, and that FAILS, with no record: a halt for the wrong reason must
+    # not pass, and an infrastructure failure must not read as the documented defect.
+    #
+    # The slice is every app node's log since the case deployed, and other apps on the cluster
+    # (sibling cases under SLT_PARALLEL) write to it too. So a substring counts only inside a log
+    # record (LOG_RECORD_START) that names one of this case's namespaces; each substring may come
+    # from a different such record.
     apps = [app] if isinstance(app, str) else list(app)
+    namespaces = sorted({a.split(".", 1)[0] for a in apps})
     started = time.monotonic()
     deadline = started + timeout
     try:
@@ -42,8 +84,19 @@ def assert_halt(client, app, timeout: int, poll: float = 2.0,
                 if log_tail is not None:
                     try:
                         tail = log_tail() or ""
-                    except Exception as te:      # degrades to the caveat path, not a false failure
+                    except Exception as te:      # native: the caveat path; otherwise a failure below
                         tail, tail_err = "", te
+                if not tail.strip() and mode != "native":
+                    why = (f"the node log could not be read ({tail_err})" if tail_err is not None
+                           else "no node-log reader was given" if log_tail is None
+                           else "the node log has no text since the case deployed")
+                    detail = (f"expect_halt_contains: terminal as expected ({shown}) but {why}, so "
+                              f"{list(contains)!r} could not be checked ({mode or 'unknown'} mode)")
+                    # Record-less on purpose, like the status-read error below: a log that could not
+                    # be read is not the halt the manifest documents, and an xfail whose tiers
+                    # include `halt` must not absorb it (ExpectedAssertionFailure.if_covered refuses
+                    # an AssertionFailed with no records).
+                    raise AssertionFailed(detail, [])
                 if not tail.strip():
                     why = (f"node-log tail unavailable ({tail_err})" if tail_err is not None
                            else "no node-log tail on this deployment mode")
@@ -52,16 +105,22 @@ def assert_halt(client, app, timeout: int, poll: float = 2.0,
                               f"{list(contains)!r} was NOT verified")
                     return [build_assertion_result(type="halt", status="passed", spec={},
                                                    target=None, db=db, detail=detail)]
-                missing = [s for s in contains if s not in tail]
+                own = "".join(r for r in log_records(tail) if _names(r, namespaces))
+                missing = [s for s in contains if s not in own]
                 if missing:
+                    elsewhere = [s for s in missing if s in tail]
                     detail = (f"expect_halt_contains: terminal as expected ({shown}) but the "
                               f"node log tail is missing {missing!r} (required, all of: "
                               f"{list(contains)!r})")
+                    if elsewhere:
+                        detail += (f"; {elsewhere!r} appear only in log records that do not name "
+                                   f"{', '.join(namespaces)} (another app's output)")
                     raise AssertionFailed(detail, [build_assertion_result(
                         type="halt", status="failed", spec={}, target=None, db=db, detail=detail)])
-                verified = [s for s in contains if s in tail]
+                verified = [s for s in contains if s in own]
                 detail = (f"terminal as expected: {shown}; expect_halt_contains verified: "
-                          f"found {list(verified)!r} (all {len(contains)} required)")
+                          f"found {list(verified)!r} (all {len(contains)} required) in log "
+                          f"records naming {', '.join(namespaces)}")
                 return [build_assertion_result(type="halt", status="passed", spec={},
                                                target=None, db=db, detail=detail)]
             if time.monotonic() >= deadline:

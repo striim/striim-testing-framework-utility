@@ -71,7 +71,7 @@ def _ts(literal: str) -> datetime:
 
 
 def test_the_samples_are_numbered_simplest_first():
-    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "15-fault-evidence", "16-recovery-sentinel", "17-one-node-failover", "18-kafka-nothing"] + list(BIGQUERY)
+    assert sorted(p.name for p in SAMPLES.iterdir() if p.is_dir()) == list(ASSETS) + list(MYSQL) + ["07-spanner-exact", "08-strict-json", "09-raw-file", "10-bounded-nothing", "11-transaction-seeds", "12-snapshot-observer", "13-append-only-audit", "14-progress-recovery", "16-recovery-sentinel", "17-one-node-failover", "18-kafka-nothing", "19-expect-halt", "20-spanner-json"] + list(BIGQUERY)
 
 
 @pytest.mark.parametrize("name", list(ASSETS) + list(MYSQL) + list(BIGQUERY))
@@ -361,24 +361,19 @@ def test_progress_stop_sample_keeps_the_fault_window_open():
         {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
 
 
-def test_fault_evidence_sample_declares_a_nonfinal_window():
-    m = load_manifest(SAMPLES / "15-fault-evidence/test.yaml")
-    assert m.recover["trigger"]["above"] == 100
-    assert _golden("15-fault-evidence")[1] == _golden("14-progress-recovery")[1]
-
-
-def test_fault_evidence_stop_sample_keeps_the_fault_window_open():
-    root = SAMPLES / '15-fault-evidence'
-    manifest = load_manifest(root / 'test.yaml')
-    trigger = manifest.recover['trigger']
-    delay = re.search(r'CHECK\s*\(pg_sleep\(([0-9.]+)\)\s+IS NOT NULL\)',
-                      (root / 'ddl_target.sql').read_text(), re.I)
-    assert delay is not None, 'STOP needs a paced target so its asynchronous boundary stays inside the window'
-    assert manifest.recover['mode'] == 'stop'
-    assert (trigger['above'], trigger['below']) == (100, 2500)
-    assert (trigger['below'] - trigger['above']) * float(delay[1]) >= 10
-    assert _golden('15-fault-evidence')[1] == [
-        {'id': str(n), 'msg': f'row-{n}'} for n in range(1, 5001)]
+def test_no_two_samples_are_the_same_test():
+    # A sample is copied as a starting point; two that differ only in name, purpose and README
+    # run the same test twice and promise behaviour neither asserts.
+    def body(root):
+        raw = _raw(root.name)
+        raw.pop("name", None), raw.pop("purpose", None)
+        files = {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*"))
+                 if p.is_file() and p.name not in ("test.yaml", "README.md")}
+        return raw, files
+    bodies = {p.name: body(p) for p in sorted(SAMPLES.iterdir()) if (p / "test.yaml").is_file()}
+    names = sorted(bodies)
+    same = [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if bodies[a] == bodies[b]]
+    assert same == []
 
 
 def test_recovery_sentinel_sample_reuses_its_declared_marker():
@@ -459,3 +454,47 @@ def test_kafka_nothing_sample_and_regression_share_the_delivery_contract():
         assert (root / filename).read_bytes() == (twin / filename).read_bytes()
     tql = (root / "app.tql").read_text()
     assert "${KAFKA_TGT_TOPIC}" in tql and "Global.KafkaWriter" in tql and "Global.JSONFormatter" in tql
+
+
+def test_expect_halt_sample_halts_on_its_own_missing_table():
+    """The halt is the assertion: no assert: block, and the halt reason must name the target table
+    the writer maps to, which no ddl: file creates and which carries this case's ${TID}."""
+    root = SAMPLES / "19-expect-halt"
+    assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == {
+        "README.md", "app.tql", "test.yaml", "ddl_source.sql", "seed.sql"}
+    m = load_manifest(root / "test.yaml")
+    raw = _raw("19-expect-halt")
+    assert m.expect_halt is True and "assert" not in raw
+    assert raw["expect_halt_contains"] == "no_such_target"
+    tql = (root / "app.tql").read_text()
+    assert "${PG_TARGET_SCHEMA}.${TID}no_such_target" in tql
+    ddl = "".join((root / f).read_text() for _db, f in m.ddl_files)
+    assert "no_such_target" not in ddl
+    assert "CREATE NAMESPACE ${NS};" in tql and "START APPLICATION ${APP};" in tql
+    assert "striim-test run samples/live/19-expect-halt" in (root / "README.md").read_text()
+
+
+def test_agents_points_at_the_framework_gallery():
+    agents = (SAMPLES.parents[1] / "AGENTS.md").read_text()
+    assert "`scripts/live/regression/framework/`" in agents
+
+
+def test_spanner_json_sample_golden_is_its_seed():
+    """assert.json on a JSON column SpannerWriter copies: the golden is each seeded document, keyed
+    by id as text, derived from seed.sql by hand (and here by parsing it)."""
+    import json as _json
+    root = SAMPLES / "20-spanner-json"
+    assert {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()} == {
+        "README.md", "app.tql", "test.yaml", "ddl.sql", "seed.sql", "expected/tgt.json"}
+    m = load_manifest(root / "test.yaml")
+    assert m.requires == ["spanner"]
+    [spec] = _raw("20-spanner-json")["assert"]["json"]
+    assert (spec["target"], spec["db"], spec["key"], spec["column"]) == ("${TID}tgt", "spanner-google", ["id"], "doc")
+    assert "doc JSON" in (root / "ddl.sql").read_text()
+    seeded = re.findall(r"\((\d+), JSON '(.*?)'\)", (root / "seed.sql").read_text())
+    golden = _json.loads((root / spec["match"]).read_text())
+    assert golden == [{"id": i, "doc": _json.loads(doc)} for i, doc in seeded]
+    tql = (root / "app.tql").read_text()
+    assert "Global.SpannerBatchReader" in tql and "Global.SpannerWriter" in tql
+    assert "_h_" not in tql, "no internal adapter property in a shipped sample"
+    assert "striim-test run samples/live/20-spanner-json" in (root / "README.md").read_text()

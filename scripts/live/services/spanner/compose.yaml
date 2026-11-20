@@ -35,8 +35,10 @@ services:
       # is for an emulator you run YOURSELF, which is a different intent.
       # The cluster override (services/striim/compose.spanner-emulator.yaml) tracks the
       # gRPC variable, so export it for the cluster provision too.
-      - "${SLT_SPANNER_GRPC_HOST_PORT:-9010}:9010"
-      - "${SLT_SPANNER_REST_HOST_PORT:-9020}:9020"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_SPANNER_GRPC_HOST_PORT:-9010}:9010"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_SPANNER_GRPC_HOST_PORT:-9010}:9010"
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_SPANNER_REST_HOST_PORT:-9020}:9020"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_SPANNER_REST_HOST_PORT:-9020}:9020"
     networks:
       - slt-spanner-net
 

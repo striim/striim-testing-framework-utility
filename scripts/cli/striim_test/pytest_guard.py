@@ -113,17 +113,18 @@ def _raw_manifest(path: Path) -> dict:
 
 
 def _disabled_reason(tier: str, raw: dict):
+    from livetest import paths
     value = raw.get("disabled")
     label = value if isinstance(value, str) else "disabled"
     if tier == "live":
-        forced = bool(os.environ.get("SLT_RUN_DISABLED"))
+        forced = paths.flag("SLT_RUN_DISABLED")
         if value and not forced:
             return f"disabled: {label}"
         par = raw.get("disabled_parallel")
-        if par and os.environ.get("SLT_PARALLEL") and not forced:
+        if par and paths.flag("SLT_PARALLEL") and not forced:
             return f"disabled_parallel: {par if isinstance(par, str) else 'disabled_parallel'}"
         return None
-    if value and os.environ.get("SLT_RUN_DISABLED") != "1":
+    if value and not paths.flag("SLT_RUN_DISABLED"):
         return f"disabled: {label}"
     return None
 

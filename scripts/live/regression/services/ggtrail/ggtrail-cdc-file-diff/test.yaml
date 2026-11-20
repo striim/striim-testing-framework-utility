@@ -18,6 +18,9 @@ assert:
   file:
     - path: /tmp/${NS}-out
       match: expected/ops.csv   # emitted by the generator; see expected/README.md
+      # workload.yaml: 20 + 40 + 60 initial rows and 100 ops = 220 operations, one event each
+      # (FilterTransactionBoundaries: true drops BEGIN/COMMIT).
+      events: 220
       project: data
 
 # ---------------------------------------------------------------------------------------

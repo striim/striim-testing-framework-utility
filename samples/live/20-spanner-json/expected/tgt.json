@@ -1,0 +1,4 @@
+[
+  {"id": "1", "doc": {"name": "alpha", "qty": 1, "active": true, "tags": ["a", "b"]}},
+  {"id": "2", "doc": {"name": "bravo", "qty": 0, "active": false, "tags": [], "note": null}}
+]

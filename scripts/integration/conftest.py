@@ -1,6 +1,10 @@
 import functools
+import itertools
 import os
+import re
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +19,75 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # session against inttest.plugin's own hooks (collection/selection/UsageError),
 # not just call its functions directly.
 pytest_plugins = ["pytester"]
+
+
+# ---------------------------------------------------------------------------------------
+# The fixture further down runs per test, which is too late for one thing: the plugin takes the
+# session lock in pytest_configure, in the state directory SLT_STATE_DIR (else
+# SLT_FRAMEWORK_HOME) names. A unit run in a shell set up for a real stack therefore took that
+# stack's lock -- refused while a real session ran, blocking one while it ran itself, and
+# leaving lock files in that checkout. A session whose `-m` expression can select no
+# `integration` or `docker` item touches no service, so it coordinates in a temporary
+# directory of its own instead. Anything else is a real session and is left alone.
+# ---------------------------------------------------------------------------------------
+
+_SERVICE_MARKERS = ("integration", "docker")
+
+
+def _selects_no_service_item(markexpr: str) -> bool:
+    """True when no assignment of markers that includes `integration` (or `docker`) satisfies
+    `markexpr`. Every marker name in the expression is tried both ways, so `-m postgres` -- which
+    selects a regression case marked `integration` and `postgres` -- is a real session."""
+    if not markexpr.strip():
+        return False
+    try:
+        from _pytest.mark.expression import Expression
+        expression = Expression.compile(markexpr)
+    except Exception:  # noqa: BLE001 - pytest reports a bad -m itself; treat it as a real session
+        return False
+    names = (set(re.findall(r"[\w:+\-.\[\]\\/]+", markexpr)) - {"and", "or", "not"}) \
+        | set(_SERVICE_MARKERS)
+    if len(names) > 12:
+        return False
+    for forced in _SERVICE_MARKERS:
+        others = sorted(names - {forced})
+        for values in itertools.product((False, True), repeat=len(others)):
+            on = dict(zip(others, values), **{forced: True})
+            if expression.evaluate(lambda name, **_kwargs: on.get(name, False)):
+                return False
+    return True
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Before the plugin's own pytest_configure takes the session lock."""
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return          # the controller already redirected it, and the worker inherits that
+    if not _selects_no_service_item(config.option.markexpr or ""):
+        return
+    names = ("SLT_STATE_DIR", "SLT_FRAMEWORK_HOME", "INT_STACK_PREFIX", "SLT_LOCK_DIR")
+    saved = {name: os.environ.get(name) for name in names}
+    state = tempfile.mkdtemp(prefix="int-hermetic-state-")
+    os.environ["SLT_STATE_DIR"] = state
+    os.environ.pop("SLT_FRAMEWORK_HOME", None)
+    os.environ.pop("INT_STACK_PREFIX", None)
+    # The session and compose locks are machine-wide (livetest.stack's lock dir, read at its import),
+    # so they move into the temporary directory too.
+    from livetest import stack
+    saved_lock_dir = stack._LOCK_DIR
+    os.environ["SLT_LOCK_DIR"] = os.path.join(state, "locks")
+    stack._LOCK_DIR = Path(os.environ["SLT_LOCK_DIR"])
+
+    def restore():      # runs after pytest_unconfigure, so the lock is already released
+        stack._LOCK_DIR = saved_lock_dir
+        shutil.rmtree(state, ignore_errors=True)
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    config.add_cleanup(restore)
 
 
 # ---------------------------------------------------------------------------------------
