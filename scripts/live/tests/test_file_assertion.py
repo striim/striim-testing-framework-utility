@@ -73,6 +73,19 @@ def test_parse_raises_on_an_unclosed_event_mid_stream(text):
     with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
         parse_json_events(text)
 
+# A stray quote inside the corrupt event puts any string tracking out of step with the text after it,
+# so the later events read as string content and the stream as a pending tail (review N8).
+_STRAY_QUOTE = [
+    '{"data":{"name":"a"b"}}, {"data":{"id":2}}',
+    '{"data":{"id":1}}\n{"data":{"name":"a"b"}}\n{"data":{"id":3}}',
+    '{"data":{"s":"x"y"},"m":{"Op":"I"}} {"data":{"id":2},"m":{"Op":"I"}}',
+]
+
+@pytest.mark.parametrize("text", _STRAY_QUOTE + ['[' + t + ']' for t in _STRAY_QUOTE])
+def test_parse_raises_on_a_stray_quote_mid_stream(text):
+    with pytest.raises(FileSpecError, match="corrupt JSON event stream"):
+        parse_json_events(text)
+
 def test_an_unclosed_event_mid_stream_fails_on_the_first_read(tmp_path):
     reads = []
     def read(path):

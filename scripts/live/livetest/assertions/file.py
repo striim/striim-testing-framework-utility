@@ -146,32 +146,25 @@ def _has_later_value(text: str, start: int, n: int) -> bool:
     # {"data":{"id":2},"metadata":{"Op, is valid up to its end, so its complete nested objects
     # all lie before that point and none of them is a later event. An event missing its closing
     # brace, {"data":{"id":1}, {"data":{"id":2}}, stops being valid exactly where the next event
-    # starts. Only `{` outside strings, counted from `start`, is tried, and only a dict counts --
-    # a bare string or number is not an event.
+    # starts. Every `{` from there on is tried, whatever string it may sit in: a stray quote in the
+    # corrupt event, {"data":{"name":"a"b"}}, would put any tracking of strings out of step with the
+    # text after it. Only a non-empty dict counts -- a bare string or number is not an event, and
+    # inside a well-formed string (every quote escaped) nothing but `{}` decodes as a dict.
     dec = json.JSONDecoder()
     try:
         dec.raw_decode(text, start)
         return False
     except json.JSONDecodeError as e:
         invalid_from = e.pos
-    in_string, escaped = False, False
-    for j in range(start, n):
-        c = text[j]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif c == "\\":
-                escaped = True
-            elif c == '"':
-                in_string = False
-        elif c == '"':
-            in_string = True
-        elif c == "{" and j >= invalid_from:
-            try:
-                if isinstance(dec.raw_decode(text, j)[0], dict):
-                    return True
-            except json.JSONDecodeError:
-                pass
+    j = text.find("{", invalid_from, n)
+    while j >= 0:
+        try:
+            obj = dec.raw_decode(text, j)[0]
+            if isinstance(obj, dict) and obj:
+                return True
+        except json.JSONDecodeError:
+            pass
+        j = text.find("{", j + 1, n)
     return False
 
 

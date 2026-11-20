@@ -358,7 +358,8 @@ the last release; the release makes it that version's entry.
 - A file read that catches the last event mid-write is polled again. A torn event with complete
   nested objects (`data`, `metadata`) was raised as a corrupt JSON stream on the first poll,
   ending the poll with no record; the exact-file route had the same check. An event missing its
-  closing brace with more events after it is still a corrupt stream, raised at once. Inside a
+  closing brace, or with a stray quote in a value, with more events after it is still a corrupt
+  stream, raised at once. Inside a
   `stable_seconds` window a mid-write read is read again until the window closes, even past
   `timeout`; a file that still ends in a partial event then fails as unreadable, not as a changed
   result.
