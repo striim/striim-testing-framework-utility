@@ -1014,14 +1014,14 @@ DOCKER_INSPECT_TIMEOUT_S = 10.0
 
 
 def _docker_inspect(argv):
-    import subprocess
     from types import SimpleNamespace
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=DOCKER_INSPECT_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        return SimpleNamespace(returncode=124, stdout="", stderr=f"timed out after {DOCKER_INSPECT_TIMEOUT_S:.0f}s")
+        r = dockercmd.run(argv, timeout=DOCKER_INSPECT_TIMEOUT_S)
     except OSError as e:
         return SimpleNamespace(returncode=127, stdout="", stderr=str(e))
+    if r.returncode == dockercmd.TIMED_OUT:
+        return SimpleNamespace(returncode=124, stdout="", stderr=f"timed out after {DOCKER_INSPECT_TIMEOUT_S:.0f}s")
+    return r
 
 
 def strip_userinfo(url):

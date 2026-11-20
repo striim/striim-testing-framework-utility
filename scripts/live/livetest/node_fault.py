@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from livetest import stack
+from livetest import dockercmd, stack
 from livetest.recovery import RecoveryError, await_stopped, utc_at
 from livetest.resultschema import build_assertion_result
 from livetest.assertions import AssertionFailed
@@ -137,7 +137,7 @@ def inventory(client, ctx, *, run=None, timeout=30):
     for role, container in containers.items():
         left = deadline - time.monotonic()
         if left <= 0: raise RecoveryError("fault-node-inventory-deadline")
-        call = run or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=left))
+        call = run or (lambda argv: dockercmd.run(argv, timeout=left))
         r = call(["docker", "inspect", container])
         if r.returncode: raise RecoveryError("fault-node-inventory-unreadable")
         rows = json.loads(r.stdout)

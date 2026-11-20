@@ -108,6 +108,9 @@ the last release; the release makes it that version's entry.
   command. A command that finishes takes with it any helper it left running in its group. The bound
   of a command whose output streams to the terminal holds however fast its output is read; what is
   still to be shown when it is stopped is shown for at most 2 s, then a line says the rest was dropped.
+  Some Docker commands still stop only the `docker` client at their bound: a node fault's
+  stop/start, an outage injection, an app-node restart, the try-out image commands, the Striim
+  provisioning jar probe and log capture, and `striim-test doctor`'s probes.
 - **recover: `expect_running: false` is checked.** The app must settle CREATED, DEPLOYED, STOPPED
   or QUIESCED after the restore; RUNNING or a terminal status fails the case, and a `recovery`
   record holds the status.

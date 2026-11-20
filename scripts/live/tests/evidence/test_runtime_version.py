@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from livetest import canon, evidence, infra, releases
+from livetest import canon, dockercmd, evidence, infra, releases
 
 C = "slt-striim-w2b1"
 EXPECTED = {"STRIIM_VERSION": "5.4.2", "STRIIM_SERIES": "5.4", "JAVA_RELEASE": "17"}
@@ -69,17 +69,17 @@ def test_zero_or_two_platform_jars_is_unreadable(probe, jars):
 
 @pytest.mark.parametrize("rc", [1, 124, 127])
 def test_exec_failure_timeout_or_no_start_is_unobserved(monkeypatch, rc):
-    """Through the real bounded runner: rc 1, a timeout (124) and an exec that cannot start (127)."""
+    """Through the bounded runner (dockercmd.run): rc 1, a timeout (124) and an exec that cannot start (127)."""
     calls = []
 
     def run(argv, **kw):
         calls.append((argv, kw.get("timeout")))
         if rc == 124:
-            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+            return subprocess.CompletedProcess(argv, dockercmd.TIMED_OUT, "", "timed out")
         if rc == 127:
             raise FileNotFoundError(2, "No such file or directory", "docker")
         return SimpleNamespace(returncode=1, stdout="", stderr="Error: No such container")
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(dockercmd, "run", run)
     version = infra.runtime_version(None, SimpleNamespace(mode="docker"), C)
     assert set(version) == {"unobserved"} and f"rc {rc}" in version["unobserved"]
     [(argv, timeout)] = calls

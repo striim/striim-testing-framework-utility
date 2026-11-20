@@ -28,7 +28,7 @@ import subprocess
 from decimal import Decimal
 from pathlib import Path
 
-from livetest import canon
+from livetest import canon, dockercmd
 from livetest.bigqueryadmin import BigQueryError
 from livetest import lifecycle as _lifecycle
 from livetest import ownership as _ownership
@@ -101,7 +101,12 @@ def read_pg(admin, table_sql: str, order_by, max_rows: int, max_bytes: int, rema
 
 
 def _run(argv, timeout: float):
-    return subprocess.run(argv, capture_output=True, timeout=timeout)
+    # Bytes out (the reader decodes them itself); the command is stopped with every process it started
+    # at the bound, which head_file reports as a timeout.
+    r = dockercmd.run(argv, timeout=timeout, capture=False, capture_output=True)
+    if r.returncode == dockercmd.TIMED_OUT:
+        raise subprocess.TimeoutExpired(argv, timeout)
+    return r
 
 
 def read_spanner(admin, table, order_by, max_rows, max_bytes, remaining, *, snapshot=None):

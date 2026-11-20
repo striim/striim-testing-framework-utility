@@ -23,7 +23,6 @@ import math
 import posixpath
 import re
 import secrets
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -724,17 +723,18 @@ def _lines(text: str) -> int:
 
 def timed_run(remaining: float):
     """A ``run`` callable for server file reads: every command it starts is killed when the remaining
-    time is spent (``subprocess.run`` terminates the child on timeout), so no reader outlives the wait."""
+    time is spent, with every process it started (``dockercmd.run``), so no reader outlives the wait."""
+    from livetest import dockercmd
     end = time.monotonic() + max(0.05, float(remaining))
 
     def run(argv):
         left = end - time.monotonic()
         if left <= 0:
             raise ProbeHung("file read did not finish within the deadline")
-        try:
-            return subprocess.run(argv, capture_output=True, text=True, timeout=left)
-        except subprocess.TimeoutExpired:
-            raise ProbeHung(f"file read killed after {remaining:.1f}s") from None
+        r = dockercmd.run(argv, timeout=left)
+        if r.returncode == dockercmd.TIMED_OUT and time.monotonic() >= end:
+            raise ProbeHung(f"file read killed after {remaining:.1f}s")
+        return r
     return run
 
 

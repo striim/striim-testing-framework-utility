@@ -697,3 +697,58 @@ def test_a_hung_cluster_compose_call_and_its_children_are_stopped_at_the_bound(m
         sp._bounded_stream([sys.executable, "-c", _GRANDCHILD], cwd=str(tmp_path), timeout=1.0)
     assert time.monotonic() - started < 20
     assert "Container x Starting" in capsys.readouterr().out      # the output still reaches the terminal
+
+
+# --- the Docker commands outside dockercmd go through it too (review N6) ---------------------------
+# A lifecycle file read, an exact-data head, an ownership-ledger command, the evidence `docker inspect`,
+# the Docker disk probe and the node-fault inventory ran `subprocess.run(..., timeout=...)`: a timeout
+# there killed only the `docker` CLI, not what it started. Each now runs through dockercmd.run.
+
+def _node_fault_inventory(monkeypatch):
+    from livetest import node_fault
+    monkeypatch.setattr(node_fault.stack, "striim_container", lambda: "primary")
+    monkeypatch.setattr(node_fault.stack, "app_nodes", lambda: ["primary", "secondary"])
+    monkeypatch.setattr(node_fault.stack, "agent_container", lambda: "agent")
+    client = SimpleNamespace(list_deployment_groups=lambda timeout: [{"output": [{"default": {
+        "actualServers": [{"name": "server_primary"}, {"name": "server_secondary"}]}}]}])
+    with pytest.raises(node_fault.RecoveryError):
+        node_fault.inventory(client, SimpleNamespace(mode="docker", url="http://test.invalid:19080"), timeout=30)
+
+
+def _call_site(site, monkeypatch):
+    from livetest import docker_disk, exactdata, infra, lifecycle, ownership
+    argv = ["docker", "exec", "n1", "true"]
+    if site == "lifecycle.timed_run":
+        lifecycle.timed_run(5.0)(argv)
+    elif site == "exactdata._run":
+        exactdata._run(argv, 5.0)
+    elif site == "ownership._docker":
+        ownership._docker(argv)
+    elif site == "infra._docker_inspect":
+        infra._docker_inspect(argv)
+    elif site == "docker_disk._default_run":
+        docker_disk._default_run(argv)
+    else:
+        _node_fault_inventory(monkeypatch)
+
+
+@pytest.mark.parametrize("site", ["lifecycle.timed_run", "exactdata._run", "ownership._docker",
+                                  "infra._docker_inspect", "docker_disk._default_run", "node_fault.inventory"])
+def test_each_docker_command_outside_dockercmd_runs_through_it(monkeypatch, site):
+    calls = []
+
+    def bypassed(*a, **k):
+        raise AssertionError(f"{site} called subprocess.run directly")
+
+    def run(argv, *, timeout=dockercmd.QUERY_TIMEOUT_S, **kw):
+        calls.append((list(argv), timeout))
+        return subprocess.CompletedProcess(argv, 1, "" if kw.get("capture", True) else b"", "")
+    monkeypatch.setattr(subprocess, "run", bypassed)
+    monkeypatch.setattr(dockercmd, "run", run)
+    try:
+        _call_site(site, monkeypatch)
+    except AssertionError:
+        raise
+    except Exception:       # noqa: BLE001 - each site answers a failed command its own way
+        pass
+    assert calls and calls[0][0][0] == "docker" and 0 < calls[0][1] <= 120, calls
