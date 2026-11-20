@@ -701,6 +701,13 @@ _QUERIERS = {"postgres": _query_postgres, "oracle": _query_oracle,
 _NON_SQL_DRIVERS = frozenset({"bigtable"})
 
 
+def is_bigtable_route(route: str) -> bool:
+    """True for a `bigtable-*` route: its rows are read whole by the admin, never queried.
+    Raises RouteError for a malformed route, as parse_route does."""
+    service, _direction = parse_route(route)
+    return service in _NON_SQL_DRIVERS
+
+
 # --- Bigtable (no SQL; the admin reads a whole table) -----------------------------------------
 # Bigtable is not a query engine -- the admin reads back a WHOLE table as
 # {row: <hex key>, cells: {<fam>:<qual>: <hex value>}}. These helpers bypass the query-rows
@@ -709,10 +716,9 @@ _NON_SQL_DRIVERS = frozenset({"bigtable"})
 #   setup_bigtable(table, families, gc, seed)  -- create the table + families/GC + seed rows
 #   read_cells(route, table)                   -- read the table back as a JSON snapshot
 #
-# They are groundwork: no test.yaml key and no assert tier calls them yet (inttest/plugin.py's
-# _assert_target_rows still reads through query_rows), so a manifest cannot set up or assert a Bigtable
-# table. `query_rows`/`run_sql_text`/`_RUNNERS`/`_QUERIERS` raise for driver 'bigtable' because
-# Bigtable has no SQL.
+# `setup: bigtable:` calls setup_bigtable/teardown_bigtable, and `assert.target` on a bigtable-*
+# route calls assert_target (inttest/plugin.py). `query_rows`/`run_sql_text`/`_RUNNERS`/`_QUERIERS`
+# raise for driver 'bigtable' because Bigtable has no SQL.
 
 
 def _bigtable_admin(route: str, tokens: Mapping[str, str]):
@@ -755,9 +761,8 @@ def read_cells(route: str, table: str,
 
 
 def assert_target(route: str, table: str, expected: list, tokens: Mapping[str, str] | None = None) -> None:
-    """Compare a route's table snapshot to `expected`, raising with a clear mismatch message.
-    Groundwork: the assert.target tier does not call it yet, so a `db: bigtable-target`
-    manifest assertion is not supported."""
+    """Compare a route's table snapshot to `expected` (a row list), raising with a clear mismatch
+    message. `assert.target` on a bigtable-* route calls it."""
     got = read_cells(route, table, tokens)
     if got != {"table": table, "rows": list(expected)}:
         import json

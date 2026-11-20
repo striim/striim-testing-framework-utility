@@ -29,6 +29,7 @@ from livetest.assertions.diff import assert_diff, parse_diff_specs
 from livetest.assertions.file import assert_file, parse_file_specs
 from livetest import exactdata as _slt_exact, inputs as _slt_inputs   # C8
 from livetest.assertions.gcs import assert_gcs, parse_gcs_specs
+from livetest.assertions.bigtable import assert_bigtable, parse_bigtable_specs
 from livetest.assertions.json import assert_json, parse_json_specs
 from livetest.assertions.monitor import assert_monitor, parse_monitor_specs
 from livetest.assertions.checkpoint_history import (
@@ -1388,6 +1389,30 @@ def require_service_admin(admins: dict, db: str, test_name: str, what: str) -> d
         raise AssertionError(f"{test_name}: {what} needs service {db!r} in 'requires'")
     return admins[db]
 
+def setup_bigtable_tables(specs, admins: dict, tokens: dict, ledger, test_name: str, report=None) -> list:
+    """`setup: bigtable:` -- create each table (families, GC rules, seed rows) through its route's
+    admin, acquired through the ownership ledger: a table that already exists is refused, and the
+    ledger's cleanup drops the table or keeps it, with the case's other resources. Returns the
+    rendered table names."""
+    made = []
+    for spec in specs:
+        table = render(spec.table, tokens)
+        if report is not None:
+            report(test_name, f"creating bigtable table {table}")
+        admin = require_service_admin(admins, spec.db, test_name, "setup.bigtable")["admin"]
+
+        def create(admin=admin, table=table, spec=spec):
+            admin.create_table(table, spec.families, gc_rules=spec.gc_rules)
+            if spec.seed:
+                admin.write_cells(table, spec.seed)
+        try:
+            ledger.acquire_bigtable_table(admin, spec.db, table, create)
+        except Exception as e:  # noqa: BLE001 - reported as the case's failure
+            pytest.fail(f"{test_name}: setup bigtable {table!r} against {spec.db!r} failed: {e}")
+        made.append(table)
+    return made
+
+
 def admin_groups(admins: dict, specs: list, test_name: str, kind: str) -> list:
     """Group data/file specs by db and pair each with its admin; fail fast on an unrequired db."""
     out = []
@@ -2675,6 +2700,9 @@ class LiveItem(pytest.Item):
             if m.modules:
                 _slt_ownership.clear_own_checkpoints(ctx, ident.ns, ledger)   # listed, exact names only
 
+            # `setup: bigtable:` tables, before the DDL and the deploy; the ledger's cleanup drops them.
+            setup_bigtable_tables(m.bigtable_setup, admins, tokens, ledger, m.name, _report)
+
             # DDL always runs before deploy (reader/writer need the tables to exist).
             _report(m.name, "loading DDL")
             # C7.6: one file at a time -- acquire (catalog pre-existence check),
@@ -3883,6 +3911,17 @@ class LiveItem(pytest.Item):
                             gcs_entry["admin"], gspecs, timeout=m.timeout, status_probe=_terminal_probe,
                             progress=_hb("asserting gcs"))
                         ran = True
+                    if m.assert_.get("bigtable"):
+                        # Each spec names its table and route; the table is read whole through that
+                        # route's admin and compared to `expected`, as dbroutes.assert_target does.
+                        _report(m.name, "asserting: bigtable")
+                        bspecs = [{**_bs, "table": render(_bs["table"], tokens)}
+                                  for _bs in parse_bigtable_specs(m.assert_["bigtable"])]
+                        for admin, group in admin_groups(admins, bspecs, m.name, "bigtable"):
+                            self._slt_records += assert_bigtable(
+                                admin, group, timeout=m.timeout, status_probe=_terminal_probe,
+                                db=_spec_route(group[0]), progress=_hb("asserting bigtable"))
+                        ran = True
                     if m.assert_.get("json"):
                         _report(m.name, "asserting: json")
                         jspecs = substitute_targets(parse_json_specs(m.assert_["json"]), tokens)
@@ -3937,7 +3976,7 @@ class LiveItem(pytest.Item):
                     self._slt_records.extend(e.records)
                     raise
             if not ran:
-                pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, monitor, checkpoint_history, jmx)")
+                pytest.fail(f"{m.name}: no supported assertion ran (supported: smoke, data, diff, file, gcs, json, bigtable, monitor, checkpoint_history, jmx)")
             succeeded = True
         finally:
             _tx_cleanup_error = None

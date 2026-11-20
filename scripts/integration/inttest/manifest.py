@@ -24,7 +24,8 @@ import yaml
 
 from zoneinfo import available_timezones
 
-from . import dbroutes, waevent
+from . import bigtablespec, dbroutes, waevent
+from .bigtablespec import BigtableSetup  # noqa: F401 - re-exported for callers of this module
 
 
 def _only_variant() -> str:
@@ -393,6 +394,7 @@ class TestManifest:
     target: object = None                       # TargetSpec | None; set => drive `op` as a target
     matrix: dict = field(default_factory=dict)  # property name -> the values to cross-product
     variants: list = field(default_factory=list) # list[Variant]; the CONNECTION axis
+    bigtable_setup: list = field(default_factory=list)  # list[BigtableSetup]; `setup: bigtable:`
 
     def runs(self) -> list:
         """Every (variant, permutation) this case executes -- the two axes composed.
@@ -754,9 +756,22 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
             # part of it is wrong. (`ddl:`/`seed:` do not do this yet; they fail later, at
             # the point of use.)
             try:
-                dbroutes.parse_route(db)
+                is_bigtable = dbroutes.is_bigtable_route(db)
             except dbroutes.RouteError as e:
                 raise ManifestError(f"{path}: 'assert.target[{i}].db': {e}") from None
+            if is_bigtable:
+                # A Bigtable route has no SQL: `query` names the table, and `match` is its rows as
+                # the admin reads them (row-key order, so no ORDER BY is asked for).
+                table = query.strip()
+                if not bigtablespec.is_table_name(table):
+                    raise ManifestError(
+                        f"{path}: 'assert.target[{i}].query' on a bigtable route must be a table "
+                        f"name ({bigtablespec.TABLE_RULE}), got {query!r}")
+                target.append(TargetAssertion(
+                    query=table, db=db, match=match,
+                    match_path=(test_dir / match).resolve(),
+                    db_explicit="db" in item))
+                continue
             # Rows are compared in order, so the query has to impose one. Checked here rather
             # than left to a reviewer: an unordered query is green on the machine that wrote
             # the golden and arbitrary everywhere else, which is the worst kind of assertion.
@@ -2063,7 +2078,23 @@ def load_manifest(path) -> TestManifest:
             f"{path}: 'assert.gcs_objects' needs 'requires: [gcs]' -- the bucket it checks "
             f"is only provisioned for a test that requires the gcs service")
 
+    try:
+        bigtable_setup = bigtablespec.normalize_setup(raw.get("setup"), path)
+    except bigtablespec.BigtableSpecError as e:
+        raise ManifestError(str(e)) from None
+    bigtable_targets = [t for t in (assert_.target or []) if dbroutes.is_bigtable_route(t.db)]
+    if (bigtable_setup or bigtable_targets) and "bigtable" not in requires:
+        raise ManifestError(
+            f"{path}: '{'setup.bigtable' if bigtable_setup else 'assert.target'}' on a bigtable route "
+            f"needs 'requires: [bigtable]' -- the emulator is only started for a test that requires it")
+    if bigtable_setup and variants:
+        # A variant runs its own DDL through its own route; a Bigtable table is not yet part of that.
+        raise ManifestError(
+            f"{path}: 'setup.bigtable' is not supported with 'variants:' yet -- the table would be "
+            f"created once for the whole case, not per engine")
+
     return TestManifest(
+        bigtable_setup=bigtable_setup,
         name=name,
         op=op,
         properties=properties,

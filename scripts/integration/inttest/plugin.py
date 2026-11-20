@@ -1883,7 +1883,9 @@ class IntYamlItem(pytest.Item):
                 # first.
                 _ensure_gcs_bucket(tok)
 
-            # --- 5. DDL then seed, in that order, each against its own db: route. ---
+            # --- 5. setup: bigtable tables, then DDL, then seed, each against its own route. ---
+            self._export_bigtable_emulator(m, tok)
+            self._setup_bigtable(m, tok)
             for spec in m.ddl:
                 try:
                     dbroutes_mod.run_sql_file(spec.db, spec.path, tok)
@@ -2264,7 +2266,7 @@ class IntYamlItem(pytest.Item):
         return merged
 
     def _reset_fixtures(self, m, tok, overrides, variant=None) -> None:
-        """Re-run this run's `ddl:` and `seed:` between runs.
+        """Re-create this run's `setup: bigtable:` tables and re-run its `ddl:` and `seed:` between runs.
 
         A run that inherited the previous one's rows would make the shared expectation assert the
         UNION of every run rather than what each produced -- the construct defeated. Called only
@@ -2275,6 +2277,8 @@ class IntYamlItem(pytest.Item):
         """
         ddl = variant.ddl if variant is not None else m.ddl
         tok = self._variant_tokens(variant) if variant is not None else tok
+        # `setup: bigtable:` is refused with variants, so its tables use the case's own tokens.
+        self._create_bigtable_tables(m, tok, _run_label(variant, overrides))
         for kind, specs in (("ddl", ddl), ("seed", m.seed)):
             for spec in specs:
                 try:
@@ -2508,6 +2512,28 @@ class IntYamlItem(pytest.Item):
             # A variant supplies the route its assertions read through, so one authored query
             # reaches whichever engine this run is against.
             route = variant.db if variant is not None else spec.db
+            try:
+                bigtable = dbroutes_mod.is_bigtable_route(route)
+            except dbroutes_mod.RouteError:
+                bigtable = False   # the query path below reports the malformed route as before
+            if bigtable:
+                # No SQL on a bigtable route: `query` names the table and `match` holds its rows as
+                # the admin reads them. The comparison is dbroutes.assert_target's, unchanged.
+                table = tokens_mod.render(spec.query, tok).strip()
+                expected = json.loads(tokens_mod.render(Path(spec.match_path).read_text(), tok))
+                if not isinstance(expected, list):
+                    pytest.fail(f"{m.name}{at}: assert.target match {spec.match!r} on {route!r} must be "
+                                f"a JSON list of rows [{{\"row\": ..., \"cells\": {{...}}}}], got "
+                                f"{type(expected).__name__}")
+                try:
+                    dbroutes_mod.assert_target(route, table, expected, tok)
+                except AssertionError as e:
+                    pytest.fail(f"{m.name}{at}: {e}"
+                                + (f"\n  writer report: {json.dumps(report)}" if report is not None else ""))
+                except Exception as e:
+                    pytest.fail(f"{m.name}{at}: assert.target read of table {table!r} against "
+                                f"{route!r} failed: {e}")
+                continue
             shown = " ".join(tokens_mod.render(spec.query, tok).split())
             try:
                 rows = dbroutes_mod.query_rows(route, spec.query, tok)
@@ -2527,6 +2553,58 @@ class IntYamlItem(pytest.Item):
                     # path there is none, and the rows are the whole of the evidence.
                     + (f"\n  writer report: {json.dumps(report)}" if report is not None else ""))
 
+    def _export_bigtable_emulator(self, m, tok) -> None:
+        """BIGTABLE_EMULATOR_HOST for the driver JVM, for a case that requires bigtable: the Bigtable client
+        reaches the emulator only through this variable (design §3), and the driver inherits the process
+        environment, as the Spanner emulator's does. A value already set must name the run's emulator:
+        otherwise the writer would write to one emulator while the admin reads another. Removed at
+        teardown, kept or not (`_teardown_db_isolation`), so it does not reach a later test."""
+        if "bigtable" not in (m.requires or []):
+            return
+        host = tok.get("BIGTABLE_HOST")
+        port = tok.get("BIGTABLE_GRPC_PORT")
+        if not host or not port:
+            pytest.fail(f"{m.name}: requires bigtable but the run's BIGTABLE_HOST/BIGTABLE_GRPC_PORT tokens are missing")
+        want = f"{host}:{port}"
+        have = os.environ.get("BIGTABLE_EMULATOR_HOST")
+        if have is None:
+            os.environ["BIGTABLE_EMULATOR_HOST"] = want
+            self._bigtable_env_set = True
+        elif have != want:
+            pytest.fail(f"{m.name}: BIGTABLE_EMULATOR_HOST is {have!r} but this run's emulator is {want!r}; "
+                        f"the writer would write to one and the assertions read the other. Unset it.")
+
+    def _setup_bigtable(self, m, tok) -> None:
+        """`setup: bigtable:` -- create each declared table (families, GC rules, seed rows) through
+        its route's admin before the case's DDL. Each is remembered before it is created, so teardown
+        of a passing case drops it; a failed case keeps it, as it keeps its Postgres data."""
+        self._bigtable_created = []
+        self._create_bigtable_tables(m, tok)
+
+    def _create_bigtable_tables(self, m, tok, label: str = "") -> None:
+        """Create (drop first, then create and seed) every `setup: bigtable:` table. Also called between
+        a `matrix:` case's runs, so a run never inherits the previous run's rows."""
+        for spec in m.bigtable_setup:
+            table = tokens_mod.render(spec.table, tok)
+            if (spec.db, table, tok) not in self._bigtable_created:
+                self._bigtable_created.append((spec.db, table, tok))
+            try:
+                dbroutes_mod.setup_bigtable(table, spec.families, gc_rules=spec.gc_rules,
+                                            seed=spec.seed, route=spec.db, tokens=tok)
+            except Exception as e:
+                pytest.fail(f"{m.name}{label}: setup bigtable {table!r} against {spec.db!r} failed: {e}")
+
+    def _teardown_bigtable(self) -> None:
+        """Drop the tables `_setup_bigtable` created. An already-missing table is fine; any other
+        failure is reported and does not mask the case's own outcome."""
+        for route, table, tok in getattr(self, "_bigtable_created", []):
+            try:
+                dbroutes_mod.teardown_bigtable(table, route=route, tokens=tok)
+            except Exception as e:  # noqa: BLE001 - teardown must not mask the real outcome
+                print(f"[integration] WARNING: failed to drop bigtable table {table!r} on "
+                      f"{route!r}: {e!r}")
+        self._bigtable_created = []
+
     def _teardown_db_isolation(self, failed: bool) -> None:
         """SPEC §5 step 8 / §13: drop whatever per-test DB isolation state
         `runtest()` step 4b created, unless the test failed (kept for debugging) or
@@ -2540,8 +2618,13 @@ class IntYamlItem(pytest.Item):
             or self.config.getoption("--slt-keep-resources", False)
             or bool(os.environ.get("INT_KEEP_RESOURCES"))
         )
+        if getattr(self, "_bigtable_env_set", False):
+            os.environ.pop("BIGTABLE_EMULATOR_HOST", None)
+            self._bigtable_env_set = False
         if keep:
             return
+        if getattr(self, "_bigtable_created", None):
+            self._teardown_bigtable()
         if self._pg_admin is not None:
             # Wipe this test's own Postgres data NOW rather than deferring to the
             # NEXT test's setup-time reset -- a passing test with no keep-flag

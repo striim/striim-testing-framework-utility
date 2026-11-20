@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 
-from livetest.uiform import Rmi, UiFormError, components, secret_names, ui_object
+from livetest.uiform import Rmi, UiFormError, components, form_diff, secret_names, ui_object
 
 TIMEOUT_MS = 60_000
 
@@ -167,13 +167,14 @@ def resave(url_base: str, user: str, password: str, token: str, apps: list[tuple
                                 want = {k: v for k, v in expected[part]["properties"].items() if k != touched}
                                 have = {k: v for k, v in ((got.get(part) or {}).get("properties") or {}).items()
                                         if k != touched}
-                                if want != have:
-                                    diff = sorted(k for k in set(want) | set(have) if want.get(k) != have.get(k))
+                                diff = form_diff(want, have)
+                                if diff:
                                     secret = secret_names(templates[expected[part]["handler"]])
-                                    shown = (lambda k, v: "***" if k.lower() in secret else repr(v))
+                                    shown = (lambda k, d: "<absent>" if k not in d
+                                             else "***" if k.lower() in secret else repr(d[k]))
                                     raise UiFormError(
                                         f"{obj['name']}.{part}: the UI sent a different form than replay: "
-                                        + ", ".join(f"{k} ui={shown(k, have.get(k))} replay={shown(k, want.get(k))}"
+                                        + ", ".join(f"{k} ui={shown(k, have)} replay={shown(k, want)}"
                                                     for k in diff))
                         lines += changes or [f"{obj['name']}: saved unchanged"]
             finally:

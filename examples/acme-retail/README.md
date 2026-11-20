@@ -80,7 +80,7 @@ executed because prerequisites were missing, which is a skip, not a pass. See
 
 Framework contributors can run the example inside the framework checkout instead, with the
 contributor environment. `tools/make-test-venv.sh` creates `.venv-test` (not `.venv`) with the
-pinned test dependencies; it needs Python 3.12, which it finds as `python3.12` on your `PATH` or
+pinned test dependencies, and on a later run syncs it to the current lock; it needs Python 3.12, which it finds as `python3.12` on your `PATH` or
 through `uv`, or set `PYTHON` to one. From the framework root, with the settings in
 `examples/acme-retail/.env`:
 

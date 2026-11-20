@@ -23,8 +23,9 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `kafka_cleanup_topics` | list[string] | no | `[]` | extra Kafka topics the test's **app** creates that the framework didn't derive itself — e.g. a persisted stream's derived `<ns>_<streamName>` data topic and its `<topic>_CHECKPOINT` companion. Each entry is `${...}`-token-rendered (embed `${NS}`/`${TID}` for per-test uniqueness) and appended to the same best-effort per-test topic delete that already removes the derived `${KAFKA_SRC_TOPIC}`/`${KAFKA_TGT_TOPIC}` at teardown. Requires `kafka` in `requires` (loader fails loud otherwise). Absent/empty (every test that doesn't set it) is a strict no-op |
 | `ddl` | string \| list | no | none | schema setup, run once before seed/deploy. Plain string (or a bare list item) → the default `postgres-source` route. List form — entries in the same style `upload:`/`server_files:` use: `- file: <name>` plus an optional `db: <route>` (default `postgres-source`), applied in order. Routes are `<svc>-source`/`<svc>-target` (fixed `qasource`/`qatarget` schemas) plus the emulator routes (`spanner-*`, `gcs`, `kafka`) — see `SERVICES.md`. **Deprecated** (still parses, warns naming the file): the route-keyed entry `{source_db\|target_db: <route>, file: <name>}` — the route value already carries the direction; write `db:` |
 | `seed` | string \| list | no | none | data setup, same shape/back-compat as `ddl`, plus two per-entry keys `ddl` does not take: **`when`** (`pre_deploy` (default) \| `post_start` \| `post_recover`) and **`after`** — see below |
+| `setup` | mapping | no | none | tables the case creates before its DDL and deploy: `bigtable:` (a list of `{table, families, gc, seed, db}`), dropped at teardown unless kept — see the `setup` section |
 | `action` | list | no | `[]` | app lifecycle operations run in order after every `post_start` seed and before every assertion tier. Five types: **`stop_start_cycle`** (`cycles`, `delay_before_stop`, `stop_duration`, optional `concurrent:` SQL loops on background threads, each `{db, file, loop_interval}`: `db` must be a route of a `requires:` service, and the case fails if a loop never succeeds or any of its statements errors); **`drop_recreate_app`** (`app` — token-rendered so a multi-app manifest names just the piece it rebuilds; `delay_before_stop`, `recreate_wait`, `seed`, and `capture`/`stopped_seed`/`tokens`, see [below](#action-drop_recreate_app--rebuild-the-app-from-its-tql)) which STOPs, `DROP APPLICATION … FORCE`s via `StriimClient._force_drop`, then rebuilds the app from its own `CREATE OR REPLACE APPLICATION … END` block in the rendered TQL and waits for RUNNING; **`service_outage`** (see [below](#action-service_outage--take-a-required-service-down-mid-run)) which stops a required service's container mid-run and starts it again; **`capture`** ([below](#action-capture--read-a-value-into-a-token)), which reads a `DESCRIBE` or `MON` field into a token; and **`alter_recompile`** ([below](#action-alter_recompile--replace-components-in-place)), the in-place `ALTER APPLICATION … RECOMPILE` upgrade. Gallery: `framework-action`, `framework-drop-recreate` |
-| `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
+| `assert` | mapping | **yes** | — | at least one tier (`smoke`, `data`, `diff`, `file`, `gcs`, `json`, `bigtable`, `monitor`, `checkpoint_history`, `jmx`, `placement`) — see below |
 | `example` | string | no | none | app directory, relative to the project root (`SLT_PROJECT_ROOT`, this clone when unset), with or without an OP/UDF. When set, `tql`/`ddl`/`seed`/`upload` are read from THERE; only `expected/*.csv` and entries marked [`local: true`](#local-true--test-only-files-beside-an-example) stay test-local. Absent → everything is relative to the test dir (self-contained regression style) |
 | `op` | mapping \| list | no | none | build + upload OpenProcessor jar(s), registered via `LOAD OPEN PROCESSOR` — single mapping or a list, see below |
 | `udf` | mapping \| list | no | none | build + upload UDF jar(s), registered via a global `LOAD` (`client.load_jar`) — single mapping or a list, see below |
@@ -34,7 +35,7 @@ A test is a folder containing a `test.yaml` (this schema) plus whatever it refer
 | `tags` | list[string] | no | `[]` | free-form labels (e.g. `[op, oracle, p1]`). `striim-test run` does not select by tag. In a direct pytest run of the engine, `-k p1` uses case-insensitive substring matching against paths, tags and markers, while `-m tag_p1` selects the exact tag marker (case is preserved). Markers are registered automatically as `tag_<name>`, replacing each character outside ASCII letters, digits and `_` with `_` (e.g. `slow-path` becomes `tag_slow_path`); tags that sanitise to the same name share a marker |
 | `disabled` | string \| bool | no | — | truthy => the test **skips** before any provisioning (collected + reported as skipped, never run). Use a non-empty string as the reason (e.g. `disabled: "top-level JSON_ARRAY writes {}; issue 123"`). For known-bug / quarantine repros that shouldn't fail CI. Force-run a disabled test with env `SLT_RUN_DISABLED=1` (e.g. to check whether the underlying bug is fixed). |
 | `disabled_parallel` | string \| bool | no | — | same shape and skip point as `disabled`, but only takes effect when the run is concurrent (an xdist worker or `SLT_PARALLEL=1`) -- a serial run ignores it entirely. NOT for a test that races or collides with a sibling -- that's an isolation bug, fix the tokenization. NOT for a plain "table name too long" failure either -- shorten the name first (an Oracle table stays under Oracle's identifier-length budget once `${TID_ORACLE}` is prepended; see `_tid_oracle`'s docstring in `scripts/live/livetest/plugin.py`). Also required for a shared-node fault case that must be excluded from concurrent selection; this is a skip rule, not a lock. Otherwise only for a defect genuinely triggered by parallel-run token substitution that isn't fixable by renaming, with a linked ticket ref as the reason string. Also force-run-able with `SLT_RUN_DISABLED=1`. |
-| `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
+| `xfail` | string \| dict | no | — | the test is **expected to fail on its assertion** — a committed defect repro that asserts the CORRECT behaviour. String form is the reason; dict form `{reason, strict, tiers, releases}`. `strict: true` (default `false`) turns an unexpected pass into a failure. **`tiers`** names which `assert:` tiers the failure may come from (`data`, `diff`, `file`, `gcs`, `json`, `bigtable`, `monitor`, `halt`, `checkpoint_history`, `jmx`; default all of them; **never `smoke`**): only an assertion failure on a named tier is reported XFAIL — a deploy error, a provisioning timeout, an app that never reached RUNNING, a failure on an unnamed tier, or a spec problem is reported as a **real failure**, exactly as it would be without the marker. Before this narrowing an xfail said green for a TQL typo. Run with `--runxfail` to see every outcome as it is. See the section below. |
 | `expect_halt` | bool | no | `false` | `true` => the app is expected to reach a terminal status (HALT/CRASH/TERMINATED/DEPLOY_FAILED) instead of RUNNING -- a raise-path test. This can be satisfied at any phase: a synchronous failure during DEPLOY/START itself (the TQL-import call raises before the app is even running), the app never reaching RUNNING during startup, or a later terminal transition while the app is running (polled the same way as any other `assert:` tier). Alone, `expect_halt: true` satisfies the manifest's "at least one assertion" requirement -- no `assert:` block is needed. To also pin *why* it halted, add `expect_halt_contains`. A DEPLOY/START failure skips everything the case declares to run after start: `post_start` seeds, generate specs and server files, `lifecycle:`, and every `assert:` tier. If the case declares any of these, a DEPLOY/START failure fails the case and names them, unless `expect_halt_contains` matches the failure text. Set `expect_halt_contains` when a startup refusal is the expected outcome. The passing record then lists what was skipped. |
 | `expect_halt_contains` | string \| list[string] | no | — | narrows `expect_halt` from "any terminal status for any reason" to "a halt whose reason names these substrings". A list means **ALL** substrings must be present (AND), not any-of — pick the one substring that's stable across Striim versions if the phrasing varies. Requires `expect_halt: true` (set alone it would be a silent no-op, and is rejected at load). Where the reason text comes from depends on the phase: a synchronous DEPLOY/START failure matches against the raised import error, which is always available; a **polled** terminal transition matches against the app-node server-log tail, which only exists in **docker** mode — on native single-node (or if the tail read itself fails) the test still PASSES but its record detail says `halt reason not checked (native mode)`, so grep `.slt.json` for that string if you need to know whether the reason was actually verified. Caveat for the polled/docker path: only the server-log text written since this case deployed is searched (a node whose log size could not be read at deploy is not searched). It is not scoped to this test's app — under `SLT_PARALLEL` a sibling test's identical error text written meanwhile could produce a false pass. Pick a substring unique to your scenario (e.g. the tokenized table/app name), not a generic phrase. |
 | `recover` | mapping | no | — | interrupt the app after `post_start` work begins and before every assertion, restore it, then assert -- so the assertions describe what SURVIVED the interruption. See **`recover:`** below. Mutually exclusive with `expect_halt` (one expects RUNNING back, the other expects terminal), and requires an assertion beyond `smoke` (which only re-checks RUNNING, something the phase already waits for). |
@@ -2156,6 +2157,56 @@ a value is `None`, never an absent key, and the marker could not match. `load_go
 it: writing `<absent>` in a `data:` golden raises a `DataSpecError` at load, naming the
 column and pointing here, rather than failing as a value mismatch after the full assertion
 timeout.
+
+### `setup` — tables the case creates
+
+<!-- snippet: fragment -->
+```yaml
+requires: [bigtable]
+setup:
+  bigtable:
+    - table: ${TID}emp               # letters, digits, _ . - or ${TOKEN}s
+      db: bigtable-target            # optional, default bigtable-target
+      families: {emp: null}          # each family null; its GC rule goes under gc:
+      gc: {emp: {age_days: 7}}       # optional
+      seed:                          # optional rows: {row, cells: {"fam:qual": value}}
+        - {row: "01", cells: {"emp:name": "ann"}}
+```
+
+Each table is created through its route's admin before the case's `ddl:` and deploy, as a resource
+of the run's ownership ledger: a table that already exists is refused and left alone, and the
+ledger's cleanup drops it at teardown. A run kept with `SLT_KEEP_RESOURCES` (or
+`SLT_KEEP_RESOURCES_ON_ERROR`, on failure) keeps it. `table` must contain `${TID}`. `gc` gives a
+family one rule: `num_versions`, `age_millis`, `age_seconds` or `age_days`, a whole number above 0.
+Seed keys and values are UTF-8 text, or `0x<hex>` for bytes; only `table` is token-rendered. Needs
+the `bigtable` service in `requires:`.
+
+### `bigtable` — Bigtable table comparison
+
+<!-- snippet: fragment -->
+```yaml
+requires: [bigtable]
+assert:
+  bigtable:
+    - table: ${TID}emp               # the table, read whole through the route's admin
+      db: bigtable-target            # optional, default bigtable-target
+      expected:                      # hand-written row list, hex-for-bytes
+        - {row: "3031", cells: {"emp:name": "616e6e"}}
+```
+
+A cell value may be `{prefix: <text>}` instead of hex: it matches a cell whose UTF-8 text starts with
+`<text>` (non-empty), for a value known only at run time (a bidirectional marker holds its
+component's name). Every other cell still needs its exact hex, lowercase, and the row keys and cell
+names must match exactly. `table` is token-rendered; `expected` is not. The specs are checked at
+load (keys, table name, route, row shape).
+
+Each spec reads its table whole (`CellsColumnLimitFilter(num_cells=1)`, the newest cell per column)
+and compares the row list to `expected`, polling until it matches or `timeout:` elapses. `expected`
+is `[{"row": "<hex key>", "cells": {"<fam>:<qual>": "<hex value>"}}]`, the same shape as the
+integration tier's `assert.target` on a `bigtable-*` route. Needs the `bigtable` service in
+`requires:`. A missing table or a changed cell fails with the rows actually read. The tier polls
+until the table matches, so an `expected` the table passes through on its way (an empty table, a
+partial write) can match early; assert the final state.
 
 ### `gcs` — GCS object content assertions
 <!-- snippet: fragment -->

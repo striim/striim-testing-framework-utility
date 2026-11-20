@@ -3,7 +3,9 @@ import pytest
 from livetest.assertions import AssertionFailed
 from livetest.assertions.bigtable import (
     BigtableSpecError,
+    _cell_matches,
     _check_spec,
+    _rows_match,
     assert_bigtable,
     parse_bigtable_specs,
 )
@@ -237,8 +239,82 @@ def test_assert_bigtable_fails_at_its_deadline_when_the_table_never_appears():
     assert record["status"] == "failed" and "deadline" in record["detail"]
 
 
-def test_bigtable_is_not_a_manifest_assertion_tier_yet():
-    # The service README and this module call the comparison groundwork; adding the tier means
-    # updating them too.
+def test_bigtable_is_a_valid_assert_tier():
     from livetest.manifest import VALID_ASSERT_TIERS
-    assert "bigtable" not in VALID_ASSERT_TIERS
+    assert "bigtable" in VALID_ASSERT_TIERS
+
+
+def test_parse_defaults_each_spec_to_the_bigtable_target_route():
+    from livetest.assertions.bigtable import parse_bigtable_specs
+    specs = parse_bigtable_specs([{"table": "emp", "expected": []}])
+    assert specs[0]["db"] == "bigtable-target"
+
+
+def test_parse_keeps_an_explicit_route():
+    from livetest.assertions.bigtable import parse_bigtable_specs
+    specs = parse_bigtable_specs([{"table": "emp", "expected": [], "db": "bigtable-source"}])
+    assert specs[0]["db"] == "bigtable-source"
+
+
+# A cell given as {"prefix": text} matches on its UTF-8 text (the marker's component name is only known
+# at run time). Values are hex, as the admin renders them.
+def test_prefix_cell_matches_the_start_of_its_text():
+    assert _cell_matches({"prefix": "SLT_run1."}, "SLT_run1.BtTarget".encode().hex())
+
+
+def test_prefix_cell_refuses_other_text():
+    assert not _cell_matches({"prefix": "SLT_run1."}, "SLT_run2.BtTarget".encode().hex())
+
+
+def test_plain_cell_still_needs_the_exact_hex():
+    assert _cell_matches("616e6e", "616e6e")
+    assert not _cell_matches("616e6e", "626f62")
+
+
+def test_prefix_cell_with_non_utf8_bytes_does_not_match():
+    assert not _cell_matches({"prefix": "x"}, "ff")
+
+
+@pytest.mark.parametrize("cell", [{"prefix": "x", "suffix": "y"}, {"prefix": 5}, {"prefix": ""}, {"pre": "x"},
+                                  "ABCD", "abc", 7])
+def test_a_bad_cell_value_is_refused_when_the_specs_are_parsed(cell):
+    # At load, not after deploy: a bad prefix would otherwise escape the poll as a bare error.
+    with pytest.raises(BigtableSpecError):
+        parse_bigtable_specs([{"table": "t", "expected": [{"row": "31", "cells": {"cf:m": cell}}]}])
+
+
+@pytest.mark.parametrize("spec,match", [
+    ({"table": "t", "expected": [], "dbb": "x"}, "unknown key"),
+    ({"table": "t", "expected": {}}, "must be a row list"),
+    ({"table": "SELECT 1", "expected": []}, "table name"),
+    ({"table": "t", "expected": [], "db": "postgres-target"}, "must be one of"),
+    ({"table": "t", "expected": [{"row": "3G", "cells": {}}]}, "lowercase hex"),
+    ({"table": "t", "expected": [{"row": "31"}]}, "row: <lowercase hex>"),
+])
+def test_a_bad_spec_is_refused(spec, match):
+    with pytest.raises(BigtableSpecError, match=match):
+        parse_bigtable_specs([spec])
+
+
+def test_parse_returns_copies_and_leaves_the_manifest_specs_alone():
+    raw = [{"table": "${TID}t", "expected": []}]
+    (spec,) = parse_bigtable_specs(raw)
+    spec["table"] = "rendered"
+    assert raw == [{"table": "${TID}t", "expected": []}]
+
+
+def test_rows_match_with_a_prefix_cell_in_a_row():
+    want = [{"row": "31", "cells": {"cf:id": "31", "cf:m": {"prefix": "SLT_run1."}}}]
+    got = [{"row": "31", "cells": {"cf:id": "31", "cf:m": "SLT_run1.BtTarget".encode().hex()}}]
+    assert _rows_match(want, got)
+
+
+def test_rows_match_refuses_a_missing_cell_even_with_a_prefix():
+    want = [{"row": "31", "cells": {"cf:id": "31", "cf:m": {"prefix": "SLT_run1."}}}]
+    got = [{"row": "31", "cells": {"cf:id": "31"}}]
+    assert not _rows_match(want, got)
+
+
+def test_a_non_string_route_is_a_spec_error():
+    with pytest.raises(BigtableSpecError, match="must be one of"):
+        parse_bigtable_specs([{"table": "t", "expected": [], "db": {"a": 1}}])

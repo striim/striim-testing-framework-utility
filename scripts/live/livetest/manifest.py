@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from livetest import paths
+from livetest.bigtablespec import BigtableSetup, BigtableSpecError, normalize_setup  # noqa: F401
 from livetest.service_cache import cached_tokens
 from livetest.enforcement import WALKER_EXEMPT_DIR_PARTS
 from livetest.releases import ReleaseError, check_release_entry, release_matches
@@ -19,11 +20,13 @@ VALID_TOPOLOGIES = {"single", "agent", "cluster"}
 # Assertion tiers an `xfail.tiers` may name. The record `type` each assert_* function writes
 # (resultschema.build_assertion_result) is the vocabulary; `smoke` is deliberately absent.
 XFAIL_TIERS_ALLOWED = frozenset(
-    {"data", "diff", "file", "gcs", "json", "monitor", "halt", "checkpoint_history", "jmx", "placement"})
+    {"data", "diff", "file", "gcs", "json", "bigtable", "monitor", "halt", "checkpoint_history", "jmx",
+     "placement"})
 XFAIL_TIERS_DEFAULT = XFAIL_TIERS_ALLOWED - {"placement"}
 # The `assert:` tiers runtest reads; any other key would check nothing.
 VALID_ASSERT_TIERS = frozenset(
-    {"smoke", "data", "diff", "file", "gcs", "json", "monitor", "checkpoint_history", "jmx", "placement"})
+    {"smoke", "data", "diff", "file", "gcs", "json", "bigtable", "monitor", "checkpoint_history", "jmx",
+     "placement"})
 VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 # Every key load_manifest reads. Anything else is a typo or a key dropped in a schema change,
 # and both used to load silently: `timout: 30` simply never applied its timeout, and a manifest
@@ -32,7 +35,7 @@ VALID_SEED_WHEN = {"pre_deploy", "post_start", "post_recover"}
 VALID_MANIFEST_KEYS = {
     "name", "purpose", "tql", "topology", "requires", "ddl", "seed", "action", "assert", "example",
     "op", "udf", "server_files", "generate", "timeout", "fixture_timeout", "diff_poll", "tags", "disabled",
-    "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover",
+    "disabled_parallel", "xfail", "expect_halt", "expect_halt_contains", "recover", "setup",
     "kafka_cleanup_topics", "depth", "tokens", "transactions", "snapshot_observer", "audit", "deployment_groups",
     "lifecycle",   # C7.2
     "exact",   # C8.1
@@ -1026,6 +1029,7 @@ class TestManifest:
     seed: str | None = None
     ddl_files: list = field(default_factory=list)   # [(db, file), ...]
     seed_files: list = field(default_factory=list)  # [(db, file, when, after), ...]
+    bigtable_setup: list = field(default_factory=list)  # [BigtableSetup, ...]: `setup: bigtable:`
     action_specs: list = field(default_factory=list)  # [{type, cycles, delay_before_stop, stop_duration}, ...]
     assert_: dict = field(default_factory=dict)
     timeout: int = 120
@@ -1243,6 +1247,12 @@ def load_manifest(path: Path) -> TestManifest:
             parse_jmx_specs(assert_["jmx"])
         except JmxSpecError as e:
             raise ManifestError(f"{path}: {e}") from None
+    if assert_ and assert_.get("bigtable") is not None:
+        from livetest.assertions.bigtable import parse_bigtable_specs
+        try:
+            parse_bigtable_specs(assert_["bigtable"])
+        except BigtableSpecError as e:
+            raise ManifestError(f"{path}: {e}") from None
     if (assert_ or {}).get("placement") is not None:
         from livetest.node_fault import normalize_placement
         try:
@@ -1301,6 +1311,15 @@ def load_manifest(path: Path) -> TestManifest:
             isinstance(t, str) and t.strip() for t in kafka_cleanup_topics):
         raise ManifestError(
             f"{path}: 'kafka_cleanup_topics' must be a list of non-empty topic-name strings")
+    try:
+        bigtable_setup = normalize_setup(raw.get("setup"), path)
+    except BigtableSpecError as e:
+        raise ManifestError(str(e)) from None
+    _asserts_bigtable = isinstance(raw.get("assert"), dict) and raw["assert"].get("bigtable")
+    if (bigtable_setup or _asserts_bigtable) and "bigtable" not in requires:
+        raise ManifestError(
+            f"{path}: '{'setup.bigtable' if bigtable_setup else 'assert.bigtable'}' needs 'requires: [bigtable]' "
+            f"-- the emulator and its admin exist only for a test that requires the bigtable service")
     if kafka_cleanup_topics and "kafka" not in requires:
         raise ManifestError(
             f"{path}: 'kafka_cleanup_topics' needs service 'kafka' in 'requires' — the "
@@ -1635,6 +1654,7 @@ def load_manifest(path: Path) -> TestManifest:
         seed=raw.get("seed"),
         ddl_files=ddl_files,
         seed_files=seed_files,
+        bigtable_setup=bigtable_setup,
         action_specs=action_specs,
         assert_=dict(raw.get("assert", {})),
         timeout=int(raw.get("timeout", 120)),
