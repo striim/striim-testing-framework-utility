@@ -1574,6 +1574,10 @@ def teardown_file_outputs(file_spec, tokens: dict, clear) -> None:
         except Exception:
             pass
 
+
+_DEFERRED_POLL_S = 0.05                  # how often teardown_unowned looks for a deferred call's admin to free
+
+
 def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: list, kafka_cleanup: list,
                      file_spec, clear_files, upload_names: list, delete_uploads, *, oracle_observer_failed=False,
                      op_s: float = _slt_ownership.CLEANUP_OP_S,
@@ -1593,7 +1597,8 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
     each call gets ``op_s`` (``CLEANUP_OP_S``) and the whole teardown ``deadline_s``
     (``CLEANUP_DEADLINE_S``). A call that outlives its bound is recorded as failed, and the calls on other
     admins go on. It is not left running past the case: a later call on the same admin is deferred until
-    the other calls are done and then waits for it (one admin's client is never used from two threads),
+    the other calls are done and then runs once that admin is free, whatever another admin's call is still
+    doing (one admin's client is never used from two threads),
     and the teardown waits for it before returning, both while the deadline lasts, so the case keeps its
     in-use lock, and its database connections, until its deletes have ended. Once the deadline has passed,
     the calls left are recorded as not attempted, and a call still running is listed under "running": the
@@ -1668,12 +1673,20 @@ def teardown_unowned(admins: dict, ddl_files: list, tokens: dict, gcs_cleanup: l
             except Exception:
                 continue
             attempt(f"file-output {path}*", clear_files, path, owner=clear_files)
-    for subjects, fn, args, owner in deferred:
-        if wait_for(busy(owner)):
-            run_call(subjects, fn, args, owner)
+    # Each deferred call runs as soon as its own admin is free, in the order it was made on that admin:
+    # an admin whose call still hangs does not hold back another admin's.
+    while deferred:
+        ready = next((d for d in deferred if not busy(d[3])), None)
+        if ready is not None:
+            deferred.remove(ready)
+            run_call(*ready)
+        elif deadline.expired():
+            break
         else:
-            out["failed"].update({s: "not attempted: an earlier delete on the same admin was still running "
-                                     "at the teardown deadline" for s in subjects})
+            time.sleep(min(_DEFERRED_POLL_S, deadline.remaining()))
+    for subjects, _fn, _args, _owner in deferred:
+        out["failed"].update({s: "not attempted: an earlier delete on the same admin was still running "
+                                 "at the teardown deadline" for s in subjects})
     wait_for([t for _s, _o, t in abandoned])
     for subjects, _o, t in abandoned:
         if t.is_alive():

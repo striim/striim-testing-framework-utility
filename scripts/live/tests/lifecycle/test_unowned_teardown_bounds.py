@@ -174,6 +174,30 @@ def test_a_delete_still_running_at_the_deadline_is_reported_as_running(gate):
     assert other == ["t3"]                                   # another admin's delete still ran
 
 
+# --- a hung admin does not hold back another admin's deferred delete (review N2) ----------------------
+# Deferred calls ran in list order, each waiting for its own admin until the deadline, so a call on an
+# admin that freed early waited behind one on an admin that never did, and was never attempted.
+
+
+def test_a_deferred_delete_runs_once_its_own_admin_is_free_whatever_hangs_before_it(gate):
+    deleted = []
+
+    def slow_then_quick(topic):
+        if topic == "b1":
+            time.sleep(0.5)                                  # outlives its bound, then finishes
+        deleted.append(topic)
+    hung, slow = _admin(delete_topic=_hang(gate)), _admin(delete_topic=slow_then_quick)
+    started = time.monotonic()
+    out = teardown_unowned({}, [], {}, [], [(hung, "a1"), (slow, "b1"), (hung, "a2"), (slow, "b2")], None,
+                           lambda p: None, [], lambda n: None, op_s=0.2, deadline_s=2.0)
+    assert time.monotonic() - started < 5
+    assert deleted == ["b1", "b2"]                           # b2 ran once b1 ended, not after a1's deadline
+    assert "topic b2" not in out["failed"]
+    assert out["failed"]["topic a2"] == ("not attempted: an earlier delete on the same admin "
+                                         "was still running at the teardown deadline")
+    assert out["running"] == ["topic a1"]
+
+
 def test_a_case_whose_delete_is_still_running_stops_the_run():
     session = SimpleNamespace(shouldfail=False)
     from livetest.plugin import stop_if_teardown_running
