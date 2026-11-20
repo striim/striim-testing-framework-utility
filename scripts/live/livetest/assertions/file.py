@@ -149,7 +149,9 @@ def _has_later_value(text: str, start: int, n: int) -> bool:
     # starts. Every `{` from there on is tried, whatever string it may sit in: a stray quote in the
     # corrupt event, {"data":{"name":"a"b"}}, would put any tracking of strings out of step with the
     # text after it. Only a non-empty dict counts -- a bare string or number is not an event, and
-    # inside a well-formed string (every quote escaped) nothing but `{}` decodes as a dict.
+    # inside a torn string (every quote escaped) nothing but `{}` decodes as a dict. Text across
+    # adjacent strings can decode (`["x{",":1}"]` from its inner `{`), but such text lies before
+    # the error position, which is where the search starts.
     dec = json.JSONDecoder()
     try:
         dec.raw_decode(text, start)

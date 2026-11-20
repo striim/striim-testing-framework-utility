@@ -207,11 +207,12 @@ def test_a_call_started_near_the_deadline_is_not_cut_short(gate):
     deleted = []
 
     def slow(topic):
-        time.sleep(0.6)
+        time.sleep(0.5 if topic == "t1" else 1.5)
         deleted.append(topic)
     out = teardown_unowned({}, [], {}, [], [(_admin(delete_topic=slow), "t1"), (_admin(delete_topic=slow), "t2")],
-                           None, lambda p: None, [], lambda n: None, op_s=2.0, deadline_s=0.8)
-    assert deleted == ["t1", "t2"]                           # t2 started with 0.2 s left and finished
+                           None, lambda p: None, [], lambda n: None, op_s=3.0, deadline_s=1.5)
+    # t2 starts with about 1 s left and needs 1.5 s: it outlives the deadline and still finishes.
+    assert deleted == ["t1", "t2"]
     assert out["failed"] == {} and out["running"] == []
 
 

@@ -195,7 +195,15 @@ def test_the_switch_check_at_configure_does_not_need_livetest(monkeypatch):
     # The plugin treats livetest-dependent modules as optional (services may be None); the switch
     # check at configure falls back to the switches alone where livetest.service_env cannot be
     # imported, rather than failing the session at startup (review N4).
+    import livetest
     monkeypatch.setitem(sys.modules, "livetest.service_env", None)
+    # An already-imported livetest holds service_env as an attribute, which `from livetest import
+    # service_env` would return regardless of sys.modules; remove it so the import really fails.
+    monkeypatch.delattr(livetest, "service_env", raising=False)
+    calls = []
+    real = P.paths_mod.flag_problems
+    monkeypatch.setattr(P.paths_mod, "flag_problems", lambda env: calls.append(env) or real(env))
     assert P._switch_problems({"SLT_RUN_DISABLED": "1"}) == []
     problems = P._switch_problems({"SLT_RUN_DISABLED": "true"})
     assert len(problems) == 1 and "SLT_RUN_DISABLED='true'" in problems[0]
+    assert len(calls) == 2                                    # the fallback answered, not service_env
