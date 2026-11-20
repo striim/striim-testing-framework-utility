@@ -342,3 +342,22 @@ def test_a_build_walks_the_input_tree_once(project, monkeypatch, name, change):
     built, ran, reasons = _hermetic_build_jar(engine, project, monkeypatch)
     assert built.origin == ('reused' if change == 'unchanged' else 'built')
     assert len(walks) == 1
+
+
+@pytest.mark.parametrize('name', ENGINES)
+@pytest.mark.parametrize('change', ['edited', 'unchanged'])
+def test_an_input_gone_between_the_walk_and_its_digest_is_a_change_not_a_crash(project, monkeypatch, name, change):
+    # An editor's swap file under src/main is walked, then deleted before it is digested (review N5).
+    engine = _engine(name)
+    _built(engine, project)
+    if change == 'edited':
+        _edit(project.own)
+    swap = project.mod / 'src/main/java/m/.MyOp.java.swp'
+    real = engine.jarinputs.inputs
+    monkeypatch.setattr(engine.jarinputs, 'inputs', lambda d: real(d) + [swap])
+    built, ran, reasons = _hermetic_build_jar(engine, project, monkeypatch)
+    assert built.origin == 'built' and len(ran) == 1
+    monkeypatch.setattr(engine.jarinputs, 'inputs', real)
+    assert engine._stale_trigger(project.jar, project.mod) is None     # the record holds what was read
+    swap.write_text('back\n')
+    assert _same(engine._stale_trigger(project.jar, project.mod), swap)  # and one that returns is a change

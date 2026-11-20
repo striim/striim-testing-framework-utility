@@ -123,8 +123,15 @@ def _digest(path: Path) -> str:
 def digests(module_dir: Path, srcs: list[Path]) -> dict[str, str]:
     """Each input's content digest, as {path relative to the module dir: sha256}. A build takes
     these BEFORE it starts: an input saved while Maven runs may not be in the jar, and digests
-    taken afterwards would vouch for it."""
-    return {os.path.relpath(p, module_dir): _digest(p) for p in srcs}
+    taken afterwards would vouch for it. An input deleted since the walk (an editor's swap file)
+    is left out: Maven does not read it, and if it comes back it is an input the record lacks."""
+    recorded = {}
+    for p in srcs:
+        try:
+            recorded[os.path.relpath(p, module_dir)] = _digest(p)
+        except FileNotFoundError:
+            continue
+    return recorded
 
 
 def write_record(jar: Path, recorded: dict[str, str]) -> None:
@@ -155,9 +162,9 @@ def stale_trigger(jar: Path, module_dir: Path, srcs: list[Path]) -> Path | None:
 
     Returns the jar itself when it is missing, the record when there is no usable one (what the
     jar was built from is unknown), a recorded input that is gone (a path that does not exist),
-    the newest input that is newer than the jar or missing from the record, or else the first
-    input whose content no longer matches its recorded digest. Digests are computed only when
-    nothing cheaper has already made the jar stale.
+    an input deleted since `srcs` was walked, the newest input that is newer than the jar or
+    missing from the record, or else the first input whose content no longer matches its recorded
+    digest. Digests are computed only when nothing cheaper has already made the jar stale.
     """
     try:
         jar_mtime = jar.stat().st_mtime
@@ -170,11 +177,20 @@ def stale_trigger(jar: Path, module_dir: Path, srcs: list[Path]) -> Path | None:
     removed = sorted(set(recorded) - set(names.values()))
     if removed:
         return module_dir / removed[0]
-    newer = [p for p in srcs if p.stat().st_mtime > jar_mtime or names[p] not in recorded]
+    mtimes = {}
+    for p in srcs:
+        try:
+            mtimes[p] = p.stat().st_mtime
+        except FileNotFoundError:
+            return p                    # deleted since the walk: the input set changed
+    newer = [p for p in srcs if mtimes[p] > jar_mtime or names[p] not in recorded]
     if newer:
-        return max(newer, key=lambda p: p.stat().st_mtime)
+        return max(newer, key=mtimes.get)
     for p in sorted(srcs, key=lambda p: names[p]):
-        if _digest(p) != recorded[names[p]]:
+        try:
+            if _digest(p) != recorded[names[p]]:
+                return p
+        except FileNotFoundError:
             return p
     return None
 
