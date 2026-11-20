@@ -409,7 +409,7 @@ def deploy(client, tql, ns, name):
         log("delivered", table=table.replace("<TID>", TID), ids=ids)
 
 
-def read_files(ctx, path, run=None):
+def read_files(ctx, path, run=None, read_timeout=None):
     return "".join(v for k, v in sorted(FILES.items()) if k.startswith(path))
 
 

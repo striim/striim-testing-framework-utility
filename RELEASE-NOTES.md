@@ -95,7 +95,8 @@ the last release; the release makes it that version's entry.
   earlier exclusive runs that nothing owns, with the command to stop them. It is refused when its
   check for leftover containers of its own prefix fails or times out, instead of going ahead.
 - **Every Docker command has a bound:** 60 s for queries, 30 min for a copy of a `server_files`
-  file or an OP jar and for a read of a FileWriter output, 10 min for `compose down`, 3 h for
+  file or an OP jar and for a read of a FileWriter output (the file assertion's polling read keeps
+  60 s, so one hung read does not hold a poll for 30 min), 10 min for `compose down`, 3 h for
   `compose up`, 1 h for captured builds. A hung Docker daemon fails the step and says so instead of
   hanging. Waits for another process's bring-up lock are bounded too, and name the lock. A command
   that outlives its bound, or is interrupted, is stopped with every process it started (the Compose

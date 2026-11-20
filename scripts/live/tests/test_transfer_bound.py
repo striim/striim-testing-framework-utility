@@ -54,6 +54,17 @@ def test_reading_a_filewriter_output_uses_the_transfer_bound_for_the_read_only(d
     assert reads == [dockercmd.TRANSFER_TIMEOUT_S] * 2
 
 
+def test_a_polling_read_of_a_filewriter_output_runs_under_the_bound_it_names(docker):
+    # The file assertion polls this read within its own timeout; a hung read must not hold one
+    # poll for the transfer bound (review N1).
+    docker.replies[lambda a: "find" in a[-1]] = lambda a: types.SimpleNamespace(
+        returncode=0, stdout="/out/rows.json\n", stderr="")
+    striimfile.read_server_files(types.SimpleNamespace(mode="docker"), "/out/rows.json",
+                                 read_timeout=dockercmd.QUERY_TIMEOUT_S)
+    reads = [t for argv, t in docker.calls if argv[4:5] == ["-c"] and "cat" in argv[5]]
+    assert reads == [dockercmd.QUERY_TIMEOUT_S] * 2
+
+
 def test_placing_a_server_file_uses_the_transfer_bound_for_the_copy_only(docker, tmp_path):
     seed = tmp_path / "seed.csv"
     seed.write_text("a,b\n")

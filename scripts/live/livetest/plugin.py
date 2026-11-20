@@ -4086,7 +4086,8 @@ class LiveItem(pytest.Item):
                         for _fs in fspecs:
                             _fs["path"] = render(_fs["path"], tokens)
                         self._slt_records += assert_file(
-                            lambda p: read_server_files(ctx, p), fspecs, m.dir, timeout=m.timeout,
+                            lambda p: read_server_files(ctx, p, read_timeout=dockercmd.QUERY_TIMEOUT_S),
+                            fspecs, m.dir, timeout=m.timeout,
                             status_probe=_terminal_probe, progress=_hb("asserting file"), tokens=tokens)
                         ran = True
                     if m.assert_.get("gcs"):

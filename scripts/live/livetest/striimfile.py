@@ -111,12 +111,19 @@ def _join_files(parts) -> str:
     return "".join(out)
 
 
-def read_server_files(ctx, path: str, run=None) -> str:
+def read_server_files(ctx, path: str, run=None, read_timeout: float | None = None) -> str:
     # Content of <path>'s FileWriter output (see _output_names) from the Striim server, file by
     # file and node by node (see _join_files); "" when none exists yet. A failed listing or read
-    # raises StriimFileError.
+    # raises StriimFileError. The read runs under the transfer bound (the whole output, however
+    # large) unless `read_timeout` names another: a polling reader passes the query bound, so one
+    # hung read does not hold its poll for the transfer bound.
     _check(path)
-    read = run or dockercmd.transfer        # the whole output, however large
+    if run:
+        read = run
+    elif read_timeout is not None:
+        read = lambda argv: dockercmd.run(argv, timeout=read_timeout)   # noqa: E731
+    else:
+        read = dockercmd.transfer
     run = run or dockercmd.run
     if ctx.mode == "docker":
         parts = []
