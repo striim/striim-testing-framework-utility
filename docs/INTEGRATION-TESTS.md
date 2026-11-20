@@ -562,7 +562,8 @@ assert:
   family to null; `gc` gives a family one rule (`num_versions`, `age_millis`, `age_seconds` or
   `age_days`, a whole number above 0). Seed keys and values are UTF-8 text, or `0x<hex>` for bytes
   (unlike `match`, which is plain hex); only `table` is token-rendered. A `matrix:` case re-creates
-  the table before each run. The table is dropped at teardown, unless the case fails or
+  the table before each run, and a perf case re-creates it at every iteration's reset
+  ([internals/PERF_SPEC.md](internals/PERF_SPEC.md) §9, Database reset). The table is dropped at teardown, unless the case fails or
   `--slt-keep-resources`/`INT_KEEP_RESOURCES` keeps it. Needs `requires: [bigtable]`. A case with
   `variants:` refuses it for now: a variant's DDL goes through the variant's own route, and a
   Bigtable table is not yet part of that. The perf tier does not accept `setup:`.
