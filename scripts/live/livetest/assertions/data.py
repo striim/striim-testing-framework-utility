@@ -155,6 +155,7 @@ def sorted_rows_for_display(rows) -> list:
 DATA_SPEC_KEYS = frozenset({
     "target", "db", "target_db", "source_db", "min_rows", "rows", "match",
     "project", "keys", "ordered", "payload", "exact", "nothing", "audit", "stable_seconds",
+    "at_least_once",
 })
 
 
@@ -182,6 +183,23 @@ def parse_data_specs(raw: list) -> list[dict]:
             raise DataSpecError("data 'ordered' requires a boolean, project: kafka_record and match")
         if not any(k in spec for k in ("min_rows", "rows", "match")):
             raise DataSpecError(f"data spec {spec['target']!r} needs one of min_rows/rows/match")
+        if "at_least_once" in spec:
+            # A declaration, not a compare mode: the target may hold a row more than once by design
+            # (an at-least-once writer replayed after a restart), so its `match:` stays the
+            # distinct-set compare -- every expected row present, nothing else -- and a `recover:`
+            # case may keep it. A count would contradict it.
+            if spec["at_least_once"] is not True:
+                raise DataSpecError(
+                    f"data spec {spec['target']!r}: 'at_least_once' must be true when given")
+            if "match" not in spec:
+                raise DataSpecError(
+                    f"data spec {spec['target']!r}: 'at_least_once' needs 'match:' (the rows that "
+                    f"must each be present at least once)")
+            clash = [k for k in ("rows", "ordered", "exact") if k in spec]
+            if clash:
+                raise DataSpecError(
+                    f"data spec {spec['target']!r}: 'at_least_once' counts nothing, so it cannot be "
+                    f"combined with {', '.join(repr(k) for k in clash)}")
         if "min_rows" in spec:
             try:
                 min_rows = int(spec["min_rows"])

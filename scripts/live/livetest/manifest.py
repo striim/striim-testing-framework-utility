@@ -156,7 +156,8 @@ def _check_counted_specs(raw: dict, assert_, path, recover, expect_halt: bool) -
     """Load-time rules for data/file/diff specs whose compare cannot see a duplicate or a late row.
 
     * A `match:` with no cardinality pin compares distinct sets: warned, and refused under
-      `recover:`, whose point is what an interruption and retry left behind.
+      `recover:`, whose point is what an interruption and retry left behind -- unless the data
+      spec declares `at_least_once: true`, a target that may hold a row more than once by design.
     * `rows: 0` passes at the first poll that reads the target empty, which is also what an app
       that has not written yet looks like. It is refused unless something proves the app got that
       far: a positive spec on the same route (read in the same poll; a typed `exact:` spec runs to
@@ -171,7 +172,8 @@ def _check_counted_specs(raw: dict, assert_, path, recover, expect_halt: bool) -
         specs = assert_.get(kind)
         for i, spec in enumerate(specs if isinstance(specs, list) else []):
             if (not isinstance(spec, dict) or "match" not in spec or "nothing" in spec
-                    or "raw" in spec or _match_is_counted(kind, spec)):
+                    or "raw" in spec or _match_is_counted(kind, spec)
+                    or (kind == "data" and spec.get("at_least_once") is True)):
                 continue
             why = (f"assert.{kind}[{i}] 'match:' compares distinct sets, so a row written twice passes"
                    f" it; pin the count with {_CARDINALITY_PINS[kind]}")
