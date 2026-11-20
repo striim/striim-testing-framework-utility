@@ -40,7 +40,7 @@ BINDING_TOKENS = ("TID", "TID_UPPER", "TID_ORACLE", "NS", "APP", "APP_BARE", "PG
                   "RUN_ID", "WORKER", "ATTEMPT")          # plus every SENTINEL_* token
 _SPEC_KEYS = {"columns", "ignore", "order", "order_by", "strict_json"}
 _BLOCK_KEYS = {"version", "max_rows", "max_bytes"}
-_INCOMPATIBLE = ("rows", "min_rows", "ordered", "project")
+_INCOMPATIBLE = ("rows", "min_rows", "ordered", "project", "at_least_once")
 _TYPE = re.compile(r"^(text|number|integer|boolean|timestamptz|timestamp|date|json|binary:hex|binary:base64|decimal:(0|[1-9][0-9]?))$")
 _INT = re.compile(r"^-?[0-9]+$")
 _DEC = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$")

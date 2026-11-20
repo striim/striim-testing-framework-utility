@@ -33,7 +33,8 @@ the last release; the release makes it that version's entry.
 - **A data or file `match:` without a count warns at load, and is refused in a `recover:`
   case.** A `match:` without `rows:`, `ordered: true`, `events:`, `multiset: true` or `exact:`
   compares sets of rows, so a duplicated row passes. `striim-test doctor` shows the warning. Add
-  `rows: N` (the golden's row count) or `exact:`. `rows: 0` is refused unless the same route has
+  `rows: N` (the golden's row count) or `exact:`; a data target written at least once by design
+  declares `at_least_once: true` instead. `rows: 0` is refused unless the same route has
   a positive spec, or the case has `lifecycle:` or `expect_halt: true`.
 - **`assert.json` compares arrays in order, and integers and floats are distinct.** List the
   arrays whose order the writer does not fix under the new `unordered:` key (`items`,
