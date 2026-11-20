@@ -121,6 +121,43 @@ def test_recover_loads_a_counted_match_or_no_match(tmp_path, assert_):
     assert m.recover["mode"] == "stop" and seen == []
 
 
+def test_recover_loads_a_match_declared_at_least_once_without_a_warning(tmp_path):
+    # An audit branch written at least once is replayed after a restart by design: its match keeps
+    # the distinct-set compare (every row present, nothing else) and the recover case loads it.
+    m, seen = _load(_case(tmp_path, {"data": [_match(at_least_once=True)]}, recover={"mode": "kill"}))
+    assert m.recover["mode"] == "kill" and seen == []
+
+
+@pytest.mark.parametrize("spec,msg", [
+    (_match(at_least_once=False), "must be true"),
+    (_match(at_least_once="yes"), "must be true"),
+    ({"target": "s.t", "target_db": PG_T, "min_rows": 1, "at_least_once": True}, "needs 'match:'"),
+    (_match(at_least_once=True, rows=1), "cannot be combined with 'rows'"),
+])
+def test_at_least_once_is_refused_where_it_would_mean_nothing_or_contradict(tmp_path, spec, msg):
+    with pytest.raises(ManifestError, match=msg):
+        load_manifest(_case(tmp_path, {"data": [spec]}))
+
+
+def test_a_typed_exact_spec_refuses_at_least_once_at_load(tmp_path):
+    # The typed exact: path never runs parse_data_specs; canon refuses the combination itself.
+    path = _case(tmp_path, {"data": [_match(at_least_once=True, exact={})]}, exact={"version": 1},
+                 recover={"mode": "kill"})
+    with pytest.raises(ManifestError, match="at_least_once"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize("extra,named", [
+    ({"exact": True}, "'exact'"),
+    ({"ordered": True, "project": "kafka_record", "keys": ["value.id"], "target_db": "kafka"}, "'ordered'"),
+])
+def test_the_parser_refuses_at_least_once_with_a_count(extra, named):
+    from livetest.assertions.data import DataSpecError, parse_data_specs
+    spec = {"target": "s.t", "match": "expected/rows.csv", "at_least_once": True, **extra}
+    with pytest.raises(DataSpecError, match=f"cannot be combined with {named}"):
+        parse_data_specs([spec])
+
+
 # ---- FW-5: rows: 0 needs an anchor --------------------------------------------------------------
 
 def _zero(**over):

@@ -1977,7 +1977,11 @@ them, or with an unknown key, is refused at load. `match` compares
 *stringified* values; use `<null>` in the golden CSV for SQL/JSON null. By default it compares
 distinct sets, so a row written twice passes; pin the count with `rows: N` (or `ordered: true`, or
 `exact:`). A `match:` with none of those loads with a warning, which `striim-test doctor` shows,
-and a `recover:` case refuses it. A golden row's missing trailing cells
+and a `recover:` case refuses it. `at_least_once: true` declares a target that may hold a row
+more than once by design, such as an audit branch written at least once and replayed after a
+restart: its `match:` stays the distinct-set compare (every golden row present, nothing else),
+loads without the warning, and a `recover:` case accepts it. It needs `match:` and cannot be
+combined with `rows`, `ordered` or `exact`. A golden row's missing trailing cells
 are NULL (prefer `<null>`); a row with more cells than the header is refused.
 On mssql and teradata, `rows` and `min_rows` count committed rows only. If the writer still holds
 the table lock at `timeout`, the committed count is never read and the spec fails ("committed count

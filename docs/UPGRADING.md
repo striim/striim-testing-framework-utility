@@ -32,7 +32,9 @@ file changes, in both engines.
 
 A data or file `match:` with no `rows:`, `ordered: true`, `events:`, `multiset: true` or
 `exact:` now warns at load (`striim-test doctor` lists it) and is refused in a `recover:` case.
-Add `rows: N`, counting the golden's rows by hand, or `exact:`. A `rows: 0` spec needs a positive
+Add `rows: N`, counting the golden's rows by hand, or `exact:`. A data target written at least once
+by design (an audit branch replayed after a restart) keeps its distinct-set `match:` with
+`at_least_once: true`. A `rows: 0` spec needs a positive
 spec on the same route, a `lifecycle:` block or `expect_halt: true`.
 
 ### `assert.json` array order (breaking)
