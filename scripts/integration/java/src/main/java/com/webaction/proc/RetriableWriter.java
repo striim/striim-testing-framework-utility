@@ -152,6 +152,14 @@ public abstract class RetriableWriter {
                 "notifyException is not modelled by the integration tier", exception);
     }
 
+    /**
+     * The real method is {@code BaseProcess}'s (final, every release 5.0.6-5.4.4): wraps a
+     * {@code Throwable} for {@code notifyException}. OpenProcessorCommon calls it on a halt.
+     */
+    public final Exception transitionException(Throwable t) {
+        return t instanceof Exception ? (Exception) t : new Exception(t);
+    }
+
     /** Typed (non-WAEvent) input is never driven by this tier. */
     protected Event convertTypedeventToWAevent(Event event) {
         throw new UnsupportedOperationException(
