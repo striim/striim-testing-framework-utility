@@ -1,5 +1,6 @@
 """The `service_outage` action: stop a required service's container while the app runs, start it
-again (or have the service restart in place, signal RESTART), and watch the app ride it out.
+again (or have the service restart in place, signal RESTART), and watch the app ride it out;
+with `halts:`, wait for the app to halt while the service is down and restart it after.
 Like recovery.py it does not judge data; the test's assertions do. `run` is injectable for the
 docker calls, `client` for the status reads.
 """
@@ -267,11 +268,14 @@ def restore(container: str, run=None, ready_timeout: float = 120.0, poll: float 
 
 def cycle(container: str, signal: str, down_for: float, ready_timeout: float, wait,
           run=None, report=None, progress=None, graceful: tuple[str, float] | None = None,
-          restart: tuple[str, float] | None = None) -> None:
-    """Interrupt, `wait(down_for)`, restore. A failure before the restore still attempts one
-    (`docker start` is idempotent) so the shared container is not left down; if that fails too
-    it is reported and the original error propagates. RESTART instead runs `restart` (the
-    service's restart_in_place) and nothing else: the container never stops."""
+          restart: tuple[str, float] | None = None, while_down=None) -> None:
+    """Interrupt, `wait(down_for)`, `while_down(down_since)` if given, restore. A failure before
+    the restore (including in `while_down`) still attempts one (`docker start` is idempotent) so
+    the shared container is not left down; if that fails too it is reported and the original
+    error propagates. RESTART instead runs `restart` (the service's restart_in_place) and
+    nothing else: the container never stops, so `while_down` is refused with it."""
+    if while_down is not None and signal == "RESTART":
+        raise OutageError("signal RESTART takes nothing down, so there is no outage to wait in")
     if signal == "RESTART":
         if not restart:
             raise OutageError(f"signal RESTART needs the service's restart_in_place ({container})")
@@ -282,7 +286,10 @@ def cycle(container: str, signal: str, down_for: float, ready_timeout: float, wa
         interrupt(container, signal, run=run, report=report, progress=progress,
                   graceful=graceful)
         _say(report, f"service_outage: {container} down")
+        down_since = time.monotonic()
         wait(down_for)
+        if while_down is not None:
+            while_down(down_since)
         restoring = True
         restore(container, run=run, ready_timeout=ready_timeout, report=report,
                 progress=progress,
@@ -318,3 +325,97 @@ def watch_app(client, app: str, settle: float, poll: float = 2.0, report=None) -
             return now
         time.sleep(min(poll, left))
         now = client.current_status(app)
+
+
+# --- `halts:` -- the outage outlasts the writer's retries --------------------------------
+
+#: Where STOP APPLICATION must leave a halted app before `stop_start` STARTs it (CREATED, which
+#: needs a DEPLOY first, fails instead; see restart_halted).
+_STOPPED = frozenset({"DEPLOYED", "STOPPED"})
+
+
+def await_halt(client, app: str, contains: str, timeout: float, *, since: float | None = None,
+               log_tail=None, mode: str | None = None, report=None, progress=None,
+               poll: float = 2.0) -> str:
+    """Wait for `app` to reach a terminal status whose reason contains `contains`, through
+    assertions.halt.assert_halt (the `expect_halt` + `expect_halt_contains` check). `timeout`
+    counts from `since` (when the service went down) if given. Returns the passing detail;
+    raises OutageError naming the last status, or the missing text and the app's last log
+    lines."""
+    from livetest.assertions import AssertionFailed
+    from livetest.assertions.halt import _names, assert_halt, log_records
+
+    left = timeout if since is None else timeout - (time.monotonic() - since)
+    seen = {"text": ""}
+
+    def _read_log():
+        seen["text"] = log_tail() or ""
+        return seen["text"]
+
+    try:
+        recs = assert_halt(client, app, timeout=max(0, int(left)), poll=poll, progress=progress,
+                           contains=(contains,), log_tail=_read_log if log_tail else None, mode=mode)
+    except AssertionFailed as e:
+        msg = f"service_outage halts: {e}"
+        ns = app.split(".", 1)[0]
+        own = [r for r in log_records(seen["text"]) if _names(r, [ns])]
+        if own:
+            msg += f"; the last log record naming {ns}:\n{_tail(own[-1], lines=10)}"
+        raise OutageError(msg) from e
+    detail = recs[0].get("detail", "") if recs else ""
+    _say(report, f"service_outage: app halted ({detail})")
+    return detail
+
+
+def _await_status(client, app: str, wanted, timeout: float, poll: float):
+    """Poll until `app` reports a status in `wanted`; (True, status) or (False, last status)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        now = client.current_status(app)
+        if now in wanted:
+            return True, now
+        if time.monotonic() >= deadline:
+            return False, now
+        time.sleep(poll)
+
+
+def restart_halted(client, app: str, how: str, timeout: float, *, report=None, progress=None,
+                   poll: float = 2.0) -> str:
+    """Bring a halted `app` back to RUNNING. `stop_start`: from CRASH or HALT, START APPLICATION (the
+    platform refuses a STOP there); otherwise STOP APPLICATION, wait for DEPLOYED or STOPPED, START. `resume`: RESUME APPLICATION. Then wait for RUNNING. STOP and
+    START go through the REST API, which does not report a rejected command, so the status
+    waits are the proof each one took."""
+    from livetest import recovery
+
+    before = client.current_status(app)
+    if how == "resume":
+        _say(report, f"service_outage: RESUME APPLICATION {app} (now {before})")
+        client.resume_app(app)
+    elif how == "stop_start" and before in recovery._RESTARTABLE:
+        # CRASH and HALT take a START directly, as recover's restore does: the platform refuses a STOP
+        # of a crashed app ("application is TERMINATED") and the status never moves (live run 2026-11-23).
+        _say(report, f"service_outage: {app} {before}; START APPLICATION")
+        client.start_app(app)
+    elif how == "stop_start":
+        _say(report, f"service_outage: STOP APPLICATION {app} (now {before})")
+        client.stop_app(app)
+        ok, now = _await_status(client, app, _STOPPED | {"CREATED"}, timeout, poll)
+        if not ok:
+            raise OutageError(f"{app} did not stop within {timeout:.0f}s of STOP APPLICATION "
+                              f"from {before} (status now {now})")
+        if now == "CREATED":
+            raise OutageError(f"STOP APPLICATION left {app} CREATED (undeployed); restart "
+                              f"stop_start does not redeploy it")
+        _say(report, f"service_outage: {app} {now}; START APPLICATION")
+        client.start_app(app)
+        before = now
+    else:
+        raise OutageError(f"unknown halts restart {how!r}")
+    # START/RESUME are asynchronous; HALT is terminal to await_running, so wait to leave it first.
+    recovery._await_left_status(client, app, before, timeout=min(60.0, timeout), poll=poll)
+    try:
+        client.await_running(app, timeout=timeout, poll=poll, progress=progress)
+    except Exception as e:
+        raise OutageError(f"{app} did not reach RUNNING after {how}: {e}") from e
+    _say(report, f"service_outage: {app} RUNNING after {how}")
+    return "RUNNING"

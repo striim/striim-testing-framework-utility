@@ -71,7 +71,8 @@ _TOKEN_NAME = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 VALID_RECOVER_MODES = {"kill", "stop", "quiesce", "restart"}
 _RECOVER_KEYS = {"mode", "after", "settle", "expect_running", "times", "every", "trigger", "sentinel", "node", "app"}
 _SERVICE_OUTAGE_KEYS = {"type", "service", "cycles", "delay_before", "down_for", "signal",
-                        "ready_timeout", "settle", "concurrent"}
+                        "ready_timeout", "settle", "concurrent", "halts"}
+_SERVICE_OUTAGE_HALTS_KEYS = {"contains", "timeout", "restart"}
 _TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # `capture` (a step of its own, or a `capture:` entry of drop_recreate_app / alter_recompile)
 # and the two actions that rebuild an app while it is stopped.
@@ -1762,6 +1763,39 @@ def load_manifest(path: Path) -> TestManifest:
                         raise ManifestError(
                             f"{path}: action[{i}] signal RESTART needs service {so_service!r} "
                             f"to set 'restart_in_place' in its service.yaml")
+                so_halts = None
+                if "halts" in action:
+                    so_h = action["halts"]
+                    where = f"{path}: action[{i}] 'service_outage' halts"
+                    if not isinstance(so_h, dict):
+                        raise ManifestError(f"{where} must be a mapping, got {so_h!r}")
+                    unknown = sorted(str(k) for k in so_h if k not in _SERVICE_OUTAGE_HALTS_KEYS)
+                    if unknown:
+                        raise ManifestError(f"{where} has unknown key(s) {unknown} -- "
+                                            f"allowed: {sorted(_SERVICE_OUTAGE_HALTS_KEYS)}")
+                    if so_signal == "RESTART":
+                        raise ManifestError(
+                            f"{where} needs a signal that takes the service down (KILL, TERM or "
+                            f"PAUSE); RESTART returns once the server is back")
+                    if so_cycles != 1:
+                        raise ManifestError(
+                            f"{where} allows only cycles: 1: the halt reason is read from the "
+                            f"node log since deploy, so a later cycle would match the first "
+                            f"halt's text")
+                    so_contains = so_h.get("contains")
+                    if not isinstance(so_contains, str) or not so_contains.strip():
+                        raise ManifestError(f"{where} needs 'contains', a non-empty substring "
+                                            f"of the halt reason")
+                    so_timeout = _parse_zeroable_duration(so_h.get("timeout", 300),
+                                                          "halts.timeout", path)
+                    if so_timeout <= 0:
+                        raise ManifestError(f"{where} 'timeout' must be greater than 0")
+                    so_restart = so_h.get("restart", "resume")   # the platform asks for RESUME after a TERMINATED halt
+                    if so_restart not in ("stop_start", "resume"):
+                        raise ManifestError(f"{where} 'restart' must be stop_start or resume, "
+                                            f"got {so_restart!r}")
+                    so_halts = {"contains": so_contains, "timeout": so_timeout,
+                                "restart": so_restart}
                 action_specs.append({
                     "type": "service_outage",
                     "service": so_service,
@@ -1776,6 +1810,7 @@ def load_manifest(path: Path) -> TestManifest:
                     "settle": _parse_zeroable_duration(
                         action.get("settle", 30), "settle", path),
                     "concurrent": _parse_concurrent(action, i, path, requires),
+                    **({"halts": so_halts} if so_halts else {}),
                 })
             else:
                 raise ManifestError(f"{path}: action[{i}] unknown type {action_type!r}")

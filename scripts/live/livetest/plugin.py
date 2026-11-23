@@ -3952,9 +3952,11 @@ class LiveItem(pytest.Item):
                                 _so_graceful, _so_restart = outage.hooks_for(
                                     _so_svc, action_spec["signal"])
                                 _so_ops = action_spec.get("concurrent", [])
+                                _so_halts = action_spec.get("halts")
                                 _report(m.name, f"action: service_outage {_so_svc} "
                                                 f"({_so_cycles} cycles, {action_spec['signal']}"
-                                                f"{', graceful_stop' if _so_graceful else ''})")
+                                                f"{', graceful_stop' if _so_graceful else ''}"
+                                                f"{', halts' if _so_halts else ''})")
                                 _so_flag, _so_threads = _start_concurrent(_so_ops)
                                 try:
                                     for cycle in range(1, _so_cycles + 1):
@@ -3972,7 +3974,24 @@ class LiveItem(pytest.Item):
                                             progress=_hb(f"action: {_so_svc} "
                                                          f"{'restart' if _so_restart else 'stop/start'}"
                                                          f"{_tag}"),
-                                            graceful=_so_graceful, restart=_so_restart)
+                                            graceful=_so_graceful, restart=_so_restart,
+                                            while_down=None if not _so_halts else (
+                                                lambda since: outage.await_halt(
+                                                    client, app, _so_halts["contains"],
+                                                    _so_halts["timeout"], since=since,
+                                                    log_tail=lambda: _halt_log_tail(ctx, log_marks),
+                                                    mode=ctx.mode,
+                                                    report=lambda msg: _report(m.name, msg),
+                                                    progress=_hb(f"action: {_so_svc} down, "
+                                                                 f"waiting for the app to halt"))))
+                                        if _so_halts:
+                                            _report(m.name, f"action: {_so_svc} back; restarting "
+                                                            f"app ({_so_halts['restart']})")
+                                            outage.restart_halted(
+                                                client, app, _so_halts["restart"],
+                                                timeout=min(300, m.timeout),
+                                                report=lambda msg: _report(m.name, msg),
+                                                progress=_hb("action: waiting for app RUNNING"))
                                         _report(m.name, f"action: {_so_svc} back{_tag}; "
                                                         f"watching app {action_spec['settle']:.0f}s")
                                         _st = outage.watch_app(client, app, action_spec["settle"],

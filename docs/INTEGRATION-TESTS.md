@@ -788,6 +788,44 @@ their 1-based position in `target.input` (a skipped row carries every event that
 in the order the writer made them. The list must equal what the writer handed over exactly; `[]`
 asserts that nothing reached the store.
 
+### `assert.junit:` — the module's JUnit tests, against the case's services
+
+A unit test that needs a service (`@EnabledIfEnvironmentVariable(named = "BIGTABLE_EMULATOR_HOST")`)
+skips in the unit tier. `assert.junit:` runs it here, against the services the case provisions,
+and fails the case if it skips.
+
+<!-- snippet: shape integration-tier test.yaml keys -->
+```yaml
+name: bigtable-emulator-junit
+op:
+  jar: java/OpenProcessors/BigtableApiWriter
+requires: [bigtable]
+assert:
+  junit:
+    tests: '*EmulatorTest'          # surefire -Dtest pattern
+    min_tests: 8                    # default 1
+```
+
+- **How it runs.** After the services are up and `setup:`, `ddl:` and `seed:` have run, the engine
+  runs `mvn -q test -Dtest=<tests> -Dsurefire.failIfNoSpecifiedTests=false` in the module's
+  directory, under the module's build lock, with the build's environment (the release's variables,
+  its JDK) on top of the engine's own. Service variables the engine exports, such as
+  `BIGTABLE_EMULATOR_HOST`, reach the test JVM. No `clean`. When releases share a series, the tests
+  run in that release's build directory (`target/.releases/<version>`).
+- **What is read.** The `TEST-*.xml` reports this run wrote; earlier `TEST-*.xml` files in that
+  reports directory are removed first.
+- **The case fails** when Maven exits non-zero (the failing tests and the end of Maven's output are
+  shown), when any test is skipped (named: a skip means the service's environment did not reach
+  the JVM), or when fewer than `min_tests` tests ran.
+- **A missing build prerequisite** (`STRIIM_HOME`, `mvn`, the release's JDK) skips the case with
+  the cause `build`, which fails the run.
+- **Refused at load:** unknown keys, a `tests` that is empty or contains spaces, a `min_tests` that
+  is not a positive integer, a case without `op:` or without `requires:`, and `matrix:` or
+  `variants:` (the tests run once per case).
+- **It may be the only assertion.** Beside `target:`, `data:` or `expect_error:` it runs first, then
+  the drive.
+- The counts are added to the item's pytest `user_properties` (`junit`).
+
 ### `variants:` — one case, every database type
 
 The knob matrix cross-products *independent* flags. An **engine** is not independent: its URL,

@@ -376,6 +376,19 @@ class StriimClient:
                 raise StriimError(
                     f"QUIESCE APPLICATION {app} rejected: {failure.get('failureMessage')}")
 
+    def resume_app(self, app: str) -> None:
+        """RESUME APPLICATION, from HALT or TERMINATED. Through TQL, with the response checked
+        as quiesce_app does: a rejected RESUME is HTTP 200 with executionStatus "Failure"."""
+        try:
+            resp = self.api.post_tungsten_line(f"RESUME APPLICATION {app};")
+        except Exception as e:
+            raise StriimError(f"RESUME APPLICATION {app} failed: {e!r}") from e
+        if isinstance(resp, list):
+            failure = next((r for r in resp if r.get("executionStatus") == "Failure"), None)
+            if failure is not None:
+                raise StriimError(
+                    f"RESUME APPLICATION {app} rejected: {failure.get('failureMessage')}")
+
     def teardown(self, app: str, namespace: str | None = None) -> None:
         # Best-effort, never raises. stop + undeploy return the app to CREATED, then
         # DROP APPLICATION ... FORCE removes it regardless of state — including when a

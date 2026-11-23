@@ -258,6 +258,13 @@ the last release; the release makes it that version's entry.
 
 **New**
 
+- **`assert.junit:` runs a module's own JUnit tests in the integration tier**, against the services
+  the case requires, and fails the case when a test fails, any test skips, or fewer than
+  `min_tests` ran. Tests gated on a service variable such as `BIGTABLE_EMULATOR_HOST` skip in the
+  unit tier; this is where they run.
+- **`service_outage` can test retry exhaustion.** `halts: {contains, timeout, restart}` waits for
+  the app to halt with the given reason while the service is down, restores the service, restarts
+  the app (`RESUME` by default, or `STOP`+`START`), and leaves the data to the case's assertions.
 - **A failed integration teardown is shown and counted.** When a case's teardown cannot reset its
   Postgres objects or drop its Oracle or Spanner tables, the warning now reaches the terminal as
   it happens, the run ends with an "integration teardown left objects behind" section, and the
