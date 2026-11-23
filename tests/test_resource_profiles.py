@@ -728,6 +728,18 @@ def test_provision_build_input_records_are_not_assets(tmp_path):
                                             rp.select_profile("live", "demo", services_dir=root).assets}
 
 
+def test_deps_check_record_is_not_an_asset(tmp_path):
+    # The Striim deps check writes its record into the recipe root on the first live run (FW-57); git
+    # ignores it. Counted as an asset, it changed the profile's hash after that run (FW-117).
+    from livetest import striim_provision
+    root = _write(tmp_path / "services", DEMO)
+    before = rp.select_profile("live", "demo", services_dir=root)
+    _write(root, {f"demo/{striim_provision.DEPS_VERIFIED_FILE}": "{}\n"})
+    after = rp.select_profile("live", "demo", services_dir=root)
+    assert after.definition_hash == before.definition_hash
+    assert striim_provision.DEPS_VERIFIED_FILE not in {rel for rel, _m, _s in after.assets}
+
+
 @pytest.mark.parametrize("tier", ["live", "integration"])
 def test_absent_file_like_source_is_still_refused(tmp_path, tier):
     root = _write(tmp_path / "services", _mounting("./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro"))

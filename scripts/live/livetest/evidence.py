@@ -310,7 +310,9 @@ def source_identity(root, run=None) -> dict:
             if "not a git repository" in (head.stderr or "").lower():
                 return {"reason": "not-a-git-worktree"}
             return {"unreadable": f"git rev-parse HEAD rc {head.returncode}: {(head.stderr or '').strip()[:200]}"}
-        status = run(["git", "-C", root, "status", "--porcelain=v1", "-z"])
+        # --no-optional-locks: a read never writes the index, so a git killed by the timeout leaves no
+        # .git/index.lock in the user's checkout (FW-112).
+        status = run(["git", "--no-optional-locks", "-C", root, "status", "--porcelain=v1", "-z"])
         if status.returncode != 0:
             return {"unreadable": f"git status rc {status.returncode}: {(status.stderr or '').strip()[:200]}"}
     except subprocess.TimeoutExpired:

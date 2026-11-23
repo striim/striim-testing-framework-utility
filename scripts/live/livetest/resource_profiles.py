@@ -57,9 +57,11 @@ _DEFAULT_COMPOSE = "compose.yaml"
 # .gitignore ignores them too).
 _EXCLUDED_DIRS = frozenset({"deps", "__pycache__"})
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".log", ".DS_Store")
-# Build-input records striim_provision writes into the striim recipe's files/ at provision time.
+# Build-input records striim_provision writes into the striim recipe at provision time, and the deps
+# check's record (striim_provision.DEPS_VERIFIED_FILE) in its root.
 _EXCLUDED_PATHS = frozenset({"images/striim/files/slt-optional-jars.json",
-                             "images/striim/files/slt-installer-identity.json"})
+                             "images/striim/files/slt-installer-identity.json",
+                             ".slt-sha256-verified.json"})
 
 # Build inputs a Dockerfile bind-mounts that the CONSUMER supplies (verified through SLT_STRIIM_DEPS_MANIFEST and staged into the owned workspace).
 _EXTERNAL_BUILD_INPUTS = frozenset({"deps"})

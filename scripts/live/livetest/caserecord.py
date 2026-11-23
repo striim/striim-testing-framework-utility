@@ -73,7 +73,9 @@ def store_dir(project_root, env=None) -> Path | None:
 def git_state(root) -> dict:
     """``{"head", "dirty"}`` of the worktree at ``root``, or ``{"unreadable": why}``."""
     def run(*args):
-        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+        # --no-optional-locks: `status` never writes the index, so a git killed by the timeout leaves no
+        # .git/index.lock in the user's checkout (FW-112).
+        return subprocess.run(["git", "--no-optional-locks", "-C", str(root), *args], capture_output=True, text=True,
                               timeout=GIT_TIMEOUT_S)
     try:
         head = run("rev-parse", "HEAD")
