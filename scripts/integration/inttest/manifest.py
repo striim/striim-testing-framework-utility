@@ -185,6 +185,15 @@ class JmxSpec:
 
 
 @dataclass(frozen=True)
+class JunitSpec:
+    """Normalized `assert.junit:` block: the module's own JUnit tests, run by Maven against the
+    services the case provisions. `tests` is surefire's `-Dtest` pattern; at least `min_tests` must
+    run, and none may skip."""
+    tests: str
+    min_tests: int = 1
+
+
+@dataclass(frozen=True)
 class AssertSpec:
     """Normalized `assert:` block. `data` is the list of DataAssertion pairs (empty if
     the block only declares `smoke: true`); `smoke` defaults to False. `gcs_objects` is
@@ -208,6 +217,7 @@ class AssertSpec:
     # one inner list per notification, in order. `[]` asserts NOTHING reached the store.
     exception_store: list | None = None
     jmx: JmxSpec | None = None                        # MBean attributes after the drive
+    junit: JunitSpec | None = None                    # the module's JUnit tests, run against the services
 
 
 @dataclass(frozen=True)
@@ -619,7 +629,7 @@ def _normalize_field_paths(item: dict, key: str, idx: int, path) -> tuple:
 
 
 _ASSERT_TIERS = {"smoke", "data", "gcs_objects", "target", "expect_error", "expect_log", "monitor",
-                 "jmx", "acked", "restarts", "replayed", "exception_store"}
+                 "jmx", "acked", "restarts", "replayed", "exception_store", "junit"}
 
 
 _TOO_BROAD = {"error", "exception", "failed", "failure"}
@@ -937,8 +947,11 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
     replayed = _normalize_target_count(raw, "replayed", is_target, path)
     exception_store = _normalize_exception_store(raw, is_target, path)
 
+    junit = _normalize_junit(raw.get("junit"), path)
+
     if (not data and not smoke and not target and acked is None
-            and restarts is None and replayed is None and expect_error is None and not monitor):
+            and restarts is None and replayed is None and expect_error is None and not monitor
+            and junit is None):
         # ⚠ `expect_log` is DELIBERATELY not enough on its own, and this branch is where that is
         # decided. A log-only case proves the operator SAID something without proving it DID
         # anything -- and a warning is emitted on a run that otherwise succeeds, so "warned" only
@@ -991,7 +1004,33 @@ def _normalize_assert(raw, test_dir: Path, path, *, is_source: bool = False,
     return AssertSpec(data=data, smoke=smoke, gcs_objects=gcs_objects, target=target, acked=acked,
                       restarts=restarts, replayed=replayed, expect_error=expect_error,
                       expect_log=expect_log, monitor=monitor, exception_store=exception_store,
-                      jmx=jmx)
+                      jmx=jmx, junit=junit)
+
+
+_JUNIT_KEYS = {"tests", "min_tests"}
+
+
+def _normalize_junit(raw, path) -> JunitSpec | None:
+    """`assert.junit:` -- see JunitSpec. The case-level rules (`op:`, `requires:`) are in
+    `load_manifest`."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ManifestError(f"{path}: 'assert.junit' must be a mapping with 'tests:'")
+    unknown = sorted(str(k) for k in set(raw) - _JUNIT_KEYS)
+    if unknown:
+        raise ManifestError(
+            f"{path}: 'assert.junit' has unknown key(s) {unknown} -- allowed: {sorted(_JUNIT_KEYS)}")
+    tests = raw.get("tests")
+    if not isinstance(tests, str) or not tests.strip() or any(c.isspace() for c in tests):
+        raise ManifestError(
+            f"{path}: 'assert.junit.tests' must be a non-empty surefire -Dtest pattern with no "
+            f"spaces (e.g. '*EmulatorTest'), got {tests!r}")
+    min_tests = raw.get("min_tests", 1)
+    if isinstance(min_tests, bool) or not isinstance(min_tests, int) or min_tests < 1:
+        raise ManifestError(
+            f"{path}: 'assert.junit.min_tests' must be a positive integer, got {min_tests!r}")
+    return JunitSpec(tests=tests, min_tests=min_tests)
 
 
 _JMX_KEYS = {"attributes", "bean"}
@@ -2001,6 +2040,22 @@ def load_manifest(path) -> TestManifest:
     if assert_.jmx is not None and udf is not None:
         raise ManifestError(
             f"{path}: 'assert.jmx' is supported for 'op:' cases only -- a UDF has no MBean")
+    if assert_.junit is not None:
+        # The tests are the module's own, run by Maven in its directory: `op:` names the module.
+        if op is None:
+            raise ManifestError(
+                f"{path}: 'assert.junit' needs 'op:' -- it runs that module's JUnit tests")
+        # Without a service the tests would run as in the unit tier, which already runs them.
+        if not requires:
+            raise ManifestError(
+                f"{path}: 'assert.junit' needs 'requires:' to name the services the tests reach "
+                f"(e.g. 'requires: [bigtable]') -- without one the unit tier already runs them")
+        # The tests run once per case; per-run axes would be declared and inert.
+        if variants or matrix:
+            raise ManifestError(
+                f"{path}: 'assert.junit' cannot be combined with "
+                f"'{'variants' if variants else 'matrix'}:' -- the tests run once per case, not "
+                f"once per run. Give each configuration its own case.")
     # A target writes to a real database, so a case without one is asserting against nothing.
     # `requires:` is what provisions it, and an unprovisioned route fails deep inside a JDBC
     # connect with a message about a refused port rather than about a missing service.

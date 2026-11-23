@@ -1008,6 +1008,10 @@ action:
     signal: KILL        # optional, default KILL -- KILL | TERM | RESTART | PAUSE
     ready_timeout: 120  # optional, default 120 -- wait for healthy after docker start (or unpause)
     settle: 30          # optional, default 30 -- app status watched after each restore
+    halts:              # optional -- the app must halt while the service is down (retry exhaustion)
+      contains: 'retries exhausted'   # required; substring of the halt reason
+      timeout: 300                    # optional, default 300 -- counted from when the service is down
+      restart: stop_start             # optional, default stop_start -- stop_start | resume
 ```
 
 | key | meaning |
@@ -1017,12 +1021,13 @@ action:
 | `delay_before`, `down_for`, `ready_timeout`, `settle` | durations (`3`, `"500ms"`, `"2m"`); `0` is legal |
 | `signal` | `KILL`: `docker kill -s KILL`, no shutdown at all. `TERM`: graceful stop via `docker stop`, which sends the image's stop signal and KILLs after the grace period. The postgres image's stop signal is SIGINT, a fast shutdown that sends `57P01` (admin_shutdown) to every session, so the app sees a different error than under `KILL`. A service whose PID 1 ignores that signal sets `graceful_stop` (see `YOUR-OWN-SERVICES.md`); `TERM` then runs it in the container and waits up to `graceful_stop_timeout` for the container to exit, and fails the test (after a KILL) if it does not. mssql sets it: its PID 1 is a bash wrapper, so `docker stop` would end in SIGKILL. `RESTART`: the container keeps running; the service's `restart_in_place` command (see `YOUR-OWN-SERVICES.md`) restarts the server inside it and returns once it is back, for a server whose container cannot be stopped without harm (the Teradata VM). The manifest fails to load if the service has no `restart_in_place`, and refuses `down_for` and `ready_timeout`. A hook that fails or does not return within `restart_in_place_timeout` fails the test and leaves the container running: it is never KILLed. `PAUSE`: `docker pause` freezes every process in the container and keeps its state; the run confirms the container is paused (not that it stopped), and the restore is `docker unpause`. Nothing shuts down and no connection is reset, so the app sees the service hang rather than go away |
 | `concurrent` | as for `stop_start_cycle`: SQL loops on background threads for the whole action. Errors on a route of the stopped `service` are expected and do not fail the case; each loop must still succeed at least once |
+| `halts` | the outage outlasts the app's retries. While the service is down, wait up to `timeout` (counted from when it went down; `down_for` still applies as a minimum) for the app to reach a terminal status (HALT, CRASH, TERMINATED, DEPLOY_FAILED) whose reason contains `contains`. The reason is checked as `expect_halt_contains` checks it: Docker mode reads it from the app-node log records that name `${NS}`; native mode does not check it and says so in the action output. Then the service is restored and the app restarted: `stop_start` runs `STOP APPLICATION`, waits for DEPLOYED or STOPPED, then `START APPLICATION`; `resume` runs `RESUME APPLICATION`. The app must reach RUNNING, then `settle` applies as usual. A timeout, a missing substring, a STOP that leaves the app anything else (CREATED included) or an app that does not reach RUNNING fails the case. Only with `signal` KILL, TERM or PAUSE and `cycles: 1`: a later cycle would read the first halt's text in the log |
 
 Per cycle: wait `delay_before`, stop the container and confirm it is not running, wait `down_for`,
 `docker start` it and wait for its healthcheck to report healthy (5 s after running if it has
 none), then re-read the app status for `settle` seconds. An app that leaves RUNNING (COMPLETED is
 accepted) fails the test. If a step fails before the restart (including Ctrl-C), the container is
-still started (with `PAUSE`, unpaused) before the error is reported. With `signal: PAUSE` the stop
+still started (with `PAUSE`, unpaused) before the error is reported. With `halts:`, the wait after `down_for` lasts until the app halts, the service is then started, the app restarted, and the settle begins once it is RUNNING. The container is started even when the halt check fails. With `signal: PAUSE` the stop
 is `docker pause` and the start is `docker unpause`; `down_for`, `ready_timeout` and `settle` apply
 as for a stop. With `signal: RESTART` the stop, `down_for` and
 `docker start` are replaced by the one `restart_in_place` call; the settle is the same. A

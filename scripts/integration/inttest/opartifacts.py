@@ -603,3 +603,163 @@ def build_jar(module_ref: str, release: dict, run=None, report=None) -> BuiltArt
         raise OpBuildFailed(str(e)) from None
     _write_source_record(jar, module_dir, started_from)
     return BuiltArtifact(path=jar, name=jar.name, op_name=op_name_for(jar.name, suffix), origin="built")
+
+
+# --- assert.junit: the module's own JUnit tests, against the services the case provisions --------
+
+@dataclass(frozen=True)
+class JUnitResult:
+    """What one `mvn test` run did, read from the surefire reports it wrote."""
+    returncode: int
+    tests: int = 0
+    failures: int = 0
+    errors: int = 0
+    skipped: int = 0
+    failed: tuple = ()        # "Class.method" of each failing or erroring test
+    skipped_names: tuple = ()  # "Class.method" (or the class) of each skipped test
+    unreadable: tuple = ()    # report files that could not be parsed
+    output: str = ""          # Maven's stdout and stderr
+    reports: str = ""         # the surefire reports directory read
+
+    @property
+    def ran(self) -> int:
+        return self.tests - self.skipped
+
+
+def _write_release_pom(module_dir: Path, output: Path) -> Path:
+    """A temporary POM beside the module's, building into `output`: the directory
+    `opjarrelease.release_runner` builds this release's jar into, so the tests compile and run
+    against the same release's classes. Named with opjarrelease's prefix, so a POM left by a killed
+    run is removed as theirs are."""
+    import tempfile
+    import xml.etree.ElementTree as ET
+    opjarrelease._remove_abandoned_poms(module_dir)
+    tree = ET.parse(module_dir / "pom.xml")
+    project = tree.getroot()
+    ns = project.tag.removesuffix("project")
+    if ns:
+        ET.register_namespace("", ns[1:-1])
+    build = project.find(ns + "build")
+    if build is None:
+        build = ET.SubElement(project, ns + "build")
+    directory = build.find(ns + "directory")
+    if directory is None:
+        directory = ET.SubElement(build, ns + "directory")
+    directory.text = str(output)
+    with tempfile.NamedTemporaryFile(prefix=f"{opjarrelease._POM_PREFIX}{os.getpid()}-",
+                                     suffix=".xml", dir=module_dir, delete=False) as f:
+        pom = Path(f.name)
+    tree.write(pom, encoding="utf-8", xml_declaration=True)
+    return pom
+
+
+def _read_surefire_reports(reports: Path) -> dict:
+    import xml.etree.ElementTree as ET
+    out = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0,
+           "failed": [], "skipped_names": [], "unreadable": []}
+    for report in sorted(reports.glob("TEST-*.xml")):
+        try:
+            root = ET.parse(report).getroot()
+        except (ET.ParseError, OSError):
+            out["unreadable"].append(report.name)
+            continue
+        for suite in root.iter("testsuite"):
+            for key in ("tests", "failures", "errors", "skipped"):
+                try:
+                    out[key] += int(suite.get(key) or 0)
+                except ValueError:
+                    out["unreadable"].append(report.name)
+            for case in suite.findall("testcase"):
+                name = ".".join(n for n in (case.get("classname"), case.get("name")) if n)
+                if case.find("failure") is not None or case.find("error") is not None:
+                    out["failed"].append(name)
+                if case.find("skipped") is not None:
+                    out["skipped_names"].append(name)
+    return out
+
+
+def run_module_tests(module_ref: str, release: dict, pattern: str, run=None) -> JUnitResult:
+    """Run `module_ref`'s JUnit tests matching `pattern` (surefire's -Dtest) with Maven, in the
+    environment `build_jar` builds in (the release's variables, STRIIM_HOME checked, the release's
+    JDK) on top of this process's, so a service variable the engine exported (BIGTABLE_EMULATOR_HOST)
+    reaches the forked test JVM. MAVEN_OPTS, and with it a lane's local repository, comes from the
+    environment as for `build_jar`. No `clean`: the case's `build_jar` has just brought the
+    module's output up to date for this release.
+
+    Only this run's reports are read: the `TEST-*.xml` files in the reports directory are removed
+    first, and nothing else is. The caller holds the module's build lock.
+
+    Raises OpModuleMissing for a module directory that does not exist, OpArtifactError for a
+    missing build prerequisite (no STRIIM_SERIES, STRIIM_HOME without the release, no JDK for it)
+    and FileNotFoundError when `mvn` is not installed."""
+    module_dir = _root() / _module_dir(module_ref)
+    series = release.get("STRIIM_SERIES")
+    if not series:
+        raise OpArtifactError(f"release is missing STRIIM_SERIES: {release!r}")
+    if not module_dir.is_dir():
+        raise OpModuleMissing(
+            f"module directory {module_dir} does not exist -- check the case's module reference "
+            f"{module_ref!r}")
+    build_env = {**os.environ, **{k: str(v) for k, v in release.items() if v is not None}}
+    _verify_striim_home(build_env, release)
+    java_release = release.get("JAVA_RELEASE")
+    if java_release:
+        java_home = resolve_build_java_home(str(java_release))
+        if java_home:
+            build_env["JAVA_HOME"] = java_home
+    argv = ["mvn", "-q", "test", f"-Dtest={pattern}", "-Dsurefire.failIfNoSpecifiedTests=false"]
+    # Where build_jar's output is: target/, or, when releases share a series, the release's own
+    # build directory (opjarrelease.release_runner).
+    versions = opjarrelease.configured_versions(_root())
+    isolated = opjarrelease.jar_suffix(release, versions) != series or len(versions) > 1
+    output = (module_dir / "target" / ".releases" / release["STRIIM_VERSION"] if isolated
+              else module_dir / "target")
+    reports = output / "surefire-reports"
+    for old in reports.glob("TEST-*.xml"):
+        old.unlink(missing_ok=True)
+    run = run or _default_run
+    pom = None
+    try:
+        if isolated:
+            try:
+                pom = _write_release_pom(module_dir, output)
+            except Exception as e:   # noqa: BLE001 -- an unreadable pom fails the run, as mvn would
+                return JUnitResult(returncode=1, output=f"cannot read {module_dir / 'pom.xml'}: {e}",
+                                   reports=str(reports))
+            argv += ["-f", str(pom)]
+        r = run(argv, str(module_dir), build_env)
+    finally:
+        if pom is not None:
+            pom.unlink(missing_ok=True)
+    text = (getattr(r, "stdout", "") or "") + (getattr(r, "stderr", "") or "")
+    counts = _read_surefire_reports(reports)
+    return JUnitResult(returncode=getattr(r, "returncode", 1), tests=counts["tests"],
+                       failures=counts["failures"], errors=counts["errors"],
+                       skipped=counts["skipped"], failed=tuple(counts["failed"]),
+                       skipped_names=tuple(counts["skipped_names"]),
+                       unreadable=tuple(counts["unreadable"]), output=text, reports=str(reports))
+
+
+def junit_problems(result: JUnitResult, min_tests: int) -> list[str]:
+    """Why `result` fails an `assert.junit` case; empty when it passes. A skipped test fails it: in
+    this tier a skip means the service's environment did not reach the test JVM."""
+    problems = []
+    if result.returncode != 0:
+        named = f"; failing: {', '.join(result.failed)}" if result.failed else ""
+        problems.append(f"mvn test exited {result.returncode}{named}\n"
+                        f"--- mvn output (tail) ---\n{result.output[-1500:]}")
+    elif result.failed:
+        problems.append(f"failing tests: {', '.join(result.failed)}")
+    if result.unreadable:
+        problems.append(f"unreadable surefire report(s) in {result.reports}: "
+                        f"{', '.join(result.unreadable)}")
+    if result.skipped:
+        names = ", ".join(result.skipped_names) or "(not named in the reports)"
+        problems.append(
+            f"{result.skipped} test(s) skipped: {names}. A skip here means the service's "
+            f"environment (e.g. BIGTABLE_EMULATOR_HOST) did not reach the test JVM, or the "
+            f"tests are disabled; either way they did not test the service")
+    if result.ran < min_tests:
+        problems.append(f"{result.ran} test(s) ran, fewer than min_tests {min_tests} "
+                        f"(reports: {result.reports})")
+    return problems

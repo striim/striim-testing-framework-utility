@@ -648,3 +648,202 @@ def test_cycle_pause_that_failed_leaves_a_running_container_alone():
         outage.cycle("c1", "PAUSE", 5.0, 0.0, wait=lambda _s: None, run=run)
     verbs = [c[1] for c in run.calls if c[1] in ("pause", "unpause", "start")]
     assert verbs == ["pause"]
+
+
+# --- halts: -----------------------------------------------------------------------------
+
+_HALTS = "  - type: service_outage\n    service: postgres\n"
+
+
+def test_halts_parses_with_defaults(tmp_path):
+    m = _load(tmp_path, _HALTS + "    halts: {contains: retries exhausted}\n")
+    assert m.action_specs[0]["halts"] == {
+        "contains": "retries exhausted", "timeout": 300.0, "restart": "stop_start"}
+
+
+def test_halts_parses_all_fields(tmp_path):
+    m = _load(tmp_path, _HALTS + "    signal: PAUSE\n"
+                       "    halts: {contains: x, timeout: 2m, restart: resume}\n")
+    assert m.action_specs[0]["halts"] == {"contains": "x", "timeout": 120.0, "restart": "resume"}
+
+
+def test_no_halts_key_without_halts(tmp_path):
+    assert "halts" not in _load(tmp_path, _HALTS).action_specs[0]
+
+
+@pytest.mark.parametrize("extra,match", [
+    ("    signal: RESTART\n    halts: {contains: x}\n", "takes the service down"),
+    ("    cycles: 2\n    halts: {contains: x}\n", "only cycles: 1"),
+    ("    halts: {contains: x, retries: 3}\n", "unknown key"),
+    ("    halts: {contains: ''}\n", "non-empty substring"),
+    ("    halts: {contains: '  '}\n", "non-empty substring"),
+    ("    halts: {timeout: 10}\n", "non-empty substring"),
+    ("    halts: {contains: x, timeout: 0}\n", "greater than 0"),
+    ("    halts: {contains: x, timeout: soon}\n", "halts.timeout"),
+    ("    halts: {contains: x, restart: bounce}\n", "stop_start or resume"),
+    ("    halts: x\n", "must be a mapping"),
+])
+def test_halts_rejects(tmp_path, monkeypatch, extra, match):
+    # RESTART's own hook check must not be what refuses it.
+    monkeypatch.setattr("livetest.registry.load_service",
+                        lambda *a, **k: type("D", (), {"restart_in_place": "x"})())
+    with pytest.raises(ManifestError, match=match):
+        _load(tmp_path, _HALTS + extra)
+
+
+class HaltClient:
+    """Status queue (last repeats) plus a log of control calls; status changes on stop/start/resume."""
+    def __init__(self, statuses, after=None):
+        self.statuses = list(statuses)
+        self.after = after or {}
+        self.calls = []
+
+    def current_status(self, app):
+        return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+
+    def _do(self, verb):
+        self.calls.append(verb)
+        if verb in self.after:
+            self.statuses = list(self.after[verb])
+
+    def stop_app(self, app):
+        self._do("stop")
+
+    def start_app(self, app):
+        self._do("start")
+
+    def resume_app(self, app):
+        self._do("resume")
+
+    def await_running(self, app, timeout, poll=2.0, progress=None):
+        from livetest.striim import StriimClient
+        StriimClient.await_running(self, app, timeout, poll=0)
+
+
+_LOG = ("2026-11-23 10:00:00 ERROR ns1.app BigtableWriter: retries exhausted after 3 attempts\n"
+        "2026-11-23 10:00:01 INFO other.app something else\n")
+
+
+def _halt_cycle(client, log=_LOG, timeout=0.0, run=None):
+    run = run or FakeRun(inspect=("false", "healthy|true"))
+    said = []
+    outage.cycle("c1", "KILL", 0.0, 0.0, wait=lambda s: None, run=run, report=said.append,
+                 while_down=lambda since: outage.await_halt(
+                     client, "ns1.app", "retries exhausted", timeout, since=since,
+                     log_tail=lambda: log, mode="docker", report=said.append, poll=0))
+    return run, said
+
+
+def test_halts_reached_then_stop_start_to_running():
+    c = HaltClient(["HALT"], after={"stop": ["STOPPING", "STOPPED"],
+                                    "start": ["STARTING", "RUNNING"]})
+    run, said = _halt_cycle(c)
+    assert run.calls.count(_START) == 1
+    assert any("retries exhausted" in m and "halted" in m for m in said)
+    assert outage.restart_halted(c, "ns1.app", "stop_start", 5, poll=0) == "RUNNING"
+    assert c.calls == ["stop", "start"]
+    assert outage.watch_app(c, "ns1.app", settle=0, poll=0) == "RUNNING"
+
+
+def test_halts_resume_to_running():
+    c = HaltClient(["HALT"], after={"resume": ["RUNNING"]})
+    assert outage.restart_halted(c, "ns1.app", "resume", 5, poll=0) == "RUNNING"
+    assert c.calls == ["resume"]
+
+
+def test_halts_restart_order_is_interrupt_halt_restore():
+    # The halt is checked while the service is down: before docker start.
+    order = []
+    fake = FakeRun(inspect=("false", "healthy|true"))
+
+    def run(argv):
+        order.append(argv[1])
+        return fake(argv)
+    c = HaltClient(["HALT"])
+    outage.cycle("c1", "KILL", 0.0, 0.0, wait=lambda s: None, run=run,
+                 while_down=lambda since: (order.append("halt"), outage.await_halt(
+                     c, "ns1.app", "retries exhausted", 0, since=since,
+                     log_tail=lambda: _LOG, mode="docker", poll=0)))
+    assert order.index("kill") < order.index("halt") < order.index("start")
+
+
+def test_halts_never_halts_fails_and_restores():
+    c = HaltClient(["RUNNING"])
+    with pytest.raises(OutageError, match=r"still non-terminal: ns1.app=RUNNING") as ei:
+        _halt_cycle(c)
+    assert "service_outage halts" in str(ei.value)
+
+
+def test_halts_never_halts_still_starts_the_container():
+    run = FakeRun(inspect=("false", "healthy|true"))
+    with pytest.raises(OutageError):
+        _halt_cycle(HaltClient(["RUNNING"]), run=run)
+    assert run.calls.count(_START) == 1
+
+
+def test_halts_wrong_reason_fails_names_it_and_restores():
+    run = FakeRun(inspect=("false", "healthy|true"))
+    log = "2026-11-23 10:00:00 ERROR ns1.app BigtableWriter: permission denied\n"
+    with pytest.raises(OutageError, match="missing \\['retries exhausted'\\]") as ei:
+        _halt_cycle(HaltClient(["HALT"]), log=log, run=run)
+    assert "permission denied" in str(ei.value)
+    assert run.calls.count(_START) == 1
+
+
+def test_halts_reason_in_another_namespace_does_not_count():
+    log = "2026-11-23 10:00:00 ERROR other.app retries exhausted\n"
+    with pytest.raises(OutageError, match="missing"):
+        _halt_cycle(HaltClient(["HALT"]), log=log)
+
+
+def test_halts_timeout_counts_from_down_since(monkeypatch):
+    seen = {}
+
+    def fake_assert_halt(client, app, timeout, **k):
+        seen["timeout"] = timeout
+        return [{"detail": "ok"}]
+    monkeypatch.setattr("livetest.assertions.halt.assert_halt", fake_assert_halt)
+    outage.await_halt(HaltClient(["HALT"]), "ns1.app", "x", 300,
+                      since=outage.time.monotonic() - 100, log_tail=lambda: "")
+    assert 198 <= seen["timeout"] <= 200
+
+
+def test_halts_stop_that_never_settles_fails():
+    c = HaltClient(["HALT"])
+    with pytest.raises(OutageError, match="did not stop .* from HALT \\(status now HALT\\)"):
+        outage.restart_halted(c, "ns1.app", "stop_start", 0, poll=0)
+    assert c.calls == ["stop"]
+
+
+def test_halts_stop_that_undeploys_fails():
+    c = HaltClient(["HALT"], after={"stop": ["CREATED"]})
+    with pytest.raises(OutageError, match="CREATED"):
+        outage.restart_halted(c, "ns1.app", "stop_start", 5, poll=0)
+    assert c.calls == ["stop"]
+
+
+def test_halts_restart_that_stays_halted_fails():
+    c = HaltClient(["HALT"])
+    with pytest.raises(OutageError, match="did not reach RUNNING after resume"):
+        outage.restart_halted(c, "ns1.app", "resume", 0, poll=0)
+
+
+def test_cycle_refuses_while_down_with_restart():
+    with pytest.raises(OutageError, match="RESTART"):
+        outage.cycle("c1", "RESTART", 0, 0, wait=lambda s: None, restart=("x", 1),
+                     while_down=lambda s: None)
+
+
+def test_resume_app_checks_the_response():
+    from livetest.striim import StriimClient, StriimError
+    c = StriimClient.__new__(StriimClient)
+    sent = []
+
+    class Api:
+        def post_tungsten_line(self, line):
+            sent.append(line)
+            return [{"executionStatus": "Failure", "failureMessage": "not halted"}]
+    c.api = Api()
+    with pytest.raises(StriimError, match="RESUME APPLICATION a.b rejected: not halted"):
+        c.resume_app("a.b")
+    assert sent == ["RESUME APPLICATION a.b;"]

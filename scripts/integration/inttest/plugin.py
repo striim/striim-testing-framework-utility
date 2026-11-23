@@ -2066,6 +2066,13 @@ class IntYamlItem(pytest.Item):
                     except Exception as e:
                         pytest.fail(f"{m.name}: seed {spec.file!r} against {spec.db!r} failed: {e}")
 
+            # --- 5b. assert.junit: the module's own JUnit tests, against the services provisioned
+            # and exported above. Before any drive, and the only assertion of a case without one. ---
+            if m.assert_.junit is not None:
+                self._run_junit(m)
+                if m.assert_.expect_error is None and m.target is None and not m.assert_.data:
+                    return
+
             # --- 6. Assertions. ---
             # assert.expect_error: the drive must FAIL, and the failure must name the reason.
             # This is what makes "must refuse" testable at all -- §6.1's structural variants
@@ -2708,6 +2715,33 @@ class IntYamlItem(pytest.Item):
                     # The run report only exists when the drive SUCCEEDED. On the expect_error
                     # path there is none, and the rows are the whole of the evidence.
                     + (f"\n  writer report: {json.dumps(report)}" if report is not None else ""))
+
+    def _run_junit(self, m) -> None:
+        """`assert.junit:` -- run the module's JUnit tests matching `tests` with Maven, under the
+        module's build lock, in this process's environment (so what `_export_bigtable_emulator` and
+        the other service steps exported reaches the test JVM). Fails the case when Maven fails, a
+        test is skipped, or fewer than `min_tests` ran. A missing build prerequisite skips with
+        the cause "build", as `_build_operator_jar` does."""
+        spec = m.assert_.junit
+        if not os.environ.get("STRIIM_HOME"):
+            _env_skip("build", f"{m.name}: STRIIM_HOME is not set -- running {m.module_ref!r}'s "
+                               f"JUnit tests needs a Striim install to build against")
+        release = releases_mod.resolve_release(os.environ)
+        try:
+            with FileLock(str(_op_build_lock_path(m.module_ref))):
+                result = opartifacts_mod.run_module_tests(m.module_ref, release, spec.tests)
+        except opartifacts_mod.OpModuleMissing as e:
+            pytest.fail(f"{m.name}: {e}", pytrace=False)
+        except (opartifacts_mod.OpArtifactError, FileNotFoundError) as e:
+            _env_skip("build", f"{m.name}: cannot run {m.module_ref!r}'s JUnit tests: {e}")
+        # Shown in pytest's JUnit XML; the counts are what the case proved.
+        self.user_properties.append(("junit", json.dumps(
+            {"tests": spec.tests, "ran": result.ran, "failures": result.failures,
+             "errors": result.errors, "skipped": result.skipped})))
+        problems = opartifacts_mod.junit_problems(result, spec.min_tests)
+        if problems:
+            pytest.fail(f"{m.name}: assert.junit {spec.tests!r} failed:\n  " + "\n  ".join(problems),
+                        pytrace=False)
 
     def _export_bigtable_emulator(self, m, tok) -> None:
         """BIGTABLE_EMULATOR_HOST for the driver JVM, for a case that requires bigtable: the Bigtable client
