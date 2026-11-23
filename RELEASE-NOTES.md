@@ -264,7 +264,7 @@ the last release; the release makes it that version's entry.
   unit tier; this is where they run.
 - **`service_outage` can test retry exhaustion.** `halts: {contains, timeout, restart}` waits for
   the app to halt with the given reason while the service is down, restores the service, restarts
-  the app (`STOP`+`START` or `RESUME`), and leaves the data to the case's assertions.
+  the app (`RESUME` by default, or `STOP`+`START`), and leaves the data to the case's assertions.
 - **A failed integration teardown is shown and counted.** When a case's teardown cannot reset its
   Postgres objects or drop its Oracle or Spanner tables, the warning now reaches the terminal as
   it happens, the run ends with an "integration teardown left objects behind" section, and the

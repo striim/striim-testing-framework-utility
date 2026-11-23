@@ -381,8 +381,8 @@ def _await_status(client, app: str, wanted, timeout: float, poll: float):
 
 def restart_halted(client, app: str, how: str, timeout: float, *, report=None, progress=None,
                    poll: float = 2.0) -> str:
-    """Bring a halted `app` back to RUNNING. `stop_start`: STOP APPLICATION, wait for DEPLOYED or
-    STOPPED, START APPLICATION. `resume`: RESUME APPLICATION. Then wait for RUNNING. STOP and
+    """Bring a halted `app` back to RUNNING. `stop_start`: from CRASH or HALT, START APPLICATION (the
+    platform refuses a STOP there); otherwise STOP APPLICATION, wait for DEPLOYED or STOPPED, START. `resume`: RESUME APPLICATION. Then wait for RUNNING. STOP and
     START go through the REST API, which does not report a rejected command, so the status
     waits are the proof each one took."""
     from livetest import recovery
@@ -391,6 +391,11 @@ def restart_halted(client, app: str, how: str, timeout: float, *, report=None, p
     if how == "resume":
         _say(report, f"service_outage: RESUME APPLICATION {app} (now {before})")
         client.resume_app(app)
+    elif how == "stop_start" and before in recovery._RESTARTABLE:
+        # CRASH and HALT take a START directly, as recover's restore does: the platform refuses a STOP
+        # of a crashed app ("application is TERMINATED") and the status never moves (live run 2026-11-23).
+        _say(report, f"service_outage: {app} {before}; START APPLICATION")
+        client.start_app(app)
     elif how == "stop_start":
         _say(report, f"service_outage: STOP APPLICATION {app} (now {before})")
         client.stop_app(app)

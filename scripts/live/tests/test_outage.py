@@ -658,7 +658,7 @@ _HALTS = "  - type: service_outage\n    service: postgres\n"
 def test_halts_parses_with_defaults(tmp_path):
     m = _load(tmp_path, _HALTS + "    halts: {contains: retries exhausted}\n")
     assert m.action_specs[0]["halts"] == {
-        "contains": "retries exhausted", "timeout": 300.0, "restart": "stop_start"}
+        "contains": "retries exhausted", "timeout": 300.0, "restart": "resume"}
 
 
 def test_halts_parses_all_fields(tmp_path):
@@ -735,11 +735,24 @@ def _halt_cycle(client, log=_LOG, timeout=0.0, run=None):
 
 
 def test_halts_reached_then_stop_start_to_running():
-    c = HaltClient(["HALT"], after={"stop": ["STOPPING", "STOPPED"],
-                                    "start": ["STARTING", "RUNNING"]})
+    # From HALT (or CRASH) the restart is a START alone: the platform refuses a STOP there (live run 2026-11-23).
+    c = HaltClient(["HALT"], after={"start": ["STARTING", "RUNNING"]})
     run, said = _halt_cycle(c)
     assert run.calls.count(_START) == 1
     assert any("retries exhausted" in m and "halted" in m for m in said)
+    assert outage.restart_halted(c, "ns1.app", "stop_start", 5, poll=0) == "RUNNING"
+    assert c.calls == ["start"]
+
+
+def test_halts_crash_takes_a_start_alone():
+    c = HaltClient(["CRASH"], after={"start": ["STARTING", "RUNNING"]})
+    assert outage.restart_halted(c, "ns1.app", "stop_start", 5, poll=0) == "RUNNING"
+    assert c.calls == ["start"]
+
+
+def test_halts_terminated_is_stopped_then_started():
+    c = HaltClient(["TERMINATED"], after={"stop": ["STOPPING", "STOPPED"],
+                                          "start": ["STARTING", "RUNNING"]})
     assert outage.restart_halted(c, "ns1.app", "stop_start", 5, poll=0) == "RUNNING"
     assert c.calls == ["stop", "start"]
     assert outage.watch_app(c, "ns1.app", settle=0, poll=0) == "RUNNING"
@@ -809,14 +822,14 @@ def test_halts_timeout_counts_from_down_since(monkeypatch):
 
 
 def test_halts_stop_that_never_settles_fails():
-    c = HaltClient(["HALT"])
-    with pytest.raises(OutageError, match="did not stop .* from HALT \\(status now HALT\\)"):
+    c = HaltClient(["TERMINATED"])
+    with pytest.raises(OutageError, match="did not stop .* from TERMINATED \\(status now TERMINATED\\)"):
         outage.restart_halted(c, "ns1.app", "stop_start", 0, poll=0)
     assert c.calls == ["stop"]
 
 
 def test_halts_stop_that_undeploys_fails():
-    c = HaltClient(["HALT"], after={"stop": ["CREATED"]})
+    c = HaltClient(["TERMINATED"], after={"stop": ["CREATED"]})
     with pytest.raises(OutageError, match="CREATED"):
         outage.restart_halted(c, "ns1.app", "stop_start", 5, poll=0)
     assert c.calls == ["stop"]

@@ -1790,7 +1790,7 @@ def load_manifest(path: Path) -> TestManifest:
                                                           "halts.timeout", path)
                     if so_timeout <= 0:
                         raise ManifestError(f"{where} 'timeout' must be greater than 0")
-                    so_restart = so_h.get("restart", "stop_start")
+                    so_restart = so_h.get("restart", "resume")   # the platform asks for RESUME after a TERMINATED halt
                     if so_restart not in ("stop_start", "resume"):
                         raise ManifestError(f"{where} 'restart' must be stop_start or resume, "
                                             f"got {so_restart!r}")
