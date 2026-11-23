@@ -596,7 +596,8 @@ def test_collect_git_info_parses_injected_output():
 
     assert info == {"repository_root": "/repo", "commit": "a" * 40, "branch": "main",
                      "dirty": False, "unavailable_reason": None}
-    assert all(argv[:3] == ["git", "-C", "/repo/some/test/dir"] for argv in calls)
+    # Every read passes --no-optional-locks, so none can leave .git/index.lock behind (FW-112).
+    assert all(argv[:4] == ["git", "--no-optional-locks", "-C", "/repo/some/test/dir"] for argv in calls)
 
 
 def test_collect_git_info_dirty_when_porcelain_nonempty():

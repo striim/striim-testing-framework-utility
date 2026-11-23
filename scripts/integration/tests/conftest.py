@@ -32,6 +32,9 @@ def _no_pre_up(monkeypatch):
     # The tier reads the project manifest's servicesRoots (inttest.resources.consumer_roots):
     # a developer's GOLD_TARGETS must not add consumer services to a hermetic test.
     monkeypatch.delenv("GOLD_TARGETS", raising=False)
+    # A host's SLT_PARALLEL=1 (field lanes and gold-cli set it) put the child sessions of the teardown
+    # tests into parallel mode and failed them; a test that needs it sets it itself.
+    monkeypatch.delenv("SLT_PARALLEL", raising=False)
 
 
 @pytest.fixture(autouse=True)

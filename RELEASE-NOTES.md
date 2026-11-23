@@ -327,6 +327,12 @@ the last release; the release makes it that version's entry.
 
 **Checks and fixes**
 
+- Reading your checkout's git state no longer leaves `.git/index.lock` behind. The engines' `git
+  status` calls (case records, evidence, the perf report) pass `--no-optional-locks`, so they never
+  write the index; before, a status killed by its timeout on a slow repository kept the lock and
+  your next commit failed.
+- A Striim service profile's assets no longer include `.slt-sha256-verified.json`, the record the
+  dependency check writes after the first live run, so the profile's hash stays the same.
 - On mssql and teradata, `min_rows` no longer passes on an uncommitted count when the writer
   still holds its lock at the timeout; it fails with "committed count never readable".
 - The code samples (`samples/code/op`, `samples/code/udf`) count every event and row exactly

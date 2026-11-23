@@ -521,7 +521,9 @@ def collect_git_info(test_dir, run=None) -> dict:
 
     def _git(*args):
         try:
-            r = run(["git", "-C", test_dir, *args])
+            # --no-optional-locks: `status` never writes the index, so a git killed by the timeout leaves
+            # no .git/index.lock in the user's checkout (FW-112).
+            r = run(["git", "--no-optional-locks", "-C", test_dir, *args])
         except (OSError, subprocess.SubprocessError) as e:
             raise _GitUnavailable(f"git executable not available: {e}") from e
         out = (getattr(r, "stdout", "") or "")
