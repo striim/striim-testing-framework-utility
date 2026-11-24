@@ -327,6 +327,11 @@ the last release; the release makes it that version's entry.
 
 **Checks and fixes**
 
+- The integration tier's platform stand-ins gain what a writer's restart filter calls:
+  `MutableStemma.DropDuplicatesStemmaProcessor.process` (the platform's duplicate test for a root
+  stemma), `Stemma.getParents` (none), `MultiMutableStemma.removeMutableStemma`, and
+  `Flow.getNodeManager().epochNumber` (the flow's start count, one per writer start). Before, a
+  writer calling them failed with a link error.
 - Reading your checkout's git state no longer leaves `.git/index.lock` behind. The engines' `git
   status` calls (case records, evidence, the perf report) pass `--no-optional-locks`, so they never
   write the index; before, a status killed by its timeout on a slow repository kept the lock and

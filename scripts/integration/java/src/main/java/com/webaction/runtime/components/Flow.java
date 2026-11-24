@@ -28,6 +28,18 @@ public class Flow extends FlowComponent {
         this.flowInfo = flowInfo;
     }
 
+    private com.webaction.appmanager.NodeManager nodeManager;
+
+    /** The real getter; null until the harness starts the flow ({@link #setNodeManager}). */
+    public com.webaction.appmanager.NodeManager getNodeManager() {
+        return nodeManager;
+    }
+
+    /** Harness-only: the real flow builds its NodeManager in {@code startNodeManager}. */
+    public void setNodeManager(final com.webaction.appmanager.NodeManager nodeManager) {
+        this.nodeManager = nodeManager;
+    }
+
     /**
      * The real override: an application is its own top-level flow; a sub-flow asks its parent. A
      * sub-flow with no parent answers null, where the real one would throw (every real sub-flow

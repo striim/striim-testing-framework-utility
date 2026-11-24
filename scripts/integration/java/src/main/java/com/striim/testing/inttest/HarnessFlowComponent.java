@@ -33,8 +33,13 @@ final class HarnessFlowComponent extends FlowComponent {
     static final String APP_NAMESPACE = "inttest";
     static final String APP_NAME = "app";
 
+    /** The flow's start count, as the platform's NodeManager.epochNumber: each writer start is one. */
+    private static final java.util.concurrent.atomic.AtomicLong STARTS = new java.util.concurrent.atomic.AtomicLong();
+
     HarnessFlowComponent() {
-        setFlow(new Flow(application()));
+        Flow flow = new Flow(application());
+        flow.setNodeManager(new com.webaction.appmanager.NodeManager(STARTS.incrementAndGet()));
+        setFlow(flow);
     }
 
     /** An application, with an exception store, as {@code CREATE APPLICATION ... USE EXCEPTIONSTORE}. */
