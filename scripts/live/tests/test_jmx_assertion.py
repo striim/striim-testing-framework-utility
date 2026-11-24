@@ -2,8 +2,8 @@ import pytest
 
 from livetest.assertions import AssertionFailed
 from livetest.assertions.jmx import (
-    JmxSpecError, assert_jmx, exporter_endpoints, parse_jmx_specs, parse_samples, render_row_keys,
-    select_bean,
+    JmxSpecError, assert_jmx, exporter_endpoints, parse_jmx_specs, parse_samples, render_bean,
+    render_row_keys, select_bean, select_rows,
 )
 from livetest.resultschema import SCHEMA_VERSION, validate
 
@@ -370,3 +370,20 @@ def test_a_bean_with_a_component_never_matches_an_unnamed_line():
 def test_a_bean_with_an_unknown_key_is_still_refused():
     with pytest.raises(JmxSpecError):
         parse_jmx_specs([{"bean": {"domain": "d", "type": "T", "name": "x"}, "attributes": {"A": 1}}])
+
+
+def test_render_bean_renders_a_component_and_leaves_an_unnamed_bean_alone():
+    """plugin.py renders through this; a bean without component must not raise."""
+    named = {"bean": {"domain": "d", "type": "T", "component": "${X}"}, "attributes": {"A": 1}}
+    unnamed = {"bean": {"domain": "d", "type": "T"}, "attributes": {"A": 1}}
+    render_bean(named, lambda v: v.replace("${X}", "C"))
+    render_bean(unnamed, lambda v: pytest.fail("nothing to render"))
+    assert named["bean"]["component"] == "C" and "component" not in unnamed["bean"]
+
+
+def test_an_unnamed_bean_selects_its_map_rows_and_no_line_with_another_label():
+    text = (UDF_EXPORT + 'com_striim_field_ReferenceUdf_ByTable{key="t1",} 2.0\n'
+            + 'com_striim_field_ReferenceUdf_Calls{other="x",} 7.0\n')
+    samples = parse_samples(text)
+    assert select_rows(samples, "com.striim.field", "ReferenceUdf", None)["ByTable"]["t1"][0] == 2.0
+    assert select_bean(samples, "com.striim.field", "ReferenceUdf", None)["Calls"][0] == 5.0

@@ -82,7 +82,7 @@ def _check_name(name) -> None:
 
 
 def parse_jmx_specs(raw) -> list[dict]:
-    """`assert.jmx:` is a list of {bean: {domain, type, component}, attributes, rows}. `domain` is
+    """`assert.jmx:` is a list of {bean: {domain, type[, component]}, attributes, rows}. `domain` is
     the ObjectName's domain, the one the plugin registers its MBean under. `type` is the
     ObjectName's `type=` key (the plugin's module, e.g. FooOp); `component` is the
     TQL component name, qualified by the test's namespace at run time (a name with a dot is
@@ -134,6 +134,12 @@ def parse_jmx_specs(raw) -> list[dict]:
                                        f"non-empty string")
                 _check_value(f"rows {name}[{key}]", want)
     return raw
+
+
+def render_bean(spec: dict, render) -> None:
+    """Token-renders the spec's `component`, when it has one (a UDF bean has none)."""
+    if "component" in spec["bean"]:
+        spec["bean"]["component"] = render(spec["bean"]["component"])
 
 
 def render_row_keys(spec: dict, render_key) -> None:
@@ -199,9 +205,10 @@ def qualified(component: str, ns: str) -> str:
 
 
 def _named(labels: dict, name) -> bool:
-    """The line belongs to bean `name`; `None` is a bean with no name key, so no `name` label."""
+    """The line belongs to bean `name`; `None` is a bean with only a type key, so no label but a
+    Map entry's `key`."""
     if name is None:
-        return "name" not in labels
+        return set(labels) <= {"key"}
     return _unquote_objectname(labels.get("name", "")) == name
 
 

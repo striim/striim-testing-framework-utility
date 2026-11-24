@@ -2499,7 +2499,7 @@ and polls until every attribute matches or `timeout` expires. A spec with no pos
 (only `max` bounds, zeros and `false`) already matches before the OP has done anything, so it is
 read again until `timeout` and fails as soon as it stops matching. Fails if the bean is on no JVM
 (listing unreachable endpoints and the exporter lines seen for that domain, such as
-`com_example_cache_*`) or on more than one: each JVM's bean counts only its own events, so the tier needs the OP to run on exactly one node. A
+`com_example_cache_*`) or on more than one: each JVM's bean counts only its own events, so the tier needs the OP or UDF to run on exactly one node. A
 deploy that places an instance on every node of a multi-node group (a `cluster` topology) exports
 one bean per node and cannot be asserted as one value.
 Refused at load: string values (the exporter drops String attributes) and clock attributes, any
