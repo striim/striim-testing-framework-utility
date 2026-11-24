@@ -82,6 +82,11 @@ public class MultiMutableStemma {
         return stemmas.get(key);
     }
 
+    /** Drops the accumulator for {@code key}, if any (the platform's is a plain map remove). */
+    public void removeMutableStemma(String key) {
+        stemmas.remove(key);
+    }
+
     /** Raises the accumulator for {@code other}'s key, creating it when this is the first. */
     public void mergeHigher(Stemma other) {
         if (other == null) {

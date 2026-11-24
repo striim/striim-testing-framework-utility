@@ -1,6 +1,7 @@
 package com.webaction.recovery;
 
 import java.io.Serializable;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
@@ -94,6 +95,14 @@ public abstract class Stemma implements Serializable {
      */
     public boolean isInitial() {
         return true;
+    }
+
+    /**
+     * The stemma's parents in the lattice: always none here (see the class note). Abstract on the real
+     * class. Field's restart filter (OpenProcessorCommon R17) drops a key once it has no parents left.
+     */
+    public Collection<Stemma> getParents() {
+        return Collections.emptyList();
     }
 
     /**

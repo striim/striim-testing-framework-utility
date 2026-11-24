@@ -72,4 +72,24 @@ public class MutableStemma extends Stemma {
     public ImmutableStemma toImmutable() {
         return new ImmutableStemma(getComponentID(), getDistributionID(), low, high);
     }
+
+    /**
+     * The platform's duplicate test, which {@code Target.receive} applies to a replayed event and
+     * field's restart filter (OpenProcessorCommon R17) reuses. For a root stemma (every stemma here:
+     * see {@link Stemma}) the 5.4.0.6C bytecode reads: an AT stemma has seen {@code pos} when its low
+     * mark is at or past {@code pos}'s low; an AFTER stemma when its high mark is. The real class's
+     * walk over parents for a medial stemma is not modelled, as parents are not.
+     */
+    public static class DropDuplicatesStemmaProcessor {
+
+        private DropDuplicatesStemmaProcessor() {
+        }
+
+        /** True when {@code seen} already covers {@code pos}: the event is a duplicate. */
+        public static boolean process(MutableStemma seen, Stemma pos) {
+            assert seen.isSameComponent(pos) : "Only same stemmas can be compared";
+            SourcePosition mark = seen.isAfter() ? seen.getHighSourcePosition() : seen.getLowSourcePosition();
+            return mark.compareTo(pos.getLowSourcePosition()) >= 0;
+        }
+    }
 }
