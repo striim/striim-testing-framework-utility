@@ -129,6 +129,14 @@ public abstract class RetriableWriter {
         return null;
     }
 
+    /**
+     * The target's stored checkpoint stemma, when it keeps one; {@code null} otherwise, as in the
+     * platform, so a caller falls back to {@link #getEndpointCheckpoint()}.
+     */
+    public com.webaction.recovery.MultiMutableStemma getEndpointCheckpointStemma() throws Exception {
+        return null;
+    }
+
     /** Publishes this component's metrics. Subclasses call {@code super} then add their own. */
     public void publishMonitorEvents(MonitorEventsCollection events) {
     }
