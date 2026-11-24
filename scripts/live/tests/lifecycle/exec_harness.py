@@ -506,6 +506,9 @@ def place_server_file(ctx, src, dest, run=None):           # The edge hashes the
 
 P.place_server_file = place_server_file
 P.opartifacts.upload_artifacts = lambda ctx, files, run=None, keep_existing=False: log("uploaded", sha=[_sha_of(f) for f in files])
+# Teardown's removal of op uploads is faked too: the real one runs `docker exec <app node> rm -f` in docker mode,
+# which reached a real container when a docker binary was on PATH and failed the case when it was not (FW-122).
+P.opartifacts.delete_artifacts = lambda ctx, names, run=None: log("deleted_uploads", names=list(names))
 P.assert_smoke = lambda client, apps, timeout, progress=None: _real_smoke(client, apps, timeout, settle_seconds=0, progress=progress)
 def compose_down(*a, **k):
     log("compose_down")

@@ -223,6 +223,8 @@ def test_the_alter_fragment_gets_the_op_upload_rename(run_case, monkeypatch):
     ns = alter["tql"].split(";", 1)[0][len("USE "):]
     assert f"ConfigFile: 'UploadedFiles/{ns}_cfg.json'" in alter["tql"]
     assert "UploadedFiles/cfg.json" not in alter["tql"]
+    # teardown removes exactly the upload the case made (through the harness's fake, never a real docker exec)
+    assert [e["names"] for e in run.events() if e["event"] == "deleted_uploads"] == [[f"{ns}_cfg.json"]]
 
 
 def test_alter_recompile_refuses_a_stop_that_crashed_the_running_app(run_actions):
