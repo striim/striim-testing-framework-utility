@@ -520,7 +520,6 @@ def test_concurrent_shared_declarations_never_refuse_each_other(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     tags = [f"p{i}" for i in range(procs_n)]
-    started = time.monotonic()
     procs = [subprocess.Popen([sys.executable, "-c", _SHARED_STRESS, str(work), t, str(rounds), str(per_round)],
                               env=_child_env(tmp_path), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
              for t in tags]
@@ -538,7 +537,8 @@ def test_concurrent_shared_declarations_never_refuse_each_other(tmp_path):
     assert refused == [], f"{len(refused)} of {total} shared declarations refused: {refused[:3]}"
     assert sum(res["declared"] for res in results) == total
     assert not list((tmp_path / "locks" / ".slt-endpoint-9080.shared").glob("*"))    # every marker released
-    assert time.monotonic() - started < 30
+    # No total wall-clock bound: each phase above has its own deadline, so a hang still fails. The old
+    # `< 30 s` measured the runner, not the code (30-56 s on CI's shared runners: FW-120).
 
 
 # ---------------------------------------------------------------- exclusive
