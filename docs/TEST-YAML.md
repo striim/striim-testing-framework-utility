@@ -2478,7 +2478,7 @@ exactly one `seed:` entry with that file and `when: post_start`. The mapping tak
 ```yaml
 assert:
   jmx:
-    - bean: {domain: com.example.cache, type: MyCacheOp, component: ProductEnrich}   # all three required
+    - bean: {domain: com.example.cache, type: MyCacheOp, component: ProductEnrich}   # component optional (below)
       attributes:                    # this, rows:, or both
         Hits: 3                      # number: exact
         Misses: {min: 1, max: 2}     # bounds: either or both, inclusive
@@ -2487,7 +2487,8 @@ assert:
         HitsByTable:
           "${NS}.${TID}orders": 2      # keys are token-rendered; same value forms
 ```
-Selects `<domain>:type=<type>,name="<NS>.<component>"`. `domain` is the MBean domain your OP
+Selects `<domain>:type=<type>,name="<NS>.<component>"`; without `component`, the bean
+`<domain>:type=<type>`, one per JVM, as a UDF registers it (FieldCommon `UdfJmx`). `domain` is the MBean domain your OP
 registers its bean under; it has no default, and a spec without it is refused at load.
 `component` is the TQL component name, token-rendered and qualified by the test's namespace; a
 name containing a dot is used as is. `rows:` asserts entries of an MXBean `Map` attribute, which
@@ -2498,7 +2499,7 @@ and polls until every attribute matches or `timeout` expires. A spec with no pos
 (only `max` bounds, zeros and `false`) already matches before the OP has done anything, so it is
 read again until `timeout` and fails as soon as it stops matching. Fails if the bean is on no JVM
 (listing unreachable endpoints and the exporter lines seen for that domain, such as
-`com_example_cache_*`) or on more than one: each JVM's bean counts only its own events, so the tier needs the OP to run on exactly one node. A
+`com_example_cache_*`) or on more than one: each JVM's bean counts only its own events, so the tier needs the OP or UDF to run on exactly one node. A
 deploy that places an instance on every node of a multi-node group (a `cluster` topology) exports
 one bean per node and cannot be asserted as one value.
 Refused at load: string values (the exporter drops String attributes) and clock attributes, any

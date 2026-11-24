@@ -36,7 +36,7 @@ from livetest.assertions.checkpoint_history import (
     CheckpointWitness, assert_checkpoint_history, assert_checkpoint_predates,
     parse_checkpoint_history_spec,
 )
-from livetest.assertions.jmx import JmxSpecError, assert_jmx, parse_jmx_specs, render_row_keys
+from livetest.assertions.jmx import JmxSpecError, assert_jmx, parse_jmx_specs, render_bean, render_row_keys
 from livetest.assertions.halt import (NODE_LOG_BOUNDARY, assert_halt, accept_expected_halt,
                                      skipped_by_startup_halt)
 from livetest import recovery
@@ -4181,14 +4181,14 @@ class LiveItem(pytest.Item):
                         ran = True
                     if m.assert_.get("jmx"):
                         # A plugin's MBean attributes, read from the stack's Prometheus JMX
-                        # exporters. `component` is token-rendered, then qualified by ${NS}.
+                        # exporters. A `component`, when given, is token-rendered, then qualified by ${NS}.
                         _report(m.name, "asserting: jmx")
                         if ctx.mode != "docker":
                             pytest.fail(f"{m.name}: assert.jmx reads the Docker stack's Prometheus JMX "
                                         f"exporters; a {ctx.mode} Striim has none")
                         xspecs = parse_jmx_specs(m.assert_["jmx"])
                         for _xs in xspecs:
-                            _xs["bean"]["component"] = render(_xs["bean"]["component"], tokens)
+                            render_bean(_xs, lambda v: render(v, tokens))
                             try:
                                 render_row_keys(_xs, lambda k: render(k, tokens))
                             except JmxSpecError as e:
