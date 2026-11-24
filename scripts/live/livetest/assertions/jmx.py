@@ -86,7 +86,8 @@ def parse_jmx_specs(raw) -> list[dict]:
     the ObjectName's domain, the one the plugin registers its MBean under. `type` is the
     ObjectName's `type=` key (the plugin's module, e.g. FooOp); `component` is the
     TQL component name, qualified by the test's namespace at run time (a name with a dot is
-    taken as already qualified). `attributes` maps an attribute to a number or boolean compared
+    taken as already qualified). Without `component` the bean is `<domain>:type=<type>`, one per
+    JVM, as a UDF registers it. `attributes` maps an attribute to a number or boolean compared
     exactly, or to {min, max} bounds (either or both, inclusive). `rows` maps a Map attribute
     (an MXBean Map, exported one line per entry with the entry's key in a `key` label) to
     {entry key: expected value}, in the same value forms. At least one of the two is needed."""
@@ -104,11 +105,12 @@ def parse_jmx_specs(raw) -> list[dict]:
             raise JmxSpecError(
                 f"jmx spec 'bean' needs 'domain:', the MBean domain the plugin registers its "
                 f"bean under (there is no default), got {bean!r}")
-        if not isinstance(bean, dict) or set(bean) != {"domain", "type", "component"} or not all(
-                isinstance(bean[k], str) and bean[k] for k in ("domain", "type", "component")):
+        if not isinstance(bean, dict) or set(bean) not in ({"domain", "type", "component"}, {"domain", "type"}) \
+                or not all(isinstance(bean[k], str) and bean[k] for k in bean):
             raise JmxSpecError(
                 f"jmx spec 'bean' must be {{domain: <MBean domain>, type: <ObjectName type>, "
-                f"component: <TQL component name>}}, got {bean!r}")
+                f"component: <TQL component name>}} (component omitted for a bean with no name key), "
+                f"got {bean!r}")
         domain = bean["domain"]
         if domain != domain.strip() or any(c in domain for c in ':,=*?"\n'):
             raise JmxSpecError(f"jmx spec 'bean.domain' {domain!r} is not an MBean domain")
@@ -196,25 +198,31 @@ def qualified(component: str, ns: str) -> str:
     return component if "." in component else f"{ns}.{component}"
 
 
-def select_bean(samples, domain: str, bean_type: str, name: str) -> dict[str, tuple[float, str]]:
-    """{attribute: (value, line)} for the bean `<domain>:type=<bean_type>,name="<name>"`."""
+def _named(labels: dict, name) -> bool:
+    """The line belongs to bean `name`; `None` is a bean with no name key, so no `name` label."""
+    if name is None:
+        return "name" not in labels
+    return _unquote_objectname(labels.get("name", "")) == name
+
+
+def select_bean(samples, domain: str, bean_type: str, name) -> dict[str, tuple[float, str]]:
+    """{attribute: (value, line)} for the bean `<domain>:type=<bean_type>,name="<name>"`, or
+    `<domain>:type=<bean_type>` when `name` is None."""
     prefix = domain_prefix(domain) + bean_type + "_"
     found = {}
     for metric, labels, value, line in samples:
-        if metric.startswith(prefix) and "key" not in labels \
-                and _unquote_objectname(labels.get("name", "")) == name:
+        if metric.startswith(prefix) and "key" not in labels and _named(labels, name):
             found[metric[len(prefix):]] = (value, line)
     return found
 
 
-def select_rows(samples, domain: str, bean_type: str, name: str) -> dict[str, dict]:
+def select_rows(samples, domain: str, bean_type: str, name) -> dict[str, dict]:
     """{Map attribute: {entry key: (value, line)}} for the same bean: the exporter writes one line
     per Map entry, the entry's key in a `key` label."""
     prefix = domain_prefix(domain) + bean_type + "_"
     found = {}
     for metric, labels, value, line in samples:
-        if metric.startswith(prefix) and "key" in labels \
-                and _unquote_objectname(labels.get("name", "")) == name:
+        if metric.startswith(prefix) and "key" in labels and _named(labels, name):
             found.setdefault(metric[len(prefix):], {})[labels["key"]] = (value, line)
     return found
 
@@ -233,8 +241,9 @@ def _matches(want, got: float) -> bool:
 
 def _evaluate(spec: dict, ns: str, scraped: dict[str, list], errors: dict[str, str]):
     domain, bean_type = spec["bean"]["domain"], spec["bean"]["type"]
-    name = qualified(spec["bean"]["component"], ns)
-    oname = f'{domain}:type={bean_type},name="{name}"'
+    component = spec["bean"].get("component")
+    name = qualified(component, ns) if component else None
+    oname = f'{domain}:type={bean_type}' + (f',name="{name}"' if name is not None else "")
     prefix = domain_prefix(domain)
     wanted = list(spec.get("attributes", {}).items()) + [
         (f"{a}[{k}]", w) for a, entries in spec.get("rows", {}).items() for k, w in entries.items()]

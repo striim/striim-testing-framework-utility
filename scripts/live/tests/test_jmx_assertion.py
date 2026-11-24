@@ -65,7 +65,6 @@ def test_parse_refuses_bad_shapes():
         [],                                                           # nothing to assert
         [{"bean": {"domain": "d", "type": "X", "component": "C"}}],     # no attributes
         [{"bean": {"domain": "d", "type": "X", "component": "C"}, "attributes": {}}],
-        [{"bean": {"domain": "d", "type": "X"}, "attributes": {"Hits": 1}}],   # no component
         [{"bean": {"domain": "d", "type": "", "component": "C"}, "attributes": {"Hits": 1}}],
         [{"bean": "X", "attributes": {"Hits": 1}}],
         [{"bean": {"domain": "d", "type": "X", "component": "C"}, "attributes": {"Hits": 1}, "node": 1}],
@@ -341,3 +340,33 @@ def test_rows_of_zeros_hold_and_a_positive_row_does_not():
     assert_jmx(_rows_spec({"CountsByApp": {"NS.billing": {"max": 9}}}), "NS", timeout=0.2,
                poll=0.02, endpoints=[A], fetch=fetch)
     assert len(calls) > 2
+
+
+# ---- a bean with no name key (a UDF's: <domain>:type=<UdfSimpleName>) ---------------------
+
+UDF_EXPORT = r'''# HELP com_striim_field_ReferenceUdf_Calls Calls (com.striim.field<type=ReferenceUdf><>Calls)
+# TYPE com_striim_field_ReferenceUdf_Calls untyped
+com_striim_field_ReferenceUdf_Calls 5.0
+com_striim_field_ReferenceUdf_Errors 0.0
+com_striim_field_ReferenceUdf_Calls{name="\"NS.Other\"",} 9.0
+'''
+
+
+def test_a_bean_without_component_parses_and_selects_the_unnamed_lines():
+    specs = parse_jmx_specs([{"bean": {"domain": "com.striim.field", "type": "ReferenceUdf"},
+                              "attributes": {"Calls": {"min": 3}, "Errors": 0}}])
+    records = assert_jmx(specs, "NS", timeout=5, poll=0, endpoints=[A], fetch=_fetcher({A: UDF_EXPORT}))
+    assert records[0]["status"] == "passed"
+    assert records[0]["target"] == "com.striim.field:type=ReferenceUdf"
+    assert select_bean(parse_samples(UDF_EXPORT), "com.striim.field", "ReferenceUdf", None) == {
+        "Calls": (5.0, "com_striim_field_ReferenceUdf_Calls 5.0"),
+        "Errors": (0.0, "com_striim_field_ReferenceUdf_Errors 0.0")}
+
+
+def test_a_bean_with_a_component_never_matches_an_unnamed_line():
+    assert select_bean(parse_samples(UDF_EXPORT), "com.striim.field", "ReferenceUdf", "NS.Missing") == {}
+
+
+def test_a_bean_with_an_unknown_key_is_still_refused():
+    with pytest.raises(JmxSpecError):
+        parse_jmx_specs([{"bean": {"domain": "d", "type": "T", "name": "x"}, "attributes": {"A": 1}}])

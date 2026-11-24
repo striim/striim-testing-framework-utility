@@ -2478,7 +2478,7 @@ exactly one `seed:` entry with that file and `when: post_start`. The mapping tak
 ```yaml
 assert:
   jmx:
-    - bean: {domain: com.example.cache, type: MyCacheOp, component: ProductEnrich}   # all three required
+    - bean: {domain: com.example.cache, type: MyCacheOp, component: ProductEnrich}   # component optional (below)
       attributes:                    # this, rows:, or both
         Hits: 3                      # number: exact
         Misses: {min: 1, max: 2}     # bounds: either or both, inclusive
@@ -2487,7 +2487,8 @@ assert:
         HitsByTable:
           "${NS}.${TID}orders": 2      # keys are token-rendered; same value forms
 ```
-Selects `<domain>:type=<type>,name="<NS>.<component>"`. `domain` is the MBean domain your OP
+Selects `<domain>:type=<type>,name="<NS>.<component>"`; without `component`, the bean
+`<domain>:type=<type>`, one per JVM, as a UDF registers it (FieldCommon `UdfJmx`). `domain` is the MBean domain your OP
 registers its bean under; it has no default, and a spec without it is refused at load.
 `component` is the TQL component name, token-rendered and qualified by the test's namespace; a
 name containing a dot is used as is. `rows:` asserts entries of an MXBean `Map` attribute, which
