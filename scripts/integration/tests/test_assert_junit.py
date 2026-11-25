@@ -260,6 +260,7 @@ def engine(monkeypatch, tmp_path):
     monkeypatch.setenv("STRIIM_HOME", str(tmp_path / "striim"))
     monkeypatch.setattr(plugin.releases_mod, "resolve_release", lambda env: dict(_RELEASE))
     monkeypatch.setattr(plugin, "_op_build_lock_path", lambda ref: tmp_path / "op.lock")
+    monkeypatch.setattr(plugin.tokens_mod, "service_tokens", lambda name: {})
     calls = []
 
     def use(result=None, exc=None):
@@ -330,3 +331,80 @@ def test_missing_module_fails(tmp_path, engine):
     engine(exc=opartifacts.OpModuleMissing("module directory x does not exist"))
     with pytest.raises(pytest.fail.Exception, match="does not exist"):
         IntYamlItem._run_junit(_item(), _case(tmp_path))
+
+
+# --- plugin: the requires: services' tokens reach the test JVM ----------------------------------------
+
+_VERTICA_CASE = _BASE.replace("requires: [bigtable]", "requires: [vertica, postgres]")
+
+
+@pytest.fixture
+def service_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("STRIIM_HOME", str(tmp_path / "striim"))
+    monkeypatch.setattr(plugin.releases_mod, "resolve_release", lambda env: dict(_RELEASE))
+    monkeypatch.setattr(plugin, "_op_build_lock_path", lambda ref: tmp_path / "op.lock")
+    provides = {
+        "vertica": {"VERTICA_URL": "jdbc:vertica://h:1/db", "VERTICA_TARGET_USER": "qatarget",
+                    "VERTICA_TARGET_PASSWORD": "s3cr3t-pw", "SHARED": "from-vertica"},
+        "postgres": {"PG_URL": "jdbc:postgresql://h:2/db", "SHARED": "from-postgres"},
+    }
+    monkeypatch.setattr(plugin.tokens_mod, "service_tokens", lambda name: provides[name])
+    for k in ("VERTICA_URL", "VERTICA_TARGET_USER", "VERTICA_TARGET_PASSWORD", "PG_URL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SHARED", "prior")
+    seen = {}
+
+    def use(exc=None, result=None):
+        def fake(module_ref, release, pattern, run=None):
+            seen.update({k: os.environ.get(k) for k in
+                         ("VERTICA_URL", "VERTICA_TARGET_USER", "VERTICA_TARGET_PASSWORD",
+                          "PG_URL", "SHARED")})
+            if exc is not None:
+                raise exc
+            return result or opartifacts.JUnitResult(returncode=0, tests=1)
+        monkeypatch.setattr(opartifacts, "run_module_tests", fake)
+        return seen
+
+    return use
+
+
+def _vertica_case(tmp_path):
+    return _load(tmp_path, "  junit: {tests: '*IT'}\n", base=_VERTICA_CASE)
+
+
+def _assert_restored():
+    for k in ("VERTICA_URL", "VERTICA_TARGET_USER", "VERTICA_TARGET_PASSWORD", "PG_URL"):
+        assert k not in os.environ
+    assert os.environ["SHARED"] == "prior"
+
+
+def test_requires_tokens_are_exported_then_restored(tmp_path, service_env):
+    seen = service_env()
+    IntYamlItem._run_junit(_item(), _vertica_case(tmp_path))
+    assert seen == {"VERTICA_URL": "jdbc:vertica://h:1/db", "VERTICA_TARGET_USER": "qatarget",
+                    "VERTICA_TARGET_PASSWORD": "s3cr3t-pw", "PG_URL": "jdbc:postgresql://h:2/db",
+                    "SHARED": "from-postgres"}
+    _assert_restored()
+
+
+def test_requires_tokens_are_restored_when_the_run_raises(tmp_path, service_env):
+    seen = service_env(exc=opartifacts.OpModuleMissing("module directory x does not exist"))
+    with pytest.raises(pytest.fail.Exception):
+        IntYamlItem._run_junit(_item(), _vertica_case(tmp_path))
+    assert seen["VERTICA_URL"] == "jdbc:vertica://h:1/db"
+    _assert_restored()
+
+
+def test_requires_token_values_are_redacted_from_the_failure(tmp_path, service_env, pytestconfig):
+    service_env(result=opartifacts.JUnitResult(
+        returncode=1, tests=1, failures=1, failed=("a.VerticaIT.connect",),
+        output="BUILD FAILURE: login failed for qatarget/s3cr3t-pw"))
+    m = _vertica_case(tmp_path)
+    with pytest.raises(pytest.fail.Exception) as e:
+        IntYamlItem._run_junit(_item(), m)
+    assert "s3cr3t-pw" in str(e.value)  # the unredacted text carries it
+    item = SimpleNamespace(manifest=m, config=pytestconfig, _traceback_filter=lambda ei: ei.traceback,
+                           tokens={"VERTICA_TARGET_PASSWORD": "s3cr3t-pw"})
+    item._repr_failure_py = lambda ei, style=None: pytest.Item._repr_failure_py(item, ei, style)
+    shown = str(plugin._redacted_failure(item, e))
+    assert "BUILD FAILURE" in shown and "s3cr3t-pw" not in shown

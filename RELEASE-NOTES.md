@@ -262,6 +262,12 @@ the last release; the release makes it that version's entry.
   the case requires, and fails the case when a test fails, any test skips, or fewer than
   `min_tests` ran. Tests gated on a service variable such as `BIGTABLE_EMULATOR_HOST` skip in the
   unit tier; this is where they run.
+- **`assert.junit:` exports the `requires:` services' tokens to the test JVM.** Every `provides:`
+  token of each service the case requires (for `vertica`: `VERTICA_URL`, `VERTICA_TARGET_USER`,
+  `VERTICA_TARGET_PASSWORD`, ...) is set for the Maven run and restored afterwards. `TID` is not
+  exported.
+- **The stand-in `MonitorEvent.Type` has `name()`**, the platform's accessor. Code calling
+  `getType().name()` threw `NoSuchMethodError` under the stand-in. `getName()` stays.
 - **`service_outage` can test retry exhaustion.** `halts: {contains, timeout, restart}` waits for
   the app to halt with the given reason while the service is down, restores the service, restarts
   the app (`RESUME` by default, or `STOP`+`START`), and leaves the data to the case's assertions.
