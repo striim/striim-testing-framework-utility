@@ -522,3 +522,46 @@ def test_a_credentials_route_is_refused_before_a_client_is_built():
 def test_a_bigtable_route_has_no_sql_surface(call):
     with pytest.raises(RouteError, match="no SQL .* support for driver 'bigtable'"):
         call()
+
+
+class _TimedBigtableAdmin(_FakeBigtableAdmin):
+    def read_all(self, table, cells_per_column_limit=1, times=False):
+        rows = list(self._TABLES.get(table, []))
+        return [dict(r) if times else {k: v for k, v in r.items() if k != "times"} for r in rows]
+
+
+_TIMED = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"},
+           "times": {"emp:name": 1577836800000000, "emp:age": 5}}]
+
+
+def _with_timed(tables, monkeypatch):
+    _TimedBigtableAdmin._TABLES = dict(tables)
+    monkeypatch.setattr("inttest.bigtableadmin.BigtableAdmin",
+                        lambda params, client=None, data_client=None: _TimedBigtableAdmin(params), raising=False)
+
+
+def test_assert_target_compares_a_named_cell_time(monkeypatch):
+    _with_timed({"emp": _TIMED}, monkeypatch)
+    want = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}, "times": {"emp:name": 1577836800000000}}]
+    assert_target("bigtable-target", "emp", want, _EMULATOR_TOKENS)      # no raise; emp:age's time not compared
+
+
+def test_assert_target_raises_on_a_wrong_cell_time(monkeypatch):
+    _with_timed({"emp": _TIMED}, monkeypatch)
+    want = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}, "times": {"emp:name": 2}}]
+    with pytest.raises(AssertionError):
+        assert_target("bigtable-target", "emp", want, _EMULATOR_TOKENS)
+
+
+def test_assert_target_without_times_ignores_them(monkeypatch):
+    _with_timed({"emp": _TIMED}, monkeypatch)
+    assert_target("bigtable-target", "emp", [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}}],
+                  _EMULATOR_TOKENS)
+
+
+@pytest.mark.parametrize("times", [{}, None, "x", {"emp:other": 1}, {"emp:name": -1}, {"emp:name": 1.5}])
+def test_assert_target_refuses_a_bad_times_map(times, monkeypatch):
+    _with_timed({"emp": _TIMED}, monkeypatch)
+    with pytest.raises(RouteError):
+        assert_target("bigtable-target", "emp", [{"row": "01", "cells": {"emp:name": "6a6b6c"}, "times": times}],
+                      _EMULATOR_TOKENS)

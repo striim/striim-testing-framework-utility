@@ -60,11 +60,21 @@ def parse_bigtable_specs(raw: list) -> list[dict]:
                 f"{type(expected).__name__}")
         for j, row in enumerate(expected):
             at = f"{where}.expected[{j}]"
-            if (not isinstance(row, dict) or set(row) != {"row", "cells"} or not isinstance(row["row"], str)
+            if (not isinstance(row, dict) or not {"row", "cells"} <= set(row) <= {"row", "cells", "times"}
+                    or not isinstance(row["row"], str)
                     or not _HEX_RE.match(row["row"]) or not isinstance(row["cells"], dict)):
-                raise BigtableSpecError(f"{at} must be {{row: <lowercase hex>, cells: {{...}}}}, got {row!r}")
+                raise BigtableSpecError(
+                    f"{at} must be {{row: <lowercase hex>, cells: {{...}}, [times: {{...}}]}}, got {row!r}")
             for cell, value in row["cells"].items():
                 _check_cell_value(value, f"{at}.cells.{cell}")
+            times = row.get("times", {})
+            if not isinstance(times, dict) or not times and "times" in row:
+                raise BigtableSpecError(f"{at}.times must be a non-empty {{<family>:<qualifier>: <microseconds>}}")
+            for cell, micros in times.items():
+                if cell not in row["cells"]:
+                    raise BigtableSpecError(f"{at}.times names {cell!r}, which is not in its cells")
+                if isinstance(micros, bool) or not isinstance(micros, int) or micros < 0:
+                    raise BigtableSpecError(f"{at}.times.{cell} must be a cell time in microseconds, got {micros!r}")
         out.append({**spec, "db": db, "expected": list(expected)})
     return out
 
@@ -93,6 +103,9 @@ def _rows_match(want: list, got: list) -> bool:
         for cell, value in w.get("cells", {}).items():
             if not _cell_matches(value, g["cells"][cell]):
                 return False
+        for cell, micros in w.get("times", {}).items():   # a cell time, where the expected row names one
+            if g.get("times", {}).get(cell) != micros:
+                return False
     return True
 
 
@@ -101,8 +114,9 @@ def _evaluate(admin, spec: dict, timeout=None):
     snapshots for the sidecar record. Mirrors inttest.dbroutes.assert_target: the comparison is on
     the `read_all` row list (inttest wraps both sides identically as `{table, rows}`, equivalent).
     A cell value may be {"prefix": text} (see _cell_matches)."""
-    got = list(admin.read_all(spec["table"], timeout=timeout))
     want = list(spec["expected"])
+    times = any("times" in r for r in want)
+    got = list(admin.read_all(spec["table"], timeout=timeout, **({"times": True} if times else {})))
     expected = {"kind": "rows", "rows": want}
     actual = {"kind": "rows", "rows": got}
     if not _rows_match(want, got):
