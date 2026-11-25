@@ -411,6 +411,61 @@ def test_target_rejects_an_empty_timezone(tmp_path):
         load_manifest(path)
 
 
+def _with_system_properties(tmp_path, block: str):
+    return _write(tmp_path, TARGET.replace(
+        "  input: input/events.json",
+        "  input: input/events.json\n  system_properties:\n" + block))[0]
+
+
+def test_target_system_properties_parse_sorted_as_strings(tmp_path):
+    path = _with_system_properties(
+        tmp_path,
+        "    vbw.test.firstWaitMillis: 100\n"
+        "    vbw.test.failCopies: '2'\n"
+        "    my_flag: true\n")
+    assert load_manifest(path).target.system_properties == (
+        ("my_flag", "true"), ("vbw.test.failCopies", "2"), ("vbw.test.firstWaitMillis", "100"))
+
+
+def test_target_system_properties_default_to_empty(tmp_path):
+    path, _ = _write(tmp_path, TARGET)
+    assert load_manifest(path).target.system_properties == ()
+
+
+def test_target_system_properties_must_be_a_mapping(tmp_path):
+    path = _with_system_properties(tmp_path, "    - vbw.test.failCopies=2\n")
+    with pytest.raises(ManifestError, match="must be a mapping of name to value"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize("name", ["1abc", "a b", "a=b", "-x", "'.x'"])
+def test_target_system_properties_reject_a_bad_name(tmp_path, name):
+    path = _with_system_properties(tmp_path, f"    {name}: x\n")
+    with pytest.raises(ManifestError, match="must match"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize("value", ["1.5", "[1, 2]", "{a: 1}", "null"])
+def test_target_system_properties_reject_a_non_scalar_value(tmp_path, value):
+    path = _with_system_properties(tmp_path, f"    vbw.test.failCopies: {value}\n")
+    with pytest.raises(ManifestError, match="must be a string, integer or boolean"):
+        load_manifest(path)
+
+
+def test_target_system_properties_reject_user_timezone(tmp_path):
+    path = _with_system_properties(tmp_path, "    user.timezone: Asia/Tokyo\n")
+    with pytest.raises(ManifestError, match="use 'target.timezone'"):
+        load_manifest(path)
+
+
+@pytest.mark.parametrize("name", ["java.io.tmpdir", "jdk.attach.allowAttachSelf", "file.encoding",
+                                  "user.home", "user.dir", "sun.jnu.encoding"])
+def test_target_system_properties_reject_jvm_owned_names(tmp_path, name):
+    path = _with_system_properties(tmp_path, f"    {name}: x\n")
+    with pytest.raises(ManifestError, match="may not set JVM property"):
+        load_manifest(path)
+
+
 # ---------------------------------------------------------------------------
 # §6.1a: the knob matrix. ONE case, every permutation, ONE shared expectation.
 # ---------------------------------------------------------------------------

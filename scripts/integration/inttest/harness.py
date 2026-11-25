@@ -313,6 +313,7 @@ def drive(op_jar, properties: dict, input_events, types: dict | None = None,
     stack runs UTC, so a temporal defect that only appears at an offset zone -- a
     `timestamptz` stored nine hours out, a DATE moved a day -- is invisible everywhere
     else; this tier is the only one that can fork per zone cheaply.
+    `target.system_properties` adds `-D<name>=<value>` after it, sorted by name.
 
     `target`, when given (a `manifest.TargetSpec`), drives `op_jar` as a TARGET (Java-side
     `TargetCore`): a `RetriableWriter` that is fed `input_events` and emits nothing. The
@@ -408,6 +409,8 @@ def drive(op_jar, properties: dict, input_events, types: dict | None = None,
         # timezone drift (e.g. macOS US/Pacific rejected by PostgreSQL 16).
         tz = target.timezone if (target is not None and getattr(target, "timezone", None)) else "UTC"
         zone = [f"-Duser.timezone={tz}"]
+        zone += [f"-D{name}={value}" for name, value
+                 in sorted(getattr(target, "system_properties", None) or ())]
         argv = ([java_bin] + zone
                 + ["-cp", classpath, "com.striim.testing.inttest.IntegrationProcessor",
                    str(request_file)])
