@@ -752,19 +752,40 @@ def teardown_bigtable(table: str, route: str = "bigtable-target",
 
 def read_cells(route: str, table: str,
                tokens: Mapping[str, str] | None = None,
-               *, cells_per_column_limit: int = 1) -> dict:
+               *, cells_per_column_limit: int = 1, times: bool = False) -> dict:
     """Read the whole `table` from a `bigtable-*` route via its admin. Returns
-    `{"table": <name>, "rows": [{"row": <hex>, "cells": {<fam>:<qual>: <hex>}}]}`."""
+    `{"table": <name>, "rows": [{"row": <hex>, "cells": {<fam>:<qual>: <hex>}}]}`; `times=True`
+    adds each row's `"times": {<fam>:<qual>: <cell time in microseconds>}`."""
     admin = _bigtable_admin(route, dict(tokens or {}))
-    rows = admin.read_all(table, cells_per_column_limit=cells_per_column_limit)
+    rows = admin.read_all(table, cells_per_column_limit=cells_per_column_limit,
+                          **({"times": True} if times else {}))
     return {"table": table, "rows": rows}
+
+
+def _times_compared(expected: list, rows: list) -> list:
+    """An expected row may carry `"times": {<fam>:<qual>: <microseconds>}`, the cell times to check.
+    Keep, in each actual row, the times of exactly the cells its expected row names, so the
+    comparison checks those times and no others. Rows beyond `expected` keep none."""
+    out = []
+    for i, row in enumerate(rows):
+        want = expected[i].get("times") if i < len(expected) and isinstance(expected[i], dict) else None
+        row = {k: v for k, v in row.items() if k != "times"}
+        if want is not None:
+            got = rows[i].get("times", {})
+            row["times"] = {c: got.get(c) for c in want}
+        out.append(row)
+    return out
 
 
 def assert_target(route: str, table: str, expected: list, tokens: Mapping[str, str] | None = None) -> None:
     """Compare a route's table snapshot to `expected` (a row list), raising with a clear mismatch
     message. `assert.target` on a bigtable-* route calls it."""
-    got = read_cells(route, table, tokens)
-    if got != {"table": table, "rows": list(expected)}:
+    expected = list(expected)
+    times = any(isinstance(r, dict) and "times" in r for r in expected)
+    got = read_cells(route, table, tokens, times=times)
+    if times:
+        got = {"table": table, "rows": _times_compared(expected, got["rows"])}
+    if got != {"table": table, "rows": expected}:
         import json
         raise AssertionError(
             f"assert.target({route!r}/{table!r}) mismatch:\n"

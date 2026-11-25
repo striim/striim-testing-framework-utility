@@ -476,21 +476,27 @@ class BigtableAdmin:
         return {"cells": cells}
 
     def read_all(self, table_name: str, *, cells_per_column_limit=1,
-                 timeout: float | None = None) -> list:
+                 timeout: float | None = None, times: bool = False) -> list:
         """Read every row in `table_name`; return a list of
         `{"row": <hex key>, "cells": {"<family>:<qualifier>": <hex value>}}` sorted by row
         key. `CellsColumnLimitFilter(num_cells=1)` makes each column return its newest cell --
-        Bigtable's own "latest version" semantics."""
+        Bigtable's own "latest version" semantics. `times=True` adds `"times": {"<family>:<qualifier>":
+        <cell time in microseconds>}` to each row."""
         from google.cloud.bigtable.data import ReadRowsQuery
         from google.cloud.bigtable.data.row_filters import CellsColumnLimitFilter
         table = self._table(table_name)
         q = ReadRowsQuery(row_filter=CellsColumnLimitFilter(num_cells=cells_per_column_limit))
         out = []
         for r in table.read_rows(q, **_Budget(timeout, f"read_all {table_name}").data()):
-            cells = {}
+            cells, stamps = {}, {}
             for c in r.cells:
-                cells.setdefault(f"{c.family}:{_qualifier_text(c.qualifier)}", c.value.hex())   # newest first
-            out.append({"row": r.row_key.hex(), "cells": cells})
+                name = f"{c.family}:{_qualifier_text(c.qualifier)}"
+                if name not in cells:   # newest first
+                    cells[name], stamps[name] = c.value.hex(), c.timestamp_micros
+            row = {"row": r.row_key.hex(), "cells": cells}
+            if times:   # each cell's time, microseconds since the epoch, for an expected row that names it
+                row["times"] = stamps
+            out.append(row)
         out.sort(key=lambda x: x["row"])
         return out
 

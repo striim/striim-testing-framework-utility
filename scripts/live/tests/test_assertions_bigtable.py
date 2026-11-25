@@ -318,3 +318,44 @@ def test_rows_match_refuses_a_missing_cell_even_with_a_prefix():
 def test_a_non_string_route_is_a_spec_error():
     with pytest.raises(BigtableSpecError, match="must be one of"):
         parse_bigtable_specs([{"table": "t", "expected": [], "db": {"a": 1}}])
+
+
+# ---- cell times ------------------------------------------------------------------------
+
+class _TimedAdmin:
+    """read_all with times=True adds each row's cell times, as BigtableAdmin.read_all does."""
+    def __init__(self, rows):
+        self.rows, self.asked_times = rows, []
+
+    def read_all(self, table, cells_per_column_limit=1, timeout=None, times=False):
+        self.asked_times.append(times)
+        return [dict(r) if times else {k: v for k, v in r.items() if k != "times"} for r in self.rows]
+
+
+_TIMED = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"},
+           "times": {"emp:name": 1577836800000000, "emp:age": 5}}]
+
+
+def test_a_named_cell_time_is_compared():
+    want = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}, "times": {"emp:name": 1577836800000000}}]
+    admin = _TimedAdmin(_TIMED)
+    assert _check_spec(admin, parse_bigtable_specs([{"table": "emp", "expected": want}])[0]) is None
+    assert admin.asked_times == [True]
+
+
+def test_a_wrong_cell_time_fails():
+    want = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}, "times": {"emp:name": 1}}]
+    assert _check_spec(_TimedAdmin(_TIMED), parse_bigtable_specs([{"table": "emp", "expected": want}])[0])
+
+
+def test_without_times_the_read_does_not_ask_for_them():
+    admin = _TimedAdmin(_TIMED)
+    want = [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}}]
+    assert _check_spec(admin, parse_bigtable_specs([{"table": "emp", "expected": want}])[0]) is None
+    assert admin.asked_times == [False]
+
+
+@pytest.mark.parametrize("times", [{}, {"emp:other": 1}, {"emp:name": -1}, {"emp:name": "1"}, {"emp:name": True}, []])
+def test_parse_rejects_a_bad_times_map(times):
+    with pytest.raises(BigtableSpecError):
+        parse_bigtable_specs([{"table": "emp", "expected": [{"row": "01", "cells": {"emp:name": "6a"}, "times": times}]}])
