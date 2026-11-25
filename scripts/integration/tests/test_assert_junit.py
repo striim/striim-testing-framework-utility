@@ -354,14 +354,14 @@ def service_env(monkeypatch, tmp_path):
     monkeypatch.setenv("SHARED", "prior")
     seen = {}
 
-    def use(exc=None):
+    def use(exc=None, result=None):
         def fake(module_ref, release, pattern, run=None):
             seen.update({k: os.environ.get(k) for k in
                          ("VERTICA_URL", "VERTICA_TARGET_USER", "VERTICA_TARGET_PASSWORD",
                           "PG_URL", "SHARED")})
             if exc is not None:
                 raise exc
-            return opartifacts.JUnitResult(returncode=0, tests=1)
+            return result or opartifacts.JUnitResult(returncode=0, tests=1)
         monkeypatch.setattr(opartifacts, "run_module_tests", fake)
         return seen
 
@@ -395,9 +395,16 @@ def test_requires_tokens_are_restored_when_the_run_raises(tmp_path, service_env)
     _assert_restored()
 
 
-def test_requires_token_values_are_not_shown(tmp_path, service_env, capsys):
-    service_env(exc=opartifacts.OpArtifactError("build needs JDK 17"))
-    with pytest.raises(plugin.EnvSkip) as e:
-        IntYamlItem._run_junit(_item(), _vertica_case(tmp_path))
-    out = capsys.readouterr()
-    assert "s3cr3t-pw" not in str(e.value) and "s3cr3t-pw" not in out.out + out.err
+def test_requires_token_values_are_redacted_from_the_failure(tmp_path, service_env, pytestconfig):
+    service_env(result=opartifacts.JUnitResult(
+        returncode=1, tests=1, failures=1, failed=("a.VerticaIT.connect",),
+        output="BUILD FAILURE: login failed for qatarget/s3cr3t-pw"))
+    m = _vertica_case(tmp_path)
+    with pytest.raises(pytest.fail.Exception) as e:
+        IntYamlItem._run_junit(_item(), m)
+    assert "s3cr3t-pw" in str(e.value)  # the unredacted text carries it
+    item = SimpleNamespace(manifest=m, config=pytestconfig, _traceback_filter=lambda ei: ei.traceback,
+                           tokens={"VERTICA_TARGET_PASSWORD": "s3cr3t-pw"})
+    item._repr_failure_py = lambda ei, style=None: pytest.Item._repr_failure_py(item, ei, style)
+    shown = str(plugin._redacted_failure(item, e))
+    assert "BUILD FAILURE" in shown and "s3cr3t-pw" not in shown

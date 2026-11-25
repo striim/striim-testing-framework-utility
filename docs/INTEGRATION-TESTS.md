@@ -813,7 +813,8 @@ assert:
   `BIGTABLE_EMULATOR_HOST`, reach the test JVM, and so does every `provides:` token of each
   `requires:` service (for `vertica`: `VERTICA_URL`, `VERTICA_TARGET_USER`,
   `VERTICA_TARGET_PASSWORD`, `VERTICA_TARGET_SCHEMA`, ...). Those are set for the Maven run only;
-  earlier values are restored afterwards. No `clean`. When releases share a series, the tests
+  earlier values are restored afterwards. Only `provides:` tokens are exported, not `TID`, so
+  under `SLT_PARALLEL` a suite must name its own tables uniquely. No `clean`. When releases share a series, the tests
   run in that release's build directory (`target/.releases/<version>`).
 - **What is read.** The `TEST-*.xml` reports this run wrote; earlier `TEST-*.xml` files in that
   reports directory are removed first.
