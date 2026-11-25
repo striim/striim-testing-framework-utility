@@ -347,6 +347,10 @@ def _perf_target_block(raw: dict, path) -> dict:
     target = raw.get("target")
     if not isinstance(target, dict):
         return target
+    if "system_properties" in target:
+        raise manifest_mod.ManifestError(
+            f"{path}: perf mode does not support 'system_properties' in 'target:'; the perf "
+            f"launcher does not pass it. Put '-D<name>=<value>' in 'performance.jvm.args' instead")
     refused = []
     if "restart_after" in target:
         refused.append("'restart_after' (perf never restarts the writer)")

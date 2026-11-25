@@ -458,8 +458,9 @@ def test_target_system_properties_reject_user_timezone(tmp_path):
         load_manifest(path)
 
 
-@pytest.mark.parametrize("name", ["java.io.tmpdir", "jdk.attach.allowAttachSelf"])
-def test_target_system_properties_reject_java_and_jdk_names(tmp_path, name):
+@pytest.mark.parametrize("name", ["java.io.tmpdir", "jdk.attach.allowAttachSelf", "file.encoding",
+                                  "user.home", "user.dir", "sun.jnu.encoding"])
+def test_target_system_properties_reject_jvm_owned_names(tmp_path, name):
     path = _with_system_properties(tmp_path, f"    {name}: x\n")
     with pytest.raises(ManifestError, match="may not set JVM property"):
         load_manifest(path)

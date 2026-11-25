@@ -1884,7 +1884,7 @@ def _normalize_system_properties(raw, path) -> tuple:
             raise ManifestError(
                 f"{path}: 'target.system_properties' may not set 'user.timezone'; "
                 f"use 'target.timezone'")
-        if name.startswith(("java.", "jdk.")):
+        if name == "file.encoding" or name.startswith(("java.", "jdk.", "user.", "sun.")):
             raise ManifestError(
                 f"{path}: 'target.system_properties' may not set JVM property {name!r}")
         if isinstance(value, bool):

@@ -653,8 +653,11 @@ assert:
   load, because the JVM would silently fall back to GMT and turn the case into a second UTC one.
 - **`system_properties:` sets the driver JVM's `-D` arguments**, for a writer whose test hooks are
   system properties. Names match `[A-Za-z_][A-Za-z0-9_.-]*`; values are strings, integers or
-  booleans, passed as strings. `user.timezone` is refused (use `timezone:`), and so is any name
-  starting with `java.` or `jdk.`. Values are not token-rendered.
+  booleans, passed as strings. Quote any value that is not a plain decimal or `true`/`false`:
+  YAML 1.1 reads unquoted `010`, `1:30`, `0x1F`, `on` and `yes` as other values. Refused:
+  `user.*` (for `user.timezone`, use `timezone:`), `file.encoding`, and any name starting with
+  `java.`, `jdk.` or `sun.`. Values are not token-rendered. Perf mode refuses the key; use
+  `performance.jvm.args`.
 - **`assert.restarts:`/`assert.replayed:` are what make a recovery case about recovery.** A
   `restart_after:` case writes the same rows and acks the same count as one with no restart, so
   those two numbers are the only thing that says the restart happened. They do **not** satisfy the

@@ -1123,6 +1123,17 @@ def test_perf_target_refuses_keys_perf_cannot_honour(tmp_path, target_extra, fra
     assert "perf mode does not support" in str(e.value)
 
 
+def test_perf_target_refuses_system_properties_and_points_to_jvm_args(tmp_path):
+    manifest_path, _ = _write(
+        tmp_path,
+        _REQUIRED_PREFIX + "target:\n  input: performance/events.json\n"
+        "  system_properties:\n    vbw.test.failCopies: 2\n" + _PERF_BLOCK)
+    with pytest.raises(PerfManifestError) as e:
+        load_perf_manifest(manifest_path)
+    assert "'system_properties'" in str(e.value)
+    assert "performance.jvm.args" in str(e.value)
+
+
 def test_perf_target_input_is_optional_and_defaults_to_performance_input(tmp_path):
     manifest_path, _ = _write(tmp_path, _REQUIRED_PREFIX + "target:\n  distribution_id: d7\n" + _PERF_BLOCK)
     m = load_perf_manifest(manifest_path)
