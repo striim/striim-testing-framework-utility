@@ -557,3 +557,11 @@ def test_assert_target_without_times_ignores_them(monkeypatch):
     _with_timed({"emp": _TIMED}, monkeypatch)
     assert_target("bigtable-target", "emp", [{"row": "01", "cells": {"emp:name": "6a6b6c", "emp:age": "1f"}}],
                   _EMULATOR_TOKENS)
+
+
+@pytest.mark.parametrize("times", [{}, None, "x", {"emp:other": 1}, {"emp:name": -1}, {"emp:name": 1.5}])
+def test_assert_target_refuses_a_bad_times_map(times, monkeypatch):
+    _with_timed({"emp": _TIMED}, monkeypatch)
+    with pytest.raises(RouteError):
+        assert_target("bigtable-target", "emp", [{"row": "01", "cells": {"emp:name": "6a6b6c"}, "times": times}],
+                      _EMULATOR_TOKENS)

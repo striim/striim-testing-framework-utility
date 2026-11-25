@@ -2291,7 +2291,10 @@ load (keys, table name, route, row shape).
 An expected row may also carry `times: {"<fam>:<qual>": <microseconds>}`: the time of each named cell
 (the newest cell's timestamp, microseconds since the epoch) must equal the value given. Cells it does
 not name are compared by value only. Each name must be one of the row's `cells`. The integration
-tier's `assert.target` on a `bigtable-*` route accepts the same `times` in its `expected/*.json` rows.
+tier's `assert.target` on a `bigtable-*` route accepts the same `times` in its `expected/*.json` rows and
+refuses a malformed map the same way, when the assertion runs. Only a time the writer sets can be
+asserted (a server-assigned time is not known in advance); the emulator keeps millisecond granularity,
+so such a time is a multiple of 1000.
 
 Each spec reads its table whole (`CellsColumnLimitFilter(num_cells=1)`, the newest cell per column)
 and compares the row list to `expected`, polling until it matches or `timeout:` elapses. `expected`

@@ -762,18 +762,35 @@ def read_cells(route: str, table: str,
     return {"table": table, "rows": rows}
 
 
+def _check_times(expected: list) -> None:
+    """An expected row's `times` is a non-empty {<fam>:<qual>: <microseconds>} naming its own cells,
+    the same rule the live tier's `assert: bigtable` applies at load."""
+    for i, row in enumerate(expected):
+        if not isinstance(row, dict) or "times" not in row:
+            continue
+        times = row["times"]
+        if not isinstance(times, dict) or not times:
+            raise RouteError(f"expected[{i}].times must be a non-empty {{<family>:<qualifier>: <microseconds>}}, "
+                             f"got {times!r}")
+        for cell, micros in times.items():
+            if cell not in row.get("cells", {}):
+                raise RouteError(f"expected[{i}].times names {cell!r}, which is not in its cells")
+            if isinstance(micros, bool) or not isinstance(micros, int) or micros < 0:
+                raise RouteError(f"expected[{i}].times.{cell} must be a cell time in microseconds, got {micros!r}")
+
+
 def _times_compared(expected: list, rows: list) -> list:
-    """An expected row may carry `"times": {<fam>:<qual>: <microseconds>}`, the cell times to check.
-    Keep, in each actual row, the times of exactly the cells its expected row names, so the
-    comparison checks those times and no others. Rows beyond `expected` keep none."""
+    """Keep, in each actual row, the times of exactly the cells its expected row (matched by row key)
+    names, so the comparison checks those times and no others. A row no expected row names keeps none."""
+    named = {r["row"]: r["times"] for r in expected if isinstance(r, dict) and "times" in r and "row" in r}
     out = []
-    for i, row in enumerate(rows):
-        want = expected[i].get("times") if i < len(expected) and isinstance(expected[i], dict) else None
-        row = {k: v for k, v in row.items() if k != "times"}
+    for row in rows:
+        want = named.get(row.get("row"))
+        trimmed = {k: v for k, v in row.items() if k != "times"}
         if want is not None:
-            got = rows[i].get("times", {})
-            row["times"] = {c: got.get(c) for c in want}
-        out.append(row)
+            got = row.get("times", {})
+            trimmed["times"] = {c: got.get(c) for c in want}
+        out.append(trimmed)
     return out
 
 
@@ -781,6 +798,7 @@ def assert_target(route: str, table: str, expected: list, tokens: Mapping[str, s
     """Compare a route's table snapshot to `expected` (a row list), raising with a clear mismatch
     message. `assert.target` on a bigtable-* route calls it."""
     expected = list(expected)
+    _check_times(expected)
     times = any(isinstance(r, dict) and "times" in r for r in expected)
     got = read_cells(route, table, tokens, times=times)
     if times:

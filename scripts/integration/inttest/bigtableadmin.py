@@ -492,7 +492,9 @@ class BigtableAdmin:
             for c in r.cells:
                 name = f"{c.family}:{_qualifier_text(c.qualifier)}"
                 if name not in cells:   # newest first
-                    cells[name], stamps[name] = c.value.hex(), c.timestamp_micros
+                    cells[name] = c.value.hex()
+                    if times:
+                        stamps[name] = c.timestamp_micros
             row = {"row": r.row_key.hex(), "cells": cells}
             if times:   # each cell's time, microseconds since the epoch, for an expected row that names it
                 row["times"] = stamps
