@@ -60,3 +60,32 @@ def test_harness_drive_respects_explicit_target_timezone(tmp_path):
 
     assert "-Duser.timezone=Asia/Tokyo" in captured_argv
     assert "-Duser.timezone=UTC" not in captured_argv
+
+
+def test_harness_drive_appends_system_properties_sorted_after_the_timezone(tmp_path):
+    op_jar = tmp_path / "op.jar"
+    op_jar.write_text("")
+    harness_jar = tmp_path / "harness.jar"
+    harness_jar.write_text("")
+
+    captured_argv: list[str] = []
+
+    def fake_run(argv, **kwargs):
+        captured_argv.extend(argv)
+        req = json.loads(Path(argv[-1]).read_text())
+        Path(req["outputFile"]).write_text("{}")
+        res = mock.MagicMock()
+        res.returncode = 0
+        return res
+
+    target = TargetSpec(input="in.json", input_path=tmp_path / "in.json",
+                        system_properties=(("vbw.test.firstWaitMillis", "100"),
+                                           ("vbw.test.failCopies", "2")))
+
+    with mock.patch("inttest.harness.ensure_harness_jar", return_value=harness_jar), \
+         mock.patch("inttest.harness._resolve_java", return_value="java"), \
+         mock.patch("subprocess.run", side_effect=fake_run):
+        harness.drive(op_jar, {}, [], target=target)
+
+    assert captured_argv[:5] == ["java", "-Duser.timezone=UTC", "-Dvbw.test.failCopies=2",
+                                 "-Dvbw.test.firstWaitMillis=100", "-cp"]

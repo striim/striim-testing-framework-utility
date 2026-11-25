@@ -543,6 +543,8 @@ target:
   positions: true                     # optional, default true; false = the no-recovery path
   distribution_id: inttest            # optional
   timezone: Asia/Tokyo                # optional: run the driver JVM at this -Duser.timezone
+  system_properties:                  # optional: -D<name>=<value> on the driver JVM, sorted by name
+    vbw.test.failCopies: 2
 assert:
   target:                             # the database the writer wrote
     - query: >
@@ -649,6 +651,10 @@ assert:
   is the defect. It is a JVM argument, not an env var — a driver reads the default zone during its
   own class initialisation, so setting it later is already too late. An unknown zone is rejected at
   load, because the JVM would silently fall back to GMT and turn the case into a second UTC one.
+- **`system_properties:` sets the driver JVM's `-D` arguments**, for a writer whose test hooks are
+  system properties. Names match `[A-Za-z_][A-Za-z0-9_.-]*`; values are strings, integers or
+  booleans, passed as strings. `user.timezone` is refused (use `timezone:`), and so is any name
+  starting with `java.` or `jdk.`. Values are not token-rendered.
 - **`assert.restarts:`/`assert.replayed:` are what make a recovery case about recovery.** A
   `restart_after:` case writes the same rows and acks the same count as one with no restart, so
   those two numbers are the only thing that says the restart happened. They do **not** satisfy the

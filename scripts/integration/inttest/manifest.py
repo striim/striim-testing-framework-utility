@@ -309,6 +309,7 @@ class TargetSpec:
     positions: bool = True
     distribution_id: str | None = None
     timezone: str | None = None
+    system_properties: tuple[tuple[str, str], ...] = ()   # (name, value), sorted by name
 
 
 @dataclass(frozen=True)
@@ -597,7 +598,9 @@ _DATA_ASSERTION_KEYS = {"input", "match", "ignore_fields", "project", "sort_by"}
 _SOURCE_KEYS = {"max_ticks", "expect_events", "seed_when"}
 
 _TARGET_KEYS = {"input", "restart_after", "positions", "distribution_id", "timezone",
-                "mid_run"}
+                "mid_run", "system_properties"}
+
+_SYSTEM_PROPERTY_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 
 _TARGET_ASSERTION_KEYS = {"query", "db", "match"}
 
@@ -1850,8 +1853,11 @@ def _normalize_target(raw, test_dir: Path, path) -> TargetSpec | None:
                 f"not reject an unknown -Duser.timezone -- it silently falls back to GMT, which "
                 f"would turn this into a second UTC case that passes and proves nothing.")
 
+    system_properties = _normalize_system_properties(raw.get("system_properties"), path)
+
     return TargetSpec(
         timezone=timezone,
+        system_properties=system_properties,
         input=input_file,
         input_path=(test_dir / input_file).resolve(),
         restart_after=restart_after,
@@ -1859,6 +1865,38 @@ def _normalize_target(raw, test_dir: Path, path) -> TargetSpec | None:
         distribution_id=distribution_id,
         mid_run=mid_run,
     )
+
+
+def _normalize_system_properties(raw, path) -> tuple:
+    """`target.system_properties:` -> sorted (name, value) pairs, passed to the driver JVM as -D."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ManifestError(
+            f"{path}: 'target.system_properties' must be a mapping of name to value, got {raw!r}")
+    out = []
+    for name, value in raw.items():
+        if not isinstance(name, str) or not _SYSTEM_PROPERTY_NAME.fullmatch(name):
+            raise ManifestError(
+                f"{path}: 'target.system_properties' name {name!r} must match "
+                f"[A-Za-z_][A-Za-z0-9_.-]*")
+        if name == "user.timezone":
+            raise ManifestError(
+                f"{path}: 'target.system_properties' may not set 'user.timezone'; "
+                f"use 'target.timezone'")
+        if name.startswith(("java.", "jdk.")):
+            raise ManifestError(
+                f"{path}: 'target.system_properties' may not set JVM property {name!r}")
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        elif isinstance(value, (str, int)):
+            value = str(value)
+        else:
+            raise ManifestError(
+                f"{path}: 'target.system_properties.{name}' must be a string, integer or "
+                f"boolean, got {value!r}")
+        out.append((name, value))
+    return tuple(sorted(out))
 
 
 def _normalize_mid_run(raw, test_dir: Path, path: Path) -> tuple:

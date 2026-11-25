@@ -258,6 +258,9 @@ the last release; the release makes it that version's entry.
 
 **New**
 
+- **`target.system_properties:` passes `-D` arguments to the integration driver JVM.** A mapping
+  of name to value, added after `-Duser.timezone` in name order. `user.timezone` and names
+  starting with `java.` or `jdk.` are refused at load.
 - **`assert.junit:` runs a module's own JUnit tests in the integration tier**, against the services
   the case requires, and fails the case when a test fails, any test skips, or fewer than
   `min_tests` ran. Tests gated on a service variable such as `BIGTABLE_EMULATOR_HOST` skip in the
