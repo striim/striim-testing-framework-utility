@@ -20,6 +20,7 @@ Oracle-safe, collision-resistant hash in both tiers.
 """
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -398,6 +399,26 @@ def _op_build_lock_path(op_jar_ref: str) -> Path:
     # One lock per module, so different modules still build in parallel.
     return _state_root() / _int_state_name(
         f".int-op-build-{opartifacts_mod.module_name(op_jar_ref)}.lock")
+
+
+@contextlib.contextmanager
+def _junit_service_env(requires):
+    """Each `requires:` service's `provides:` tokens in `os.environ` for the block (a later
+    service's token of the same name wins, as in `build_tokens`); every prior value or absence is
+    restored on exit, failure included. Values are secrets among others: never log them."""
+    exported: dict[str, str] = {}
+    for name in requires or []:
+        exported.update(tokens_mod.service_tokens(name))
+    saved = {k: os.environ.get(k) for k in exported}
+    try:
+        os.environ.update(exported)
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _session_lock_path() -> Path:
@@ -2719,16 +2740,17 @@ class IntYamlItem(pytest.Item):
     def _run_junit(self, m) -> None:
         """`assert.junit:` -- run the module's JUnit tests matching `tests` with Maven, under the
         module's build lock, in this process's environment (so what `_export_bigtable_emulator` and
-        the other service steps exported reaches the test JVM). Fails the case when Maven fails, a
-        test is skipped, or fewer than `min_tests` ran. A missing build prerequisite skips with
-        the cause "build", as `_build_operator_jar` does."""
+        the other service steps exported reaches the test JVM), plus every `provides:` token of
+        each `requires:` service (`_junit_service_env`), such as VERTICA_URL. Fails the case when
+        Maven fails, a test is skipped, or fewer than `min_tests` ran. A missing build prerequisite
+        skips with the cause "build", as `_build_operator_jar` does."""
         spec = m.assert_.junit
         if not os.environ.get("STRIIM_HOME"):
             _env_skip("build", f"{m.name}: STRIIM_HOME is not set -- running {m.module_ref!r}'s "
                                f"JUnit tests needs a Striim install to build against")
         release = releases_mod.resolve_release(os.environ)
         try:
-            with FileLock(str(_op_build_lock_path(m.module_ref))):
+            with FileLock(str(_op_build_lock_path(m.module_ref))), _junit_service_env(m.requires):
                 result = opartifacts_mod.run_module_tests(m.module_ref, release, spec.tests)
         except opartifacts_mod.OpModuleMissing as e:
             pytest.fail(f"{m.name}: {e}", pytrace=False)
