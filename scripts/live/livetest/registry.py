@@ -418,11 +418,11 @@ def with_dependencies(names) -> list:
 
 
 def teardown_order(names) -> list:
-    """``names`` with each dependent before what it depends on (``with_dependencies`` reversed),
-    each name once, nothing added."""
+    """``names`` with each dependent before what it depends on, each name once, nothing added;
+    names with no order between them keep their given order."""
     wanted = list(dict.fromkeys(names))
     try:
-        ordered = list(reversed(with_dependencies(wanted)))
+        ordered = list(reversed(with_dependencies(list(reversed(wanted)))))
     except RegistryError:
         return wanted
     return [n for n in ordered if n in wanted]

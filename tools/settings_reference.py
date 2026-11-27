@@ -356,7 +356,10 @@ def service_settings(services: Path) -> list:
         # A dependency's own settings (vertica-eon's compose reads SLT_MINIO_HOST_PORT) stay under it.
         theirs = set()
         for dep in raw.get("depends_on") or ():
-            dep_raw = yaml.safe_load((services / dep / "service.yaml").read_text()) or {}
+            dep_file = services / dep / "service.yaml"
+            if not dep_file.is_file():
+                continue
+            dep_raw = yaml.safe_load(dep_file.read_text()) or {}
             dep_compose = services / dep / dep_raw["compose"] if dep_raw.get("compose") else None
             theirs |= set((dep_raw.get("docker_env") or {}).values()) | set((dep_raw.get("live_env") or {}).values())
             if dep_compose and dep_compose.is_file():

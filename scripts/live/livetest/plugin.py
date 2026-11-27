@@ -47,7 +47,8 @@ from livetest.striimfile import (
     read_server_files, clear_server_files, clear_server_dir, clear_op_checkpoints, ensure_server_dir,
     place_server_file,
 )
-from livetest.registry import load_service, unavailable as _registry_unavailable
+from livetest.registry import (load_service, teardown_order as _registry_teardown_order,
+                               unavailable as _registry_unavailable)
 from livetest import prestart as _prestart
 from livetest.services import (
     resolve, compose_down, ServiceError, DockerUnavailable, derive_per_test_base,
@@ -4792,7 +4793,9 @@ def pytest_sessionfinish(session, exitstatus):
     if unaccounted:
         _slt_adopt_exclusive_stack(config)
     started = getattr(config, "_slt_started", set())
-    for defn in getattr(config, "_slt_defs", {}).values():
+    defs = getattr(config, "_slt_defs", {})
+    # A dependent before its dependency: vertica-eon's stop_db needs minio still up.
+    for defn in (defs[n] for n in _registry_teardown_order(list(defs))):
         if defn.container in started and defn.compose:
             try:
                 compose_down(defn)

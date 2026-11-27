@@ -51,10 +51,17 @@ def _bash(expr: str, env: dict) -> str:
 
 def test_teardown_order_puts_a_dependent_first_and_adds_nothing():
     from livetest import registry
-    assert registry.teardown_order(["minio", "postgres", "vertica-eon"]) == ["vertica-eon", "postgres", "minio"]
+    assert registry.teardown_order(["minio", "postgres", "vertica-eon"]) == ["postgres", "vertica-eon", "minio"]
     assert registry.teardown_order(["minio"]) == ["minio"]
+    assert registry.teardown_order(["vertica-eon", "minio"]) == ["vertica-eon", "minio"]
     assert registry.dependents("minio") == ["vertica-eon"]
     assert registry.dependents("vertica-eon") == []
+
+
+def test_teardown_order_keeps_services_without_dependencies_in_their_given_order():
+    from livetest import registry
+    names = ["postgres", "oracle", "kafka", "mssql"]
+    assert registry.teardown_order(names) == names
 
 
 def test_a_fresh_minio_bring_up_resets_vertica_eon_first(monkeypatch):
@@ -218,11 +225,49 @@ def test_the_secondary_waits_for_this_life_of_the_primary_before_start_node():
     primary, secondary = text.split('\nelse\n  # On a full start')
     primary = primary[primary.find('if [ "$ROLE" = primary ]; then'):]
     assert _entrypoint_var("READY") == "$SHARED/.primary-ready"
-    # cleared at entry (and on SIGTERM), written once start_db or create is over
-    assert -1 < primary.find('rm -f "$READY"') < primary.find('touch "$READY"')
-    assert primary.find('"$VCLUSTER" start_db') < primary.rfind('touch "$READY"')
-    wait = secondary.find('wait_for 600 test -f "$READY" || fail')
+    assert _entrypoint_var("BOOT") == "$SHARED/.primary-boot"
+    # READY cleared at entry (and on SIGTERM), then this life's token to BOOT, and the same
+    # token to READY once start_db or create is over
+    write_ready = 'printf \'%s\\n\' "$TOKEN" > "$READY.tmp"'
+    assert -1 < primary.find('rm -f "$READY"') < primary.find('> "$BOOT.tmp"') < primary.find(write_ready)
+    assert primary.find('"$VCLUSTER" start_db') < primary.rfind(write_ready)
+    wait = secondary.find('wait_primary_life 600 || fail')
     assert -1 < wait < secondary.find("node_state") < secondary.find('"$VCLUSTER" start_node')
+
+
+def _wait_primary_life(tmp_path, boot, ready, answers, steps=(), n=4):
+    """Run entrypoint.sh's wait_primary_life against BOOT/READY files in tmp_path. ``answers``:
+    whether the primary answers SQL; ``steps``: (file, content) written at each sleep, in turn."""
+    fn = re.search(r"^wait_primary_life\(\) \{\n.*?^\}\n", _entrypoint(), re.MULTILINE | re.DOTALL).group(0)
+    for name, content in (("boot", boot), ("ready", ready)):
+        if content is not None:
+            (tmp_path / name).write_text(content + "\n")
+    script = "\n".join([
+        f'BOOT={tmp_path}/boot READY={tmp_path}/ready PRIMARY=p i=0',
+        f'sql() {{ {"true" if answers else "false"}; }}',
+        "steps=(" + " ".join(f"'{f}={c}'" for f, c in steps) + ")",
+        'sleep() { local s=${steps[$i]:-}; i=$((i+1)); [ -n "$s" ] && printf "%s\\n" "${s#*=}" > "'
+        + str(tmp_path) + '/${s%%=*}"; return 0; }',
+        fn, f"wait_primary_life {n}"])
+    return subprocess.run(["bash", "-c", script]).returncode
+
+
+def test_the_secondary_ignores_the_ready_file_a_killed_primary_left(tmp_path):
+    # stale pair, primary not answering and never starting: times out
+    assert _wait_primary_life(tmp_path, "t1", "t1", answers=False) == 1
+    # stale pair, then the primary's new life: READY removed, new BOOT, READY written
+    assert _wait_primary_life(tmp_path, "t1", "t1", answers=False,
+                              steps=[("ready", ""), ("boot", "t2"), ("ready", "t2")]) == 0
+
+
+def test_the_secondary_waits_for_ready_to_match_this_lifes_boot(tmp_path):
+    assert _wait_primary_life(tmp_path, "t2", None, answers=True) == 1
+    assert _wait_primary_life(tmp_path, "t2", "t1", answers=True) == 1
+    assert _wait_primary_life(tmp_path, None, None, answers=True) == 1
+
+
+def test_a_secondary_restarted_alone_accepts_the_live_primarys_ready(tmp_path):
+    assert _wait_primary_life(tmp_path, "t1", "t1", answers=True, n=1) == 0
 
 
 def test_the_primary_fails_when_the_secondary_nma_is_down():

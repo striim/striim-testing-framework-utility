@@ -442,4 +442,4 @@ def test_stop_all_and_teardown_stop_a_dependent_before_its_dependency(monkeypatc
     monkeypatch.setattr(preflight, "manifests_for", lambda ids: [])
     monkeypatch.setattr(preflight, "compute_unions", lambda m: (["minio", "postgres", "vertica-eon"], []))
     assert preflight.teardown(["some-case"], explicit=True) == 0
-    assert downed == ["vertica-eon", "postgres", "minio"]
+    assert downed == ["postgres", "vertica-eon", "minio"]

@@ -25,7 +25,9 @@ S3_PARAMS="AWSEndpoint=$S3_ENDPOINT,AWSAuth=$EON_S3_ACCESS_KEY:$EON_S3_SECRET_KE
 SHARED=/shared
 VCONF=$SHARED/vertica_cluster.yaml
 CREATED=$SHARED/.db-created
-# Written by the primary once this life's start_db or create is over; the secondary waits for it.
+# The primary writes a fresh token to BOOT at entry, and the same token to READY once this
+# life's start_db or create is over; the secondary waits for READY to match BOOT.
+BOOT=$SHARED/.primary-boot
 READY=$SHARED/.primary-ready
 CERTS=/opt/vertica/config/https_certs
 VCLUSTER=/opt/vertica/bin/vcluster
@@ -70,8 +72,31 @@ make_certs() {
 nma_up() { curl -sfk "https://$1:5554/v1/health"; }
 sql() { "$VSQL" -h "$1" -U dbadmin -w "$PASSWORD" -d "$DB" -Atc "$2"; }
 
+# Secondary: wait (up to $1 seconds) until the primary's current life is ready. READY matching
+# a BOOT that changed since our entry is a new life that finished. READY matching the BOOT seen
+# at entry is either a live primary (secondary restarted alone; it answers SQL) or a stale pair
+# a killed primary left (it does not answer until its new life has removed READY).
+wait_primary_life() {
+  local n=$1 boot0 b r
+  boot0=$(cat "$BOOT" 2>/dev/null)
+  for _ in $(seq 1 "$n"); do
+    b=$(cat "$BOOT" 2>/dev/null); r=$(cat "$READY" 2>/dev/null)
+    if [ -n "$b" ] && [ "$r" = "$b" ]; then
+      [ "$b" != "$boot0" ] && return 0
+      if sql "$PRIMARY" 'SELECT 1' >/dev/null 2>&1 \
+          && [ "$(cat "$READY" 2>/dev/null)" = "$b" ] && [ "$(cat "$BOOT" 2>/dev/null)" = "$b" ]; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 if [ "$ROLE" = primary ]; then
   rm -f "$READY"
+  TOKEN=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "$(date +%s%N)-$$-$RANDOM")
+  { printf '%s\n' "$TOKEN" > "$BOOT.tmp" && mv -f "$BOOT.tmp" "$BOOT"; } || fail "could not write $BOOT"
   trap 'log "SIGTERM: stopping $DB"; rm -f "$READY"; "$VCLUSTER" stop_db --db-name "$DB" --config "$VCONF" --password "$PASSWORD" >/dev/null 2>&1; exit 0' TERM INT
   [ -f "$SHARED/certs/.done" ] || make_certs || fail "could not create certificates"
 else
@@ -122,13 +147,13 @@ if [ "$ROLE" = primary ]; then
       --config-param "$S3_PARAMS" >/tmp/vcluster.log 2>&1 || fail "start_db failed"
     log "started $DB in $(( $(date +%s) - t0 ))s"
   fi
-  touch "$READY" || fail "could not write $READY"
+  { printf '%s\n' "$TOKEN" > "$READY.tmp" && mv -f "$READY.tmp" "$READY"; } || fail "could not write $READY"
 else
   # On a full start the primary's start_db starts this node; wait for that first, or a
   # start_node here collides with it. Restarted alone (the primary up, this node DOWN), it
   # starts its own node.
   wait_for 600 test -f "$CREATED" || fail "database never created"
-  wait_for 600 test -f "$READY" || fail "primary did not finish starting within 600s (no $READY)"
+  wait_primary_life 600 || fail "primary did not finish starting within 600s ($READY does not match $BOOT)"
   wait_for 600 sql "$PRIMARY" 'SELECT 1' || fail "primary not answering"
   state=
   for _ in $(seq 1 120); do
