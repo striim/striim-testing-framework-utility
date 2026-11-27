@@ -1,0 +1,87 @@
+# Vertica 25.3 CE in Eon mode: a primary subcluster (node 1) and a secondary subcluster (node 2),
+# communal storage in the minio service (service.yaml depends_on), reached through the host's
+# published MinIO port. Provisioning is baked into images/vertica-eon/entrypoint.sh.
+#
+# Parallel stacks: SLT_STACK_PREFIX namespaces the project, the container names and the host
+# names (docs/internals/ENGINE.md "Parallel stacks"). The catalog stores node IPs, so the nodes
+# have static IPs on a /24 of their own: SLT_VERTICA_EON_SUBNET (its first three octets) must
+# differ per stack running at once.
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon
+
+x-vertica: &vertica
+  build:
+    context: ./images/vertica-eon
+    args:
+      BASE: ${SLT_VERTICA_EON_BASE:-opentext/vertica-k8s:25.3.0-8-multiarch}
+  image: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon:25.3.0-8
+  cpus: ${SLT_VERTICA_EON_CPUS:-1}
+  mem_limit: ${SLT_VERTICA_EON_MEM_LIMIT:-2g}
+  ulimits:
+    nofile:
+      soft: 32768
+      hard: 32768
+  # stop_db on the primary takes ~10-30 s; Docker's default 10 s would kill it mid-stop.
+  stop_grace_period: 90s
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - slt-vertica-eon-shared:/shared
+  healthcheck:
+    # As services/vertica: the marker this boot wrote, then a qasource login on this node.
+    test: ["CMD-SHELL", "test -f /data/.slt-init-done && /opt/vertica/bin/vsql -h 127.0.0.1 -U qasource -w striim -d sltdb -c 'SELECT 1'"]
+    interval: 2s
+    timeout: 5s
+    # First boot (create_db, add_subcluster) takes about 60 s.
+    retries: 300
+
+x-env: &env
+  EON_PRIMARY_HOST: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon-1
+  EON_SECONDARY_HOST: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon-2
+  EON_CERT_IPS: "${SLT_VERTICA_EON_SUBNET:-172.16.250}.11 ${SLT_VERTICA_EON_SUBNET:-172.16.250}.12"
+  EON_S3_ENDPOINT: host.docker.internal:${SLT_MINIO_HOST_PORT:-19000}
+  EON_S3_BUCKET: vertica-eon
+  # minio/compose.yaml's MINIO_ROOT_USER and MINIO_ROOT_PASSWORD: change both.
+  EON_S3_ACCESS_KEY: minioadmin
+  EON_S3_SECRET_KEY: minioadmin-test
+
+services:
+  slt-vertica-eon-2:
+    <<: *vertica
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon-2
+    hostname: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon-2
+    environment:
+      <<: *env
+      EON_ROLE: secondary
+    # Published on ${SLT_BIND_ADDRESS} and ${SLT_BIND_GATEWAY}, as every service (docs/SETTINGS.md).
+    ports:
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_VERTICA_EON_SECONDARY_HOST_PORT:-25434}:5433"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_VERTICA_EON_SECONDARY_HOST_PORT:-25434}:5433"
+    networks:
+      slt-vertica-eon-net:
+        ipv4_address: ${SLT_VERTICA_EON_SUBNET:-172.16.250}.12
+
+  slt-vertica-eon-1:
+    <<: *vertica
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon-1
+    hostname: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-vertica-eon-1
+    environment:
+      <<: *env
+      EON_ROLE: primary
+    # Node 2 starts first and stops last, so node 1's stop_db stops both cleanly.
+    depends_on: [slt-vertica-eon-2]
+    ports:
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_VERTICA_EON_HOST_PORT:-25433}:5433"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_VERTICA_EON_HOST_PORT:-25433}:5433"
+    networks:
+      slt-vertica-eon-net:
+        ipv4_address: ${SLT_VERTICA_EON_SUBNET:-172.16.250}.11
+
+volumes:
+  slt-vertica-eon-shared:
+
+networks:
+  slt-vertica-eon-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${SLT_VERTICA_EON_SUBNET:-172.16.250}.0/24

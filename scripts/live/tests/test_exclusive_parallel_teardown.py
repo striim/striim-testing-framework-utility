@@ -180,3 +180,11 @@ def test_a_serial_exclusive_run_that_finished_cleanly_needs_no_prefix_scan(monke
 def test_a_serial_shared_run_that_was_interrupted_adopts_nothing(calls, stack_on_docker):
     P.pytest_sessionfinish(_session(_controller("shared")), pytest.ExitCode.INTERRUPTED)
     assert calls == []
+
+
+def test_session_teardown_stops_a_dependent_before_its_dependency(monkeypatch, calls):
+    # Insertion order puts minio first; vertica-eon's stop_db needs minio up, so it must go first.
+    cfg = SimpleNamespace(_slt_started={"xabc-slt-minio", "xabc-slt-vertica-eon"},
+                          _slt_defs={"minio": _defn("minio"), "vertica-eon": _defn("vertica-eon")})
+    P.pytest_sessionfinish(_session(cfg), 0)
+    assert calls == [("compose_down", "xabc-slt-vertica-eon"), ("compose_down", "xabc-slt-minio")]

@@ -88,7 +88,10 @@ def test_every_service_publishing_an_overridable_port_declares_docker_env():
         published = re.findall(r"\$\{(SLT_[A-Z_]*HOST_PORT)", compose.read_text())
         if not published:
             continue
-        declared = set(registry.load_service(compose.parent.name).docker_env.values())
+        defn = registry.load_service(compose.parent.name)
+        declared = set(defn.docker_env.values())
+        for dep in defn.depends_on:        # a dependency's port: vertica-eon reaches minio's
+            declared |= set(registry.load_service(dep).docker_env.values())
         for var in published:
             if var not in declared:
                 missing.append(f"{compose.parent.name}:{var}")

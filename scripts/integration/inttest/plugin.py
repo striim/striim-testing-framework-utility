@@ -1219,6 +1219,18 @@ def _variant_workers(env) -> int:
     return int(raw)
 
 
+def _token_services(text: str, services) -> set:
+    """The services whose `${<SERVICE>_...}` tokens `text` names. Each token goes to the longest
+    matching service prefix, so `${VERTICA_EON_URL}` is vertica-eon's, not vertica's."""
+    prefixes = {svc.upper().replace("-", "_") + "_": svc for svc in services}
+    out = set()
+    for token in re.findall(r"\$\{([A-Z0-9_]+)", text):
+        hits = [p for p in prefixes if token.startswith(p)]
+        if hits:
+            out.add(prefixes[max(hits, key=len)])
+    return out
+
+
 def _variant_services(m, variant) -> set:
     """Every service one variant reaches (see `_variant_groups`), plus `ConfigFile` when the case
     has one."""
@@ -1226,8 +1238,7 @@ def _variant_services(m, variant) -> set:
     out |= {dbroutes_mod.parse_route(spec.db)[0] for spec in variant.ddl}
     # Case-level properties too: one every variant shares reaches that service from each.
     named = " ".join(str(v) for v in (*variant.tokens.values(), *m.properties.values()))
-    out |= {svc for svc in (*dbroutes_mod._PARAM_SPECS, *m.requires)
-            if "${" + svc.upper() + "_" in named}
+    out |= _token_services(named, (*dbroutes_mod._PARAM_SPECS, *m.requires))
     if "ConfigFile" in m.properties:
         out.add("ConfigFile")  # its contents are not scanned: every variant shares a group
     if m.target is not None:

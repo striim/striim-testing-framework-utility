@@ -59,7 +59,7 @@ def check_teradata_prefix(path: Path, text: str) -> list[Violation]:
 
 
 _VERTICA_RE = re.compile(
-    r"(qasource|qatarget|\$\{VERTICA_(?:SOURCE|TARGET)_SCHEMA\})"
+    r"(qasource|qatarget|\$\{VERTICA_(?:EON_)?(?:SOURCE|TARGET)_SCHEMA\})"
     r"\.(?!\$\{TID\})[A-Za-z_]",
     re.IGNORECASE,
 )

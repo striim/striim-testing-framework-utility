@@ -47,7 +47,8 @@ from livetest.striimfile import (
     read_server_files, clear_server_files, clear_server_dir, clear_op_checkpoints, ensure_server_dir,
     place_server_file,
 )
-from livetest.registry import load_service, unavailable as _registry_unavailable
+from livetest.registry import (load_service, teardown_order as _registry_teardown_order,
+                               unavailable as _registry_unavailable)
 from livetest import prestart as _prestart
 from livetest.services import (
     resolve, compose_down, ServiceError, DockerUnavailable, derive_per_test_base,
@@ -282,7 +283,7 @@ def _striim_dir():
 # bare fake config in seven hermetic tests, and marker registration is static configuration
 # anyway -- it does not belong in a hook.
 _SERVICE_MARKERS = ("postgres", "oracle", "mssql", "spanner", "bigtable", "gcs", "kafka", "mysql", "teradata",
-                    "vertica", "servicenow", "bigquery")
+                    "vertica", "vertica-eon", "minio", "servicenow", "bigquery")
 
 
 def _registered_markers(config) -> set:
@@ -2760,21 +2761,22 @@ class LiveItem(pytest.Item):
                                                  "schema": None}
                     admins["teradata-admin"] = {"admin": TeradataAdmin(resolved.base, role="admin"),
                                                 "schema": None}
-                elif svc == "vertica":
+                elif svc in ("vertica", "vertica-eon"):
                     # Like teradata: qasource (source) + qatarget (target) users, each owning a
                     # same-named schema. The container's init.sql creates them; ensure_setup (as
                     # dbadmin) re-creates them if missing, once across xdist workers. Tables are
                     # ${TID}-prefixed + dropped per table at teardown (drop_test_tables).
+                    # vertica-eon's routes reach its primary node.
                     _vt = VerticaAdmin(resolved.base, role="source")
                     if _parallel(os.environ):
-                        ensure_provisioned_once("vertica-setup", _vt.ensure_setup)
+                        ensure_provisioned_once(f"{svc}-setup", _vt.ensure_setup)
                     else:
                         _vt.ensure_setup()
-                    admins["vertica-source"] = {"admin": _vt, "schema": None}
-                    admins["vertica-target"] = {"admin": VerticaAdmin(resolved.base, role="target"),
-                                                "schema": None}
-                    admins["vertica-admin"] = {"admin": VerticaAdmin(resolved.base, role="admin"),
+                    admins[f"{svc}-source"] = {"admin": _vt, "schema": None}
+                    admins[f"{svc}-target"] = {"admin": VerticaAdmin(resolved.base, role="target"),
                                                "schema": None}
+                    admins[f"{svc}-admin"] = {"admin": VerticaAdmin(resolved.base, role="admin"),
+                                              "schema": None}
                 elif svc == "bigtable":
                     for admin, key in _bigtable_admins(resolved.base):
                         admins[key] = {"admin": admin, "schema": None}
@@ -4791,7 +4793,9 @@ def pytest_sessionfinish(session, exitstatus):
     if unaccounted:
         _slt_adopt_exclusive_stack(config)
     started = getattr(config, "_slt_started", set())
-    for defn in getattr(config, "_slt_defs", {}).values():
+    defs = getattr(config, "_slt_defs", {})
+    # A dependent before its dependency: vertica-eon's stop_db needs minio still up.
+    for defn in (defs[n] for n in _registry_teardown_order(list(defs))):
         if defn.container in started and defn.compose:
             try:
                 compose_down(defn)

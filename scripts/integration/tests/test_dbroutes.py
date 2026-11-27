@@ -48,6 +48,8 @@ from inttest.tokens import SubstitutionError, render
         ("sqlserver-target", ("sqlserver", "target")),
         ("vertica-source", ("vertica", "source")),
         ("vertica-target", ("vertica", "target")),
+        ("vertica-eon-source", ("vertica-eon", "source")),
+        ("vertica-eon-target", ("vertica-eon", "target")),
     ],
 )
 def test_parse_route_valid(route, expected):
@@ -65,6 +67,7 @@ def test_parse_route_valid(route, expected):
         "POSTGRES-SOURCE",      # uppercase direction not accepted
         "",
         "postgres-source-extra",
+        "vertica-eon-eon",       # a dashed service still ends in a direction
         "spanner-source",       # spanner's directions are google/postgres, not source/target
         "spanner-target",
         "spanner-foo",
@@ -226,6 +229,17 @@ def test_connection_params_vertica_target():
     params = connection_params("vertica-target", tokens)
     assert params == {
         "driver": "vertica", "host": "localhost", "port": 15433, "dbname": "intdb",
+        "user": "qatarget", "password": "striim", "schema": "qatarget",
+    }
+
+
+def test_connection_params_vertica_eon_target():
+    tokens = dict(_TOKENS, VERTICA_EON_HOST="localhost", VERTICA_EON_PORT="25433",
+                  VERTICA_EON_DB="sltdb", VERTICA_EON_TARGET_USER="qatarget",
+                  VERTICA_EON_TARGET_PASSWORD="striim", VERTICA_EON_TARGET_SCHEMA="qatarget")
+    params = connection_params("vertica-eon-target", tokens)
+    assert params == {
+        "driver": "vertica", "host": "localhost", "port": 25433, "dbname": "sltdb",
         "user": "qatarget", "password": "striim", "schema": "qatarget",
     }
 

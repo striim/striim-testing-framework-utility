@@ -95,7 +95,7 @@ def test_collection_parses_manifest_once(tmp_path, monkeypatch):
     assert item['services'] == ['postgres']
     assert item['depth'] == 'smoke'
     assert item['tags'] == ['P1']
-    assert len(loads) == 1
+    assert len([t for t in loads if t == path.read_text()]) == 1      # service.yaml reads aside
 
 
 def test_tag_marker_preserves_case(collect_tags, tmp_path):

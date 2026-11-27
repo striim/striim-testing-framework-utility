@@ -175,8 +175,8 @@ def test_service_keys_are_every_override_the_service_definitions_name():
             want |= {d["live_override_env"]} if d.get("live_override_env") else set()
             for section in ("live_env", "docker_env"):
                 want |= set((d.get(section) or {}).values())
-            if tier == "live":
-                want.add(f"SLT_{f.parent.name.upper()}_VIEW_HOST")
+            if tier == "live" and d.get("live_override_env"):    # read only for an existing instance
+                want.add(f"SLT_{f.parent.name.upper().replace('-', '_')}_VIEW_HOST")
     assert set(paths.SERVICE_KEYS) == want, (want - set(paths.SERVICE_KEYS), set(paths.SERVICE_KEYS) - want)
     assert len(paths.SERVICE_KEYS) == len(want) and not set(paths.SERVICE_KEYS) & set(paths.KEYS)
 

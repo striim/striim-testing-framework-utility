@@ -37,6 +37,8 @@ PUBLIC_IMAGES = {
     "confluentinc/cp-schema-registry:7.6.1",
     "mcr.microsoft.com/mssql/server:2022-latest",
     "opentext/vertica-k8s:25.3.0-8-multiarch",
+    # minio/minio is no longer published; Chainguard's free image, by digest (it serves only `latest`).
+    "cgr.dev/chainguard/minio@sha256:b288eaa709ba2f799a39e9a8ceda71a08fabf90109b12c90badba9afff29485c",
     "amd64/ubuntu:22.04", "ubuntu:24.04",
     # Google's Cloud SDK emulators image (Bigtable emulator), by the index digest: arm64 and amd64.
     "gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935",
@@ -126,7 +128,7 @@ def test_the_catalog_ships_only_the_public_services():
     assert not [k for k in keys if k.split("/")[1] == "teradata"], keys
     overlays = {"live/striim/compose.node-fault.yaml", "live/striim/compose.debug.yaml"}
     assert overlays <= keys
-    assert len(keys - overlays) == 22, sorted(keys)
+    assert len(keys - overlays) == 24, sorted(keys)
 
 
 @pytest.mark.parametrize("path", COMPOSE_FILES, ids=_key)
@@ -167,11 +169,14 @@ def test_every_image_is_public_or_built_here_on_a_public_base(path):
             continue
         df = _dockerfile(path, build)
         assert df.is_file(), f"{_key(path)} {name}: no {df}"
-        stages, bases = set(), []
+        stages, bases, args = set(), [], {}
         for ln in df.read_text().splitlines():
+            a = re.match(r"\s*ARG\s+(\w+)=(\S+)", ln, re.I)
+            if a:
+                args[a.group(1)] = a.group(2)      # a FROM ${ARG} is checked at its default
             m = re.match(r"\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?", ln, re.I)
             if m:
-                bases.append(m.group(1))
+                bases.append(re.sub(r"\$\{(\w+)\}", lambda v: args.get(v.group(1), v.group(0)), m.group(1)))
                 if m.group(2):
                     stages.add(m.group(2))
         assert bases, f"{df}: no FROM"

@@ -17,7 +17,7 @@ from livetest.preflight import (
     teardown_cluster as preflight_teardown_cluster,
     teardown_services as preflight_teardown_services,
 )
-from livetest.registry import all_services
+from livetest.registry import all_services, with_dependencies
 from livetest.stack import adopt_prefix
 
 # The Striim cluster is a startable target but NOT a registry service: it has compose files
@@ -73,6 +73,7 @@ def _as_coordinator() -> None:
 def cmd_up(targets: list) -> int:
     _as_coordinator()
     services, test_ids, cluster = _resolve_targets(targets)
+    services = with_dependencies(services)      # `start vertica-eon` starts minio first
     # `all` is a DERIVED list, so the opt-in gate applies to it -- otherwise it hands the
     # operator the very emulators they declined. Named services always come up.
     derived = "all" in targets

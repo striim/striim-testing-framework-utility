@@ -188,6 +188,13 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_ZOOKEEPER_MEM_LIMIT` | shell, `.env`, machine | `512m` | Memory limit of the container. |
 | `SLT_KAFKA_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
+### MinIO (`minio`)
+
+| Setting | Where | Docker default | What it does |
+|---|---|---|---|
+| `SLT_MINIO_HOST_PORT` | shell, `.env` | `19000` | Host port the container publishes; change it when the port is in use. |
+| `SLT_MINIO_MEM_LIMIT` | shell, `.env`, machine | `512m` | Memory limit of the container. |
+
 ### SQL Server (`mssql`)
 
 | Setting | Where | Docker default | What it does |
@@ -338,6 +345,30 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_VERTICA_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
 | `SLT_VERTICA_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |
 | `SLT_VERTICA_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
+
+### Vertica Eon mode (`vertica-eon`)
+
+| Setting | Where | Docker default | What it does |
+|---|---|---|---|
+| `SLT_VERTICA_EON_HOST` | shell, `.env`, machine | `localhost` | Your own instance's host: set it to use that instead of the container. |
+| `SLT_VERTICA_EON_PORT` | shell, `.env`, machine | `25433` | Your own instance: its port. |
+| `SLT_VERTICA_EON_SECONDARY_PORT` | shell, `.env`, machine | `25434` | Your own instance: the port of the node in the secondary subcluster. |
+| `SLT_VERTICA_EON_DB` | shell, `.env`, machine | `sltdb` | Your own instance: the database. |
+| `SLT_VERTICA_EON_ADMIN_USER` | shell, `.env`, machine | `dbadmin` | Your own instance: the admin account, which makes the test accounts and schemas and cleans up. |
+| `SLT_VERTICA_EON_ADMIN_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: the admin account's password. |
+| `SLT_VERTICA_EON_SOURCE_USER` | shell, `.env`, machine | `qasource` | Your own instance: the account a test's source side uses. |
+| `SLT_VERTICA_EON_SOURCE_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |
+| `SLT_VERTICA_EON_SOURCE_SCHEMA` | shell, `.env`, machine | `qasource` | Your own instance: the schema source tables are made in. |
+| `SLT_VERTICA_EON_TARGET_USER` | shell, `.env`, machine | `qatarget` | Your own instance: the account a test's target side uses. |
+| `SLT_VERTICA_EON_TARGET_PASSWORD` | shell, `.env`, machine | `striim` | Your own instance: its password. |
+| `SLT_VERTICA_EON_TARGET_SCHEMA` | shell, `.env`, machine | `qatarget` | Your own instance: the schema target tables are made in. |
+| `SLT_VERTICA_EON_HOST_PORT` | shell, `.env` | `25433` | Host port the container publishes; change it when the port is in use. |
+| `SLT_VERTICA_EON_SECONDARY_HOST_PORT` | shell, `.env` | `25434` | Host port the container publishes for the port of the node in the secondary subcluster; change it when the port is in use. |
+| `SLT_VERTICA_EON_BASE` | shell, `.env`, machine | `opentext/vertica-k8s:25.3.0-8-multiarch` | Base image the nodes are built from: a local image built from the default, for a build without network access. |
+| `SLT_VERTICA_EON_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
+| `SLT_VERTICA_EON_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |
+| `SLT_VERTICA_EON_SUBNET` | shell, `.env`, machine | `172.16.250` | First three octets of the /24 the two nodes get static IPs in (`.11`, `.12`). Give each stack running at once its own. |
+| `SLT_VERTICA_EON_VIEW_HOST` | shell, `.env`, machine |  | The host Striim reaches it by, when that differs from this machine's. |
 
 ## Integration tier
 

@@ -93,6 +93,7 @@ Every key a `service.yaml` can hold:
 |---|---|---|
 | `name` | yes | the service's name, as tests write it in `requires:`; equal to the folder name |
 | `family` | no | the system the service is, when its name says otherwise: a second emulator of a system the framework ships, under its own name. Default: the name. The engine's handling for that system applies, and its routes are `<family>-<role>`. `family: bigquery` gives the service the BigQuery writer checks, emulator endpoint and fake key, and the `bigquery-target` route; its settings need `port`, `token_port` and `project`, as the shipped `bigquery` service's do. A case requires at most one `bigquery`-family service |
+| `depends_on` | no | services this one needs running first: a test that requires it, and `python -m livetest.cli start <name>`, bring them up before it. The shipped `vertica-eon` declares `[minio]`. A service whose existing instance is set still brings them up. `stop <name>` stops only that service |
 | `isolation` | yes | `none` for every shipped service: tests keep apart by `${TID}` in their object names |
 | `compose` | yes, to start it in Docker | the compose file, relative to `service.yaml` |
 | `container` | yes, to start it in Docker | the name of the container that compose starts. The framework checks whether it runs, and reuses it when it does |

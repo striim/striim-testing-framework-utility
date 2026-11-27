@@ -527,6 +527,12 @@ def test_vertica_prefix_flags_untokenized_tables():
     assert [x.line for x in v] == [1, 2, 3] and all(x.rule == "vertica-prefix" for x in v)
 
 
+def test_vertica_prefix_covers_the_eon_schema_tokens():
+    text = ("CREATE TABLE ${VERTICA_EON_TARGET_SCHEMA}.ORDERS (id INT);\n"
+            "CREATE TABLE ${VERTICA_EON_SOURCE_SCHEMA}.${TID}ORDERS (id INT);\n")
+    assert [x.line for x in check_vertica_prefix(Path("ddl.sql"), text)] == [1]
+
+
 def test_vertica_prefix_accepts_tid_prefixed_tables():
     text = ("CREATE TABLE ${VERTICA_SOURCE_SCHEMA}.${TID}ORDERS (id INT);\n"
             "SELECT * FROM QATARGET.${TID}items;\n")

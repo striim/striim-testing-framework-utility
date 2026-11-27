@@ -1505,6 +1505,11 @@ def load_manifest(path: Path) -> TestManifest:
     requires = raw.get("requires", [])
     if not isinstance(requires, list):
         raise ManifestError(f"{path}: 'requires' must be a list of service names, got {requires!r}")
+    from livetest import registry
+    try:   # a service's depends_on come first (vertica-eon needs minio)
+        requires = registry.with_dependencies(requires)
+    except registry.RegistryError as e:
+        raise ManifestError(f"{path}: 'requires': {e}") from e
     tags = raw.get("tags", [])
     if not isinstance(tags, list):
         raise ManifestError(f"{path}: 'tags' must be a list of tag strings, got {tags!r}")

@@ -1,0 +1,54 @@
+name: vertica-eon
+compose: compose.yaml            # relative to this file
+container: slt-vertica-eon-1     # the primary node; slt-vertica-eon-2 is the secondary
+isolation: none                  # fixed qasource/qatarget schemas; tests use ${TID}-prefixed tables
+# Eon mode keeps its communal storage in MinIO: requiring vertica-eon brings up minio first.
+depends_on: [minio]
+# If SLT_VERTICA_EON_HOST is set, reuse a live Eon database (from SLT_VERTICA_EON_* env) and
+# skip Docker. Accounts and schemas as services/vertica.
+live_override_env: SLT_VERTICA_EON_HOST
+docker_defaults:
+  host: localhost
+  port: 25433                   # node 1, primary subcluster
+  secondary_port: 25434         # node 2, secondary subcluster
+  dbname: sltdb
+  admin_user: dbadmin
+  admin_password: striim
+  source_user: qasource
+  source_password: striim
+  source_schema: qasource
+  target_user: qatarget
+  target_password: striim
+  target_schema: qatarget
+# Published host ports, overridable exactly as compose.yaml interpolates them.
+docker_env:
+  port: SLT_VERTICA_EON_HOST_PORT
+  secondary_port: SLT_VERTICA_EON_SECONDARY_HOST_PORT
+live_env:
+  host: SLT_VERTICA_EON_HOST
+  port: SLT_VERTICA_EON_PORT
+  secondary_port: SLT_VERTICA_EON_SECONDARY_PORT
+  dbname: SLT_VERTICA_EON_DB
+  admin_user: SLT_VERTICA_EON_ADMIN_USER
+  admin_password: SLT_VERTICA_EON_ADMIN_PASSWORD
+  source_user: SLT_VERTICA_EON_SOURCE_USER
+  source_password: SLT_VERTICA_EON_SOURCE_PASSWORD
+  source_schema: SLT_VERTICA_EON_SOURCE_SCHEMA
+  target_user: SLT_VERTICA_EON_TARGET_USER
+  target_password: SLT_VERTICA_EON_TARGET_PASSWORD
+  target_schema: SLT_VERTICA_EON_TARGET_SCHEMA
+# {view_host} is the host the Striim app reaches Vertica by, as in services/vertica. The
+# framework's own connection goes to node 1. The _SECONDARY_ tokens reach node 2.
+provides:
+  VERTICA_EON_HOST: "{view_host}"
+  VERTICA_EON_PORT: "{port}"
+  VERTICA_EON_SECONDARY_PORT: "{secondary_port}"
+  VERTICA_EON_DB: "{dbname}"
+  VERTICA_EON_SOURCE_USER: "{source_user}"
+  VERTICA_EON_SOURCE_PASSWORD: "{source_password}"
+  VERTICA_EON_SOURCE_SCHEMA: "{source_schema}"
+  VERTICA_EON_TARGET_USER: "{target_user}"
+  VERTICA_EON_TARGET_PASSWORD: "{target_password}"
+  VERTICA_EON_TARGET_SCHEMA: "{target_schema}"
+  VERTICA_EON_URL: "jdbc:vertica://{view_host}:{port}/{dbname}"
+  VERTICA_EON_SECONDARY_URL: "jdbc:vertica://{view_host}:{secondary_port}/{dbname}"

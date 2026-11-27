@@ -258,6 +258,13 @@ the last release; the release makes it that version's entry.
 
 **New**
 
+- **`vertica-eon` and `minio` services.** `requires: [vertica-eon]` runs Vertica 25.3 Community
+  Edition in Eon mode on two nodes (a primary and a secondary subcluster), with its communal storage
+  in a test-only MinIO, which it starts first. Routes `vertica-eon-source`, `vertica-eon-target`
+  and `vertica-eon-admin`; tokens `VERTICA_EON_*` and `MINIO_*` ([docs/SERVICES.md](docs/SERVICES.md)).
+  A second stack running at once sets its own `SLT_VERTICA_EON_SUBNET`.
+- **`depends_on:` in a `service.yaml`** names services to bring up first, for a test that requires
+  it and for `python -m livetest.cli start <name>` ([docs/YOUR-OWN-SERVICES.md](docs/YOUR-OWN-SERVICES.md)).
 - **`target.system_properties:` passes `-D` arguments to the integration driver JVM.** A mapping
   of name to value, added after `-Duser.timezone` in name order. `file.encoding` and names
   starting with `user.`, `java.`, `jdk.` or `sun.` are refused at load. Perf mode refuses the

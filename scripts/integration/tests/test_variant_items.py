@@ -152,3 +152,11 @@ def test_a_hyphenated_variant_name_is_escaped_in_the_id(pytester, monkeypatch, t
     _, cases, _ = run(pytester, monkeypatch, tmp_path,
                       case({"pg": "postgres-target", "my-ora": "oracle-target"}))
     assert set(cases) == {"fan[pg]", "fan[my~2dora]"}
+
+
+def test_a_token_belongs_to_its_longest_service_prefix():
+    services = ("vertica", "vertica-eon", "postgres")
+    assert P._token_services("${VERTICA_EON_URL}", services) == {"vertica-eon"}
+    assert P._token_services("${VERTICA_URL} ${VERTICA_EON_SECONDARY_URL}", services) == {"vertica", "vertica-eon"}
+    assert P._token_services("${POSTGRES_HOST} ${TID}", services) == {"postgres"}
+    assert P._token_services("no tokens", services) == set()

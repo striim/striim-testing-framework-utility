@@ -1,0 +1,21 @@
+name: minio
+compose: compose.yaml            # relative to this file
+container: slt-minio
+isolation: none                  # one shared store; tests keep apart by ${TID}-prefixed buckets
+# Test-only: always this container, with fixed test credentials (no live_override_env).
+# vertica-eon depends on it for Eon mode's communal storage (vertica-eon/service.yaml).
+docker_defaults:
+  host: localhost
+  port: 19000
+  access_key: minioadmin
+  secret_key: minioadmin-test
+docker_env:
+  port: SLT_MINIO_HOST_PORT
+# {view_host} is the host the Striim app reaches MinIO by (host.docker.internal for a
+# containerized Striim). MinIO serves the S3 API on plain HTTP.
+provides:
+  MINIO_HOST: "{view_host}"
+  MINIO_PORT: "{port}"
+  MINIO_ENDPOINT: "http://{view_host}:{port}"
+  MINIO_ACCESS_KEY: "{access_key}"
+  MINIO_SECRET_KEY: "{secret_key}"

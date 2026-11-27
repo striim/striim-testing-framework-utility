@@ -110,3 +110,10 @@ def test_env_example_assigns_no_setting_a_dotenv_cannot_hold():
     assigned = set(re.findall(r"^#? ?([A-Z][A-Z0-9_]*)=", example, re.M))
     shell_only = sorted(n for n, where in _page_rows() if ".env" not in where and n in assigned)
     assert not shell_only, f".env.example assigns settings .env never reads: {shell_only}"
+
+
+def test_a_dependency_without_a_service_yaml_is_skipped(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "service.yaml").write_text("depends_on: [gone]\nlive_env: {host: SLT_A_HOST}\n")
+    [(title, rows, *_)] = _tool().service_settings(tmp_path)
+    assert title == "a" and [r[0] for r in rows] == ["SLT_A_HOST"]
