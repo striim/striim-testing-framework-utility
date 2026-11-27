@@ -25,6 +25,8 @@ S3_PARAMS="AWSEndpoint=$S3_ENDPOINT,AWSAuth=$EON_S3_ACCESS_KEY:$EON_S3_SECRET_KE
 SHARED=/shared
 VCONF=$SHARED/vertica_cluster.yaml
 CREATED=$SHARED/.db-created
+# Written by the primary once this life's start_db or create is over; the secondary waits for it.
+READY=$SHARED/.primary-ready
 CERTS=/opt/vertica/config/https_certs
 VCLUSTER=/opt/vertica/bin/vcluster
 VSQL=/opt/vertica/bin/vsql
@@ -69,7 +71,8 @@ nma_up() { curl -sfk "https://$1:5554/v1/health"; }
 sql() { "$VSQL" -h "$1" -U dbadmin -w "$PASSWORD" -d "$DB" -Atc "$2"; }
 
 if [ "$ROLE" = primary ]; then
-  trap 'log "SIGTERM: stopping $DB"; "$VCLUSTER" stop_db --db-name "$DB" --config "$VCONF" --password "$PASSWORD" >/dev/null 2>&1; exit 0' TERM INT
+  rm -f "$READY"
+  trap 'log "SIGTERM: stopping $DB"; rm -f "$READY"; "$VCLUSTER" stop_db --db-name "$DB" --config "$VCONF" --password "$PASSWORD" >/dev/null 2>&1; exit 0' TERM INT
   [ -f "$SHARED/certs/.done" ] || make_certs || fail "could not create certificates"
 else
   trap 'log "SIGTERM: stopping node $ME"; [ -f "$VCONF" ] && "$VCLUSTER" stop_node --db-name "$DB" --config "$VCONF" --password "$PASSWORD" --hosts "$PRIMARY" --stop-hosts "$ME" >/dev/null 2>&1; exit 0' TERM INT
@@ -87,11 +90,12 @@ if [ "$ROLE" = primary ]; then
     || fail "MinIO not reachable at $S3_ENDPOINT (is the minio service up?)"
   out=$(/usr/config/s3-mkbucket.py "$S3_ENDPOINT" "$S3_BUCKET" 2>&1) || fail "bucket: $out"
   log "bucket $S3_BUCKET: $out"
-  wait_for 120 nma_up "$SECONDARY" || log "WARN: secondary NMA not up; continuing"
+  wait_for 120 nma_up "$SECONDARY" || fail "secondary NMA not up at $SECONDARY:5554"
 
   if [ ! -d "/data/$DB" ]; then
     # A path of its own per database: a MinIO that outlived an earlier database keeps its files.
     communal="s3://$S3_BUCKET/$DB-$(date -u +%Y%m%d%H%M%S)"
+    rm -f "$CREATED"      # a marker from an earlier life must not make a failed create look created
     t0=$(date +%s)
     "$VCLUSTER" create_db --db-name "$DB" --hosts "$PRIMARY" \
       --catalog-path /data --data-path /data --depot-path /data/depot --depot-size 1G \
@@ -118,10 +122,13 @@ if [ "$ROLE" = primary ]; then
       --config-param "$S3_PARAMS" >/tmp/vcluster.log 2>&1 || fail "start_db failed"
     log "started $DB in $(( $(date +%s) - t0 ))s"
   fi
+  touch "$READY" || fail "could not write $READY"
 else
-  # On a full start the primary's start_db starts this node; wait for that first. Restarted
-  # alone (the primary up, this node DOWN), it starts its own node.
+  # On a full start the primary's start_db starts this node; wait for that first, or a
+  # start_node here collides with it. Restarted alone (the primary up, this node DOWN), it
+  # starts its own node.
   wait_for 600 test -f "$CREATED" || fail "database never created"
+  wait_for 600 test -f "$READY" || fail "primary did not finish starting within 600s (no $READY)"
   wait_for 600 sql "$PRIMARY" 'SELECT 1' || fail "primary not answering"
   state=
   for _ in $(seq 1 120); do

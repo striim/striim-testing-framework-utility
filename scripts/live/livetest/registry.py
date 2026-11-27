@@ -417,6 +417,31 @@ def with_dependencies(names) -> list:
     return out
 
 
+def teardown_order(names) -> list:
+    """``names`` with each dependent before what it depends on (``with_dependencies`` reversed),
+    each name once, nothing added."""
+    wanted = list(dict.fromkeys(names))
+    try:
+        ordered = list(reversed(with_dependencies(wanted)))
+    except RegistryError:
+        return wanted
+    return [n for n in ordered if n in wanted]
+
+
+def dependents(name: str) -> list:
+    """The services that need ``name`` running, directly or not, in teardown order."""
+    out = []
+    for other in all_services():
+        if other == name:
+            continue
+        try:
+            if name in with_dependencies([other]):
+                out.append(other)
+        except RegistryError:
+            continue
+    return teardown_order(out)
+
+
 def family(name: str) -> str:
     """The family of service ``name``: its service.yaml's ``family``, else the name itself. An
     unknown name is its own family, so the requires check reports it in its usual place; a

@@ -417,3 +417,29 @@ def test_stop_stops_only_what_it_names(monkeypatch):
     monkeypatch.setattr(cli, "preflight_teardown_services", lambda names: seen.append(list(names)) or 0)
     assert cli.cmd_down(["vertica-eon"]) == 0
     assert seen == [["vertica-eon"]]
+
+
+def _record_compose_downs(monkeypatch):
+    from livetest import preflight
+    downed = []
+    monkeypatch.setattr(preflight, "compose_down", lambda defn: downed.append(defn.name))
+    monkeypatch.setattr(preflight, "_surviving_containers", lambda defn: [])
+    monkeypatch.setattr(preflight, "forget_provisioned", lambda keys, state_dir=None: None)
+    return downed
+
+
+def test_stop_all_and_teardown_stop_a_dependent_before_its_dependency(monkeypatch):
+    # `stop all` is alphabetical (minio < vertica-eon) and teardown follows compute_unions; both
+    # must stop vertica-eon first, or its stop_db waits on communal storage that is gone.
+    from livetest import preflight
+    monkeypatch.setattr(cli, "known_test_ids", set)
+    monkeypatch.setattr(cli, "preflight_teardown_cluster", lambda **kw: 0)
+    downed = _record_compose_downs(monkeypatch)
+    assert cli.cmd_down(["all"]) == 0
+    assert "minio" in downed and downed.index("vertica-eon") < downed.index("minio")
+
+    downed.clear()
+    monkeypatch.setattr(preflight, "manifests_for", lambda ids: [])
+    monkeypatch.setattr(preflight, "compute_unions", lambda m: (["minio", "postgres", "vertica-eon"], []))
+    assert preflight.teardown(["some-case"], explicit=True) == 0
+    assert downed == ["vertica-eon", "postgres", "minio"]

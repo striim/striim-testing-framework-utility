@@ -12,7 +12,7 @@ from filelock import FileLock, Timeout
 from livetest import paths, service_healing, drivers, pgidle
 from livetest import bindaddr, dockercmd, lockdir, stack
 from livetest import striim_provision
-from livetest.registry import load_service, ServiceDef
+from livetest.registry import dependents, load_service, ServiceDef
 
 _PROVISION_REGISTRY = ".slt-provision-registry.json"
 _PROVISION_LOCK = ".slt-provision-registry.lock"
@@ -340,6 +340,17 @@ def _compose_reset(compose) -> None:
         raise DockerUnavailable(f"docker not found: {e}") from e
 
 
+def _reset_dependents(defn: ServiceDef) -> None:
+    """Down the services that depend on ``defn`` before its own reset (vertica-eon before minio),
+    and drop their records: a dependent cannot outlive the storage it runs on."""
+    for name in dependents(defn.name):
+        dep = load_service(name)
+        if not dep.compose:
+            continue
+        _compose_reset(dep.dir / dep.compose)
+        forget_provisioned([dep.container, f"{name}-setup"])
+
+
 _NOT_RUNNING = ("created", "exited", "paused", "restarting", "dead")
 
 
@@ -381,6 +392,7 @@ def _default_compose_up(defn: ServiceDef, progress=None) -> None:
         # (parallel runs / fast re-runs, spec §C.6) we must NOT `down -v` first — that destroys the
         # shared emulator volumes a sibling worker or a prior kept run depends on; reuse them as-is
         # (the up below is a no-op against an already-healthy service).
+        _reset_dependents(defn)
         _compose_reset(compose)
     elif defn.name == "kafka" and _has_stopped_containers(compose, cenv):
         # Kept services are reused as they are, but a STOPPED Kafka stack is not reusable: its

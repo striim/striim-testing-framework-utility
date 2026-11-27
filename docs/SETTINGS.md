@@ -364,8 +364,7 @@ To use your own database instead of the container the framework starts, set its 
 | `SLT_VERTICA_EON_TARGET_SCHEMA` | shell, `.env`, machine | `qatarget` | Your own instance: the schema target tables are made in. |
 | `SLT_VERTICA_EON_HOST_PORT` | shell, `.env` | `25433` | Host port the container publishes; change it when the port is in use. |
 | `SLT_VERTICA_EON_SECONDARY_HOST_PORT` | shell, `.env` | `25434` | Host port the container publishes for the port of the node in the secondary subcluster; change it when the port is in use. |
-| `SLT_MINIO_HOST_PORT` | shell, `.env` | `19000` | Host port the container publishes; change it when the port is in use. |
-| `SLT_VERTICA_EON_BASE` | shell, `.env`, machine | `opentext/vertica-k8s:25.3.0-8-multiarch` | Base image the nodes are built from, in place of `opentext/vertica-k8s:25.3.0-8-multiarch`: a local image built from that base, for a build without network access. |
+| `SLT_VERTICA_EON_BASE` | shell, `.env`, machine | `opentext/vertica-k8s:25.3.0-8-multiarch` | Base image the nodes are built from: a local image built from the default, for a build without network access. |
 | `SLT_VERTICA_EON_CPUS` | shell, `.env`, machine | `1` | CPUs the container may use. |
 | `SLT_VERTICA_EON_MEM_LIMIT` | shell, `.env`, machine | `2g` | Memory limit of the container. |
 | `SLT_VERTICA_EON_SUBNET` | shell, `.env`, machine | `172.16.250` | First three octets of the /24 the two nodes get static IPs in (`.11`, `.12`). Give each stack running at once its own. |

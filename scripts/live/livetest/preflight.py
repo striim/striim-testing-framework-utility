@@ -50,7 +50,8 @@ from livetest.plugin import (
     _EXTRA_LIVE_CASES, _LIVE_CASES, _STATE_DIR, _STRIIM_DIR, _gcs_endpoint_ip, _loaded_jar_probe, _op_jar_fingerprint,
     _module_build_lock, _register_op_jar, _registry_key, _resolve_release, _resolve_striim,
 )
-from livetest.registry import RegistryError, load_service, opted_in, unavailable as registry_unavailable
+from livetest.registry import (RegistryError, load_service, opted_in, teardown_order,
+                               unavailable as registry_unavailable)
 from livetest import prestart as _prestart
 from livetest.services import (
     clear_provision_registry, compose_down, container_exists, container_running,
@@ -155,11 +156,13 @@ def compute_unions(manifests) -> tuple[list[str], list[dict]]:
     return services, modules
 
 
-_PORT_VAR_RE = re.compile(r"\$\{(SLT_[A-Z0-9_]*(?:PORT|HOST_PORT))(?::-([0-9]+))?\}")
+# Per-stack compose settings: host ports, and a network's subnet (SLT_VERTICA_EON_SUBNET), which
+# two stacks cannot share either.
+_PORT_VAR_RE = re.compile(r"\$\{(SLT_[A-Z0-9_]*(?:PORT|HOST_PORT|SUBNET))(?::-([0-9.]+))?\}")
 
 
 def missing_port_overrides(services, env=None) -> list:
-    """Host-port variables a PREFIXED stack leaves at their default, which is a collision.
+    """Host-port and subnet variables a PREFIXED stack leaves at their default, which is a collision.
 
     A published host port is global to the daemon: `ec-slt-zookeeper` and the default stack's
     `slt-zookeeper` cannot both bind 2181. Every such port therefore needs an override in the
@@ -175,7 +178,7 @@ def missing_port_overrides(services, env=None) -> list:
     env = os.environ if env is None else env
     if not (env.get("SLT_STACK_PREFIX") or "").strip():
         return []
-    missing = []
+    missing, reported = [], set()
     for svc in sorted(set(services)):
         try:
             path = service_compose_path(load_service(svc))
@@ -184,9 +187,11 @@ def missing_port_overrides(services, env=None) -> list:
         if not path or not pathlib.Path(path).is_file():
             continue
         text = pathlib.Path(path).read_text()
-        # Each mapping is written twice (bind address and gateway): report a variable once.
+        # Each mapping is written twice (bind address and gateway), and a dependent's compose may
+        # read its dependency's port (SLT_MINIO_HOST_PORT): report a variable once.
         for var, default in dict.fromkeys(_PORT_VAR_RE.findall(text)):
-            if default and not (env.get(var) or "").strip():
+            if default and not (env.get(var) or "").strip() and var not in reported:
+                reported.add(var)
                 missing.append((svc, var, default))
     return missing
 
@@ -262,9 +267,11 @@ def _bring_up_services(services, env, apply_gate: bool = True, infra=None,
     if pre_up is None:
         pre_up = not apply_gate
     for svc, var, default in missing_port_overrides(services, env):
-        _log(f"WARNING service {svc}: {var} is unset, so its host port defaults to {default} -- "
-             f"which the unprefixed stack also publishes. Set {var} (see .env) or this stack will "
-             f"fail to bind. If .env already sets it, your shell predates that line: re-source it.")
+        what = "subnet" if var.endswith("SUBNET") else "host port"
+        _log(f"WARNING service {svc}: {var} is unset, so its {what} defaults to {default} -- "
+             f"which the unprefixed stack also uses. Set {var} (see .env) or this stack will "
+             f"fail to {'create its network' if what == 'subnet' else 'bind'}. If .env already sets "
+             f"it, your shell predates that line: re-source it.")
     started: set = set()
     resolved: dict = {}
     from livetest.service_healing import Refused, current_context, _redact
@@ -339,7 +346,8 @@ def _take_down_services(services, env, apply_gate: bool = True) -> list:
     is self-healing (it clears the whole registry first); an explicit stop is not.
     """
     failed = []
-    for svc in services:
+    # A dependent before its dependency: vertica-eon's stop_db needs minio still up.
+    for svc in teardown_order(services):
         try:
             # Inside the try: `_gated_out` loads service.yaml too, so a malformed one raised
             # straight out of the loop and abandoned every remaining service AND the cluster

@@ -47,7 +47,34 @@ def _bash(expr: str, env: dict) -> str:
     return subprocess.check_output(["bash", "-c", f'printf "%s" "{expr}"'], env=env, text=True)
 
 
-# ---- definitions and tokens ------------------------------------------------------------------
+# ---- dependency order ------------------------------------------------------------------------
+
+def test_teardown_order_puts_a_dependent_first_and_adds_nothing():
+    from livetest import registry
+    assert registry.teardown_order(["minio", "postgres", "vertica-eon"]) == ["vertica-eon", "postgres", "minio"]
+    assert registry.teardown_order(["minio"]) == ["minio"]
+    assert registry.dependents("minio") == ["vertica-eon"]
+    assert registry.dependents("vertica-eon") == []
+
+
+def test_a_fresh_minio_bring_up_resets_vertica_eon_first(monkeypatch):
+    import types
+    from livetest import services as services_mod
+    monkeypatch.delenv("SLT_KEEP_SERVICES", raising=False)
+    monkeypatch.setenv("SLT_BIND_ADDRESS", "127.0.0.1")
+    resets, forgotten = [], []
+    monkeypatch.setattr(services_mod, "_preflight_profile", lambda defn: None)
+    monkeypatch.setattr(services_mod, "_compose_reset", lambda compose: resets.append(Path(compose).parent.name))
+    monkeypatch.setattr(services_mod, "forget_provisioned", lambda keys, state_dir=None: forgotten.extend(keys))
+    monkeypatch.setattr(services_mod.dockercmd, "run",
+                        lambda argv, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
+    services_mod._default_compose_up(load_service("minio"))
+    assert resets == ["vertica-eon", "minio"]
+    assert forgotten == ["slt-vertica-eon-1", "vertica-eon-setup"]
+    resets.clear()
+    services_mod._default_compose_up(load_service("vertica-eon"))
+    assert resets == ["vertica-eon"]
+
 
 def test_vertica_eon_service_def_loads():
     defn = load_service("vertica-eon")
@@ -55,7 +82,7 @@ def test_vertica_eon_service_def_loads():
     assert defn.container == "slt-vertica-eon-1"
     assert defn.live_override_env == "SLT_VERTICA_EON_HOST"
     assert defn.depends_on == ["minio"]
-    assert defn.opt_in_env is None
+    assert defn.opt_in_env is None   # start all includes it: a required service must never be gated out
     for key in ("VERTICA_EON_HOST", "VERTICA_EON_PORT", "VERTICA_EON_SECONDARY_PORT", "VERTICA_EON_DB",
                 "VERTICA_EON_URL", "VERTICA_EON_SECONDARY_URL",
                 "VERTICA_EON_SOURCE_USER", "VERTICA_EON_SOURCE_PASSWORD", "VERTICA_EON_SOURCE_SCHEMA",
@@ -179,6 +206,27 @@ def test_a_partial_first_boot_says_to_recreate():
     assert "RECREATE=\"recreate the stack: python -m livetest.cli stop vertica-eon" in text
     # the marker of a finished first boot is written only after init.sql
     assert text.find("-f /usr/config/init.sql") < text.find('touch "$CREATED"')
+
+
+def test_a_stale_created_marker_is_cleared_before_create_db():
+    text = _entrypoint()
+    assert -1 < text.find('rm -f "$CREATED"') < text.find('"$VCLUSTER" create_db') < text.find('touch "$CREATED"')
+
+
+def test_the_secondary_waits_for_this_life_of_the_primary_before_start_node():
+    text = _entrypoint()
+    primary, secondary = text.split('\nelse\n  # On a full start')
+    primary = primary[primary.find('if [ "$ROLE" = primary ]; then'):]
+    assert _entrypoint_var("READY") == "$SHARED/.primary-ready"
+    # cleared at entry (and on SIGTERM), written once start_db or create is over
+    assert -1 < primary.find('rm -f "$READY"') < primary.find('touch "$READY"')
+    assert primary.find('"$VCLUSTER" start_db') < primary.rfind('touch "$READY"')
+    wait = secondary.find('wait_for 600 test -f "$READY" || fail')
+    assert -1 < wait < secondary.find("node_state") < secondary.find('"$VCLUSTER" start_node')
+
+
+def test_the_primary_fails_when_the_secondary_nma_is_down():
+    assert 'wait_for 120 nma_up "$SECONDARY" || fail' in _entrypoint()
 
 
 def test_init_sql_creates_the_service_accounts_and_schemas():

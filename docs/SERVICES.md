@@ -391,6 +391,7 @@ in the primary subcluster, node 2 in a secondary subcluster (`sc_secondary`). Re
   first three octets are `SLT_VERTICA_EON_SUBNET` (default `172.16.250`). A second stack
   (`SLT_STACK_PREFIX`) running at the same time needs another value, for example `172.16.251`, and
   its own host ports.
+- `start all` starts it too (three containers, about 4.5 GB at their limits).
 - First boot takes about a minute. With your own Eon database (`SLT_VERTICA_EON_HOST`), `minio` is
   still started.
 - How it is built: [scripts/live/services/vertica-eon/README.md](../scripts/live/services/vertica-eon/README.md).

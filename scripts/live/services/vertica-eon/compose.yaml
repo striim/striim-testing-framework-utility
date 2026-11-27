@@ -40,6 +40,7 @@ x-env: &env
   EON_CERT_IPS: "${SLT_VERTICA_EON_SUBNET:-172.16.250}.11 ${SLT_VERTICA_EON_SUBNET:-172.16.250}.12"
   EON_S3_ENDPOINT: host.docker.internal:${SLT_MINIO_HOST_PORT:-19000}
   EON_S3_BUCKET: vertica-eon
+  # minio/compose.yaml's MINIO_ROOT_USER and MINIO_ROOT_PASSWORD: change both.
   EON_S3_ACCESS_KEY: minioadmin
   EON_S3_SECRET_KEY: minioadmin-test
 
