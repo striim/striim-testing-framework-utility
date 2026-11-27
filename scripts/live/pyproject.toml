@@ -50,6 +50,8 @@ markers = [
     "mysql: live test whose manifest requires the mysql service",
     "teradata: live test whose manifest requires the teradata service (your own instance, SLT_TERADATA_HOST)",
     "vertica: live test whose manifest requires the vertica service",
+    "vertica-eon: live test whose manifest requires the vertica-eon service",
+    "minio: live test whose manifest requires the minio service (vertica-eon brings it too)",
     "servicenow: live test whose manifest requires the servicenow service (your own instance, SLT_SERVICENOW_HOST)",
     # One per depth tier a manifest can name in `depth:` (docs/WRITING-TESTS.md);
     # livetest/plugin.py applies the matching one per item.

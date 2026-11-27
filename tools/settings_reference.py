@@ -229,6 +229,10 @@ SECTIONS = (
 )
 # Service settings no service.yaml field explains.
 SERVICE_EXTRAS = {
+    "SLT_VERTICA_EON_BASE": (None, "Base image the nodes are built from, in place of `opentext/vertica-k8s:25.3.0-8-multiarch`: "
+                             "a local image built from that base, for a build without network access."),
+    "SLT_VERTICA_EON_SUBNET": ("`172.16.250`", "First three octets of the /24 the two nodes get static IPs in (`.11`, `.12`). "
+                               "Give each stack running at once its own."),
     "SLT_BIGQUERY_WRITER_ENDPOINT": (None, "Local IPv4 HTTP endpoint for the writer's documented PSC property."),
     "SLT_BIGQUERY_TOKEN_URI": (None, "Dedicated local fake OAuth endpoint ending in `/token`."),
     "SLT_BIGQUERY_IMAGE": (None, "Required user-supplied qualified emulator image, already present locally; the framework does not build it. Retain its digest in qualification evidence."),
@@ -279,7 +283,8 @@ NOT_SETTINGS = {"SLT_BIGQUERY_GOMEMLIMIT", "STRIIM_RELEASE", "STRIIM_VERSION", "
                 "SLT_BIND_GATEWAY"}
 
 NAMES = {"postgres": "PostgreSQL", "oracle": "Oracle", "mssql": "SQL Server", "sqlserver": "SQL Server",
-         "mysql": "MySQL", "mariadb": "MariaDB", "vertica": "Vertica", "kafka": "Kafka", "spanner": "Spanner emulator",
+         "mysql": "MySQL", "mariadb": "MariaDB", "vertica": "Vertica", "vertica-eon": "Vertica Eon mode",
+         "minio": "MinIO", "kafka": "Kafka", "spanner": "Spanner emulator",
          "gcs": "GCS emulator", "bigquery": "BigQuery emulator", "bigtable": "Bigtable emulator", "teradata": "Teradata", "servicenow": "ServiceNow"}
 FIELDS = {
     "writer_endpoint": "the writer's local IPv4 HTTP PSC endpoint",
@@ -298,6 +303,7 @@ FIELDS = {
                                                                           "database",
     "project": "the project id", "instance": "the instance", "gsql_db": "GoogleSQL-dialect database",
     "pg_db": "PostgreSQL-dialect database", "admin_port": "its REST admin port",
+    "secondary_port": "the port of the node in the secondary subcluster",
     "credentials": "path of a service-account key file (in `.env`, relative to its folder); set, the "
                    "tests use real Cloud Spanner, not the "
                    "emulator ([SERVICES.md](SERVICES.md#real-cloud-spanner))",
@@ -423,12 +429,13 @@ def build() -> str:
     listed |= {n for _, rows, _ in live + integration for n, _, _ in rows}
     # Service settings no service file names (view hosts, extras): file them under their service.
     prefixes = {"PG": "postgres", "POSTGRES": "postgres", "ORA": "oracle", "ORACLE": "oracle",
-                "MSSQL": "mssql", "MYSQL": "mysql", "MARIADB": "mariadb", "VERTICA": "vertica", "KAFKA": "kafka",
+                "MSSQL": "mssql", "MYSQL": "mysql", "MARIADB": "mariadb", "VERTICA": "vertica", "VERTICA_EON": "vertica-eon",
+                "MINIO": "minio", "KAFKA": "kafka",
                 "SCHEMA": "kafka", "ZOOKEEPER": "kafka", "SPANNER": "spanner", "GCS": "gcs",
                 "TOKEN": "gcs", "BIGQUERY": "bigquery", "BIGTABLE": "bigtable", "TERADATA": "teradata", "SERVICENOW": "servicenow"}
     for name in sorted((allowed | set(SERVICE_EXTRAS)) - listed - set(paths.LICENCE_KEYS)):
         tier, _, rest = name.partition("_")
-        service = prefixes.get(rest.split("_")[0])
+        service = prefixes.get("_".join(rest.split("_")[:2])) or prefixes.get(rest.split("_")[0])
         group = live if tier == "SLT" else integration
         match = [rows for svc, rows, _ in group if svc == service or (svc, service) == ("sqlserver", "mssql")]
         if not service or not match:

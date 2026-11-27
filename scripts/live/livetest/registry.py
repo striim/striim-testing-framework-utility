@@ -159,6 +159,9 @@ class ServiceDef:
     # and emulator credentials, say) and its routes (`<family>-<role>`). A consumer's own emulator
     # under another name sets the family of the service it stands in for. Default: its own name.
     family: str = ""
+    # Services this one needs running first (vertica-eon needs minio): requires: and `start` bring
+    # them up before it (with_dependencies).
+    depends_on: list = field(default_factory=list)
 
     def __post_init__(self):
         self.family = self.family or self.name
@@ -310,6 +313,7 @@ SERVICE_KEYS = frozenset({
     "post_up", "required_files", "required_files_env", "python_module", "python_module_hint",
     "driver", "pre_up", "pre_up_env", "pre_up_check", "pre_up_timeout", "unavailable_policy",
     "graceful_stop", "graceful_stop_timeout", "restart_in_place", "restart_in_place_timeout",
+    "depends_on",
 })
 
 
@@ -369,7 +373,48 @@ def load_service(name: str, services_dir: Path | None = None, env=None) -> Servi
         python_module_hint=_optional_str(raw.get("python_module_hint"), "python_module_hint", path),
         driver=_driver(raw.get("driver"), path),
         family=_optional_str(raw.get("family"), "family", path) or name,
+        depends_on=_depends_on(raw.get("depends_on"), name, path),
     )
+
+
+def _depends_on(raw, name: str, path: Path) -> list:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(d, str) and d.strip() for d in raw):
+        raise RegistryError(f"{path}: 'depends_on' must be a list of service names")
+    if name in raw:
+        raise RegistryError(f"{path}: 'depends_on' names the service itself")
+    return list(raw)
+
+
+def with_dependencies(names) -> list:
+    """``names`` with each service's ``depends_on`` before it, recursively, each name once, in
+    first-seen order. A name that is not a readable definition stays as it is, for the caller's own
+    check to report; a cycle raises RegistryError."""
+    out: list = []
+    path: list = []
+
+    def visit(name):
+        if name in out:
+            return
+        if not isinstance(name, str):
+            out.append(name)
+            return
+        if name in path:
+            raise RegistryError(f"services depend on each other: {' -> '.join(path + [name])}")
+        path.append(name)
+        try:
+            deps = getattr(load_service(name), "depends_on", []) if _find(name) is not None else []
+        except RegistryError:
+            deps = []
+        for dep in deps:
+            visit(dep)
+        path.pop()
+        out.append(name)
+
+    for n in names:
+        visit(n)
+    return out
 
 
 def family(name: str) -> str:

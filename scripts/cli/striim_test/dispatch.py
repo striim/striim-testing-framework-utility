@@ -39,7 +39,8 @@ PLUGINS = {"live": "livetest.plugin", "integration": "inttest.plugin", "perf": "
 PARALLEL_WORKERS = 3
 _LIVE_MARKERS = ["live: end-to-end test requiring a Striim server"] + [
     f"{s}: live test whose manifest requires the {s} service"
-    for s in ("postgres", "oracle", "mssql", "spanner", "gcs", "kafka", "mysql", "vertica", "bigquery")] + [
+    for s in ("postgres", "oracle", "mssql", "spanner", "gcs", "kafka", "mysql", "vertica", "vertica-eon", "minio",
+              "bigquery")] + [
     # Every live case carries depth_<its depth:>; unlisted, each printed a
     # PytestUnknownMarkWarning into stdout.log. The names follow livetest.manifest.VALID_DEPTHS.
     f"depth_{d}: live test whose manifest says depth: {d}"

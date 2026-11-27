@@ -30,6 +30,7 @@ and `services/oracle/service.yaml` -- not invented:
                       SQLSERVER_TARGET_USER, SQLSERVER_TARGET_PASSWORD, SQLSERVER_TARGET_SCHEMA
   vertica-target  -> VERTICA_HOST, VERTICA_PORT, VERTICA_DB,
                       VERTICA_TARGET_USER, VERTICA_TARGET_PASSWORD, VERTICA_TARGET_SCHEMA
+  vertica-eon-target -> the same with VERTICA_EON_ in place of VERTICA_
 
 Spanner's "direction" is a DIALECT, not a source/target pair -- one emulator
 instance, two fixed-dialect databases -- so its routes are `spanner-google`/
@@ -53,7 +54,8 @@ from typing import Mapping
 
 from inttest.tokens import render
 
-_ROUTE_RE = re.compile(r"^(?P<service>[A-Za-z0-9]+)-(?P<direction>[A-Za-z0-9]+)$")
+# A service name may hold dashes (vertica-eon-target); the direction is the last part.
+_ROUTE_RE = re.compile(r"^(?P<service>[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)-(?P<direction>[A-Za-z0-9]+)$")
 
 # Direction vocabulary per service. Most services are source/target; Spanner's
 # "direction" is a DIALECT instead (one emulator, two fixed-dialect databases), so
@@ -185,6 +187,16 @@ _PARAM_SPECS: dict[str, dict] = {
             "user": "VERTICA_{DIR}_USER",
             "password": "VERTICA_{DIR}_PASSWORD",
             "schema": "VERTICA_{DIR}_SCHEMA",
+        },
+    },
+    "vertica-eon": {
+        # As vertica: the Eon service's primary node (VERTICA_EON_PORT).
+        "driver": "vertica",
+        "common": {"host": "VERTICA_EON_HOST", "port": "VERTICA_EON_PORT", "dbname": "VERTICA_EON_DB"},
+        "per_direction": {
+            "user": "VERTICA_EON_{DIR}_USER",
+            "password": "VERTICA_EON_{DIR}_PASSWORD",
+            "schema": "VERTICA_EON_{DIR}_SCHEMA",
         },
     },
     "spanner": {

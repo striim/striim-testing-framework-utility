@@ -252,3 +252,37 @@ def test_an_opt_in_set_on_opts_in(env):
     from livetest import registry
     assert registry.opted_in("SLT_EMU", env) is True
     assert registry.opted_in(None, env) is ("SLT_EMULATORS" in env)
+
+
+# ---- depends_on: a service another needs running first ------------------------------------
+
+def test_vertica_eon_depends_on_minio():
+    from livetest.registry import with_dependencies
+    assert load_service("vertica-eon").depends_on == ["minio"]
+    assert load_service("postgres").depends_on == []
+    assert with_dependencies(["vertica-eon"]) == ["minio", "vertica-eon"]
+    # each once, first-seen order; an unknown name is left for the caller to report
+    assert with_dependencies(["postgres", "minio", "vertica-eon", "nosuchdb"]) == \
+        ["postgres", "minio", "vertica-eon", "nosuchdb"]
+
+
+def test_depends_on_is_recursive_and_rejects_cycles(tmp_path, overlay):
+    from livetest.registry import with_dependencies
+    for name, deps in (("a", "[b]"), ("b", "[c]"), ("c", "[]")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "service.yaml").write_text(f"name: {name}\nisolation: none\ndepends_on: {deps}\n")
+    overlay.set_roots(services=[tmp_path])
+    assert with_dependencies(["a"]) == ["c", "b", "a"]
+    (tmp_path / "c" / "service.yaml").write_text("name: c\nisolation: none\ndepends_on: [a]\n")
+    with pytest.raises(RegistryError, match="a -> b -> c -> a"):
+        with_dependencies(["a"])
+
+
+@pytest.mark.parametrize("deps,why", [("minio", "list of service names"), ("[x, '']", "list of service names"),
+                                      ("[self]", "the service itself")])
+def test_depends_on_shape_is_checked(tmp_path, overlay, deps, why):
+    (tmp_path / "self").mkdir()
+    (tmp_path / "self" / "service.yaml").write_text(f"name: self\nisolation: none\ndepends_on: {deps}\n")
+    overlay.set_roots(services=[tmp_path])
+    with pytest.raises(RegistryError, match=why):
+        load_service("self")

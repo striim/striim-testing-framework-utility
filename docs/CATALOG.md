@@ -77,6 +77,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Bigtable emulator service recipe](../scripts/live/services/bigtable/README.md) | `scripts/live/services/bigtable/README.md` | Using this service in a test (tokens, routes, using your own instance): docs/SERVICES.md. |
 | [GCS emulator service recipe](../scripts/live/services/gcs/README.md) | `scripts/live/services/gcs/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 | [Kafka service recipe](../scripts/live/services/kafka/README.md) | `scripts/live/services/kafka/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
+| [MinIO service recipe](../scripts/live/services/minio/README.md) | `scripts/live/services/minio/README.md` | Using this service in a test (tokens, settings): docs/SERVICES.md. |
 | [SQL Server service recipe](../scripts/live/services/mssql/README.md) | `scripts/live/services/mssql/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 | [MySQL service recipe](../scripts/live/services/mysql/README.md) | `scripts/live/services/mysql/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 | [Oracle service recipe](../scripts/live/services/oracle/README.md) | `scripts/live/services/oracle/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
@@ -84,6 +85,7 @@ Runnable regression guides are included under Contributing and internals.
 | [Spanner emulator service recipe](../scripts/live/services/spanner/README.md) | `scripts/live/services/spanner/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 | [Striim image recipe](../scripts/live/services/striim/README.md) | `scripts/live/services/striim/README.md` | The Docker cluster the framework starts when STRIIM_URL is unset: slt-striim (primary, web UI and REST on 9080, login admin/striim), slt-node (a second node) and slt-agent. |
 | [Extra JDBC drivers](../scripts/live/services/striim/images/striim/deps/extra-lib/README.md) | `scripts/live/services/striim/images/striim/deps/extra-lib/README.md` | Put a JDBC driver jar here to add it to the framework's Striim image: the build copies every .jar in this folder into Striim's lib/. |
+| [Vertica Eon service recipe](../scripts/live/services/vertica-eon/README.md) | `scripts/live/services/vertica-eon/README.md` | Using this service in a test (accounts, tokens, routes, settings): docs/SERVICES.md. |
 | [Vertica service recipe](../scripts/live/services/vertica/README.md) | `scripts/live/services/vertica/README.md` | Using this service in a test (accounts, tokens, routes, using your own instance): docs/SERVICES.md. |
 
 ## Reference

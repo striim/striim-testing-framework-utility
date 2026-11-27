@@ -90,7 +90,7 @@ def _services(tier: str) -> set:
 
 
 def _ticked(text: str) -> set:
-    return set(re.findall(r"`([a-z]+)`", text))
+    return set(re.findall(r"`([a-z]+(?:-[a-z]+)*)`", text))
 
 
 def test_requires_lists_name_every_service_directory():

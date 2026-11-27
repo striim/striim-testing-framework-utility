@@ -508,6 +508,21 @@ def test_requires_string_raises_instead_of_char_exploding(tmp_path):
     with pytest.raises(ManifestError, match="requires"):
         load_manifest(p)
 
+def test_requires_brings_a_services_dependencies_first(tmp_path):
+    p = _write(tmp_path, """
+        name: eon
+        tql: app.tql
+        requires: [vertica-eon]
+        ddl:
+          - file: ddl.sql
+            db: vertica-eon-target
+        assert:
+          smoke: true
+    """)
+    m = load_manifest(p)
+    assert m.requires == ["minio", "vertica-eon"]
+    assert m.ddl_files == [("vertica-eon-target", "ddl.sql")]
+
 def test_tags_string_raises_instead_of_char_exploding(tmp_path):
     p = _write(tmp_path, """
         name: bad

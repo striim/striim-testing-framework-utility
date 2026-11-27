@@ -1,0 +1,31 @@
+# MinIO, an S3-compatible store, for tests only. vertica-eon keeps its communal storage here.
+# Parallel stacks: SLT_STACK_PREFIX namespaces the project and container_name (docs/internals/ENGINE.md).
+name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-minio
+services:
+  slt-minio:
+    # minio/minio left Docker Hub and quay.io in Oct 2025; this is Chainguard's free image, pinned
+    # by digest. Chainguard's free tier serves only `latest`, so once this digest ages out the pull
+    # fails: re-pin to the current `cgr.dev/chainguard/minio:latest` digest.
+    image: cgr.dev/chainguard/minio@sha256:b288eaa709ba2f799a39e9a8ceda71a08fabf90109b12c90badba9afff29485c
+    container_name: ${SLT_STACK_PREFIX:+${SLT_STACK_PREFIX}-}slt-minio
+    command: ["server", "/data", "--address", ":9000"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin-test
+    mem_limit: ${SLT_MINIO_MEM_LIMIT:-512m}
+    # Both lines: this machine and its containers (vertica-eon reaches MinIO through
+    # host.docker.internal), as the other services publish (docs/SETTINGS.md, SLT_BIND_ADDRESS).
+    ports:
+      - "${SLT_BIND_ADDRESS:-0.0.0.0}:${SLT_MINIO_HOST_PORT:-19000}:9000"
+      - "${SLT_BIND_GATEWAY:-${SLT_BIND_ADDRESS:-0.0.0.0}}:${SLT_MINIO_HOST_PORT:-19000}:9000"
+    volumes:
+      - slt-minio-data:/data
+    healthcheck:
+      # The image has bash but no curl: an HTTP GET over bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /minio/health/live HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && read -r s <&3 && [[ $$s == *' 200 '* ]]"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  slt-minio-data:

@@ -576,7 +576,7 @@ def resolve(name: str, env: dict, started: set, compose_up=None, post_up=None, p
         # host.docker.internal". SLT_<NAME>_VIEW_HOST is the per-service override for a host the
         # app must reach some other way (a VPN name the container cannot resolve, say).
         host = base.get("host") or "localhost"
-        per_service = (env.get(f"SLT_{name.upper()}_VIEW_HOST") or "").strip()
+        per_service = (env.get(f"SLT_{name.upper().replace('-', '_')}_VIEW_HOST") or "").strip()
         if per_service:
             base["view_host"] = per_service
         elif host in ("localhost", "127.0.0.1", "::1"):

@@ -122,7 +122,7 @@ def test_every_published_port_is_bound_to_the_bind_address_and_the_gateway():
             assert second.startswith(GATEWAY + ":"), (where, second)
             assert first[len(BIND):] == second[len(GATEWAY):], (where, first, second)
             mappings += 1
-    assert mappings == 32, mappings          # every service port of both tiers, JDWP excluded
+    assert mappings == 35, mappings          # every service port of both tiers, JDWP excluded
 
 
 def test_no_port_entry_carries_a_second_address():

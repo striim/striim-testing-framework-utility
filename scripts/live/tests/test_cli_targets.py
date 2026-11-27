@@ -399,3 +399,21 @@ def test_ggtrail_needs_workload_and_out(monkeypatch):
         _ggtrail(monkeypatch, "--out", "trail")
     with pytest.raises(SystemExit):
         _ggtrail(monkeypatch, "--workload", "w.yaml")
+
+
+def test_start_brings_up_a_services_dependencies_first(monkeypatch):
+    monkeypatch.setenv("SLT_PARALLEL", "0")
+    monkeypatch.setattr(cli, "known_test_ids", set)
+    seen = []
+    monkeypatch.setattr(cli, "preflight_provision_services",
+                        lambda names, apply_gate=False: seen.append(list(names)) or 0)
+    assert cli.cmd_up(["vertica-eon"]) == 0
+    assert seen == [["minio", "vertica-eon"]]
+
+
+def test_stop_stops_only_what_it_names(monkeypatch):
+    monkeypatch.setattr(cli, "known_test_ids", set)
+    seen = []
+    monkeypatch.setattr(cli, "preflight_teardown_services", lambda names: seen.append(list(names)) or 0)
+    assert cli.cmd_down(["vertica-eon"]) == 0
+    assert seen == [["vertica-eon"]]

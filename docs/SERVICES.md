@@ -52,6 +52,8 @@ interface as they always did.
 | `mssql` | SQL Server 2022 Developer, CDC + Agent | yes | 1433 | `mssql-source`, `mssql-target`, `mssql-admin` | `SLT_MSSQL_HOST` |
 | `mysql` | `mysql:8.0`, binlog `ROW` | yes | 3306 | `mysql-source`, `mysql-target` | `SLT_MYSQL_HOST` |
 | `vertica` | Vertica 25.3 Community Edition, one node | no | 5433 | `vertica-source`, `vertica-target`, `vertica-admin` | `SLT_VERTICA_HOST` |
+| `vertica-eon` | Vertica 25.3 Community Edition, Eon mode, two nodes on `minio` | no | 25433, 25434 | `vertica-eon-source`, `vertica-eon-target`, `vertica-eon-admin` | `SLT_VERTICA_EON_HOST` |
+| `minio` | MinIO (Chainguard image), S3 API | n/a | 19000 | none | no (test-only) |
 | `kafka` | Confluent 7.6.1: Kafka, ZooKeeper, Schema Registry | n/a | 9092, 19092, 8081 | `kafka` | `SLT_KAFKA_HOST` |
 | `spanner` | Cloud Spanner emulator 1.5.55 | change streams | 9010, 9020 | `spanner-google`, `spanner-postgres` | `SLT_SPANNER_HOST` |
 | `gcs` | `fake-gcs-server` 1.54.0 + a token server | n/a | 4443, 4444 | `gcs` | `SLT_GCS_HOST` |
@@ -370,6 +372,43 @@ natively on Apple Silicon. 25.3 is the newest release that still runs as Communi
   names `schema.table`; nothing is dropped on it.
 - The Striim image carries the Vertica JDBC driver.
 
+## Vertica Eon mode (`vertica-eon`)
+
+Vertica 25.3 Community Edition in Eon mode, with its communal storage in the `minio` service: node 1
+in the primary subcluster, node 2 in a secondary subcluster (`sc_secondary`). Requiring it brings up
+`minio` first. The accounts, schemas and database name are those of `vertica`.
+
+| | |
+|---|---|
+| JDBC | `jdbc:vertica://HOST:25433/sltdb` (node 1); `jdbc:vertica://HOST:25434/sltdb` (node 2); no TLS |
+| Accounts | admin `dbadmin`; `qasource`, `qatarget`; password `striim` |
+| Tokens | `VERTICA_EON_URL`, `VERTICA_EON_SECONDARY_URL`, `VERTICA_EON_HOST`, `VERTICA_EON_PORT`, `VERTICA_EON_SECONDARY_PORT`, `VERTICA_EON_DB`, `VERTICA_EON_SOURCE_USER`, `VERTICA_EON_SOURCE_PASSWORD`, `VERTICA_EON_SOURCE_SCHEMA`, `VERTICA_EON_TARGET_USER`, `VERTICA_EON_TARGET_PASSWORD`, `VERTICA_EON_TARGET_SCHEMA` |
+| Settings | `SLT_VERTICA_EON_HOST` and the other `SLT_VERTICA_EON_*` keys; ports `SLT_VERTICA_EON_HOST_PORT`, `SLT_VERTICA_EON_SECONDARY_HOST_PORT`; node subnet `SLT_VERTICA_EON_SUBNET` |
+
+- The routes reach node 1. Connect to node 2 with `${VERTICA_EON_SECONDARY_URL}` to work in the
+  secondary subcluster.
+- The nodes have static IPs, because Vertica's catalog stores them: `.11` and `.12` of the /24 whose
+  first three octets are `SLT_VERTICA_EON_SUBNET` (default `172.16.250`). A second stack
+  (`SLT_STACK_PREFIX`) running at the same time needs another value, for example `172.16.251`, and
+  its own host ports.
+- First boot takes about a minute. With your own Eon database (`SLT_VERTICA_EON_HOST`), `minio` is
+  still started.
+- How it is built: [scripts/live/services/vertica-eon/README.md](../scripts/live/services/vertica-eon/README.md).
+
+## MinIO (`minio`)
+
+An S3-compatible store, for tests only: it always runs as a container, with fixed test credentials.
+
+| | |
+|---|---|
+| Endpoint | `http://HOST:19000` (S3 API, plain HTTP, region `us-east-1`) |
+| Credentials | access key `minioadmin`, secret key `minioadmin-test` |
+| Tokens | `MINIO_ENDPOINT`, `MINIO_HOST`, `MINIO_PORT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` |
+| Settings | port `SLT_MINIO_HOST_PORT` |
+
+- `vertica-eon` keeps its communal storage in the bucket `vertica-eon`. Give a test's own buckets a
+  `${TID}` prefix; nothing removes them before the stack stops.
+
 ## Kafka (`kafka`)
 
 Kafka with ZooKeeper and a Confluent Schema Registry, for `KafkaReader` and `KafkaWriter` with Avro.
@@ -630,6 +669,7 @@ With the hosts and ports above, from this machine:
 - **SQL Server**: host `localhost`, port `1433`, database `qauser`, user `qasource`; trust the
   server certificate.
 - **Vertica**: host `localhost`, port `5433`, database `sltdb`, user `qasource`; SSL off.
+- **Vertica Eon**: as Vertica, on port `25433` (node 1) or `25434` (node 2).
 
 **Spanner in DBeaver** needs a custom driver:
 

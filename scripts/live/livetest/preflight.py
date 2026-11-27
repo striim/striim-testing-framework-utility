@@ -270,7 +270,7 @@ def _bring_up_services(services, env, apply_gate: bool = True, infra=None,
     from livetest.service_healing import Refused, current_context, _redact
     from filelock import Timeout
     admins = {"postgres": PgAdmin, "mssql": MssqlAdmin,
-              "teradata": TeradataAdmin, "vertica": VerticaAdmin}
+              "teradata": TeradataAdmin, "vertica": VerticaAdmin, "vertica-eon": VerticaAdmin}
     for svc in services:
         if outcomes is not None and outcomes.get(svc, {}).get("status") == "unavailable":
             continue
