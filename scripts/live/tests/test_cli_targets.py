@@ -422,9 +422,14 @@ def test_stop_stops_only_what_it_names(monkeypatch):
 def _record_compose_downs(monkeypatch):
     from livetest import preflight
     downed = []
-    monkeypatch.setattr(preflight, "compose_down", lambda defn: downed.append(defn.name))
-    monkeypatch.setattr(preflight, "_surviving_containers", lambda defn: [])
-    monkeypatch.setattr(preflight, "forget_provisioned", lambda keys, state_dir=None: None)
+    fakes = {"compose_down": lambda defn: downed.append(defn.name),
+             "_surviving_containers": lambda defn: [],
+             "forget_provisioned": lambda keys, state_dir=None: None}
+    # Also the module cli's bound function runs in: a test that re-imports livetest modules can
+    # leave cli holding an older preflight than `from livetest import preflight` returns.
+    for scope in (vars(preflight), cli.preflight_teardown_services.__globals__):
+        for name, fake in fakes.items():
+            monkeypatch.setitem(scope, name, fake)
     return downed
 
 
