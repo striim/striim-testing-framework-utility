@@ -1,6 +1,8 @@
 """Consumer service settings discovery and dotenv resolution, shared by both tiers."""
 from __future__ import annotations
 
+import copy
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -54,6 +56,18 @@ def compose_keys(text):
     return set(re.findall(r'\$\{([A-Z][A-Z0-9_]*)', text))
 
 
+_PARSED = {}
+
+
+def _parsed(file):
+    """A service.yaml's mapping, parsed once per content; callers get their own copy."""
+    data = file.read_bytes()
+    key = file.resolve(), hashlib.sha256(data).digest()
+    if key not in _PARSED:
+        _PARSED[key] = yaml.safe_load(data) or {}
+    return copy.deepcopy(_PARSED[key])
+
+
 def _service_definitions(env=None):
     """(file, raw mapping) of each visible service.yaml in both tiers, the first definition of a
     name winning within each tier.
@@ -91,7 +105,7 @@ def _service_definitions(env=None):
                 if file.parent.name in seen:
                     continue
                 seen.add(file.parent.name)
-                yield file, yaml.safe_load(Path(watch(file)).read_text()) or {}
+                yield file, _parsed(Path(watch(file)))
 
 
 def declarations(env=None):

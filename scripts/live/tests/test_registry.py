@@ -278,6 +278,19 @@ def test_depends_on_is_recursive_and_rejects_cycles(tmp_path, overlay):
         with_dependencies(["a"])
 
 
+def test_depends_on_of_an_overriding_root_wins_and_roots_are_read_once(tmp_path, overlay, monkeypatch):
+    from livetest import registry
+    (tmp_path / "vertica-eon").mkdir()
+    (tmp_path / "vertica-eon" / "service.yaml").write_text("name: vertica-eon\nisolation: none\ndepends_on: [postgres]\n")
+    overlay.set_roots(services=[tmp_path])
+    calls = []
+    real = registry._roots
+    monkeypatch.setattr(registry, "_roots", lambda *a: calls.append(a) or real(*a))
+    assert registry.with_dependencies(["vertica-eon", "minio"]) == ["postgres", "vertica-eon", "minio"]
+    # one lookup of the roots per call: each one re-reads every service.yaml (#144 listing 18 s -> 465 s)
+    assert sum(1 for a in calls if not a or a[0] is None) == 1
+
+
 @pytest.mark.parametrize("deps,why", [("minio", "list of service names"), ("[x, '']", "list of service names"),
                                       ("[self]", "the service itself")])
 def test_depends_on_shape_is_checked(tmp_path, overlay, deps, why):

@@ -393,6 +393,7 @@ def with_dependencies(names) -> list:
     check to report; a cycle raises RegistryError."""
     out: list = []
     path: list = []
+    roots: list = []      # looked up once, on first use: each lookup re-reads every service.yaml
 
     def visit(name):
         if name in out:
@@ -404,7 +405,9 @@ def with_dependencies(names) -> list:
             raise RegistryError(f"services depend on each other: {' -> '.join(path + [name])}")
         path.append(name)
         try:
-            deps = getattr(load_service(name), "depends_on", []) if _find(name) is not None else []
+            roots[:] = roots or _roots()
+            root = next((r for r in roots if (r / name / "service.yaml").is_file()), None)
+            deps = getattr(load_service(name, root), "depends_on", []) if root is not None else []
         except RegistryError:
             deps = []
         for dep in deps:
